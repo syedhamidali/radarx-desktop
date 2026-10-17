@@ -165,6 +165,17 @@ def _neighbour_count(valid: np.ndarray, wrap_azimuth: bool) -> np.ndarray:
             max=1.0,
             step=0.05,
         ),
+        param(
+            "apply_to",
+            "select",
+            "all fields",
+            "Apply the mask to",
+            options=["all fields", "main fields only"],
+            help=(
+                "'all fields' also outputs a cleaned copy of every other polar field in the "
+                "sweep. Gap-filling and smoothing stay on the main fields."
+            ),
+        ),
         param("smooth", "bool", False, "Smooth the clean gates"),
         param(
             "smooth_radius_km", "number", 0.3, "   Smoothing radius (km)", min=0.1, max=5, step=0.1
@@ -187,6 +198,7 @@ def run(
     fill_gaps,
     fill_radius_km,
     fill_min_coverage,
+    apply_to,
     smooth,
     smooth_radius_km,
 ):
@@ -305,6 +317,9 @@ def run(
         emit("RhoHV", rho, "", 0.5, 1.0)
     if vel is not None and vel.shape == z.shape:  # not interpolated: velocity can fold
         emit("velocity", vel, "m/s", fillable=False)
+    if apply_to == "all fields":
+        for name, arr, units in G.other_polar_fields(ctx.dataset, z.shape):
+            res.field(f"Cleaned {name}", np.where(keep, arr, np.nan), units=units)
     res.field("QC flags", flags, categories=CATEGORIES)
     res.text(EXPLANATION, title="How the mask works and its limits")
     return res
