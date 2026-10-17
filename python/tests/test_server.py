@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
@@ -847,3 +848,279 @@ class TestSaveTextFile:
         handler, _ = _make_handler()
         await handler.handle_message(json.dumps({"type": "save_text_file", **payload}))
         assert handler._sent[-1]["type"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# Multi-radar mosaics
+# ---------------------------------------------------------------------------
+
+
+class TestMosaic:
+    GRID: ClassVar[dict] = {
+        "resolution_m": 1000,
+        "max_range_km": 80,
+        "z_max_m": 12000,
+        "z_step_m": 1000,
+    }
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        from engine import mosaic
+
+        mosaic.MOSAICS.clear()
+        yield
+        mosaic.MOSAICS.clear()
+
+    @staticmethod
+    def _open_two() -> tuple[str, str]:
+        from tests.test_mosaic import A, B, flat, make_reader, make_volume
+
+        fa = server._register_reader(make_reader(make_volume(*A, flat(20.0), name="LOW")))
+        fb = server._register_reader(make_reader(make_volume(*B, flat(40.0), name="HIGH")))
+        return fa, fb
+
+    @staticmethod
+    async def _create(handler, file_ids, **extra) -> dict:
+        await handler.handle_message(
+            json.dumps(
+                {
+                    "type": "create_mosaic",
+                    "request_id": "r1",
+                    "file_ids": file_ids,
+                    "variable": "DBZH",
+                    "product": "cappi",
+                    "height_m": 2000,
+                    "grid": TestMosaic.GRID,
+                    "merge": {"enabled": True},
+                    **extra,
+                }
+            )
+        )
+        return next(
+            (m for m in handler._sent if m["type"] in ("mosaic_result", "mosaic_error")), {}
+        )
+
+    @pytest.mark.asyncio
+    async def test_create_streams_png_contiguously(self) -> None:
+        pytest.importorskip("radarx")
+        fa, fb = self._open_two()
+        handler, _ = _make_handler()
+        msg = await self._create(handler, [fa, fb])
+        assert msg["type"] == "mosaic_result" and msg["request_id"] == "r1"
+        for key in (
+            "mosaic_id",
+            "product",
+            "variable",
+            "units",
+            "height_m",
+            "grid",
+            "corners",
+            "vmin",
+            "vmax",
+            "cmap",
+            "legend",
+            "stats",
+            "radars",
+            "overlap_fraction",
+            "elapsed_ms",
+            "png_bytes",
+            "chunks",
+        ):
+            assert key in msg, key
+        assert msg["product"] == "cappi" and msg["units"] == "dBZ" and msg["height_m"] == 2000
+        assert [r["file_id"] for r in msg["radars"]] == [fa, fb]
+        assert [r["name"] for r in msg["radars"]] == ["LOW", "HIGH"]
+        assert len(msg["corners"]) == 4 and len(msg["legend"]) == 16
+        # frames: header immediately followed by exactly `chunks` binary frames
+        kinds = [k for k, _ in handler._frames if k == "bin" or _.get("type") == "mosaic_result"]
+        i = next(n for n, (k, f) in enumerate(handler._frames) if k == "json" and f is msg)
+        assert [k for k, _ in handler._frames[i + 1 : i + 1 + msg["chunks"]]] == ["bin"] * msg[
+            "chunks"
+        ]
+        assert kinds.count("bin") == msg["chunks"]
+        png = _binary(handler)
+        assert len(png) == msg["png_bytes"] and png[:8] == b"\x89PNG\r\n\x1a\n"
+        assert all(len(f) <= server.CHUNK_SIZE for k, f in handler._frames if k == "bin")
+        progress = [m for m in handler._sent if m["type"] == "progress"]
+        assert progress and progress[-1]["percent"] == 100
+        assert handler._sent[-1] is progress[-1]
+
+    @pytest.mark.asyncio
+    async def test_large_png_is_chunked(self, monkeypatch) -> None:
+        pytest.importorskip("radarx")
+        fa, fb = self._open_two()
+        monkeypatch.setattr(server, "CHUNK_SIZE", 2000)
+        handler, _ = _make_handler()
+        msg = await self._create(handler, [fa, fb])
+        assert msg["chunks"] > 1
+        assert len(_binary(handler)) == msg["png_bytes"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "needle"),
+        [
+            ({"file_ids": []}, "file_ids"),
+            ({"file_ids": "abc"}, "file_ids"),
+            ({"file_ids": ["nope"]}, "Unknown or closed"),
+            ({"product": "weird"}, "product"),
+            ({"grid": {"resolution_m": 10}}, "resolution_m"),
+            ({"grid": "big"}, "'grid' must be an object"),
+            ({"variable": "ZDR"}, "ZDR"),
+        ],
+    )
+    async def test_errors_are_mosaic_errors(self, payload, needle) -> None:
+        pytest.importorskip("radarx")
+        fa, _ = self._open_two()
+        handler, _ = _make_handler()
+        msg = {"file_ids": [fa], **payload}
+        await handler.handle_message(
+            json.dumps({"type": "create_mosaic", "request_id": "q", "variable": "DBZH", **msg})
+        )
+        errors = [m for m in handler._sent if m["type"] == "mosaic_error"]
+        assert len(errors) == 1 and errors[0]["request_id"] == "q"
+        assert needle in errors[0]["message"]
+        assert not [m for m in handler._sent if m["type"] == "error"]
+        assert handler._sent[-1]["type"] == "progress" and handler._sent[-1]["percent"] == 100
+
+    @pytest.mark.asyncio
+    async def test_missing_radarx_message(self, monkeypatch) -> None:
+        from engine import mosaic
+
+        def _raise():
+            raise mosaic.MosaicError(
+                "Multi-radar mosaics need the Python package radarx: pip install radarx"
+            )
+
+        monkeypatch.setattr(mosaic, "_radarx", _raise)
+        fid = server._register_reader(_reader_with_tree())
+        handler, _ = _make_handler()
+        msg = await self._create(handler, [fid])
+        assert msg["type"] == "mosaic_error" and "pip install radarx" in msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_probe(self) -> None:
+        pytest.importorskip("radarx")
+        fa, fb = self._open_two()
+        handler, _ = _make_handler()
+        created = await self._create(handler, [fa, fb])
+        handler._sent.clear()
+        await handler.handle_message(
+            json.dumps(
+                {
+                    "type": "mosaic_probe",
+                    "mosaic_id": created["mosaic_id"],
+                    "lon": -97.0,
+                    "lat": 35.3,
+                }
+            )
+        )
+        res = handler._sent[-1]
+        assert res["type"] == "mosaic_probe_result" and res["mosaic_id"] == created["mosaic_id"]
+        assert res["value"] == pytest.approx(20.0, abs=1.5) and res["units"] == "dBZ"
+        assert [r["name"] for r in res["radars"]] == ["LOW", "HIGH"]
+        assert {"value", "range_km", "elevation_deg"} <= set(res["radars"][0])
+        await handler.handle_message(
+            json.dumps(
+                {
+                    "type": "mosaic_probe",
+                    "mosaic_id": created["mosaic_id"],
+                    "lon": 10.0,
+                    "lat": 10.0,
+                }
+            )
+        )
+        assert handler._sent[-1]["value"] is None
+
+    @pytest.mark.asyncio
+    async def test_probe_unknown_mosaic(self) -> None:
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps({"type": "mosaic_probe", "mosaic_id": "zzz", "lon": 0, "lat": 0})
+        )
+        assert handler._sent[-1]["type"] == "mosaic_error"
+        assert "Unknown or expired" in handler._sent[-1]["message"]
+
+    @pytest.mark.asyncio
+    async def test_export_netcdf_and_png(self, tmp_path) -> None:
+        pytest.importorskip("radarx")
+        import xarray as xr
+
+        fa, fb = self._open_two()
+        handler, _ = _make_handler()
+        created = await self._create(handler, [fa, fb])
+        mid = created["mosaic_id"]
+        nc = tmp_path / "mosaic.nc"
+        await handler.handle_message(
+            json.dumps(
+                {"type": "export_mosaic", "mosaic_id": mid, "format": "netcdf", "path": str(nc)}
+            )
+        )
+        assert handler._sent[-1] == {"type": "file_saved", "path": str(nc)}
+        with xr.open_dataset(nc) as ds:
+            assert "DBZH_cappi" in ds and ds["DBZH_cappi"].attrs["units"] == "dBZ"
+            assert ds.sizes["lon"] == created["grid"]["nx"]
+        assert not list(tmp_path.glob(".*.tmp"))
+        # existing file: refused until overwrite=true
+        await handler.handle_message(
+            json.dumps(
+                {"type": "export_mosaic", "mosaic_id": mid, "format": "netcdf", "path": str(nc)}
+            )
+        )
+        assert handler._sent[-1]["type"] == "mosaic_error"
+        assert "already exists" in handler._sent[-1]["message"]
+        await handler.handle_message(
+            json.dumps(
+                {
+                    "type": "export_mosaic",
+                    "mosaic_id": mid,
+                    "format": "netcdf",
+                    "path": str(nc),
+                    "overwrite": True,
+                }
+            )
+        )
+        assert handler._sent[-1]["type"] == "file_saved"
+        png = tmp_path / "mosaic.png"
+        await handler.handle_message(
+            json.dumps(
+                {"type": "export_mosaic", "mosaic_id": mid, "format": "png", "path": str(png)}
+            )
+        )
+        assert handler._sent[-1] == {"type": "file_saved", "path": str(png)}
+        assert png.read_bytes()[:4] == b"\x89PNG"
+        assert len((tmp_path / "mosaic.pgw").read_text().split()) == 6
+        assert (tmp_path / "mosaic.prj").exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"mosaic_id": "zzz", "format": "netcdf", "path": "/tmp/x.nc"},
+            {"mosaic_id": "", "format": "netcdf", "path": "/tmp/x.nc"},
+            {"mosaic_id": "zzz", "format": "gif", "path": "/tmp/x.gif"},
+            {"mosaic_id": "zzz", "format": "png", "path": ""},
+        ],
+    )
+    async def test_export_errors(self, payload) -> None:
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps({"type": "export_mosaic", **payload}))
+        assert handler._sent[-1]["type"] == "mosaic_error"
+
+    @pytest.mark.asyncio
+    async def test_export_bad_folder(self) -> None:
+        pytest.importorskip("radarx")
+        fa, fb = self._open_two()
+        handler, _ = _make_handler()
+        created = await self._create(handler, [fa, fb])
+        await handler.handle_message(
+            json.dumps(
+                {
+                    "type": "export_mosaic",
+                    "mosaic_id": created["mosaic_id"],
+                    "format": "png",
+                    "path": "/definitely/not/here/x.png",
+                }
+            )
+        )
+        assert handler._sent[-1]["type"] == "mosaic_error"
+        assert "folder does not exist" in handler._sent[-1]["message"]
