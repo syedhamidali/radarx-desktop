@@ -137,6 +137,23 @@ products). The result card has **View in 2D / View in 3D / Remove** buttons.
   statistics and export tools use real variables).
 * Object results (storm cells, couplets, arcs) are not gridded fields and are not shown in 3D.
 
+## Saving cleaned data
+
+Derived variables can be written to disk with the rest of the volume: **Export → Data Export →
+NetCDF / CfRadial2 / Zarr**. When the file has derived fields, two checkboxes appear:
+
+- **Include derived fields** adds every derived variable to every sweep as a `(azimuth, range)`
+  float32 variable. `:` is not allowed in NetCDF names, so `radarx_clean:cleaned_zdr` is written as
+  `radarx_clean__cleaned_zdr`. Sweeps a variable was not computed for are filled with NaN. Categorical
+  fields carry `flag_values` / `flag_meanings`; every field carries `long_name`, `units` and a
+  `comment` naming the module and its parameters.
+- **Include original moments**: untick it to save only the derived fields.
+
+PNG/SVG/PDF/CSV exports and batch/animation exports accept derived names as ordinary variables.
+The export protocol takes `include_derived` and `include_original` on `export`.
+Files from mobile platforms (per-ray latitude/longitude/altitude) are exported with the median
+position as the site location, since CfRadial1 stores one position per volume.
+
 ## Protocol (for tooling)
 
 ```

@@ -12,6 +12,7 @@
   import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
   import { getActiveFile } from '../stores/fileManager';
+  import { activeDerived } from '../stores/derived';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
   // --- Where the file goes -------------------------------------------------
@@ -99,6 +100,11 @@
   let showRings = true;
   let showTitle = true;
   let darkBackground = false;
+
+  // Data export: write module results (cleaned fields, …) next to the measured moments.
+  let includeDerived = true;
+  let includeOriginal = true;
+  $: derivedCount = $activeDerived.length;
 
   // Batch export
   let batchFormat = 'png';
@@ -328,6 +334,10 @@
       sweep: $selectedSweep,
       dpi: 300,
       options: {},
+      // CSV is the single selected variable; the volume formats take every derived field too.
+      ...(fmt !== 'csv' && derivedCount > 0
+        ? { include_derived: includeDerived, include_original: includeOriginal }
+        : {}),
     });
   }
 
@@ -479,6 +489,19 @@
     <div class="export-section">
       <div class="section-header">Data Export</div>
       <p class="section-desc">Export raw data for analysis</p>
+
+      {#if derivedCount > 0}
+        <div class="checkbox-row">
+          <label class="checkbox-label" title="Add the {derivedCount} module result field(s) to NetCDF, CfRadial2 and Zarr files">
+            <input type="checkbox" bind:checked={includeDerived} disabled={!canExport} />
+            Include {derivedCount} derived field{derivedCount === 1 ? '' : 's'} (cleaned, …)
+          </label>
+          <label class="checkbox-label" title="Untick to write only the derived fields">
+            <input type="checkbox" bind:checked={includeOriginal} disabled={!canExport || !includeDerived} />
+            Include original moments
+          </label>
+        </div>
+      {/if}
 
       <div class="format-buttons">
         <button class="fmt-btn data-btn" on:click={() => doDataExport('netcdf')} disabled={!canExport} title="Export as CfRadial1 NetCDF">
