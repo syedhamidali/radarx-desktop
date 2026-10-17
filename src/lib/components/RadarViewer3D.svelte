@@ -15,6 +15,18 @@
     type GovernorState,
   } from '../utils/qualityGovernor';
   import TransferFunctionEditor from './TransferFunctionEditor.svelte';
+  import { settings } from '../stores/settings';
+  import { resolveBasemap } from '../utils/basemaps';
+  import {
+    variableKind, buildTf, thresholdSpec, thresholdToShader, significantNorm, adaptiveShiftDb,
+    type VolumeVarKind,
+  } from '../utils/volumeTf';
+  import {
+    loadPref, savePref, presetPose, ringStepFor, drawOverlay,
+    VEXAG_MIN, VEXAG_MAX, VEXAG_DEFAULT, Z_TOP_KM, RANGE_DEFAULT_KM,
+    type Cam, type CameraPreset,
+  } from '../utils/scene3d';
+  import { buildGroundMap } from '../utils/groundMap';
 
   // ── Reactive state ────────────────────────────────────────────────────────
   let container = $state<HTMLDivElement | null>(null);
@@ -39,14 +51,32 @@
   const variableLabel = $derived(varStyle?.label ?? variable ?? '');
   const categories = $derived(varStyle?.categories ?? null);
 
-  /** Sweeps that actually carry the selected variable, lowest elevation first. */
+  /**
+   * Sweeps that actually carry the selected variable, lowest elevation first, ONE per elevation.
+   * Scan strategies like NEXRAD's SAILS/split cuts repeat an elevation several times (the same
+   * 0.5 deg cut 4 times in KGWX). Only one of them can be the layer at that angle: stacking the
+   * repeats is wasted loading and makes the volume jump between times. The first (lowest index)
+   * of each elevation cluster is used.
+   */
   const applicable = $derived.by(() => {
     if (!variable) return [];
     // Split-cut volumes (NEXRAD) carry a variable on only some sweeps; waiting for the others
     // would keep the viewer "loading" forever.
-    return [...sweeps]
-      .sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0))
-      .filter((s) => !s.variables || s.variables.length === 0 || s.variables.includes(variable));
+    const list = [...sweeps]
+      .filter((s) => !s.variables || s.variables.length === 0 || s.variables.includes(variable))
+      .sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0) || a.index - b.index);
+    const out: typeof list = [];
+    let cluster: typeof list = [];
+    const flush = () => {
+      if (cluster.length) out.push(cluster.reduce((m, x) => (x.index < m.index ? x : m)));
+      cluster = [];
+    };
+    for (const s of list) {
+      if (cluster.length && Math.abs((s.elevation ?? 0) - (cluster[0].elevation ?? 0)) >= 0.12) flush();
+      cluster.push(s);
+    }
+    flush();
+    return out;
   });
 
   let vmin = $state(0);
@@ -56,21 +86,73 @@
   let opacityScale = $state(0.8);
   let compassAngle = $state(0);    // degrees CW from screen-up to North
   let showTfe      = $state(false);
-  let tfData       = $state(buildTfData('turbo'));
+  let varUnits     = $state('');
+  /** Kind of the variable the volume shows: decides the default opacity curve and threshold. */
+  const kind = $derived<VolumeVarKind>(variableKind(variable, !!categories));
+  let tfData       = $state(buildTf('other', COLORMAP_DATA['turbo'], 0, 1));
+  /** Bumped whenever the default curve is rebuilt: tells the editor to redraw its control points. */
+  let tfSyncKey    = $state(0);
+  let tfShift      = $state(0);     // dB the default reflectivity curve was slid by (weak scenes)
+  let lastP995     = 0;
+  let tfTouched    = false;         // the user edited the curve: never auto-adapt it
+  let thrTouched   = false;
 
-  function buildTfData(cmapName: string, flatAlpha = false): Uint8Array {
-    const rgb = COLORMAP_DATA[cmapName] ?? COLORMAP_DATA['turbo'];
-    const tf = new Uint8Array(256 * 4);
-    for (let i = 0; i < 256; i++) {
-      const t = i / 255;
-      tf[i*4]   = rgb[i*3];
-      tf[i*4+1] = rgb[i*3+1];
-      tf[i*4+2] = rgb[i*3+2];
-      // Categorical classes are equally important: no value-dependent fade-in
-      tf[i*4+3] = flatAlpha ? Math.round(0.85 * 255) : Math.round(Math.pow(t, 0.5) * 0.85 * 255);
-    }
-    return tf;
+  /** Rebuild the default transfer function (colours of the colormap, opacity curve of the kind). */
+  function applyDefaultTf(v: string) {
+    const k = variableKind(v, !!styleFor(v)?.categories);
+    const rgb = COLORMAP_DATA[cmap] ?? COLORMAP_DATA['turbo'];
+    tfShift = 0;
+    tfTouched = false;
+    thrTouched = false;
+    tfData = buildTf(k, rgb, vmin, vmax);
+    const spec = thresholdSpec(k, vmin, vmax, varUnits);
+    thrValue = spec ? spec.value : 0;
+    tfSyncKey++;
+    uploadTransferFn();
   }
+
+  /**
+   * Once the whole volume is packed: if it is a weak scene (light rain), slide the default opacity
+   * curve and threshold towards weaker echoes so something is visible. Strong scenes keep the
+   * standard curve. Never overrides what the user edited.
+   */
+  function adaptTf() {
+    if (tfTouched || kind !== 'reflectivity' || valHist.size === 0) return;
+    const tot = new Float64Array(256);
+    let sum = 0;
+    for (const h of valHist.values()) for (let i = 0; i < 256; i++) { tot[i] += h[i]; sum += h[i]; }
+    if (sum < 5000) return;
+    let acc = 0;
+    let p995 = vmax;
+    for (let i = 1; i < 256; i++) {
+      acc += tot[i];
+      if (acc >= 0.995 * sum) { p995 = vmin + ((i - 1) / 254) * (vmax - vmin); break; }
+    }
+    lastP995 = p995;
+    const shift = adaptiveShiftDb(p995);
+    if (shift === tfShift) return;
+    tfShift = shift;
+    tfData = buildTf('reflectivity', COLORMAP_DATA[cmap] ?? COLORMAP_DATA['turbo'], vmin, vmax, 'default', shift);
+    const spec = thrSpec;
+    if (spec && !thrTouched) thrValue = Math.max(Math.max(spec.min, 5), Math.min(spec.max, 15 - shift));
+    tfSyncKey++;
+    uploadTransferFn();
+    markDirty();
+  }
+
+  // "Hide below X" threshold (live, applied in the shader on top of the transfer function)
+  let thrValue = $state(15);
+  const thrSpec = $derived(thresholdSpec(kind, vmin, vmax, varUnits));
+
+  // Scene: vertical exaggeration, range crop, ground
+  let vexag       = $state<number>(loadPref<number>('vexag', VEXAG_DEFAULT, (x) => (x as number) >= VEXAG_MIN && (x as number) <= VEXAG_MAX));
+  let rangeKm     = $state(RANGE_DEFAULT_KM);
+  let rangeAuto   = $state(true);
+  let fullRangeKm = $state(460);
+  type GroundMode = 'map' | 'grid' | 'off';
+  let groundMode  = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  let showLight   = $state<boolean>(loadPref<boolean>('light', false));
+  const siteName  = $derived(String($radarData.attributes?.instrument_name ?? $radarData.attributes?.site_name ?? ''));
 
   // Colorbar gradient reflects live tfData (updates when TFE presets change colors)
   const cmapGradient = $derived.by(() => {
@@ -132,14 +214,16 @@
   }
 
   // Camera (orbit in degrees / km)
-  let camTheta = $state(-30);   // azimuthal angle (°)
-  let camPhi   = $state(25);    // elevation above horizon (°), [-85, 89]
+  let camTheta = $state(192);   // azimuthal angle (°); 180 = looking north from the south
+  let camPhi   = $state(34);    // elevation above horizon (°), [-85, 89]
   let camDist  = $state(800);   // km from target
-  let camTgt: [number,number,number] = [0,0,0];
+  let camTgt: [number,number,number] = [0,0,0];   // scene units (z is exaggerated)
 
   // Animation targets — the frame job lerps toward these each frame
   let camTgtTarget: [number,number,number] = [0, 0, 0];
   let camDistTarget = 800;
+  let camThetaTarget = 192;
+  let camPhiTarget = 34;
 
   let isDragging  = false;
   let isShiftDrag = false;
@@ -147,6 +231,9 @@
   let resizeObs: ResizeObserver | null = null;
   let destroyed   = false;
   let cameraInitKey = '';
+  /** The user moved the camera by hand: do not re-frame it automatically when the auto range settles. */
+  let camTouched = false;
+  let camPreset: CameraPreset = 'oblique';
   let lastAnimT = 0;
 
   /** Request a redraw. Draws are scheduled on demand: nothing runs while the view is idle. */
@@ -160,13 +247,15 @@
   let angleIdxTex: WebGLTexture | null = null;
   let sweepMetaTex:WebGLTexture | null = null;
   let tfTex:       WebGLTexture | null = null;
+  let groundTex:   WebGLTexture | null = null;   // map image (or a 1x1 placeholder)
+  let groundHasMap = false;
   let maxTexSize = 4096;
 
   // Cached uniform locations (set after link)
   let uloc: Record<string, WebGLUniformLocation | null> = {};
 
   // Volume parameters set after publish
-  let volMaxRange  = 460;   // km
+  let volMaxRange  = 460;   // km (slant range of the data)
   let volTotalAz   = 1;     // total rows in volume texture
   let volMaxNRange = 1;     // width of volume texture
   let volNSweeps   = 0;
@@ -186,7 +275,7 @@
     precision highp float;
     precision highp int;
 
-    // Camera
+    // Camera (scene units: km, z exaggerated)
     uniform vec3  u_camPos;
     uniform vec3  u_camRight;
     uniform vec3  u_camUp;
@@ -197,12 +286,13 @@
 
     // Textures
     uniform highp sampler2D u_volume;    // polar data R8 (quantised)
-    uniform highp sampler2D u_angleIdx;  // elevation→fractional sweep index R32F
-    uniform highp sampler2D u_sweepMeta; // per-sweep metadata RGBA32F (2×nSweeps)
-    uniform sampler2D       u_transferFn;// value→RGBA RGBA8
+    uniform highp sampler2D u_angleIdx;  // elevation -> (fractional sweep index, coverage) RG32F
+    uniform highp sampler2D u_sweepMeta; // per-sweep metadata RGBA32F (2 x nSweeps)
+    uniform sampler2D       u_transferFn;// value -> RGBA RGBA8
+    uniform sampler2D       u_ground;    // map image over [-R, R]^2, row 0 = north
 
     // Volume params
-    uniform float u_maxRange;      // km
+    uniform float u_maxRange;      // km, slant range of the data
     uniform float u_stepSize;      // km per step (user step x quality multiplier)
     uniform float u_stepUser;      // km per step the user asked for (opacity reference)
     uniform int   u_maxSteps;      // hard cap on iterations; step grows to honour it
@@ -216,6 +306,19 @@
     uniform float u_elevMin;
     uniform float u_elevMax;
 
+    // Scene
+    uniform float u_rangeLimit;    // km: horizontal crop radius (also the ground disc)
+    uniform float u_zTop;          // km: physical height cap
+    uniform float u_vexag;         // vertical exaggeration
+    uniform float u_thr;           // "hide below" in normalised value units (0 = off)
+    uniform float u_thrSoft;
+    uniform int   u_thrMode;       // 0: value, 1: |value| about the middle (velocity)
+    uniform int   u_groundMode;    // 0 off, 1 grid, 2 map
+    uniform float u_groundSize;    // texels of u_ground
+    uniform float u_groundHalf;    // km: half extent the map image covers
+    uniform float u_ringStep;      // km
+    uniform int   u_light;         // gradient lighting on/off
+
     // Optional XY clip box (km, radar-relative East/North)
     uniform int   u_useClip;
     uniform float u_clipMinX;
@@ -227,16 +330,6 @@
 
     const float PI  = 3.14159265358979;
     const float PI2 = 6.28318530717959;
-
-    // Ray–sphere intersection. Returns (tNear, tFar); tNear > tFar means miss.
-    vec2 raySphere(vec3 o, vec3 d, float r) {
-      float b = dot(o, d);
-      float c = dot(o, o) - r * r;
-      float disc = b * b - c;
-      if (disc < 0.0) return vec2(1e10, -1e10);
-      float sq = sqrt(disc);
-      return vec2(-b - sq, -b + sq);
-    }
 
     // Decode a stored byte (0..1 after normalisation) to 0..1 over [vmin, vmax]; -1 = no data.
     float decode(float b) {
@@ -275,6 +368,93 @@
       return mix(v0, v1, azFrac);
     }
 
+    // The field at a PHYSICAL position (km; z = real height). Returns false outside the data.
+    // val: normalised value 0..1; cov: coverage 0..1 (fades at the volume's edges instead of
+    // cutting off, so the sweep cones blend into each other).
+    bool sampleField(vec3 pp, bool smoothElev, out float val, out float cov) {
+      float groundR = length(pp.xy);
+      float r       = length(pp);
+      val = 0.0; cov = 0.0;
+      if (r < 0.01 || r > u_maxRange) return false;
+
+      float elevDeg  = degrees(atan(pp.z, groundR));
+      float elevNorm = (elevDeg - u_elevMin) / (u_elevMax - u_elevMin);
+      if (elevNorm < 0.0 || elevNorm > 1.0) return false;
+
+      vec2 li = texture(u_angleIdx, vec2(elevNorm, 0.5)).rg;
+      if (li.y <= 0.0) return false;               // below the lowest / above the highest beam
+
+      int   s0 = int(li.x);
+      int   s1 = min(s0 + 1, u_nSweeps - 1);
+      float sw = fract(li.x);
+
+      float az     = atan(pp.x, pp.y);              // atan2(East, North) = met. azimuth
+      float azNorm = az / PI2;
+      if (azNorm < 0.0) azNorm += 1.0;
+
+      if (!smoothElev) {
+        // Cheap path (and categorical data): the nearest sweep only
+        val = sampleSweep(sw < 0.5 ? s0 : s1, r, azNorm);
+        cov = li.y;
+        return val >= 0.0;
+      }
+      float va = sampleSweep(s0, r, azNorm);
+      float vb = (s1 == s0) ? va : sampleSweep(s1, r, azNorm);
+      float wa = (1.0 - sw) * (va >= 0.0 ? 1.0 : 0.0);
+      float wb = (s1 == s0) ? 0.0 : sw * (vb >= 0.0 ? 1.0 : 0.0);
+      float ws = wa + wb;
+      if (ws <= 0.002) return false;
+      val = (wa * max(va, 0.0) + wb * max(vb, 0.0)) / ws;
+      cov = li.y * ws;
+      return true;
+    }
+
+    // Opacity multiplier of a value: the "hide below" threshold with a soft edge.
+    float thresholdFactor(float val) {
+      if (u_thr <= 0.0) return 1.0;
+      float m = (u_thrMode == 1) ? abs(val * 2.0 - 1.0) : val;
+      return smoothstep(u_thr, u_thr + u_thrSoft, m);
+    }
+
+    float hash12(vec2 p) {
+      return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
+    }
+
+    // Ground disc shading at scene position gp (z = 0), seen along d from distance t.
+    vec3 groundColor(vec3 gp, float t, vec3 d) {
+      float R = u_rangeLimit;
+      float pixAng = 2.0 * u_tanHalfFovY / u_resolution.y;
+      float foot = t * pixAng / max(0.05, -d.z);          // km covered by one pixel on the ground
+      float g = length(gp.xy);
+
+      vec3 col;
+      if (u_groundMode == 2 && abs(gp.x) < u_groundHalf && abs(gp.y) < u_groundHalf) {
+        vec2 tuv = vec2(gp.x / (2.0 * u_groundHalf) + 0.5, 0.5 - gp.y / (2.0 * u_groundHalf));
+        float lod = log2(max(1.0, foot / (2.0 * u_groundHalf / u_groundSize)));
+        col = min(textureLod(u_ground, tuv, lod).rgb * 1.5, vec3(1.0));
+      } else {
+        col = vec3(0.07, 0.085, 0.12);
+        // faint grid every half ring step
+        float gs = u_ringStep * 0.5;
+        vec2 gm = abs(mod(gp.xy + 0.5 * gs, gs) - 0.5 * gs);
+        float gl = 1.0 - smoothstep(0.5 * max(foot, 0.3), 1.5 * max(foot, 0.3), min(gm.x, gm.y));
+        col += vec3(0.05, 0.06, 0.09) * gl;
+      }
+
+      float w = max(foot * 0.9, 0.3);
+      // range rings
+      float rd = abs(mod(g + 0.5 * u_ringStep, u_ringStep) - 0.5 * u_ringStep);
+      float ring = 1.0 - smoothstep(0.5 * w, 1.5 * w, rd);
+      col = mix(col, vec3(0.72, 0.8, 0.95), ring * (u_groundMode == 2 ? 0.42 : 0.35));
+      // N-S / E-W axes through the radar
+      float ax = 1.0 - smoothstep(0.5 * w, 1.5 * w, min(abs(gp.x), abs(gp.y)));
+      col = mix(col, vec3(0.72, 0.8, 0.95), ax * 0.12);
+      // rim
+      float rim = 1.0 - smoothstep(0.5 * w, 2.0 * w, abs(g - R));
+      col = mix(col, vec3(0.85, 0.9, 1.0), rim * 0.6);
+      return col;
+    }
+
     void main() {
       // Reconstruct per-pixel ray direction
       vec2 uv = (gl_FragCoord.xy / u_resolution - 0.5) * 2.0;
@@ -283,135 +463,145 @@
         uv.x * u_tanHalfFovX * u_camRight +
         uv.y * u_tanHalfFovY * u_camUp
       );
+      vec3 o = u_camPos;
 
-      // Intersect bounding sphere (radar coverage radius)
-      vec2 tHit = raySphere(u_camPos, rayDir, u_maxRange);
-      if (tHit.x > tHit.y) { fragColor = vec4(0.07, 0.07, 0.10, 1.0); return; }
+      // Background: a soft vertical gradient so the scene is not a flat slab of colour
+      float by = gl_FragCoord.y / u_resolution.y;
+      vec3 bg = mix(vec3(0.115, 0.135, 0.20), vec3(0.03, 0.037, 0.07), smoothstep(0.0, 1.0, by));
 
-      float tOrig  = max(tHit.x, 0.0);
-      float tStart = tOrig;
-      float tEnd   = tHit.y;
+      float R  = u_rangeLimit;
+      float H  = u_zTop * u_vexag;
 
-      // The iteration cap wins over the requested step: long rays take longer steps.
-      float stepEff = max(u_stepSize, (tEnd - tStart) / float(u_maxSteps));
-      // Per-step opacity is compensated for steps coarser than the user's own setting.
-      float comp = stepEff / u_stepUser;
-
-      // Interleaved gradient noise — better spatial distribution than sin hash
-      float jitter = fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));
-      tStart += jitter * stepEff;
-
-      vec4 color = vec4(0.0);
-
-      float elevRange = u_elevMax - u_elevMin;
-
-      for (int i = 0; i < 4096; i++) {
-        if (i >= u_maxSteps) break;
-        float t = tStart + float(i) * stepEff;
-        if (t >= tEnd || color.a >= 0.99) break;
-
-        vec3 pos = u_camPos + rayDir * t;
-
-        float groundR = sqrt(pos.x * pos.x + pos.y * pos.y);
-        float r       = length(pos);
-        if (r < 0.01 || r > u_maxRange) continue;
-
-        // XY clip box
-        if (u_useClip != 0) {
-          if (pos.x < u_clipMinX || pos.x > u_clipMaxX ||
-              pos.y < u_clipMinY || pos.y > u_clipMaxY) continue;
+      // Ray against the cylinder (radius R) clipped to the slab 0 <= z <= H
+      float t0 = 0.0;
+      float t1 = 1e9;
+      bool  hit = true;
+      if (abs(rayDir.z) > 1e-6) {
+        float ta = (0.0 - o.z) / rayDir.z;
+        float tb = (H - o.z) / rayDir.z;
+        t0 = max(t0, min(ta, tb));
+        t1 = min(t1, max(ta, tb));
+      } else if (o.z < 0.0 || o.z > H) {
+        hit = false;
+      }
+      float a2 = dot(rayDir.xy, rayDir.xy);
+      float b2 = dot(o.xy, rayDir.xy);
+      float c2 = dot(o.xy, o.xy) - R * R;
+      if (a2 > 1e-9) {
+        float disc = b2 * b2 - a2 * c2;
+        if (disc < 0.0) hit = false;
+        else {
+          float sq = sqrt(disc);
+          t0 = max(t0, (-b2 - sq) / a2);
+          t1 = min(t1, (-b2 + sq) / a2);
         }
+      } else if (c2 > 0.0) {
+        hit = false;
+      }
+      if (t0 >= t1) hit = false;
 
-        // Elevation angle above horizontal (degrees)
-        float elevDeg = degrees(atan(pos.z, groundR));
-
-        // Look up fractional sweep index from elevation
-        float elevNorm = (elevDeg - u_elevMin) / elevRange;
-        if (elevNorm < 0.0 || elevNorm > 1.0) continue;
-
-        float sweepF = texture(u_angleIdx, vec2(elevNorm, 0.5)).r;
-        if (sweepF < 0.0) continue;   // below radar floor
-
-        // Two bracketing sweeps for elevation interpolation
-        int   s0 = int(sweepF);
-        int   s1 = min(s0 + 1, u_nSweeps - 1);
-        float sw = fract(sweepF);
-
-        // Azimuth in [0,1) from North (Y+), clockwise toward East (X+)
-        float az     = atan(pos.x, pos.y);  // atan2(East, North) = met. azimuth
-        float azNorm = az / PI2;
-        if (azNorm < 0.0) azNorm += 1.0;
-
-        float val;
-        if (u_interp < 2) {
-          // Cheap path: nearest sweep only
-          val = sampleSweep(sw < 0.5 ? s0 : s1, r, azNorm);
-          if (val < 0.0) continue;
-        } else {
-          float val0 = sampleSweep(s0, r, azNorm);
-          float val1 = (s0 == s1) ? val0 : sampleSweep(s1, r, azNorm);
-          bool nd0 = val0 < 0.0;
-          bool nd1 = val1 < 0.0;
-          if (nd0 && nd1) continue;
-          val = nd0 ? val1 : (nd1 ? val0 : mix(val0, val1, sw));
-        }
-
-        // Map value through transfer function
-        vec4 tf = texture(u_transferFn, vec2(val, 0.5));
-        float a0 = tf.a * u_opacityScale;
-        if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
-
-        // Front-to-back compositing
-        float a = a0 * (1.0 - color.a);
-        color.rgb += tf.rgb * a;
-        color.a   += a;
+      // Ground plane z = 0 (only seen from above); it is the floor of the cylinder
+      bool  groundHit = false;
+      float tG = 0.0;
+      vec3  gp = vec3(0.0);
+      if (u_groundMode != 0 && o.z > 0.0 && rayDir.z < -1e-5) {
+        tG = -o.z / rayDir.z;
+        gp = o + rayDir * tG;
+        groundHit = length(gp.xy) <= R;
       }
 
-      // Premultiplied → straight alpha
-      vec4 fc = color.a > 0.001
-        ? vec4(color.rgb / color.a, color.a)
-        : vec4(0.07, 0.07, 0.10, 1.0);
+      vec4 color = vec4(0.0);   // premultiplied
+      float tOrig = max(t0, 0.0);
+      float tEnd  = groundHit ? min(t1, tG) : t1;
 
-      // Ground-plane range rings (50 km spacing), composited under data
-      if (u_camPos.z > 0.0 && rayDir.z < -0.0001) {
-        float tGround = -u_camPos.z / rayDir.z;
-        if (tGround >= 0.0 && tGround <= tEnd) {
-          vec3  gp = u_camPos + rayDir * tGround;
-          float gd = length(gp.xy);
-          if (gd <= u_maxRange) {
-            float md = mod(gd, 50.0);
-            float rw = max(0.3, 0.7 * (1.0 - gd / u_maxRange));
-            if (md < rw || md > 50.0 - rw) {
-              float rb = 0.5 * (1.0 - fc.a);
-              fc.rgb   = mix(fc.rgb, vec3(0.28, 0.28, 0.45), rb);
-              fc.a     = min(1.0, fc.a + rb * 0.35);
+      if (hit && tEnd > tOrig) {
+        // The iteration cap wins over the requested step: long rays take longer steps.
+        float stepEff = max(u_stepSize, (tEnd - tOrig) / float(u_maxSteps));
+        // Per-step opacity is compensated for steps coarser than the user's own setting.
+        float comp = stepEff / u_stepUser;
+
+        // Interleaved gradient noise: a per-pixel offset along the ray turns layer banding into noise
+        float jitter = hash12(gl_FragCoord.xy);
+        float tStart = tOrig + jitter * stepEff;
+        bool smoothElev = (u_interp >= 2);
+
+        for (int i = 0; i < 4096; i++) {
+          if (i >= u_maxSteps) break;
+          float t = tStart + float(i) * stepEff;
+          if (t >= tEnd || color.a >= 0.99) break;
+
+          vec3 pos = o + rayDir * t;
+
+          // XY clip box
+          if (u_useClip != 0) {
+            if (pos.x < u_clipMinX || pos.x > u_clipMaxX ||
+                pos.y < u_clipMinY || pos.y > u_clipMaxY) continue;
+          }
+
+          // Scene -> physical (undo the vertical exaggeration)
+          vec3 pp = vec3(pos.xy, pos.z / u_vexag);
+          float val, cov;
+          if (!sampleField(pp, smoothElev, val, cov)) continue;
+
+          // Map value through transfer function
+          vec4 tf = texture(u_transferFn, vec2((val * 255.0 + 0.5) / 256.0, 0.5));
+          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val);
+          if (a0 < 0.0004) continue;
+          if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
+
+          vec3 rgb = tf.rgb;
+          if (u_light != 0 && a0 > 0.02) {
+            // Gradient of the field (scene units) -> surface-like normal: brighter towards the viewer
+            float e = max(0.6, stepEff * 0.8);
+            // One call site in a loop (not six inlined copies): keeps the shader small to compile.
+            float gv[6];
+            for (int k = 0; k < 6; k++) {
+              int ax = k / 2;
+              float sgn = (k - ax * 2 == 0) ? -1.0 : 1.0;
+              vec3 off = vec3(ax == 0 ? 1.0 : 0.0, ax == 1 ? 1.0 : 0.0, ax == 2 ? 1.0 / u_vexag : 0.0) * (sgn * e);
+              float vv, c;
+              bool ok = sampleField(pp + off, smoothElev, vv, c);
+              gv[k] = ok ? vv : 0.0;
+            }
+            vec3 gr = vec3(gv[1] - gv[0], gv[3] - gv[2], gv[5] - gv[4]);
+            float gm = length(gr);
+            if (gm > 0.02) {
+              vec3 n = -gr / gm;                              // points out of the stronger echo
+              vec3 L = normalize(-rayDir * 0.7 + vec3(-0.35, -0.25, 0.9));
+              float dif = max(dot(n, L), 0.0);
+              float k = smoothstep(0.02, 0.2, gm);
+              rgb *= mix(1.0, 0.55 + 0.75 * dif, k);
             }
           }
+
+          // Front-to-back compositing
+          float a = a0 * (1.0 - color.a);
+          color.rgb += rgb * a;
+          color.a   += a;
         }
       }
 
-      // Clip box wireframe — ground footprint edges + 4 vertical corner lines
+      vec3 behind = bg;
+      if (groundHit) behind = groundColor(gp, tG, rayDir);
+      vec3 rgbOut = color.rgb + (1.0 - color.a) * behind;
+
+      // Clip box wireframe: ground footprint edges + 4 vertical corner lines
       if (u_useClip != 0) {
         float ew = max(0.25, 0.004 * length(u_camPos));
+        float vis = 1.0 - color.a;
 
-        // Ground footprint: 4 edges of the XY rectangle
         if (u_camPos.z > 0.0 && rayDir.z < -0.0001) {
-          float tG = -u_camPos.z / rayDir.z;
-          if (tG >= 0.0 && tG <= tEnd) {
-            vec3 gp = u_camPos + rayDir * tG;
-            bool inX = gp.x >= u_clipMinX && gp.x <= u_clipMaxX;
-            bool inY = gp.y >= u_clipMinY && gp.y <= u_clipMaxY;
-            float ex = min(abs(gp.x - u_clipMinX), abs(gp.x - u_clipMaxX));
-            float ey = min(abs(gp.y - u_clipMinY), abs(gp.y - u_clipMaxY));
-            if ((inY && ex < ew) || (inX && ey < ew)) {
-              float cb = 0.7 * (1.0 - fc.a);
-              fc.rgb = mix(fc.rgb, vec3(0.0, 0.85, 1.0), cb);
-              fc.a   = min(1.0, fc.a + cb * 0.45);
-            }
+          float tGc = -u_camPos.z / rayDir.z;
+          vec3 gq = u_camPos + rayDir * tGc;
+          bool inX = gq.x >= u_clipMinX && gq.x <= u_clipMaxX;
+          bool inY = gq.y >= u_clipMinY && gq.y <= u_clipMaxY;
+          float ex = min(abs(gq.x - u_clipMinX), abs(gq.x - u_clipMaxX));
+          float ey = min(abs(gq.y - u_clipMinY), abs(gq.y - u_clipMaxY));
+          if ((inY && ex < ew) || (inX && ey < ew)) {
+            rgbOut = mix(rgbOut, vec3(0.0, 0.85, 1.0), 0.7 * vis);
           }
         }
 
-        // Vertical corner lines: closest point on ray to each corner (in XY)
         float d2r = dot(rayDir.xy, rayDir.xy);
         if (d2r > 1e-6) {
           vec2 corners[4];
@@ -422,20 +612,18 @@
           for (int i = 0; i < 4; i++) {
             float tC = ((corners[i].x - u_camPos.x) * rayDir.x +
                         (corners[i].y - u_camPos.y) * rayDir.y) / d2r;
-            tC = clamp(tC, tOrig, tEnd);
+            tC = clamp(tC, tOrig, max(tOrig, t1));
             vec3  cp     = u_camPos + rayDir * tC;
             float dist2d = length(cp.xy - corners[i]);
-            if (dist2d < ew && cp.z >= 0.0) {
+            if (dist2d < ew && cp.z >= 0.0 && cp.z <= H) {
               float fade = 1.0 - dist2d / ew;
-              float cb = 0.45 * fade * (1.0 - fc.a);
-              fc.rgb = mix(fc.rgb, vec3(0.0, 0.85, 1.0), cb);
-              fc.a   = min(1.0, fc.a + cb * 0.3);
+              rgbOut = mix(rgbOut, vec3(0.0, 0.85, 1.0), 0.45 * fade * vis);
             }
           }
         }
       }
 
-      fragColor = fc;
+      fragColor = vec4(rgbOut, 1.0);
     }
   `;
 
@@ -501,7 +689,9 @@
       'u_maxRange','u_stepSize','u_stepUser','u_maxSteps','u_interp','u_nSweeps',
       'u_volTotalAz','u_volMaxNRange','u_opacityScale',
       'u_elevMin','u_elevMax',
-      'u_volume','u_angleIdx','u_sweepMeta','u_transferFn',
+      'u_volume','u_angleIdx','u_sweepMeta','u_transferFn','u_ground',
+      'u_rangeLimit','u_zTop','u_vexag','u_thr','u_thrSoft','u_thrMode',
+      'u_groundMode','u_groundSize','u_groundHalf','u_ringStep','u_light',
       'u_useClip','u_clipMinX','u_clipMinY','u_clipMaxX','u_clipMaxY',
     ];
     uloc = {};
@@ -529,6 +719,7 @@
     g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
     g.clearColor(0.05, 0.05, 0.1, 1.0);
     uploadTransferFn();
+    createGroundPlaceholder();
 
     if (!container) return false;
     resizeCanvas();
@@ -551,10 +742,24 @@
     // Diagnostics hook for tests / the console: renderer counters, no behaviour.
     (globalThis as any).__xr3d = {
       stats: () => ({ ...pr?.stats, gov: governor.snapshot() }),
+      // Scene state for tests: adaptive opacity curve / threshold / crop / exaggeration.
+      scene: () => ({ shift: tfShift, p995: lastP995, thr: thrValue, rangeKm, vexag, kind, groundMode, groundMap: groundHasMap }),
       // Test-only handles (dev server): lose/restore the context, tamper with the scheduler.
       ...(import.meta.env.DEV ? { gl: () => gl, pr: () => pr } : {}),
     };
     return true;
+  }
+
+  /** 1x1 texture so the ground sampler is always valid, even before / without a map. */
+  function createGroundPlaceholder() {
+    if (!gl) return;
+    if (groundTex) gl.deleteTexture(groundTex);
+    groundTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, groundTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([20, 24, 34, 255]));
+    groundHasMap = false;
   }
 
   function uploadTransferFn() {
@@ -599,6 +804,12 @@
   let packVmax = 1;
   let publishTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPublishAt = 0;
+  /** sweep index -> count of "significant echo" gates by ground range (HIST_KM bins): drives the auto range crop. */
+  let rangeHist = new Map<number, Float64Array>();
+  /** sweep index -> count of gates per quantised value (256 bins): drives the adaptive opacity curve. */
+  let valHist = new Map<number, Uint32Array>();
+  const HIST_KM = 5;
+  const HIST_BINS = 110;
 
   function computeLayout(entries: SweepDataEntry[], texMB: number): Layout {
     let R = 1, azMax = 1;
@@ -634,6 +845,8 @@
     layout = null;
     cpuVol = null;
     packedMeta = new Map();
+    rangeHist = new Map();
+    valHist = new Map();
     pendingPack = [...loadedSweeps.keys()];
     dropVolumeGpu();
     volNSweeps = 0;
@@ -647,6 +860,8 @@
     layout = null;
     cpuVol = null;
     packedMeta = new Map();
+    rangeHist = new Map();
+    valHist = new Map();
     pendingPack = [];
     loadedSweeps = new Map();
     outstanding = new Map();
@@ -659,6 +874,7 @@
 
   function ingest(entry: SweepDataEntry) {
     if (!applicableSet.has(entry.sweep)) return;
+    if (entry.units && entry.units !== varUnits) varUnits = entry.units;
     loadedSweeps.set(entry.sweep, entry);
     if (!pendingPack.includes(entry.sweep) && !packedMeta.has(entry.sweep)) pendingPack.push(entry.sweep);
     else if (packedMeta.has(entry.sweep)) {
@@ -693,6 +909,8 @@
           layout = computeLayout([...loadedSweeps.values()], governor.textureBudgetMB());
           cpuVol = new Uint8Array(layout.W * layout.nSlots * layout.slotRows);
           packedMeta = new Map();
+          rangeHist = new Map();
+    valHist = new Map();
           dropVolumeGpu();
           pendingPack = [idx, ...[...loadedSweeps.keys()].filter((k) => k !== idx)];
           governor.setVolumeMB(cpuVol.length / 1048576);
@@ -738,11 +956,18 @@
     const lo = packVmin;
     const sc = 254 / (packVmax - packVmin || 1);
     let t0 = performance.now();
+    // Echo extent: count gates above a "significant" value per range column (see autoRange()).
+    const sigNorm = significantNorm(variableKind(entry.variable, !!entry.categories || !!styleFor(entry.variable)?.categories), packVmin, packVmax);
+    const sigByte = sigNorm == null ? 999 : Math.round(1 + sigNorm * 254);
+    const cnt = new Uint32Array(nOut);
+    const touched = new Uint8Array(nAzOut);
+    const vh = new Uint32Array(256);
 
     for (let ai = 0; ai < nAz; ai++) {
       let gi = Math.round((azimuth[ai] / 360) * nAzOut) % nAzOut;
       if (gi < 0) gi += nAzOut;
       const dst = (base + gi) * W;
+      touched[gi] = 1;
       const src = ai * nRange;
       if (fr === 1) {
         for (let r = 0; r < nRange; r++) {
@@ -751,6 +976,8 @@
             const t = (v - lo) * sc;
             const b = t >= 254 ? 255 : (t + 1.5) | 0;
             if (b > vol[dst + r]) vol[dst + r] = b;
+            if (b >= sigByte) cnt[r]++;
+            vh[b]++;
           }
         }
       } else {
@@ -767,6 +994,8 @@
             }
           }
           vol[dst + o] = m;
+          if (m >= sigByte) cnt[o]++;
+          vh[m]++;
         }
       }
       if ((ai & 7) === 7 && performance.now() - t0 > SLICE_MS) {
@@ -774,6 +1003,36 @@
         if (g !== packGen || destroyed) return false;
         t0 = performance.now();
       }
+    }
+
+    // Radial azimuths are never exactly on the row grid (0.5 deg spacing with +-0.05 deg jitter): a
+    // third of the rows can end up without a radial, which shows as thin dark radial "spokes". Give
+    // every empty row the content of its nearest filled neighbour (within a few rows).
+    for (let gi = 0; gi < nAzOut; gi++) {
+      if (touched[gi]) continue;
+      for (let k = 1; k <= 3; k++) {
+        const a = (gi - k + nAzOut) % nAzOut;
+        const b = (gi + k) % nAzOut;
+        const from = touched[a] ? a : touched[b] ? b : -1;
+        if (from >= 0) {
+          const d0 = (base + gi) * W;
+          vol.copyWithin(d0, (base + from) * W, (base + from) * W + W);
+          break;
+        }
+      }
+    }
+
+    {
+      const hist = new Float64Array(HIST_BINS);
+      const stepKm = sweepRangeStepKm(entry) * fr;
+      const cosE = Math.cos(((L.elevOf.get(entry.sweep) ?? 0) * Math.PI) / 180);
+      for (let o = 0; o < nOut; o++) {
+        if (!cnt[o]) continue;
+        const bin = Math.min(HIST_BINS - 1, Math.floor(((o + 0.5) * stepKm * cosE) / HIST_KM));
+        hist[bin] += cnt[o];
+      }
+      rangeHist.set(entry.sweep, hist);
+      valHist.set(entry.sweep, vh);
     }
 
     packedMeta.set(entry.sweep, {
@@ -882,6 +1141,12 @@
     volTotalAz   = layout.nSlots * layout.slotRows;
     volNSweeps   = n;
     volMaxRange  = maxKm;
+    fullRangeKm  = Math.max(10, Math.ceil(maxKm));
+    const prevRange = rangeKm;
+    if (rangeAuto) setRangeKm(autoRangeKm(), false);
+    else if (rangeKm > fullRangeKm) setRangeKm(fullRangeKm, false);
+    // The auto range firms up as sweeps arrive: keep the untouched default camera framed on it.
+    if (rangeKm !== prevRange && !camTouched && cameraInitKey === loadKey) resetCamera(camPreset, true);
 
     if (sweepMetaTex) gl.deleteTexture(sweepMetaTex);
     sweepMetaTex = gl.createTexture()!;
@@ -893,7 +1158,8 @@
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 2, n, 0, gl.RGBA, gl.FLOAT, metaData);
     buildAngleIndex(metas);
 
-    if (cameraInitKey !== loadKey) { cameraInitKey = loadKey; resetCamera(); }
+    if (cameraInitKey !== loadKey) { cameraInitKey = loadKey; camTouched = false; resetCamera('oblique', true); }
+    if (outstanding.size === 0 && pendingPack.length === 0) { scheduleGround(200); adaptTf(); }
     hasRendered = true;
     errorMsg = '';
     governor.setVolumeMB(layout.W * layout.nSlots * layout.slotRows / 1048576);
@@ -902,42 +1168,46 @@
   }
 
   // ── AngleIndex texture ────────────────────────────────────────────────────
-  // Maps elevation in [elevMin, elevMax] → fractional sweep index.
-  // floor(value) = lower sweep, fract(value) = interpolation weight.
-  // -1 = below radar floor.
+  // Maps elevation in [elevMin, elevMax] -> (fractional sweep index, coverage).
+  // floor(index) = lower sweep, fract(index) = interpolation weight along the vertical.
+  // coverage is 1 between the lowest and highest beam and fades to 0 just outside them: the
+  // volume ends gently at the lowest beam's lower edge and above the top beam (the cone of
+  // silence is left empty) instead of being extruded or cut with a hard step.
 
   function buildAngleIndex(metas: PackedMeta[]) {
     if (!gl || metas.length === 0) return;
 
     const N       = 2048;
-    const elevMin = metas[0].elevDeg - 1.0;   // 1° below lowest sweep
-    const elevMax = metas[metas.length - 1].elevDeg + 5.0;  // 5° above highest
+    const first   = metas[0].elevDeg;
+    const last    = metas[metas.length - 1].elevDeg;
+    // Half a beam width below / above the outermost beams (a beam is ~1 deg wide).
+    const gapLo   = metas.length > 1 ? metas[1].elevDeg - first : 1;
+    const gapHi   = metas.length > 1 ? last - metas[metas.length - 2].elevDeg : 1;
+    const padLo   = Math.max(0.15, Math.min(0.5, gapLo * 0.5));
+    const padHi   = Math.max(0.15, Math.min(0.8, gapHi * 0.5));
+    const elevMin = first - padLo - 0.2;
+    const elevMax = last + padHi + 0.2;
 
-    const data = new Float32Array(N);
-
+    const data = new Float32Array(N * 2);
+    let lo = 0;
     for (let i = 0; i < N; i++) {
-      const elevDeg = elevMin + (i / (N - 1)) * (elevMax - elevMin);
-
-      if (elevDeg < metas[0].elevDeg) {
-        data[i] = -1.0;
-        continue;
+      const e = elevMin + (i / (N - 1)) * (elevMax - elevMin);
+      let idx: number, cov: number;
+      if (e < first) {
+        idx = 0;
+        cov = Math.max(0, 1 - (first - e) / padLo);
+      } else if (e >= last) {
+        idx = metas.length - 1;
+        cov = Math.max(0, 1 - (e - last) / padHi);
+      } else {
+        while (lo < metas.length - 2 && e >= metas[lo + 1].elevDeg) lo++;
+        while (lo > 0 && e < metas[lo].elevDeg) lo--;
+        const d = metas[lo + 1].elevDeg - metas[lo].elevDeg;
+        idx = lo + (d > 1e-4 ? (e - metas[lo].elevDeg) / d : 0);
+        cov = 1;
       }
-      if (elevDeg >= metas[metas.length - 1].elevDeg) {
-        // Above highest sweep: use highest sweep, no further interpolation
-        data[i] = metas.length - 1.0;
-        continue;
-      }
-
-      // Find bracketing sweeps (metas is already sorted by elevation)
-      let lo = 0;
-      for (let j = 0; j < metas.length - 1; j++) {
-        if (metas[j].elevDeg <= elevDeg && elevDeg < metas[j+1].elevDeg) {
-          lo = j;
-          break;
-        }
-      }
-      const t = (elevDeg - metas[lo].elevDeg) / (metas[lo+1].elevDeg - metas[lo].elevDeg);
-      data[i] = lo + t;
+      data[i * 2] = idx;
+      data[i * 2 + 1] = cov * cov * (3 - 2 * cov);   // smoothstep fade
     }
 
     if (angleIdxTex) gl.deleteTexture(angleIdxTex);
@@ -947,7 +1217,7 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, N, 1, 0, gl.RED, gl.FLOAT, data);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG32F, N, 1, 0, gl.RG, gl.FLOAT, data);
 
     // Store elevMin/elevMax for shader uniform
     _elevMin = elevMin;
@@ -969,8 +1239,10 @@
     ];
     const fwd   = norm3(diff3(camTgt, eye));
     const upHint: [number,number,number] = camPhi < 0 ? [0,0,-1] : [0,0,1];
-    const right = norm3(cross3(upHint, fwd));
-    const up    = cross3(fwd, right);
+    // Right-handed basis: looking north (+Y) with Z up, 'right' is East (+X). (The previous
+    // cross3(upHint, fwd) gave West, i.e. a mirror image of the whole scene.)
+    const right = norm3(cross3(fwd, upHint));
+    const up    = cross3(right, fwd);
     return { eye, fwd, right, up };
   }
 
@@ -984,11 +1256,183 @@
     return [v[0]/l, v[1]/l, v[2]/l];
   }
 
+  // ── Scene: range crop, ground map, overlay ────────────────────────────────
+
+  let overlayCanvas = $state<HTMLCanvasElement | null>(null);
+  let overlayCtx: CanvasRenderingContext2D | null = null;
+  let overlayDpr = 1;
+  let groundTexSize = 1024;
+  let groundHalfKm = 1;
+  let groundKey = '';
+  let groundGen = 0;
+  let groundTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Radar site from the file's attributes (null when unknown). */
+  function currentSite(): { lat: number; lon: number } | null {
+    const a = $radarData.attributes ?? {};
+    const num = (v: unknown) => (v === null || v === undefined || v === '' ? NaN : Number(v));
+    const lat = [a.latitude, a.origin_latitude, a.siteLat].map(num).find(Number.isFinite);
+    const lon = [a.longitude, a.origin_longitude, a.siteLon].map(num).find(Number.isFinite);
+    if (lat === undefined || lon === undefined || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+    if (lat === 0 && lon === 0) return null;
+    return { lat, lon };
+  }
+
+  /** Smallest horizontal radius holding ~97% of the significant echoes, rounded up; falls back to 200 km. */
+  function autoRangeKm(): number {
+    const tot = new Float64Array(HIST_BINS);
+    let sum = 0;
+    for (const h of rangeHist.values()) for (let i = 0; i < HIST_BINS; i++) { tot[i] += h[i]; sum += h[i]; }
+    const cap = Math.min(fullRangeKm, 300);
+    if (sum < 300) return Math.min(RANGE_DEFAULT_KM, fullRangeKm);
+    let acc = 0;
+    let km = cap;
+    for (let i = 0; i < HIST_BINS; i++) {
+      acc += tot[i];
+      if (acc >= 0.97 * sum) { km = (i + 1) * HIST_KM; break; }
+    }
+    km = Math.ceil((km + 15) / 10) * 10;
+    return Math.max(60, Math.min(cap, km));
+  }
+
+  /** Crop the volume horizontally. Never reloads or repacks anything; the camera keeps its framing. */
+  function setRangeKm(v: number, keepFraming: boolean) {
+    const nv = Math.max(10, Math.min(fullRangeKm, Math.round(v)));
+    if (nv === rangeKm) return;
+    const old = rangeKm;
+    rangeKm = nv;
+    if (keepFraming && old > 0) {
+      const k = nv / old;
+      camDist *= k; camDistTarget *= k;
+      camTgt = [camTgt[0] * k, camTgt[1] * k, camTgt[2]];
+      camTgtTarget = [camTgtTarget[0] * k, camTgtTarget[1] * k, camTgtTarget[2]];
+    }
+    if (outstanding.size === 0 && pendingPack.length === 0) scheduleGround();
+    markDirty();
+  }
+
+  function onRangeInput(e: Event) {
+    rangeAuto = false;
+    setRangeKm(Number((e.target as HTMLInputElement).value), true);
+    interact();
+  }
+  function setRangeAuto() {
+    rangeAuto = true;
+    setRangeKm(autoRangeKm(), true);
+    interact();
+  }
+
+  function onVexagInput(e: Event) {
+    const nv = Math.max(VEXAG_MIN, Math.min(VEXAG_MAX, Number((e.target as HTMLInputElement).value)));
+    if (nv === vexag) return;
+    const k = nv / vexag;   // keep what the camera looks at: scale its height with the stretch
+    vexag = nv;
+    camTgt = [camTgt[0], camTgt[1], camTgt[2] * k];
+    camTgtTarget = [camTgtTarget[0], camTgtTarget[1], camTgtTarget[2] * k];
+    savePref('vexag', nv);
+    interact();
+  }
+
+  function setGroundMode(m: GroundMode) {
+    groundMode = m;
+    savePref('ground', m);
+    scheduleGround(0);
+    markDirty();
+  }
+  function onLightToggle() {
+    savePref('light', showLight);
+    markDirty();
+  }
+
+  function scheduleGround(delay = 500) {
+    if (groundTimer) clearTimeout(groundTimer);
+    groundTimer = setTimeout(() => { groundTimer = null; void refreshGround(); }, delay);
+  }
+
+  /** (Re)build the map image under the volume; no-op without a site, a provider or network. */
+  async function refreshGround() {
+    if (destroyed) return;
+    const gen = ++groundGen;
+    const site = currentSite();
+    const bm = resolveBasemap($settings.mapStyle, $settings.theme.mode);
+    if (groundMode !== 'map' || !site || !bm.provider.url || !gl || volNSweeps === 0) { markDirty(); return; }
+    const radius = rangeKm;
+    const key = `${site.lat.toFixed(3)},${site.lon.toFixed(3)}|${radius}|${bm.provider.id}`;
+    if (key === groundKey && groundHasMap) return;
+    let res = null;
+    try {
+      res = await buildGroundMap(
+        { lat: site.lat, lon: site.lon, radiusKm: radius, size: 1024, provider: bm.provider, theme: 'dark' },
+        () => gen !== groundGen || destroyed,
+      );
+    } catch (e) {
+      console.warn('[3D] ground map failed:', e);
+    }
+    if (!res || gen !== groundGen || destroyed || !gl) return;
+    gl.activeTexture(gl.TEXTURE4);
+    if (groundTex) gl.deleteTexture(groundTex);
+    groundTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, groundTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, res.size, res.size, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(res.data.buffer));
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number));
+    gl.activeTexture(gl.TEXTURE0);
+    groundTexSize = res.size;
+    groundHalfKm = radius;
+    groundHasMap = true;
+    groundKey = key;
+    markDirty();
+  }
+
+  function sizeOverlay() {
+    if (!overlayCanvas || !container) return;
+    overlayDpr = Math.min(window.devicePixelRatio || 1, 2);
+    const rect = container.getBoundingClientRect();
+    const w = Math.max(1, Math.round(rect.width * overlayDpr));
+    const h = Math.max(1, Math.round(rect.height * overlayDpr));
+    if (overlayCanvas.width !== w || overlayCanvas.height !== h) {
+      overlayCanvas.width = w;
+      overlayCanvas.height = h;
+      overlayCanvas.style.width = rect.width + 'px';
+      overlayCanvas.style.height = rect.height + 'px';
+    }
+  }
+
+  /** Height scale, range-ring labels, N/E/S/W, radar marker, north arrow: a 2D layer above the GL canvas. */
+  function drawSceneOverlay(
+    eye: [number, number, number], fwd: [number, number, number],
+    right: [number, number, number], up: [number, number, number],
+    tanX: number, tanY: number,
+  ) {
+    if (!overlayCanvas || !container) return;
+    try {
+      if (!overlayCtx) overlayCtx = overlayCanvas.getContext('2d');
+      if (!overlayCtx) return;
+      sizeOverlay();
+      const cssW = overlayCanvas.width / overlayDpr;
+      const cssH = overlayCanvas.height / overlayDpr;
+      overlayCtx.setTransform(overlayDpr, 0, 0, overlayDpr, 0, 0);
+      const cam: Cam = { eye, fwd, right, up, tanX, tanY, w: cssW, h: cssH };
+      drawOverlay(overlayCtx, cam, {
+        rangeKm, zTopKm: Z_TOP_KM, vexag, ringStepKm: ringStepFor(rangeKm),
+        siteName, showRings: groundMode !== 'off', showFrame: true,
+      });
+    } catch (e) {
+      console.warn('[3D] overlay failed:', e);
+    }
+  }
+
   // ── Render (driven by ProgressiveRenderer: one frame = several banded draws) ─
 
   const frameJob: ProgressiveJob = {
     begin(params, w, h) {
-      if (!gl || !prog || !quadVAO || !volumeTex || !angleIdxTex || !sweepMetaTex || !tfTex || volNSweeps === 0) return false;
+      if (!gl || !prog || !quadVAO || !volumeTex || !angleIdxTex || !sweepMetaTex || !tfTex || !groundTex || volNSweeps === 0) return false;
       const g = gl;
 
       // Smooth camera animation — ease toward the targets by elapsed time, not by frame count, so
@@ -1005,13 +1449,17 @@
         camTgt[2] - camTgtTarget[2]
       );
       const dDist = Math.abs(camDist - camDistTarget);
-      if (dTgt > 0.05 || dDist > 0.5) {
+      const dTheta = ((camThetaTarget - camTheta + 540) % 360) - 180;
+      const dPhi = camPhiTarget - camPhi;
+      if (dTgt > 0.05 || dDist > 0.5 || Math.abs(dTheta) > 0.05 || Math.abs(dPhi) > 0.05) {
         camTgt = [
           camTgt[0] + (camTgtTarget[0] - camTgt[0]) * lf,
           camTgt[1] + (camTgtTarget[1] - camTgt[1]) * lf,
           camTgt[2] + (camTgtTarget[2] - camTgt[2]) * lf,
         ];
         camDist += (camDistTarget - camDist) * lf;
+        camTheta += dTheta * lf;
+        camPhi += dPhi * lf;
         pr?.noteInteraction(); // still moving: coarse frames now, one settled frame at the end
       }
 
@@ -1051,6 +1499,22 @@
       g.uniform1f(u('u_elevMin'),      _elevMin);
       g.uniform1f(u('u_elevMax'),      _elevMax);
 
+      // Scene
+      g.uniform1f(u('u_rangeLimit'),   rangeKm);
+      g.uniform1f(u('u_zTop'),         Z_TOP_KM);
+      g.uniform1f(u('u_vexag'),        vexag);
+      const ts = thrSpec ? thresholdToShader(thrSpec, thrValue, vmin, vmax) : { thr: 0, soft: 0.03, mode: 0 };
+      g.uniform1f(u('u_thr'),          ts.thr);
+      g.uniform1f(u('u_thrSoft'),      ts.soft);
+      g.uniform1i(u('u_thrMode'),      ts.mode);
+      g.uniform1i(u('u_groundMode'),   groundMode === 'off' ? 0 : groundMode === 'map' && groundHasMap ? 2 : 1);
+      g.uniform1f(u('u_groundSize'),   groundTexSize);
+      g.uniform1f(u('u_groundHalf'),   groundHalfKm);
+      g.uniform1f(u('u_ringStep'),     ringStepFor(rangeKm));
+      g.uniform1i(u('u_light'),        showLight && !categories ? 1 : 0);
+
+      drawSceneOverlay(eye, fwd, right, up, tanX, tanY);
+
       const clip = $selectedBox;
       g.uniform1i(u('u_useClip'), clip ? 1 : 0);
       if (clip) {
@@ -1070,6 +1534,8 @@
       g.activeTexture(g.TEXTURE1); g.bindTexture(g.TEXTURE_2D, angleIdxTex);  g.uniform1i(uloc['u_angleIdx'], 1);
       g.activeTexture(g.TEXTURE2); g.bindTexture(g.TEXTURE_2D, sweepMetaTex); g.uniform1i(uloc['u_sweepMeta'], 2);
       g.activeTexture(g.TEXTURE3); g.bindTexture(g.TEXTURE_2D, tfTex);        g.uniform1i(uloc['u_transferFn'], 3);
+      g.activeTexture(g.TEXTURE4); g.bindTexture(g.TEXTURE_2D, groundTex);    g.uniform1i(uloc['u_ground'], 4);
+      g.activeTexture(g.TEXTURE0);
       g.drawArrays(g.TRIANGLES, 0, 6);
       g.bindVertexArray(null);
     },
@@ -1089,6 +1555,7 @@
     canvas.height = h;
     canvas.style.width  = rect.width  + 'px';
     canvas.style.height = rect.height + 'px';
+    sizeOverlay();
     // The resize cleared the canvas: put the last image back right away, refine afterwards.
     pr?.presentLast();
     interact();
@@ -1115,8 +1582,7 @@
         cmap = getDefaultCmap(v);
         const range = getDefaultRange(v);
         if (range) { vmin = range[0]; vmax = range[1]; }
-        tfData = buildTfData(cmap, !!styleFor(v)?.categories);
-        uploadTransferFn();
+        applyDefaultTf(v);
       }
       packVmin = vmin;
       packVmax = vmax;
@@ -1204,7 +1670,9 @@
     pr?.setLost(true);
     gl = null;
     prog = null; quadVAO = null;
-    volumeTex = angleIdxTex = sweepMetaTex = tfTex = null;
+    volumeTex = angleIdxTex = sweepMetaTex = tfTex = groundTex = null;
+    groundHasMap = false; groundKey = '';
+    overlayCtx = null;
     texAllocated = false;
     errorMsg = 'Graphics context lost; trying to recover…';
     if (lostTimer) clearTimeout(lostTimer);
@@ -1225,6 +1693,7 @@
       if (!ok) return;
       errorMsg = '';
       void reuploadAll();
+      scheduleGround(300);
     });
   }
 
@@ -1232,18 +1701,20 @@
     fatalMsg = '';
     errorMsg = '';
     glFailed = false;
-    if (!gl) { pr?.dispose(); pr = null; glInit = null; void ensureGl().then((ok) => ok && void reuploadAll()); }
+    if (!gl) { pr?.dispose(); pr = null; glInit = null; void ensureGl().then((ok) => { if (ok) { void reuploadAll(); scheduleGround(300); } }); }
     else { pr?.resume(); }
   }
 
   // ── Mouse / touch controls ────────────────────────────────────────────────
 
   function onMouseDown(e: MouseEvent) {
+    camTouched = true;
     isDragging = true; isShiftDrag = e.shiftKey;
     lastMouse = [e.clientX, e.clientY];
     // Snap targets to current state to stop any in-flight animation
     camTgtTarget  = [...camTgt];
     camDistTarget = camDist;
+    camThetaTarget = camTheta; camPhiTarget = camPhi;
   }
   function onMouseMove(e: MouseEvent) {
     if (!isDragging) return;
@@ -1262,6 +1733,7 @@
     } else {
       camTheta += dx * 0.4;
       camPhi    = Math.max(-85, Math.min(89, camPhi - dy * 0.4));
+      camThetaTarget = camTheta; camPhiTarget = camPhi;   // do not fight manual orbit
     }
     interact();
   }
@@ -1272,6 +1744,7 @@
     if (was && (pendingPack.length > 0 || publishTimer)) schedulePublish();
   }
   function onWheel(e: WheelEvent) {
+    camTouched = true;
     e.preventDefault();
     e.stopPropagation();
     camDist = Math.max(10, Math.min(5000, camDist * (1 + e.deltaY * 0.001)));
@@ -1279,6 +1752,7 @@
     interact();
   }
   function onKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'r' && e.key !== 'R') camTouched = true;
     const step = e.shiftKey ? 15 : 5;
     switch (e.key) {
       case 'ArrowLeft':  camTheta -= step; break;
@@ -1290,14 +1764,27 @@
       case 'r': case 'R': resetCamera(); return;
       default: return;
     }
+    camThetaTarget = camTheta; camPhiTarget = camPhi;
     e.preventDefault();
     interact();
   }
 
-  function resetCamera() {
-    camTheta      = -30; camPhi = 25;
-    camDistTarget = volMaxRange * 1.8;
-    camTgtTarget  = [0, 0, 0];
+  /** Move the camera to a preset pose (animated unless `instant`). */
+  function resetCamera(preset: CameraPreset = 'oblique', instant = false) {
+    camPreset = preset;
+    const rect = container?.getBoundingClientRect();
+    const asp = rect && rect.height > 0 ? rect.width / rect.height : 1.6;
+    const pose = presetPose(preset, rangeKm, vexag, asp, Math.PI / 4);
+    camThetaTarget = pose.theta;
+    camPhiTarget   = pose.phi;
+    camDistTarget  = pose.dist;
+    camTgtTarget   = [...pose.target];
+    if (instant) {
+      camTheta = pose.theta; camPhi = pose.phi; camDist = pose.dist; camTgt = [...pose.target];
+    } else {
+      // Take the short way round
+      camTheta = camThetaTarget + ((camTheta - camThetaTarget + 540) % 360) - 180;
+    }
     interact();
   }
 
@@ -1305,22 +1792,25 @@
 
   $effect(() => {
     const clip = $selectedBox;
-    untrack(() => markDirty());
-    if (clip) {
-      camTgtTarget = [
-        (clip.xMin + clip.xMax) / 2 / 1000,
-        (clip.yMin + clip.yMax) / 2 / 1000,
-        0,
-      ];
-      camDistTarget = Math.max(50, Math.hypot(
-        (clip.xMax - clip.xMin) / 1000,
-        (clip.yMax - clip.yMin) / 1000,
-      ) * 2);
-      if (camPhi < 15) camPhi = 15;
-    } else {
-      camTgtTarget  = [0, 0, 0];
-      camDistTarget = volMaxRange * 1.8;
-    }
+    untrack(() => {
+      markDirty();
+      if (clip) {
+        camTgtTarget = [
+          (clip.xMin + clip.xMax) / 2 / 1000,
+          (clip.yMin + clip.yMax) / 2 / 1000,
+          0,
+        ];
+        camDistTarget = Math.max(50, Math.hypot(
+          (clip.xMax - clip.xMin) / 1000,
+          (clip.yMax - clip.yMin) / 1000,
+        ) * 2);
+        if (camPhi < 15) { camPhi = 15; camPhiTarget = 15; }
+      } else {
+        const pose = presetPose('oblique', rangeKm, vexag, 1.6, Math.PI / 4);
+        camTgtTarget  = [...pose.target];
+        camDistTarget = pose.dist;
+      }
+    });
   });
 
   onMount(() => {
@@ -1345,6 +1835,8 @@
     if (timeoutTimer) { clearInterval(timeoutTimer); timeoutTimer = null; }
     if (publishTimer) { clearTimeout(publishTimer); publishTimer = null; }
     if (lostTimer) { clearTimeout(lostTimer); lostTimer = null; }
+    if (groundTimer) { clearTimeout(groundTimer); groundTimer = null; }
+    groundGen++;
     pr?.dispose();
     pr = null;
     governor.release();
@@ -1353,7 +1845,7 @@
     canvas?.removeEventListener('webglcontextlost', onContextLost);
     canvas?.removeEventListener('webglcontextrestored', onContextRestored);
     if (gl) {
-      [volumeTex, angleIdxTex, sweepMetaTex, tfTex].forEach(t => t && gl!.deleteTexture(t));
+      [volumeTex, angleIdxTex, sweepMetaTex, tfTex, groundTex].forEach(t => t && gl!.deleteTexture(t));
       if (prog)    gl.deleteProgram(prog);
       if (quadVAO) gl.deleteVertexArray(quadVAO);
     }
@@ -1397,7 +1889,12 @@
         </span>
       </div>
 
-      <button class="reset-btn" onclick={resetCamera} title="Reset camera (R)">Reset</button>
+      <div class="ctrl-group views" role="group" aria-label="Camera views">
+        <button class="reset-btn" onclick={() => resetCamera('oblique')} title="Reset camera (R)">Reset</button>
+        <button class="reset-btn" onclick={() => resetCamera('oblique')} title="Oblique view from the south">Oblique</button>
+        <button class="reset-btn" onclick={() => resetCamera('side')} title="Side view: shows the vertical structure">Side</button>
+        <button class="reset-btn" onclick={() => resetCamera('top')} title="Top-down view, north up">Top</button>
+      </div>
       <button class="reset-btn" class:active={showTfe} onclick={() => showTfe = !showTfe} title="Transfer function editor">TF</button>
 
       {#if $selectedBox}
@@ -1414,11 +1911,60 @@
       {/if}
     </div>
 
+    <div class="controls-3d row2" aria-label="Scene controls">
+      {#if thrSpec}
+        <div class="ctrl-group" title="Echoes weaker than this are hidden. Raise it to isolate the strong cores.">
+          <label for="thr-ctrl">{thrSpec.label}</label>
+          <input id="thr-ctrl" type="range" min={thrSpec.min} max={thrSpec.max} step={thrSpec.step}
+                 bind:value={thrValue} oninput={() => { thrTouched = true; interact(); }} />
+          <span class="ctrl-val wide">{thrValue}{thrSpec.unit ? ' ' + thrSpec.unit : ''}</span>
+        </div>
+      {/if}
+
+      <div class="ctrl-group" title="Stretch the vertical axis. A radar volume is ~15 km tall and hundreds of km wide, so it needs stretching to read.">
+        <label for="vex-ctrl">Vertical</label>
+        <input id="vex-ctrl" type="range" min={VEXAG_MIN} max={VEXAG_MAX} step="1"
+               value={vexag} oninput={onVexagInput} />
+        <span class="ctrl-val">{vexag}×</span>
+      </div>
+
+      <div class="ctrl-group" title="Crop the volume to this horizontal radius. Does not reload data.">
+        <label for="range-ctrl">Range</label>
+        <input id="range-ctrl" type="range" min="20" max={fullRangeKm} step="10"
+               value={rangeKm} oninput={onRangeInput} />
+        <span class="ctrl-val wide">{rangeKm} km</span>
+        <button class="reset-btn" class:active={rangeAuto} onclick={setRangeAuto}
+                title="Fit the range to where the echoes are">Auto</button>
+      </div>
+
+      <div class="ctrl-group">
+        <label for="ground-ctrl">Ground</label>
+        <select id="ground-ctrl" class="quality-sel" value={groundMode}
+                onchange={(e) => setGroundMode((e.target as HTMLSelectElement).value as GroundMode)}>
+          <option value="map">Map</option>
+          <option value="grid">Grid</option>
+          <option value="off">Off</option>
+        </select>
+      </div>
+
+      {#if !categories}
+        <label class="chk" title="Shade the echoes using the gradient of the field, which gives cores depth (costs GPU time)">
+          <input type="checkbox" bind:checked={showLight} onchange={onLightToggle} /> Lighting
+        </label>
+      {/if}
+    </div>
+
     {#if showTfe}
       <div class="tfe-panel">
         <TransferFunctionEditor
           bind:transferFunction={tfData}
-          onchange={() => { uploadTransferFn(); markDirty(); }}
+          kind={kind}
+          {vmin}
+          {vmax}
+          keepColors={true}
+          syncKey={tfSyncKey}
+          shift={tfShift}
+          onchange={() => { tfTouched = true; uploadTransferFn(); markDirty(); }}
         />
       </div>
     {/if}
@@ -1433,6 +1979,7 @@
          onwheel={onWheel}
          onkeydown={onKeyDown}>
       <canvas bind:this={canvas}></canvas>
+      <canvas class="scene-overlay" bind:this={overlayCanvas} aria-hidden="true"></canvas>
 
       {#if hasRendered}
         <!-- Colorbar -->
@@ -1629,6 +2176,20 @@
   }
   .canvas-wrap:active { cursor: grabbing; }
   .canvas-wrap canvas { display: block; }
+  .canvas-wrap canvas.scene-overlay {
+    position: absolute; left: 0; top: 0;
+    pointer-events: none;
+    z-index: 2;
+  }
+  .controls-3d.row2 { padding-top: 3px; padding-bottom: 3px; }
+  .ctrl-val.wide { min-width: 52px; }
+  .ctrl-group.views { gap: 3px; }
+  .chk {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+    color: var(--text-muted); text-transform: uppercase; cursor: pointer;
+  }
+  .chk input { accent-color: var(--accent-primary); }
 
   .colorbar-wrap {
     position: absolute;
