@@ -69,7 +69,9 @@ VAR_ALIASES: dict[str, list[str]] = {
     "PHIDP": ["PHIDP", "differential_phase", "PhiDP", "UPHIDP"],
     "KDP": ["KDP", "specific_differential_phase"],
     "RHOHV": ["RHOHV", "cross_correlation_ratio", "RhoHV", "CCORH"],
-    "VRADH": ["VRADH", "velocity", "V", "radial_velocity"],
+    "VRADH": ["VRADH", "velocity", "V", "radial_velocity", "VEL"],
+    "SNR": ["SNR", "SNRH", "SNRHC", "SNRV", "SNRVC", "snr"],
+    "NCP": ["NCP", "normalized_coherent_power", "SQI", "SQIH"],
     "WRADH": ["WRADH", "WIDTH", "spectrum_width"],
 }
 
