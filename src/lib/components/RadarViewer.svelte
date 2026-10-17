@@ -5,6 +5,7 @@
   import { PPIRenderer, getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import ColorBar from './ColorBar.svelte';
   import StormOverlay from './StormOverlay.svelte';
+  import ModuleOverlay from './ModuleOverlay.svelte';
   import MapBackground from './MapBackground.svelte';
   import GeoOverlay from './GeoOverlay.svelte';
   import MeasureTools from './MeasureTools.svelte';
@@ -123,6 +124,8 @@
   // ── Lifecycle ────────────���────────────────────────���────────────────────────
   onMount(() => {
     unsubSweepData = wsManager.onMessage('sweep_data_ready', (entry: SweepDataEntry) => {
+      // A slow response for a sweep/variable the user already left must not repaint over the current view
+      if (entry.variable !== $selectedVariable || entry.sweep !== $selectedSweep) return;
       renderSweepData(entry);
     });
 
@@ -573,6 +576,14 @@
 
       {#if hasRendered}
         <StormOverlay
+          {scale}
+          {translateX}
+          {translateY}
+          maxRange={currentMaxRange}
+          {containerWidth}
+          {containerHeight}
+        />
+        <ModuleOverlay
           {scale}
           {translateX}
           {translateY}
