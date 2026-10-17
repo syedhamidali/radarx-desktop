@@ -753,7 +753,12 @@
       // Load lowest-elevation sweeps first — they cover the most ground area
       const sweepsByElev = [...sweeps].sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0));
       let anyRequested = false;
-      for (const s of sweepsByElev) {
+      // Split-cut volumes (NEXRAD) carry a variable on only some sweeps; waiting for the others
+      // would keep the viewer "loading" forever.
+      const applicable = sweepsByElev.filter(
+        (s) => !s.variables || s.variables.length === 0 || s.variables.includes(variable),
+      );
+      for (const s of applicable) {
         const key = `${variable}:${s.index}`;
         if (loadedSweeps.has(s.index) || requestedSweeps.has(key)) continue;
         const cached = getCachedSweep(variable, s.index);
@@ -767,7 +772,7 @@
       }
 
       if (loadedSweeps.size > 0) buildAndRender();
-      isLoading = anyRequested || loadedSweeps.size < sweeps.length;
+      isLoading = anyRequested || loadedSweeps.size < applicable.length;
     }
   });
 

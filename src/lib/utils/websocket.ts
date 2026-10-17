@@ -1,3 +1,4 @@
+import { pickDefaultVariable, firstSweepWith } from './variables';
 import { get } from 'svelte/store';
 import {
   connectionStatus,
@@ -449,8 +450,8 @@ class WebSocketManager {
           this.prefetchInFlight.clear();
           this.recentRequests.clear();
 
-          const firstVar = vars.length > 0 ? vars[0] : null;
-          const firstSweep = swps.length > 0 ? swps[0].index : 0;
+          const firstVar = pickDefaultVariable(vars);
+          const firstSweep = firstSweepWith(swps, firstVar);
 
           // Clear variable first so no stale render fires while stores are updating
           selectedVariable.set(null);
