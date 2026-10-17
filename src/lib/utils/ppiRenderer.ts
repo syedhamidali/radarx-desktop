@@ -22,7 +22,8 @@ import {
 } from './colormaps';
 import { renderCache, type CachedMesh } from './renderCache';
 import { perfStats } from '../stores/perfStats';
-import type { MeshWorkerInput, MeshWorkerOutput } from '../workers/meshWorker';
+import { buildSharpMesh, buildSmoothMesh, type SmoothMesh } from './meshBuilder';
+import type { MeshWorkerOutput } from '../workers/meshWorker';
 
 // ─── Sweep data cache ────────────────────────────────────────────────────
 export interface SweepDataEntry {
@@ -39,27 +40,61 @@ export interface SweepDataEntry {
   units: string;
 }
 
+// Insertion-ordered Map doubles as an LRU list (oldest first).
 const sweepCache = new Map<string, SweepDataEntry>();
+let sweepCacheBytes = 0;
+/** Memory bound for cached raw sweeps (a full-resolution sweep is ~3-8 MB). */
+const SWEEP_CACHE_MAX_BYTES = 384 * 1024 * 1024;
+const SWEEP_CACHE_MAX_ENTRIES = 512;
 
 function cacheKey(variable: string, sweep: number): string {
   return `${variable}:${sweep}`;
 }
 
+/** Bytes retained by an entry. Its arrays are usually views over one shared buffer. */
+function entryBytes(e: SweepDataEntry): number {
+  const buf = e.values.buffer;
+  if (e.azimuth.buffer === buf && e.range.buffer === buf) return buf.byteLength;
+  return e.azimuth.byteLength + e.range.byteLength + e.values.byteLength;
+}
+
 export function cacheSweepData(entry: SweepDataEntry): void {
   const key = cacheKey(entry.variable, entry.sweep);
+  const existing = sweepCache.get(key);
+  if (existing) {
+    sweepCacheBytes -= entryBytes(existing);
+    sweepCache.delete(key);
+  }
   sweepCache.set(key, entry);
-  if (sweepCache.size > 200) {
-    const first = sweepCache.keys().next().value;
-    if (first !== undefined) sweepCache.delete(first);
+  sweepCacheBytes += entryBytes(entry);
+
+  // Evict least-recently-used entries until under budget (never the one just added).
+  while (
+    (sweepCacheBytes > SWEEP_CACHE_MAX_BYTES || sweepCache.size > SWEEP_CACHE_MAX_ENTRIES) &&
+    sweepCache.size > 1
+  ) {
+    const oldestKey = sweepCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    const oldest = sweepCache.get(oldestKey)!;
+    sweepCacheBytes -= entryBytes(oldest);
+    sweepCache.delete(oldestKey);
   }
 }
 
 export function getCachedSweep(variable: string, sweep: number): SweepDataEntry | undefined {
-  return sweepCache.get(cacheKey(variable, sweep));
+  const key = cacheKey(variable, sweep);
+  const entry = sweepCache.get(key);
+  if (entry) {
+    // Touch: move to the most-recently-used end.
+    sweepCache.delete(key);
+    sweepCache.set(key, entry);
+  }
+  return entry;
 }
 
 export function clearSweepCache(): void {
   sweepCache.clear();
+  sweepCacheBytes = 0;
   renderCache.clear();
 }
 
@@ -104,34 +139,6 @@ export function getColormapRGB(cmapName: string, index: number): [number, number
   return [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]];
 }
 
-// ─── Sin/Cos lookup table ──────────────────────────────────────────────
-
-const TRIG_TABLE_SIZE = 3600; // 0.1-degree resolution
-const sinLUT = new Float32Array(TRIG_TABLE_SIZE);
-const cosLUT = new Float32Array(TRIG_TABLE_SIZE);
-
-for (let i = 0; i < TRIG_TABLE_SIZE; i++) {
-  const rad = (i / TRIG_TABLE_SIZE) * Math.PI * 2;
-  sinLUT[i] = Math.sin(rad);
-  cosLUT[i] = Math.cos(rad);
-}
-
-function fastSin(degrees: number): number {
-  const idx = (((degrees % 360) + 360) % 360) * (TRIG_TABLE_SIZE / 360);
-  const i0 = Math.floor(idx) % TRIG_TABLE_SIZE;
-  const i1 = (i0 + 1) % TRIG_TABLE_SIZE;
-  const frac = idx - Math.floor(idx);
-  return sinLUT[i0] * (1 - frac) + sinLUT[i1] * frac;
-}
-
-function fastCos(degrees: number): number {
-  const idx = (((degrees % 360) + 360) % 360) * (TRIG_TABLE_SIZE / 360);
-  const i0 = Math.floor(idx) % TRIG_TABLE_SIZE;
-  const i1 = (i0 + 1) % TRIG_TABLE_SIZE;
-  const frac = idx - Math.floor(idx);
-  return cosLUT[i0] * (1 - frac) + cosLUT[i1] * frac;
-}
-
 // ─── Shaders ────────────────────────────────────────────────────────────
 
 // --- Sharp (original flat-color) vertex + fragment ---
@@ -152,7 +159,11 @@ const VERTEX_SHADER_SHARP = `
 `;
 
 const FRAGMENT_SHADER_SHARP = `
+  #ifdef GL_FRAGMENT_PRECISION_HIGH
+  precision highp float;
+  #else
   precision mediump float;
+  #endif
   varying float v_value;
   varying vec2 v_pos;
   uniform sampler2D u_colormap;
@@ -200,7 +211,11 @@ const VERTEX_SHADER_SMOOTH = `
 `;
 
 const FRAGMENT_SHADER_SMOOTH = `
+  #ifdef GL_FRAGMENT_PRECISION_HIGH
+  precision highp float;
+  #else
   precision mediump float;
+  #endif
   varying vec2 v_polar;
   varying vec4 v_values4;
   varying vec2 v_pos;
@@ -274,7 +289,11 @@ const CONTOUR_VERTEX_SHADER = `
 
 const CONTOUR_FRAGMENT_SHADER = `
   #extension GL_OES_standard_derivatives : enable
+  #ifdef GL_FRAGMENT_PRECISION_HIGH
+  precision highp float;
+  #else
   precision mediump float;
+  #endif
   varying float v_value;
   uniform float u_vmin;
   uniform float u_vmax;
@@ -335,13 +354,23 @@ function _compileShader(gl: WebGLRenderingContext, type: number, source: string)
 function _linkProgram(gl: WebGLRenderingContext, vsSrc: string, fsSrc: string): WebGLProgram | null {
   const vs = _compileShader(gl, gl.VERTEX_SHADER, vsSrc);
   const fs = _compileShader(gl, gl.FRAGMENT_SHADER, fsSrc);
-  if (!vs || !fs) return null;
+  if (!vs || !fs) {
+    if (vs) gl.deleteShader(vs);
+    if (fs) gl.deleteShader(fs);
+    return null;
+  }
   const prog = gl.createProgram()!;
   gl.attachShader(prog, vs);
   gl.attachShader(prog, fs);
   gl.linkProgram(prog);
+  // The linked program keeps its own copy; the shader objects are no longer needed.
+  gl.detachShader(prog, vs);
+  gl.detachShader(prog, fs);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
   if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
     console.error('[PPI] Program link failed:', gl.getProgramInfoLog(prog));
+    gl.deleteProgram(prog);
     return null;
   }
   return prog;
@@ -390,6 +419,28 @@ interface ContourLocs {
 
 // ─── WebGL PPI Renderer ─────────────────────────────────────────────────
 
+/**
+ * Meshes are cached per "variable:sweep", but the same key can carry different
+ * data (e.g. a QC'd or difference result replacing the raw sweep). This records
+ * which entry a cached mesh was built from so stale meshes are never reused.
+ */
+const meshOwner = new WeakMap<Float32Array, SweepDataEntry>();
+
+/** CPU-side copy (reference) of the sharp mesh, kept for context restore. */
+interface SharpMeshData {
+  positions: Float32Array;
+  vals: Float32Array;
+  vertexCount: number;
+}
+
+interface PendingMesh {
+  resolve: (r: MeshWorkerOutput) => void;
+  reject: (e: unknown) => void;
+}
+
+/** Minimum interval between perfStats publications (avoids a store update per frame). */
+const PERF_PUBLISH_INTERVAL_MS = 200;
+
 export class PPIRenderer {
   private gl: WebGLRenderingContext | null = null;
   private canvas: HTMLCanvasElement | null = null;
@@ -433,18 +484,40 @@ export class PPIRenderer {
 
   // Colormap / ring / view state
   private colormapTex: WebGLTexture | null = null;
+  /** Name of the colormap currently resident in the GPU texture ('' = none). */
   private currentCmapName = '';
+  /** Data array that was uploaded for currentCmapName (detects re-registered colormaps). */
+  private currentCmapData: Uint8Array | null = null;
+  /** Last colormap requested (re-uploaded after a context restore). */
+  private wantedCmapName = '';
   private ringBuffer: WebGLBuffer | null = null;
   private ringVertexCount = 0;
+  private ringRange = -1;
   private scale = 1;
   private panX = 0;
   private panY = 0;
   private maxRange = 1;
+  private readonly matrixBuf = new Float32Array(9);
 
   // Mesh worker
   private meshWorker: Worker | null = null;
   private meshWorkerReady = false;
-  private pendingMeshResolve: ((result: MeshWorkerOutput) => void) | null = null;
+  private meshReqSeq = 0;
+  private pendingMesh = new Map<number, PendingMesh>();
+
+  // Upload bookkeeping
+  /** Entry most recently passed to uploadSweepData (applied or still building). */
+  private requestedEntry: SweepDataEntry | null = null;
+  /** Bumped per upload; async mesh results for older uploads are discarded. */
+  private uploadSeq = 0;
+  private smoothSeq = 0;
+  /** Entry whose sharp / smooth mesh is currently resident (and drawn). */
+  private sharpEntry: SweepDataEntry | null = null;
+  private smoothEntry: SweepDataEntry | null = null;
+  private cpuSharp: SharpMeshData | null = null;
+  private cpuSmooth: SmoothMesh | null = null;
+  /** positions array currently in posBuffer (skips redundant re-uploads). */
+  private gpuSharpSrc: Float32Array | null = null;
 
   // Feature toggles
   private interpolationMode: 'sharp' | 'smooth' = 'sharp';
@@ -465,14 +538,29 @@ export class PPIRenderer {
   // ANGLE_instanced_arrays (stored for future instanced rendering)
   private instancedExt: ANGLE_instanced_arrays | null = null;
 
-  // Stored render params for re-render during transitions
+  // Stored render params
   private lastVmin = 0;
   private lastVmax = 1;
+  private hasRenderParams = false;
+
+  // Frame scheduling: all state changes just mark the renderer dirty; at most
+  // one draw happens per animation frame.
+  private dirty = false;
+  private rafId = 0;
+  private destroyed = false;
+  private contextLost = false;
+  private lastPerfPublish = 0;
+
+  // CSS size (for devicePixelRatio changes)
+  private cssWidth = 0;
+  private cssHeight = 0;
+  private dprQuery: MediaQueryList | null = null;
 
   // ─── Initialization ───────────────────────────────────────────────────
 
   init(canvas: HTMLCanvasElement): boolean {
     this.canvas = canvas;
+    this.destroyed = false;
     const gl = canvas.getContext('webgl', {
       antialias: true,
       premultipliedAlpha: false,
@@ -482,6 +570,20 @@ export class PPIRenderer {
     if (!gl) return false;
     this.gl = gl;
 
+    canvas.addEventListener('webglcontextlost', this.onContextLost, false);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored, false);
+
+    if (!this.initGLResources(gl)) return false;
+
+    // Initialize mesh worker
+    this.initMeshWorker();
+    this.watchDpr();
+
+    return true;
+  }
+
+  /** Create programs, buffers, texture and GL state. Also used after a context restore. */
+  private initGLResources(gl: WebGLRenderingContext): boolean {
     // Extensions
     this.instancedExt = gl.getExtension('ANGLE_instanced_arrays');
     gl.getExtension('OES_standard_derivatives'); // for fwidth() in contour shader
@@ -506,6 +608,8 @@ export class PPIRenderer {
     };
 
     // Smooth program (bilinear interpolation)
+    this.smoothProgram = null;
+    this.smoothLocs = null;
     const smoothProg = _linkProgram(gl, VERTEX_SHADER_SMOOTH, FRAGMENT_SHADER_SMOOTH);
     if (smoothProg) {
       this.smoothProgram = smoothProg;
@@ -525,6 +629,8 @@ export class PPIRenderer {
     }
 
     // Contour program
+    this.contourProgram = null;
+    this.contourLocs = null;
     const contourProg = _linkProgram(gl, CONTOUR_VERTEX_SHADER, CONTOUR_FRAGMENT_SHADER);
     if (contourProg) {
       this.contourProgram = contourProg;
@@ -542,6 +648,7 @@ export class PPIRenderer {
     }
 
     // Ring program
+    this.ringProgram = null;
     const ringProg = _linkProgram(gl, RING_VERTEX_SHADER, RING_FRAGMENT_SHADER);
     if (ringProg) {
       this.ringProgram = ringProg;
@@ -563,45 +670,102 @@ export class PPIRenderer {
     this.transSmoothVal4Buffer = gl.createBuffer();
     this.ringBuffer = gl.createBuffer();
     this.colormapTex = gl.createTexture();
+    this.currentCmapName = '';
+    this.currentCmapData = null;
+    this.gpuSharpSrc = null;
+    this.ringRange = -1;
 
     // Dark background matching the app theme
     gl.clearColor(15 / 255, 15 / 255, 26 / 255, 1);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
 
-    // Initialize mesh worker
-    this.initMeshWorker();
-
     return true;
+  }
+
+  // ─── Context loss ─────────────────────────────────────────────────────
+
+  private onContextLost = (e: Event): void => {
+    // preventDefault is what allows 'webglcontextrestored' to fire.
+    e.preventDefault();
+    this.contextLost = true;
+    this.cancelFrame();
+    this.endTransition();
+  };
+
+  private onContextRestored = (): void => {
+    const gl = this.gl;
+    if (!gl || this.destroyed) return;
+    this.contextLost = false;
+    if (!this.initGLResources(gl)) {
+      console.error('[PPI] Failed to rebuild GL resources after context restore');
+      return;
+    }
+    // Everything on the GPU is gone: re-upload from the CPU-side meshes.
+    const sharp = this.cpuSharp;
+    this.vertexCount = 0;
+    this.smoothVertexCount = 0;
+    this.transVertexCount = 0;
+    this.transSmoothVertexCount = 0;
+    if (sharp) this.uploadMeshToGPU(sharp.positions, sharp.vals, sharp.vertexCount);
+    if (this.cpuSmooth) this.uploadSmoothToGPU(this.cpuSmooth);
+    this.buildRingGeometry(this.maxRange);
+    if (this.wantedCmapName) this.setColormap(this.wantedCmapName);
+    this.markDirty();
+  };
+
+  /** True while the WebGL context is lost (nothing is drawn until it is restored). */
+  isContextLost(): boolean {
+    return this.contextLost;
   }
 
   // ─── Public API: feature toggles ──────────────────────────────────────
 
   /** Switch between 'sharp' (flat per-gate) and 'smooth' (bilinear interpolation). */
   setInterpolation(mode: 'sharp' | 'smooth'): void {
+    if (mode === this.interpolationMode) return;
     this.interpolationMode = mode;
+    if (mode === 'smooth') {
+      // The smooth mesh is only built on demand: it is ~3x the size of the sharp mesh.
+      if (this.requestedEntry) this.ensureSmooth(this.requestedEntry);
+    } else {
+      this.releaseSmooth();
+    }
+    this.markDirty();
   }
 
   /** Enable/disable contour lines with configurable interval and color. */
   setContours(enabled: boolean, interval: number = 5, color: [number, number, number] = [1, 1, 1]): void {
+    const changed =
+      enabled !== this.contoursEnabled ||
+      interval !== this.contourInterval ||
+      color[0] !== this.contourColor[0] || color[1] !== this.contourColor[1] || color[2] !== this.contourColor[2];
     this.contoursEnabled = enabled;
     this.contourInterval = interval;
     this.contourColor = color;
+    if (changed) this.markDirty();
   }
 
   /** Set contour line width (default 1.5). */
   setContourWidth(width: number): void {
+    if (width === this.contourWidthVal) return;
     this.contourWidthVal = width;
+    this.markDirty();
   }
 
   /** Set vignette intensity (0 = off, 1 = strong darkening at edges). */
   setVignette(intensity: number): void {
-    this.vignetteIntensity = Math.max(0, Math.min(1, intensity));
+    const v = Math.max(0, Math.min(1, intensity));
+    if (v === this.vignetteIntensity) return;
+    this.vignetteIntensity = v;
+    this.markDirty();
   }
 
   /** Enable/disable transparent background (no-data regions become see-through). */
   setTransparentBackground(enabled: boolean): void {
+    if (enabled === this.transparentBg) return;
     this.transparentBg = enabled;
+    this.markDirty();
   }
 
   /** Enable/disable FPS counter. Provide a callback to receive FPS updates. */
@@ -623,23 +787,28 @@ export class PPIRenderer {
 
   /** Spawn the mesh computation Web Worker. */
   private initMeshWorker(): void {
+    if (this.meshWorker) return;
     try {
-      this.meshWorker = new Worker(
+      const worker = new Worker(
         new URL('../workers/meshWorker.ts', import.meta.url),
         { type: 'module' }
       );
+      this.meshWorker = worker;
       this.meshWorkerReady = true;
 
-      this.meshWorker.onmessage = (e: MessageEvent<MeshWorkerOutput>) => {
-        if (this.pendingMeshResolve) {
-          this.pendingMeshResolve(e.data);
-          this.pendingMeshResolve = null;
+      worker.onmessage = (e: MessageEvent<MeshWorkerOutput>) => {
+        // Results are matched by id, never by arrival order.
+        const pending = this.pendingMesh.get(e.data.id);
+        if (pending) {
+          this.pendingMesh.delete(e.data.id);
+          pending.resolve(e.data);
         }
       };
 
-      this.meshWorker.onerror = (err) => {
+      worker.onerror = (err) => {
         console.warn('[PPI] Mesh worker error, falling back to main thread:', err);
         this.meshWorkerReady = false;
+        this.failPendingMeshes(err);
       };
     } catch (err) {
       console.warn('[PPI] Could not create mesh worker, using main thread:', err);
@@ -647,205 +816,138 @@ export class PPIRenderer {
     }
   }
 
+  private failPendingMeshes(reason: unknown): void {
+    const pending = [...this.pendingMesh.values()];
+    this.pendingMesh.clear();
+    for (const p of pending) p.reject(reason);
+  }
+
   /** Send mesh work to the worker and return a promise for the result. */
-  private buildMeshInWorker(input: MeshWorkerInput): Promise<MeshWorkerOutput> {
-    return new Promise((resolve) => {
-      this.pendingMeshResolve = resolve;
-
-      const azCopy = new Float32Array(input.azimuth);
-      const rngCopy = new Float32Array(input.range);
-      const valCopy = new Float32Array(input.values);
-
-      const msg: MeshWorkerInput = {
-        azimuth: azCopy,
-        range: rngCopy,
-        values: valCopy,
-        nAz: input.nAz,
-        nRange: input.nRange,
-      };
-
-      this.meshWorker!.postMessage(msg, [
-        azCopy.buffer,
-        rngCopy.buffer,
-        valCopy.buffer,
-      ]);
+  private buildMeshInWorker(entry: SweepDataEntry, mode: 'sharp' | 'smooth'): Promise<MeshWorkerOutput> {
+    return new Promise((resolve, reject) => {
+      const worker = this.meshWorker;
+      if (!worker || !this.meshWorkerReady) {
+        reject(new Error('mesh worker unavailable'));
+        return;
+      }
+      const id = ++this.meshReqSeq;
+      this.pendingMesh.set(id, { resolve, reject });
+      try {
+        // Structured clone: the cached entry keeps its own arrays. If the three
+        // arrays are views over one buffer (the websocket path), that buffer is
+        // cloned once.
+        worker.postMessage({
+          id,
+          mode,
+          azimuth: entry.azimuth,
+          range: entry.range,
+          values: entry.values,
+          nAz: entry.nAz,
+          nRange: entry.nRange,
+        });
+      } catch (err) {
+        this.pendingMesh.delete(id);
+        reject(err);
+      }
     });
-  }
-
-  /** Synchronous fallback: build sharp mesh on main thread using trig LUT. */
-  private buildMeshSync(entry: SweepDataEntry): { positions: Float32Array; vals: Float32Array; vertexCount: number; buildTimeMs: number } {
-    const t0 = performance.now();
-    const { azimuth, range, values, nAz, nRange } = entry;
-
-    const positions: number[] = [];
-    const vals: number[] = [];
-
-    for (let ai = 0; ai < nAz; ai++) {
-      const az0 = azimuth[ai];
-      const az1 = ai + 1 < nAz ? azimuth[ai + 1] : azimuth[0] + 360;
-
-      const sin0 = fastSin(az0), cos0 = fastCos(az0);
-      const sin1 = fastSin(az1), cos1 = fastCos(az1);
-
-      for (let ri = 0; ri < nRange - 1; ri++) {
-        const v = values[ai * nRange + ri];
-        if (v <= -9998) continue;
-
-        const r0 = range[ri];
-        const r1 = range[ri + 1];
-
-        const x00 = r0 * sin0, y00 = r0 * cos0;
-        const x01 = r1 * sin0, y01 = r1 * cos0;
-        const x10 = r0 * sin1, y10 = r0 * cos1;
-        const x11 = r1 * sin1, y11 = r1 * cos1;
-
-        positions.push(x00, y00, x01, y01, x10, y10);
-        vals.push(v, v, v);
-        positions.push(x01, y01, x11, y11, x10, y10);
-        vals.push(v, v, v);
-      }
-    }
-
-    return {
-      positions: new Float32Array(positions),
-      vals: new Float32Array(vals),
-      vertexCount: vals.length,
-      buildTimeMs: performance.now() - t0,
-    };
-  }
-
-  // ─── Smooth mesh builder ──────────────────────────────────────────────
-
-  /** Build bilinear-interpolation mesh (smooth mode) on main thread. */
-  private buildSmoothMesh(entry: SweepDataEntry): {
-    positions: Float32Array;
-    polars: Float32Array;
-    values4: Float32Array;
-    vertexCount: number;
-  } {
-    const { azimuth, range, values, nAz, nRange } = entry;
-    const posArr: number[] = [];
-    const polArr: number[] = [];
-    const v4Arr: number[] = [];
-
-    for (let ai = 0; ai < nAz; ai++) {
-      const ai1 = (ai + 1) % nAz;
-      const az0 = azimuth[ai];
-      const az1 = ai + 1 < nAz ? azimuth[ai + 1] : azimuth[0] + 360;
-
-      const sin0 = fastSin(az0), cos0 = fastCos(az0);
-      const sin1 = fastSin(az1), cos1 = fastCos(az1);
-
-      for (let ri = 0; ri < nRange - 1; ri++) {
-        const v00 = values[ai * nRange + ri];
-        const v01 = values[ai * nRange + ri + 1];
-        const v10 = values[ai1 * nRange + ri];
-        const v11 = values[ai1 * nRange + ri + 1];
-
-        if (v00 <= -9998 && v01 <= -9998 && v10 <= -9998 && v11 <= -9998) continue;
-
-        const r0 = range[ri];
-        const r1 = range[ri + 1];
-
-        const x00 = r0 * sin0, y00 = r0 * cos0;
-        const x01 = r1 * sin0, y01 = r1 * cos0;
-        const x10 = r0 * sin1, y10 = r0 * cos1;
-        const x11 = r1 * sin1, y11 = r1 * cos1;
-
-        // Triangle 1: (0,0) (0,1) (1,0)
-        posArr.push(x00, y00, x01, y01, x10, y10);
-        polArr.push(0, 0, 0, 1, 1, 0);
-        v4Arr.push(v00, v01, v10, v11);
-        v4Arr.push(v00, v01, v10, v11);
-        v4Arr.push(v00, v01, v10, v11);
-
-        // Triangle 2: (0,1) (1,1) (1,0)
-        posArr.push(x01, y01, x11, y11, x10, y10);
-        polArr.push(0, 1, 1, 1, 1, 0);
-        v4Arr.push(v00, v01, v10, v11);
-        v4Arr.push(v00, v01, v10, v11);
-        v4Arr.push(v00, v01, v10, v11);
-      }
-    }
-
-    const vertexCount = posArr.length / 2;
-    return {
-      positions: new Float32Array(posArr),
-      polars: new Float32Array(polArr),
-      values4: new Float32Array(v4Arr),
-      vertexCount,
-    };
   }
 
   // ─── Sweep data upload ────────────────────────────────────────────────
 
+  /** Return a cached sharp mesh only if it was built from exactly this entry. */
+  private lookupMesh(entry: SweepDataEntry): SharpMeshData | null {
+    const cached = renderCache.get(entry.variable, entry.sweep);
+    if (cached && meshOwner.get(cached.positions) === entry) return cached;
+    return null;
+  }
+
+  private storeMesh(entry: SweepDataEntry, positions: Float32Array, vals: Float32Array, vertexCount: number): void {
+    meshOwner.set(positions, entry);
+    renderCache.put(entry.variable, entry.sweep, {
+      positions,
+      vals,
+      vertexCount,
+      key: `${entry.variable}:${entry.sweep}`,
+    });
+  }
+
   /**
    * Generate triangle mesh from polar data and upload to GPU.
    * Uses the render cache when available, otherwise computes via Web Worker
-   * (falling back to main thread if the worker is unavailable).
-   * Also builds the smooth mesh for bilinear interpolation mode.
+   * (falling back to main thread if the worker is unavailable). The draw
+   * happens automatically when the mesh is ready, so callers do not need to
+   * re-render after an asynchronous build.
+   * The bilinear mesh is only built while interpolation mode is 'smooth'.
    */
-  uploadSweepData(entry: SweepDataEntry): void {
-    this.maxRange = entry.maxRange;
+  uploadSweepData(entry: SweepDataEntry, force = false): void {
+    if (!this.gl || this.destroyed) return;
 
-    // --- Sharp mesh (original pipeline, cache-aware) ---
+    // Same entry as last time: the mesh is already resident (or being built).
+    if (!force && entry === this.requestedEntry) {
+      this.markDirty();
+      return;
+    }
+    this.requestedEntry = entry;
+    const seq = ++this.uploadSeq;
 
-    const cached = renderCache.get(entry.variable, entry.sweep);
+    const cached = this.lookupMesh(entry);
     if (cached) {
-      this.uploadMeshToGPU(cached.positions, cached.vals, cached.vertexCount);
-      this.buildRingGeometry(entry.maxRange);
       perfStats.update(s => ({ ...s, meshBuildTimeMs: 0 }));
+      this.applySharpMesh(entry, cached.positions, cached.vals, cached.vertexCount);
     } else if (this.meshWorkerReady && this.meshWorker) {
-      const transferStart = performance.now();
-      this.buildMeshInWorker({
-        azimuth: entry.azimuth,
-        range: entry.range,
-        values: entry.values,
-        nAz: entry.nAz,
-        nRange: entry.nRange,
-      }).then((result) => {
-        const transferTime = performance.now() - transferStart - result.buildTimeMs;
+      const requestedAt = performance.now();
+      this.buildMeshInWorker(entry, 'sharp').then((result) => {
+        if (this.destroyed) return;
+        const roundTrip = performance.now() - requestedAt;
         perfStats.update(s => ({
           ...s,
           meshBuildTimeMs: result.buildTimeMs,
-          dataTransferTimeMs: Math.max(0, transferTime),
+          dataTransferTimeMs: Math.max(0, roundTrip - result.buildTimeMs),
         }));
-
-        renderCache.put(entry.variable, entry.sweep, {
-          positions: result.positions,
-          vals: result.vals,
-          vertexCount: result.vertexCount,
-          key: `${entry.variable}:${entry.sweep}`,
-        });
-
-        this.uploadMeshToGPU(result.positions, result.vals, result.vertexCount);
-        this.buildRingGeometry(entry.maxRange);
+        // Cache even if superseded: it is still a valid mesh for this entry.
+        this.storeMesh(entry, result.positions, result.vals, result.vertexCount);
+        if (seq === this.uploadSeq) {
+          this.applySharpMesh(entry, result.positions, result.vals, result.vertexCount);
+        }
+      }).catch(() => {
+        // Worker died or was unavailable: build on the main thread instead.
+        if (!this.destroyed && seq === this.uploadSeq) this.buildSharpOnMainThread(entry);
       });
     } else {
-      const result = this.buildMeshSync(entry);
-      perfStats.update(s => ({ ...s, meshBuildTimeMs: result.buildTimeMs, dataTransferTimeMs: 0 }));
-
-      renderCache.put(entry.variable, entry.sweep, {
-        positions: result.positions,
-        vals: result.vals,
-        vertexCount: result.vertexCount,
-        key: `${entry.variable}:${entry.sweep}`,
-      });
-
-      this.uploadMeshToGPU(result.positions, result.vals, result.vertexCount);
-      this.buildRingGeometry(entry.maxRange);
+      this.buildSharpOnMainThread(entry);
     }
 
-    // --- Smooth mesh (always built on main thread for now) ---
-    this.uploadSmoothMesh(entry);
+    if (this.interpolationMode === 'smooth') this.ensureSmooth(entry);
+  }
+
+  private buildSharpOnMainThread(entry: SweepDataEntry): void {
+    const t0 = performance.now();
+    const mesh = buildSharpMesh(entry.azimuth, entry.range, entry.values, entry.nAz, entry.nRange);
+    perfStats.update(s => ({ ...s, meshBuildTimeMs: performance.now() - t0, dataTransferTimeMs: 0 }));
+    this.storeMesh(entry, mesh.positions, mesh.vals, mesh.vertexCount);
+    this.applySharpMesh(entry, mesh.positions, mesh.vals, mesh.vertexCount);
+  }
+
+  /** Make a sharp mesh the one that is drawn. */
+  private applySharpMesh(entry: SweepDataEntry, positions: Float32Array, vals: Float32Array, vertexCount: number): void {
+    this.cpuSharp = { positions, vals, vertexCount };
+    this.sharpEntry = entry;
+    this.setMaxRange(entry.maxRange);
+    this.uploadMeshToGPU(positions, vals, vertexCount);
+    // A smooth mesh of a different sweep must not be drawn over the new data.
+    if (this.smoothEntry !== entry) this.dropSmoothMesh();
+    this.markDirty();
   }
 
   /** Upload pre-computed sharp mesh arrays to WebGL buffers. */
   private uploadMeshToGPU(positions: Float32Array, vals: Float32Array, vertexCount: number): void {
     const gl = this.gl;
-    if (!gl) return;
+    if (!gl || this.contextLost) return;
 
     this.vertexCount = vertexCount;
+    // Identical mesh already on the GPU (e.g. same sweep re-selected): nothing to do.
+    if (this.gpuSharpSrc === positions) return;
+    this.gpuSharpSrc = positions;
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
@@ -854,12 +956,53 @@ export class PPIRenderer {
     gl.bufferData(gl.ARRAY_BUFFER, vals, gl.STATIC_DRAW);
   }
 
-  /** Build and upload the smooth (bilinear) mesh to GPU. */
-  private uploadSmoothMesh(entry: SweepDataEntry): void {
-    const gl = this.gl;
-    if (!gl || !this.smoothProgram) return;
+  // ─── Smooth mesh (on demand) ──────────────────────────────────────────
 
-    const mesh = this.buildSmoothMesh(entry);
+  /** Build the bilinear mesh for `entry` (worker first, main thread as fallback). */
+  private ensureSmooth(entry: SweepDataEntry): void {
+    if (!this.smoothProgram || this.destroyed) return;
+    if (this.smoothEntry === entry) return;
+    const seq = ++this.smoothSeq;
+    const accept = () => seq === this.smoothSeq && !this.destroyed
+      && this.interpolationMode === 'smooth' && this.requestedEntry === entry;
+
+    const buildSync = () => {
+      if (!accept()) return;
+      const m = buildSmoothMesh(entry.azimuth, entry.range, entry.values, entry.nAz, entry.nRange);
+      this.applySmoothMesh(entry, m);
+    };
+
+    if (this.meshWorkerReady && this.meshWorker) {
+      this.buildMeshInWorker(entry, 'smooth').then((r) => {
+        if (!accept()) return;
+        this.applySmoothMesh(entry, {
+          positions: r.positions,
+          polars: r.polars!,
+          values4: r.values4!,
+          vertexCount: r.vertexCount,
+        });
+      }).catch(buildSync);
+    } else {
+      buildSync();
+    }
+  }
+
+  private applySmoothMesh(entry: SweepDataEntry, mesh: SmoothMesh): void {
+    this.cpuSmooth = mesh;
+    this.smoothEntry = entry;
+    this.setMaxRange(entry.maxRange);
+    this.uploadSmoothToGPU(mesh);
+    // Do not draw (or contour) a sharp mesh that belongs to a different sweep.
+    if (this.sharpEntry !== entry) {
+      this.vertexCount = 0;
+      this.gpuSharpSrc = null;
+    }
+    this.markDirty();
+  }
+
+  private uploadSmoothToGPU(mesh: SmoothMesh): void {
+    const gl = this.gl;
+    if (!gl || this.contextLost) return;
     this.smoothVertexCount = mesh.vertexCount;
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.smoothPosBuffer);
@@ -872,13 +1015,48 @@ export class PPIRenderer {
     gl.bufferData(gl.ARRAY_BUFFER, mesh.values4, gl.STATIC_DRAW);
   }
 
+  /** Forget the smooth mesh (CPU and GPU memory) without cancelling a pending build. */
+  private dropSmoothMesh(): void {
+    if (!this.cpuSmooth && this.smoothVertexCount === 0) {
+      this.smoothEntry = null;
+      return; // nothing resident (the common case in sharp mode)
+    }
+    this.cpuSmooth = null;
+    this.smoothEntry = null;
+    this.smoothVertexCount = 0;
+    const gl = this.gl;
+    if (gl && !this.contextLost) {
+      for (const buf of [this.smoothPosBuffer, this.smoothPolarBuffer, this.smoothVal4Buffer]) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferData(gl.ARRAY_BUFFER, 0, gl.STATIC_DRAW); // free GPU memory
+      }
+    }
+  }
+
+  private releaseSmooth(): void {
+    this.smoothSeq++; // cancels any in-flight smooth build
+    this.dropSmoothMesh();
+  }
+
+  /** Update the data extent and rebuild the range rings if it changed. */
+  private setMaxRange(maxRange: number): void {
+    this.maxRange = maxRange;
+    if (this.ringRange !== maxRange) this.buildRingGeometry(maxRange);
+  }
+
   /** Upload a colormap texture by name. */
   setColormap(cmapName: string): void {
-    if (cmapName === this.currentCmapName) return;
-    if (!COLORMAP_DATA[cmapName]) return;
-    this.currentCmapName = cmapName;
+    const data = COLORMAP_DATA[cmapName];
+    if (!data) return;
+    this.wantedCmapName = cmapName;
+    // Skip only if the same *data* is already resident (a re-registered custom
+    // colormap with the same name gets a new array and must be re-uploaded).
+    if (cmapName === this.currentCmapName && data === this.currentCmapData) return;
 
-    const gl = this.gl!;
+    const gl = this.gl;
+    if (!gl || this.contextLost) return;
+    this.currentCmapName = cmapName;
+    this.currentCmapData = data;
     const rgba = buildColormapRGBA(cmapName);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -888,41 +1066,47 @@ export class PPIRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    this.markDirty();
   }
 
   private buildRingGeometry(maxRange: number): void {
     const gl = this.gl;
-    if (!gl || !this.ringProgram) return;
+    if (!gl || !this.ringProgram || this.contextLost) return;
+    this.ringRange = maxRange;
 
-    const verts: number[] = [];
     const segments = 128;
 
     const ringSpacingKm = maxRange > 300000 ? 100 : maxRange > 100000 ? 50 : maxRange > 30000 ? 25 : 10;
     const ringSpacing = ringSpacingKm * 1000;
-    const numRings = Math.floor(maxRange / ringSpacing);
+    const numRings = Math.max(0, Math.floor(maxRange / ringSpacing));
+
+    // rings: 2 vertices per segment; crosshair: 4 vertices
+    const verts = new Float32Array((numRings * segments * 2 + 4) * 2);
+    let o = 0;
 
     for (let ri = 1; ri <= numRings; ri++) {
       const r = ri * ringSpacing;
       for (let s = 0; s < segments; s++) {
         const a0 = (s / segments) * Math.PI * 2;
         const a1 = ((s + 1) / segments) * Math.PI * 2;
-        verts.push(r * Math.sin(a0), r * Math.cos(a0));
-        verts.push(r * Math.sin(a1), r * Math.cos(a1));
+        verts[o++] = r * Math.sin(a0); verts[o++] = r * Math.cos(a0);
+        verts[o++] = r * Math.sin(a1); verts[o++] = r * Math.cos(a1);
       }
     }
 
     // Crosshair (N-S and E-W lines)
-    verts.push(0, -maxRange, 0, maxRange);
-    verts.push(-maxRange, 0, maxRange, 0);
+    verts[o++] = 0; verts[o++] = -maxRange; verts[o++] = 0; verts[o++] = maxRange;
+    verts[o++] = -maxRange; verts[o++] = 0; verts[o++] = maxRange; verts[o++] = 0;
 
     this.ringVertexCount = verts.length / 2;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.ringBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verts), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STATIC_DRAW);
   }
 
   // ─── View matrix ──────────────────────────────────────────────────────
 
-  private buildMatrix(): number[] {
+  /** Fill (and return) the reusable 3x3 column-major view matrix. */
+  private buildMatrix(): Float32Array {
     const w = this.canvas!.width;
     const h = this.canvas!.height;
     const mr = this.maxRange;
@@ -930,9 +1114,11 @@ export class PPIRenderer {
     const base = this.scale / mr;
     const sx = aspect >= 1 ? base / aspect : base;
     const sy = aspect >= 1 ? base : base * aspect;
-    const tx = this.panX * sx;
-    const ty = this.panY * sy;
-    return [sx, 0, 0, 0, sy, 0, tx, ty, 1];
+    const m = this.matrixBuf;
+    m[0] = sx; m[1] = 0; m[2] = 0;
+    m[3] = 0; m[4] = sy; m[5] = 0;
+    m[6] = this.panX * sx; m[7] = this.panY * sy; m[8] = 1;
+    return m;
   }
 
   // ─── Shared uniform setter ────────────────────────────────────────────
@@ -946,7 +1132,7 @@ export class PPIRenderer {
       uNodata: WebGLUniformLocation | null; uColormap: WebGLUniformLocation | null;
       uMatrix: WebGLUniformLocation | null;
     },
-    matrix: number[],
+    matrix: Float32Array,
     vmin: number,
     vmax: number,
     alpha: number,
@@ -963,22 +1149,76 @@ export class PPIRenderer {
     gl.uniform1i(locs.uColormap, 0);
   }
 
-  // ─── Render ───────────────────────────────────────────────────────────
+  // ─── Render scheduling ────────────────────────────────────────────────
 
-  /** Render the PPI with overlays. */
+  /**
+   * Request a render with the given colour range. Cheap and idempotent: the
+   * frame is drawn on the next animation frame, and repeated calls within a
+   * frame (pan/zoom/wheel bursts) collapse into one draw. Calls that change
+   * nothing since the last draw are no-ops.
+   */
   render(vmin: number, vmax: number): void {
-    const gl = this.gl;
-    if (!gl || !this.sharpProgram) return;
-    if (this.vertexCount === 0 && this.smoothVertexCount === 0 && !this.transitionActive) return;
-
-    const renderStart = performance.now();
+    const changed = !this.hasRenderParams || vmin !== this.lastVmin || vmax !== this.lastVmax;
     this.lastVmin = vmin;
     this.lastVmax = vmax;
+    this.hasRenderParams = true;
+    if (changed) this.requestRender();
+  }
+
+  /** Force a redraw on the next frame even if no tracked state changed. */
+  invalidate(): void {
+    this.requestRender();
+  }
+
+  /** Draw immediately if a draw is pending (e.g. before reading the canvas back). */
+  flush(): void {
+    if (!this.dirty) return;
+    this.cancelFrame();
+    this.drawFrame();
+  }
+
+  /** State changed: schedule a draw (only once a first render() has supplied vmin/vmax). */
+  private markDirty(): void {
+    if (this.hasRenderParams) this.requestRender();
+  }
+
+  private requestRender(): void {
+    if (!this.gl || this.destroyed || !this.hasRenderParams) return;
+    this.dirty = true;
+    if (!this.rafId) this.rafId = requestAnimationFrame(this.onFrame);
+  }
+
+  private onFrame = (): void => {
+    this.rafId = 0;
+    if (!this.dirty) return;
+    this.dirty = false;
+    this.drawFrame();
+  };
+
+  private cancelFrame(): void {
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = 0;
+    }
+    this.dirty = false;
+  }
+
+  /** Draw the PPI with overlays. Always call through render()/markDirty(). */
+  private drawFrame(): void {
+    const gl = this.gl;
+    if (!gl || !this.sharpProgram || !this.canvas || this.contextLost || this.destroyed) return;
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    if (w <= 0 || h <= 0) return;
+
+    const vmin = this.lastVmin;
+    const vmax = this.lastVmax;
+    const renderStart = performance.now();
 
     // FPS tracking
     if (this.fpsEnabled) {
       this.fpsFrameCount++;
-      const now = performance.now();
+      const now = renderStart;
       if (now - this.fpsLastTime >= 1000) {
         this.fpsValue = Math.round(this.fpsFrameCount * 1000 / (now - this.fpsLastTime));
         this.fpsFrameCount = 0;
@@ -987,8 +1227,6 @@ export class PPIRenderer {
       }
     }
 
-    const w = this.canvas!.width;
-    const h = this.canvas!.height;
     gl.viewport(0, 0, w, h);
 
     if (this.transparentBg) {
@@ -1006,6 +1244,7 @@ export class PPIRenderer {
       this.drawPPIPass(gl, matrix, vmin, vmax, oldAlpha,
         this.transPosBuffer!, this.transValBuffer!, this.transVertexCount,
         this.transSmoothPosBuffer!, this.transSmoothPolarBuffer!, this.transSmoothVal4Buffer!, this.transSmoothVertexCount,
+        this.transitionSmooth,
       );
     }
 
@@ -1015,6 +1254,7 @@ export class PPIRenderer {
       this.drawPPIPass(gl, matrix, vmin, vmax, alpha,
         this.posBuffer!, this.valBuffer!, this.vertexCount,
         this.smoothPosBuffer!, this.smoothPolarBuffer!, this.smoothVal4Buffer!, this.smoothVertexCount,
+        this.interpolationMode === 'smooth',
       );
     }
 
@@ -1037,13 +1277,18 @@ export class PPIRenderer {
       gl.disableVertexAttribArray(this.raPosition);
     }
 
-    perfStats.update(s => ({ ...s, renderTimeMs: performance.now() - renderStart }));
+    // Publish timing at a low rate: a store update per frame re-renders subscribers.
+    if (renderStart - this.lastPerfPublish >= PERF_PUBLISH_INTERVAL_MS) {
+      this.lastPerfPublish = renderStart;
+      const renderTimeMs = performance.now() - renderStart;
+      perfStats.update(s => ({ ...s, renderTimeMs }));
+    }
   }
 
   /** Draw PPI triangles using either sharp or smooth mode. */
   private drawPPIPass(
     gl: WebGLRenderingContext,
-    matrix: number[],
+    matrix: Float32Array,
     vmin: number,
     vmax: number,
     alpha: number,
@@ -1054,8 +1299,9 @@ export class PPIRenderer {
     smoothPolarBuf: WebGLBuffer,
     smoothVal4Buf: WebGLBuffer,
     smoothCount: number,
+    wantSmooth: boolean,
   ): void {
-    const useSmooth = this.interpolationMode === 'smooth'
+    const useSmooth = wantSmooth
       && this.smoothProgram && this.smoothLocs && smoothCount > 0;
 
     if (useSmooth) {
@@ -1101,7 +1347,7 @@ export class PPIRenderer {
   }
 
   /** Draw contour lines as a second pass over the sharp mesh. */
-  private drawContourPass(gl: WebGLRenderingContext, matrix: number[], vmin: number, vmax: number): void {
+  private drawContourPass(gl: WebGLRenderingContext, matrix: Float32Array, vmin: number, vmax: number): void {
     const locs = this.contourLocs!;
     gl.useProgram(this.contourProgram!);
 
@@ -1129,6 +1375,21 @@ export class PPIRenderer {
 
   // ─── Animation: cross-fade transition ─────────────────────────────────
 
+  /** Whether the outgoing mesh of the running transition should be drawn smooth. */
+  private transitionSmooth = false;
+
+  /** Stop a running cross-fade (keeps the current mesh, drops the outgoing one). */
+  private endTransition(): void {
+    if (this.transitionRafId) {
+      cancelAnimationFrame(this.transitionRafId);
+      this.transitionRafId = 0;
+    }
+    this.transitionActive = false;
+    this.transitionAlpha = 1.0;
+    this.transVertexCount = 0;
+    this.transSmoothVertexCount = 0;
+  }
+
   /**
    * Smoothly cross-fade from the current sweep to new sweep data.
    * @param newData  The new sweep data to transition to.
@@ -1136,7 +1397,7 @@ export class PPIRenderer {
    */
   transitionToSweep(newData: SweepDataEntry, duration: number = 500): void {
     const gl = this.gl;
-    if (!gl) return;
+    if (!gl || this.contextLost || this.destroyed) return;
 
     // Cancel any in-progress transition
     if (this.transitionRafId) {
@@ -1175,9 +1436,17 @@ export class PPIRenderer {
     tmpN = this.smoothVertexCount;
     this.smoothVertexCount = 0;
     this.transSmoothVertexCount = tmpN;
+    this.transitionSmooth = this.interpolationMode === 'smooth';
+
+    // The resident meshes now live in the transition buffers.
+    this.gpuSharpSrc = null;
+    this.sharpEntry = null;
+    this.smoothEntry = null;
+    this.cpuSharp = null;
+    this.cpuSmooth = null;
 
     // Upload new data into the (now-swapped) current buffers
-    this.uploadSweepData(newData);
+    this.uploadSweepData(newData, true);
 
     // Start transition animation
     this.transitionActive = true;
@@ -1186,12 +1455,15 @@ export class PPIRenderer {
     this.transitionDuration = duration;
 
     const animate = () => {
+      if (this.destroyed || !this.transitionActive) return;
       const elapsed = performance.now() - this.transitionStart;
       const t = Math.min(elapsed / this.transitionDuration, 1.0);
       // Smooth ease-in-out (smoothstep)
       this.transitionAlpha = t * t * (3 - 2 * t);
 
-      this.render(this.lastVmin, this.lastVmax);
+      // Already inside an animation frame: draw directly.
+      this.cancelFrame();
+      this.drawFrame();
 
       if (t < 1.0) {
         this.transitionRafId = requestAnimationFrame(animate);
@@ -1199,6 +1471,8 @@ export class PPIRenderer {
         this.transitionActive = false;
         this.transitionAlpha = 1.0;
         this.transitionRafId = 0;
+        this.transVertexCount = 0;
+        this.transSmoothVertexCount = 0;
       }
     };
 
@@ -1208,46 +1482,93 @@ export class PPIRenderer {
   // ─── View / resize / lifecycle ────────────────────────────────────────
 
   setView(scale: number, panX: number, panY: number): void {
+    if (scale === this.scale && panX === this.panX && panY === this.panY) return;
     this.scale = scale;
     this.panX = panX;
     this.panY = panY;
+    this.markDirty();
   }
 
   resize(width: number, height: number): void {
     if (!this.canvas) return;
+    this.cssWidth = width;
+    this.cssHeight = height;
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    this.canvas.width = Math.round(width * dpr);
-    this.canvas.height = Math.round(height * dpr);
+    const w = Math.max(1, Math.round(width * dpr));
+    const h = Math.max(1, Math.round(height * dpr));
+    // Assigning width/height clears the drawing buffer even when unchanged.
+    if (w === this.canvas.width && h === this.canvas.height) return;
+    this.canvas.width = w;
+    this.canvas.height = h;
+
+    // The buffer was just cleared and a ResizeObserver callback runs after this
+    // frame's rAF phase: redraw now so no blank frame is ever presented.
+    if (this.hasRenderParams && !this.contextLost) {
+      this.cancelFrame();
+      this.drawFrame();
+    }
   }
 
+  /** Re-apply the canvas size when devicePixelRatio changes (monitor switch, zoom). */
+  private watchDpr(): void {
+    this.unwatchDpr();
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const q = window.matchMedia(`(resolution: ${window.devicePixelRatio || 1}dppx)`);
+    q.addEventListener?.('change', this.onDprChange);
+    this.dprQuery = q;
+  }
+
+  private unwatchDpr(): void {
+    this.dprQuery?.removeEventListener?.('change', this.onDprChange);
+    this.dprQuery = null;
+  }
+
+  private onDprChange = (): void => {
+    if (this.destroyed) return;
+    this.watchDpr(); // the query is bound to the old ratio: re-arm for the new one
+    if (this.cssWidth > 0 && this.cssHeight > 0) this.resize(this.cssWidth, this.cssHeight);
+  };
+
   destroy(): void {
+    this.destroyed = true;
+    this.cancelFrame();
+    this.endTransition();
+    this.unwatchDpr();
+    this.failPendingMeshes(new Error('renderer destroyed'));
+
+    if (this.canvas) {
+      this.canvas.removeEventListener('webglcontextlost', this.onContextLost, false);
+      this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored, false);
+    }
+
     const gl = this.gl;
-    if (!gl) return;
+    if (gl && !this.contextLost) {
+      const buffers = [
+        this.posBuffer, this.valBuffer,
+        this.smoothPosBuffer, this.smoothPolarBuffer, this.smoothVal4Buffer,
+        this.transPosBuffer, this.transValBuffer,
+        this.transSmoothPosBuffer, this.transSmoothPolarBuffer, this.transSmoothVal4Buffer,
+        this.ringBuffer,
+      ];
+      for (const buf of buffers) {
+        if (buf) gl.deleteBuffer(buf);
+      }
 
-    if (this.transitionRafId) {
-      cancelAnimationFrame(this.transitionRafId);
-      this.transitionRafId = 0;
-    }
+      if (this.colormapTex) gl.deleteTexture(this.colormapTex);
 
-    const buffers = [
-      this.posBuffer, this.valBuffer,
-      this.smoothPosBuffer, this.smoothPolarBuffer, this.smoothVal4Buffer,
-      this.transPosBuffer, this.transValBuffer,
-      this.transSmoothPosBuffer, this.transSmoothPolarBuffer, this.transSmoothVal4Buffer,
-      this.ringBuffer,
-    ];
-    for (const buf of buffers) {
-      if (buf) gl.deleteBuffer(buf);
-    }
-
-    if (this.colormapTex) gl.deleteTexture(this.colormapTex);
-
-    const programs = [this.sharpProgram, this.smoothProgram, this.contourProgram, this.ringProgram];
-    for (const prog of programs) {
-      if (prog) gl.deleteProgram(prog);
+      const programs = [this.sharpProgram, this.smoothProgram, this.contourProgram, this.ringProgram];
+      for (const prog of programs) {
+        if (prog) gl.deleteProgram(prog);
+      }
     }
 
     this.gl = null;
+    this.cpuSharp = null;
+    this.cpuSmooth = null;
+    this.requestedEntry = null;
+    this.sharpEntry = null;
+    this.smoothEntry = null;
+    this.gpuSharpSrc = null;
 
     if (this.meshWorker) {
       this.meshWorker.terminate();
@@ -1258,9 +1579,5 @@ export class PPIRenderer {
 
   getMaxRange(): number {
     return this.maxRange;
-  }
-
-  private compileShader(type: number, source: string): WebGLShader | null {
-    return _compileShader(this.gl!, type, source);
   }
 }

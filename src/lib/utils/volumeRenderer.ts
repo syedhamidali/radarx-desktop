@@ -12,7 +12,9 @@
  *  - Fragment shader marches rays through a 3D texture, sampling and compositing
  *  - Transfer function encoded as a 256x1 RGBA lookup texture
  *  - Wireframe bounding box overlay for spatial reference
- *  - Dirty-flag render loop via requestAnimationFrame (renders only when needed)
+ *  - On-demand requestAnimationFrame scheduling: no frame loop while idle; coarser
+ *    ray steps while the camera is being dragged, full quality once it settles
+ *  - WebGL context-loss recovery (GPU state is rebuilt from CPU-side copies)
  *  - ResizeObserver for responsive canvas sizing
  */
 
@@ -365,8 +367,8 @@ export class VolumeRenderer {
   private gl: WebGL2RenderingContext;
 
   // Programs
-  private volumeProgram: WebGLProgram;
-  private wireframeProgram: WebGLProgram;
+  private volumeProgram!: WebGLProgram;
+  private wireframeProgram!: WebGLProgram;
 
   // Volume program uniforms
   private uMvpLoc: WebGLUniformLocation | null = null;
@@ -386,9 +388,19 @@ export class VolumeRenderer {
   private wireVAO: WebGLVertexArrayObject | null = null;
   private wireIndexCount = 0;
 
+  // GL buffers (kept so they can be released on dispose)
+  private glBuffers: WebGLBuffer[] = [];
+
   // Textures
   private volumeTexture: WebGLTexture | null = null;
   private transferTexture: WebGLTexture | null = null;
+
+  // CPU-side copies used to rebuild GPU state after a context loss
+  private volumeU8: Uint8Array | null = null;
+  private transferRGBA: Uint8Array = createDefaultTransferFunction();
+  /** Dimensions of the texture currently allocated on the GPU (to allow in-place updates). */
+  private texDims: [number, number, number] = [0, 0, 0];
+  private contextLost = false;
 
   // Volume metadata
   private volumeDims: [number, number, number] = [0, 0, 0];
@@ -411,11 +423,14 @@ export class VolumeRenderer {
   private lastMouseX = 0;
   private lastMouseY = 0;
 
-  // Render loop
+  // Render scheduling
   private dirty = true;
   private animFrameId = 0;
   private resizeObserver: ResizeObserver | null = null;
   private disposed = false;
+  /** True while the user is dragging / zooming: ray steps are coarsened for responsiveness. */
+  private interacting = false;
+  private settleTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Bound event handlers (stored for removal on dispose)
   private onMouseDownBound: (e: MouseEvent) => void;
@@ -423,6 +438,8 @@ export class VolumeRenderer {
   private onMouseUpBound: (e: MouseEvent) => void;
   private onWheelBound: (e: WheelEvent) => void;
   private onContextMenuBound: (e: Event) => void;
+  private onContextLostBound: (e: Event) => void;
+  private onContextRestoredBound: () => void;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -441,30 +458,25 @@ export class VolumeRenderer {
       antialias: true,
       preserveDrawingBuffer: false,
     });
-    if (!gl) throw new Error('WebGL2 is not supported in this browser');
+    if (!gl) {
+      this.canvas.remove();
+      throw new Error('WebGL2 is not supported in this browser');
+    }
     this.gl = gl;
 
-    // Compile shader programs
-    this.volumeProgram = createProgram(gl, VOLUME_VERT_SRC, VOLUME_FRAG_SRC);
-    this.wireframeProgram = createProgram(gl, WIREFRAME_VERT_SRC, WIREFRAME_FRAG_SRC);
-
-    // Cache uniform locations
-    this.cacheUniformLocations();
-
-    // Set up geometry
-    this.initCubeGeometry();
-    this.initWireframeGeometry();
-
-    // Set up textures
-    this.initTransferTexture();
+    this.setupGL();
 
     // Size the canvas to its container
     this.resizeCanvas();
 
     // Observe container resizes
     this.resizeObserver = new ResizeObserver(() => {
-      this.resizeCanvas();
-      this.markDirty();
+      if (this.resizeCanvas()) {
+        // Resizing cleared the canvas, and this callback runs after the frame's
+        // rAF phase: draw right away so no blank frame is presented.
+        this.dirty = false;
+        this.render();
+      }
     });
     this.resizeObserver.observe(this.container);
 
@@ -474,15 +486,54 @@ export class VolumeRenderer {
     this.onMouseUpBound = this.onMouseUp.bind(this);
     this.onWheelBound = this.onWheel.bind(this);
     this.onContextMenuBound = (e: Event) => e.preventDefault();
+    this.onContextLostBound = (e: Event) => {
+      e.preventDefault(); // allows 'webglcontextrestored' to fire
+      this.contextLost = true;
+      if (this.animFrameId) { cancelAnimationFrame(this.animFrameId); this.animFrameId = 0; }
+    };
+    this.onContextRestoredBound = () => {
+      if (this.disposed) return;
+      this.contextLost = false;
+      this.setupGL();
+      this.resizeCanvas(true);
+      this.restoreGpuData();
+      this.markDirty();
+    };
 
     this.canvas.addEventListener('mousedown', this.onMouseDownBound);
     window.addEventListener('mousemove', this.onMouseMoveBound);
     window.addEventListener('mouseup', this.onMouseUpBound);
     this.canvas.addEventListener('wheel', this.onWheelBound, { passive: false });
     this.canvas.addEventListener('contextmenu', this.onContextMenuBound);
+    this.canvas.addEventListener('webglcontextlost', this.onContextLostBound);
+    this.canvas.addEventListener('webglcontextrestored', this.onContextRestoredBound);
 
-    // Start render loop
-    this.renderLoop();
+    // First frame
+    this.markDirty();
+  }
+
+  // ── GL resources ────────────────────────────────────────────────────────
+
+  /** Compile programs and create static geometry / transfer texture (also used after context restore). */
+  private setupGL(): void {
+    const gl = this.gl;
+    this.glBuffers = [];
+    this.volumeTexture = null;
+    this.texDims = [0, 0, 0];
+
+    this.volumeProgram = createProgram(gl, VOLUME_VERT_SRC, VOLUME_FRAG_SRC);
+    this.wireframeProgram = createProgram(gl, WIREFRAME_VERT_SRC, WIREFRAME_FRAG_SRC);
+    this.cacheUniformLocations();
+    this.initCubeGeometry();
+    this.initWireframeGeometry();
+    this.initTransferTexture();
+  }
+
+  /** Re-upload the volume and transfer function from CPU copies after a context restore. */
+  private restoreGpuData(): void {
+    if (this.volumeU8 && this.hasVolume) {
+      this.uploadVolumeTexture(this.volumeU8, this.volumeDims[0], this.volumeDims[1], this.volumeDims[2]);
+    }
   }
 
   // ── Uniform Locations ───────────────────────────────────────────────────
@@ -513,6 +564,7 @@ export class VolumeRenderer {
     gl.bindVertexArray(this.cubeVAO);
 
     const vbo = gl.createBuffer();
+    if (vbo) this.glBuffers.push(vbo);
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
@@ -521,6 +573,7 @@ export class VolumeRenderer {
     gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
 
     const ibo = gl.createBuffer();
+    if (ibo) this.glBuffers.push(ibo);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
@@ -536,6 +589,7 @@ export class VolumeRenderer {
     gl.bindVertexArray(this.wireVAO);
 
     const vbo = gl.createBuffer();
+    if (vbo) this.glBuffers.push(vbo);
     gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
     gl.bufferData(gl.ARRAY_BUFFER, vertices, gl.STATIC_DRAW);
 
@@ -544,6 +598,7 @@ export class VolumeRenderer {
     gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
 
     const ibo = gl.createBuffer();
+    if (ibo) this.glBuffers.push(ibo);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
 
@@ -563,23 +618,26 @@ export class VolumeRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
-    // Upload the default transfer function
-    const defaultTF = createDefaultTransferFunction();
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, defaultTF);
+    // Upload the current transfer function (the default one initially)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.transferRGBA);
     gl.bindTexture(gl.TEXTURE_2D, null);
   }
 
   // ── Canvas Sizing ─────────────────────────────────────────────────────
 
-  private resizeCanvas(): void {
-    const dpr = window.devicePixelRatio || 1;
-    const width = this.container.clientWidth;
-    const height = this.container.clientHeight;
+  /** Resize the backing store to the container. Returns true if the size changed. */
+  private resizeCanvas(force = false): boolean {
+    // Ray marching cost scales with pixel count: cap the pixel ratio at 2.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const width = Math.max(1, Math.round(this.container.clientWidth * dpr));
+    const height = Math.max(1, Math.round(this.container.clientHeight * dpr));
 
-    this.canvas.width = Math.round(width * dpr);
-    this.canvas.height = Math.round(height * dpr);
-
-    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    // Assigning width/height clears the canvas even if the value is unchanged.
+    if (!force && width === this.canvas.width && height === this.canvas.height) return false;
+    this.canvas.width = width;
+    this.canvas.height = height;
+    if (!this.contextLost) this.gl.viewport(0, 0, width, height);
+    return true;
   }
 
   // ── Public API ────────────────────────────────────────────────────────
@@ -606,39 +664,23 @@ export class VolumeRenderer {
     this.volumeDims = [nx, ny, nz];
     this.bounds = { ...bounds };
 
-    // Normalize data to [0, 1] based on current vmin/vmax
-    const normalized = new Float32Array(expectedLen);
+    // Normalize to 8 bits: the transfer function is a 256-entry LUT, so 8 bits lose
+    // nothing visible, the texture is 4x smaller than R32F, and R8 is always
+    // linearly filterable in WebGL2 (R32F needs OES_texture_float_linear, which
+    // was never requested here, so trilinear sampling could fail on some GPUs).
+    const normalized = new Uint8Array(expectedLen);
     const range = this.vmax - this.vmin;
-    const invRange = range !== 0 ? 1.0 / range : 0;
+    const scale = range !== 0 ? 255 / range : 0;
+    const vmin = this.vmin;
 
     for (let i = 0; i < expectedLen; i++) {
-      const v = data[i];
-      // Treat NaN/Infinity as nodata (map to 0)
-      if (!isFinite(v)) {
-        normalized[i] = 0;
-      } else {
-        normalized[i] = Math.max(0, Math.min(1, (v - this.vmin) * invRange));
-      }
+      const v = (data[i] - vmin) * scale;
+      // NaN fails both comparisons -> stays 0 (no data); +/-Infinity clamp.
+      normalized[i] = v >= 255 ? 255 : v > 0 ? (v + 0.5) | 0 : 0;
     }
 
-    // Create or update the 3D texture
-    if (!this.volumeTexture) {
-      this.volumeTexture = gl.createTexture();
-    }
-    gl.bindTexture(gl.TEXTURE_3D, this.volumeTexture);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-
-    gl.texImage3D(
-      gl.TEXTURE_3D, 0, gl.R32F,
-      nx, ny, nz, 0,
-      gl.RED, gl.FLOAT,
-      normalized,
-    );
-    gl.bindTexture(gl.TEXTURE_3D, null);
+    this.volumeU8 = normalized;
+    this.uploadVolumeTexture(normalized, nx, ny, nz);
 
     // Compute an appropriate step size (~1/200 of the volume diagonal)
     const dx = bounds.xMax - bounds.xMin;
@@ -653,6 +695,33 @@ export class VolumeRenderer {
     this.markDirty();
   }
 
+  /** Create / update the 3D texture from normalized 8-bit voxels. */
+  private uploadVolumeTexture(voxels: Uint8Array, nx: number, ny: number, nz: number): void {
+    if (this.contextLost) return;
+    const gl = this.gl;
+
+    const sameShape = this.texDims[0] === nx && this.texDims[1] === ny && this.texDims[2] === nz;
+    if (!this.volumeTexture) this.volumeTexture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, this.volumeTexture);
+
+    // Tightly packed rows (R8 rows are not 4-byte aligned in general).
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (sameShape) {
+      // Same size: update in place instead of reallocating GPU storage.
+      gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, nx, ny, nz, gl.RED, gl.UNSIGNED_BYTE, voxels);
+    } else {
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, nx, ny, nz, 0, gl.RED, gl.UNSIGNED_BYTE, voxels);
+      this.texDims = [nx, ny, nz];
+    }
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.bindTexture(gl.TEXTURE_3D, null);
+  }
+
   /**
    * Upload a custom transfer function. Must be exactly 1024 bytes (256 RGBA entries).
    * Each group of 4 bytes is [R, G, B, A] for the value at index/255.
@@ -662,10 +731,13 @@ export class VolumeRenderer {
       throw new Error(`Transfer function must be 256 * 4 = 1024 bytes, got ${rgba.length}`);
     }
 
-    const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.transferTexture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+    this.transferRGBA = rgba.slice(); // keep a copy for context-restore
+    if (!this.contextLost) {
+      const gl = this.gl;
+      gl.bindTexture(gl.TEXTURE_2D, this.transferTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+    }
 
     this.markDirty();
   }
@@ -676,6 +748,7 @@ export class VolumeRenderer {
    * Call this before setVolumeData if you want custom normalization.
    */
   setValueRange(vmin: number, vmax: number): void {
+    if (vmin === this.vmin && vmax === this.vmax) return;
     this.vmin = vmin;
     this.vmax = vmax;
     this.markDirty();
@@ -683,7 +756,9 @@ export class VolumeRenderer {
 
   /** Set the global opacity multiplier (default 1.0). */
   setAlphaScale(scale: number): void {
-    this.alphaScale = Math.max(0, scale);
+    const next = Math.max(0, scale);
+    if (next === this.alphaScale) return;
+    this.alphaScale = next;
     this.markDirty();
   }
 
@@ -698,7 +773,7 @@ export class VolumeRenderer {
 
   /** Trigger a single render pass (call automatically via dirty flag, but available publicly). */
   render(): void {
-    if (this.disposed) return;
+    if (this.disposed || this.contextLost) return;
 
     const gl = this.gl;
     const width = this.canvas.width;
@@ -744,6 +819,11 @@ export class VolumeRenderer {
       this.animFrameId = 0;
     }
 
+    if (this.settleTimer) {
+      clearTimeout(this.settleTimer);
+      this.settleTimer = null;
+    }
+
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
       this.resizeObserver = null;
@@ -755,20 +835,27 @@ export class VolumeRenderer {
     window.removeEventListener('mouseup', this.onMouseUpBound);
     this.canvas.removeEventListener('wheel', this.onWheelBound);
     this.canvas.removeEventListener('contextmenu', this.onContextMenuBound);
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLostBound);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestoredBound);
 
     const gl = this.gl;
 
-    // Delete textures
-    if (this.volumeTexture) gl.deleteTexture(this.volumeTexture);
-    if (this.transferTexture) gl.deleteTexture(this.transferTexture);
+    if (!this.contextLost) {
+      // Delete textures
+      if (this.volumeTexture) gl.deleteTexture(this.volumeTexture);
+      if (this.transferTexture) gl.deleteTexture(this.transferTexture);
 
-    // Delete VAOs
-    if (this.cubeVAO) gl.deleteVertexArray(this.cubeVAO);
-    if (this.wireVAO) gl.deleteVertexArray(this.wireVAO);
+      // Delete VAOs and their buffers
+      if (this.cubeVAO) gl.deleteVertexArray(this.cubeVAO);
+      if (this.wireVAO) gl.deleteVertexArray(this.wireVAO);
+      for (const b of this.glBuffers) gl.deleteBuffer(b);
 
-    // Delete programs
-    gl.deleteProgram(this.volumeProgram);
-    gl.deleteProgram(this.wireframeProgram);
+      // Delete programs
+      gl.deleteProgram(this.volumeProgram);
+      gl.deleteProgram(this.wireframeProgram);
+    }
+    this.glBuffers = [];
+    this.volumeU8 = null;
 
     // Remove canvas from DOM
     if (this.canvas.parentElement) {
@@ -798,7 +885,9 @@ export class VolumeRenderer {
     // Set uniforms
     gl.uniformMatrix4fv(this.uMvpLoc, false, mvp);
     gl.uniform3f(this.uCameraPosLoc, camPos[0], camPos[1], camPos[2]);
-    gl.uniform1f(this.uStepSizeLoc, this.stepSize);
+    // Coarser ray steps while orbiting/zooming: ~2.5x fewer samples per pixel.
+    // (Opacity is step-size compensated in the shader, so the look stays the same.)
+    gl.uniform1f(this.uStepSizeLoc, this.interacting ? this.stepSize * 2.5 : this.stepSize);
     gl.uniform1f(this.uAlphaScaleLoc, this.alphaScale);
 
     // Bind 3D volume texture to unit 0
@@ -836,20 +925,33 @@ export class VolumeRenderer {
 
   // ── Render Loop ───────────────────────────────────────────────────────
 
+  /** Request a redraw; at most one rAF is ever pending and nothing runs while idle. */
   private markDirty(): void {
     this.dirty = true;
+    if (this.animFrameId || this.disposed || this.contextLost) return;
+    this.animFrameId = requestAnimationFrame(this.renderLoop);
   }
 
   private renderLoop = (): void => {
+    this.animFrameId = 0;
     if (this.disposed) return;
 
     if (this.dirty) {
       this.dirty = false;
       this.render();
     }
-
-    this.animFrameId = requestAnimationFrame(this.renderLoop);
   };
+
+  /** Mark the camera as moving; a full-quality frame follows once input pauses. */
+  private beginInteraction(): void {
+    this.interacting = true;
+    if (this.settleTimer) clearTimeout(this.settleTimer);
+    this.settleTimer = setTimeout(() => {
+      this.settleTimer = null;
+      this.interacting = false;
+      this.markDirty();
+    }, 150);
+  }
 
   // ── Input Handlers ────────────────────────────────────────────────────
 
@@ -903,6 +1005,7 @@ export class VolumeRenderer {
       this.camPhi = Math.max(0.01, Math.min(Math.PI - 0.01, this.camPhi));
     }
 
+    this.beginInteraction();
     this.markDirty();
   }
 
@@ -920,6 +1023,7 @@ export class VolumeRenderer {
     this.camRadius *= 1.0 + e.deltaY * zoomSpeed;
     this.camRadius = Math.max(0.3, Math.min(20.0, this.camRadius));
 
+    this.beginInteraction();
     this.markDirty();
   }
 }

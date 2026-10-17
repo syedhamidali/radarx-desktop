@@ -147,8 +147,15 @@ const initialState: AnnotationsState = {
 
 export const annotationsStore = writable<AnnotationsState>(initialState);
 
-// Auto-persist on change
-annotationsStore.subscribe((s) => saveToStorage(s));
+// Auto-persist when the persisted data changes (not on tool-mode / pending-point updates)
+let lastPersistedMeasurements: unknown = initialState.measurements;
+let lastPersistedAnnotations: unknown = initialState.annotations;
+annotationsStore.subscribe((s) => {
+  if (s.measurements === lastPersistedMeasurements && s.annotations === lastPersistedAnnotations) return;
+  lastPersistedMeasurements = s.measurements;
+  lastPersistedAnnotations = s.annotations;
+  saveToStorage(s);
+});
 
 // ─── Actions ───────────────────────────────────────────────────────────
 

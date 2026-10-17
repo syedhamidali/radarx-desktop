@@ -1,12 +1,20 @@
 /**
  * Web Worker: polar-to-Cartesian triangle mesh computation.
  *
- * Moves the heaviest CPU work (the nested loop in uploadSweepData) off the
- * main thread.  Receives Float32Arrays via transferable objects for zero-copy
- * transfer and returns the computed positions + vals the same way.
+ * Moves the heaviest CPU work (the nested gate loop) off the main thread.
+ * Every request carries an `id` that is echoed in the response, so results can
+ * be matched to requests regardless of ordering or errors.
+ *
+ * The result arrays are exactly sized, so they are transferred without copying.
  */
 
+import { buildSharpMesh, buildSmoothMesh } from '../utils/meshBuilder';
+
 export interface MeshWorkerInput {
+  /** Correlation id, echoed in the output. */
+  id: number;
+  /** 'sharp' (default): flat-colour mesh. 'smooth': bilinear mesh. */
+  mode?: 'sharp' | 'smooth';
   azimuth: Float32Array;
   range: Float32Array;
   values: Float32Array;
@@ -15,100 +23,42 @@ export interface MeshWorkerInput {
 }
 
 export interface MeshWorkerOutput {
+  id: number;
+  mode: 'sharp' | 'smooth';
   positions: Float32Array;
+  /** sharp mode: one value per vertex (empty in smooth mode) */
   vals: Float32Array;
+  /** smooth mode only */
+  polars?: Float32Array;
+  /** smooth mode only */
+  values4?: Float32Array;
   vertexCount: number;
   buildTimeMs: number;
 }
 
-/**
- * Build the triangle mesh from polar radar data.
- * Identical math to PPIRenderer.uploadSweepData, but runs in a worker.
- */
-function buildMesh(input: MeshWorkerInput): MeshWorkerOutput {
+self.onmessage = (e: MessageEvent<MeshWorkerInput>) => {
+  const { id, azimuth, range, values, nAz, nRange } = e.data;
+  const mode = e.data.mode ?? 'sharp';
   const t0 = performance.now();
-  const { azimuth, range, values, nAz, nRange } = input;
 
-  // Worst case: each (az, range) cell produces 2 triangles = 6 vertices.
-  // Pre-allocate at max size then trim — avoids dynamic push overhead.
-  const maxVerts = nAz * (nRange - 1) * 6;
-  const positions = new Float32Array(maxVerts * 2);
-  const vals = new Float32Array(maxVerts);
-
-  let vi = 0; // vertex index
-
-  for (let ai = 0; ai < nAz; ai++) {
-    const az0Rad = azimuth[ai] * (Math.PI / 180);
-    const az1Deg = ai + 1 < nAz ? azimuth[ai + 1] : azimuth[0] + 360;
-    const az1Rad = az1Deg * (Math.PI / 180);
-
-    const sinAz0 = Math.sin(az0Rad);
-    const cosAz0 = Math.cos(az0Rad);
-    const sinAz1 = Math.sin(az1Rad);
-    const cosAz1 = Math.cos(az1Rad);
-
-    for (let ri = 0; ri < nRange - 1; ri++) {
-      const v = values[ai * nRange + ri];
-      if (v <= -9998) continue;
-
-      const r0 = range[ri];
-      const r1 = range[ri + 1];
-
-      const x00 = r0 * sinAz0, y00 = r0 * cosAz0;
-      const x01 = r1 * sinAz0, y01 = r1 * cosAz0;
-      const x10 = r0 * sinAz1, y10 = r0 * cosAz1;
-      const x11 = r1 * sinAz1, y11 = r1 * cosAz1;
-
-      // Triangle 1
-      const pi = vi * 2;
-      positions[pi]     = x00; positions[pi + 1] = y00;
-      positions[pi + 2] = x01; positions[pi + 3] = y01;
-      positions[pi + 4] = x10; positions[pi + 5] = y10;
-      vals[vi]     = v;
-      vals[vi + 1] = v;
-      vals[vi + 2] = v;
-      vi += 3;
-
-      // Triangle 2
-      const pi2 = vi * 2;
-      positions[pi2]     = x01; positions[pi2 + 1] = y01;
-      positions[pi2 + 2] = x11; positions[pi2 + 3] = y11;
-      positions[pi2 + 4] = x10; positions[pi2 + 5] = y10;
-      vals[vi]     = v;
-      vals[vi + 1] = v;
-      vals[vi + 2] = v;
-      vi += 3;
-    }
+  let output: MeshWorkerOutput;
+  let transfer: ArrayBuffer[];
+  if (mode === 'smooth') {
+    const m = buildSmoothMesh(azimuth, range, values, nAz, nRange);
+    output = {
+      id, mode, positions: m.positions, vals: new Float32Array(0),
+      polars: m.polars, values4: m.values4,
+      vertexCount: m.vertexCount, buildTimeMs: performance.now() - t0,
+    };
+    transfer = [m.positions.buffer as ArrayBuffer, m.polars.buffer as ArrayBuffer, m.values4.buffer as ArrayBuffer];
+  } else {
+    const m = buildSharpMesh(azimuth, range, values, nAz, nRange);
+    output = {
+      id, mode, positions: m.positions, vals: m.vals,
+      vertexCount: m.vertexCount, buildTimeMs: performance.now() - t0,
+    };
+    transfer = [m.positions.buffer as ArrayBuffer, m.vals.buffer as ArrayBuffer];
   }
 
-  // Return trimmed views over the same buffer
-  const buildTimeMs = performance.now() - t0;
-  return {
-    positions: positions.subarray(0, vi * 2),
-    vals: vals.subarray(0, vi),
-    vertexCount: vi,
-    buildTimeMs,
-  };
-}
-
-// ── Worker message handler ──────────────────────────────────────────────────
-
-self.onmessage = (e: MessageEvent<MeshWorkerInput>) => {
-  const result = buildMesh(e.data);
-
-  // Copy into standalone buffers for transfer (subarray shares the original)
-  const posBuf = new Float32Array(result.positions);
-  const valBuf = new Float32Array(result.vals);
-
-  const output: MeshWorkerOutput = {
-    positions: posBuf,
-    vals: valBuf,
-    vertexCount: result.vertexCount,
-    buildTimeMs: result.buildTimeMs,
-  };
-
-  (self as unknown as Worker).postMessage(output, [
-    posBuf.buffer,
-    valBuf.buffer,
-  ]);
+  (self as unknown as Worker).postMessage(output, transfer);
 };

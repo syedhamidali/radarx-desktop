@@ -151,11 +151,25 @@ function createWorkspaceStore() {
   function debouncedSave() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
+      saveTimer = null;
       const state = get({ subscribe });
       if (state.autoSave) {
         saveState(state);
       }
     }, 2000);
+  }
+
+  // Flush a pending debounced save when the window closes.
+  if (typeof window !== 'undefined') {
+    const flush = () => {
+      if (!saveTimer) return;
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      const state = get({ subscribe });
+      if (state.autoSave) saveState(state);
+    };
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
   }
 
   // Persist on every change (debounced)

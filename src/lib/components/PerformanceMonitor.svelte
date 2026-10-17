@@ -6,7 +6,11 @@
   // ── Visibility ──────────────────────────────────────────────────────────
   let visible = false;
 
-  function toggle() { visible = !visible; }
+  function toggle() {
+    visible = !visible;
+    // The sampling loops only run while the overlay is on screen.
+    if (visible) startLoops(); else stopLoops();
+  }
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.ctrlKey && e.shiftKey && e.key === 'P') {
@@ -82,16 +86,27 @@
     return 'var(--perf-red, #f87171)';
   }
 
-  onMount(() => {
-    window.addEventListener('keydown', onKeyDown);
+  function startLoops() {
+    if (rafId || updateInterval) return;
+    frameCount = 0;
+    lastTimestamp = 0;
     rafId = requestAnimationFrame(frameCallback);
     updateInterval = setInterval(updateStats, 1000);
+    updateStats();
+  }
+
+  function stopLoops() {
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    if (updateInterval) { clearInterval(updateInterval); updateInterval = null; }
+  }
+
+  onMount(() => {
+    window.addEventListener('keydown', onKeyDown);
   });
 
   onDestroy(() => {
     window.removeEventListener('keydown', onKeyDown);
-    cancelAnimationFrame(rafId);
-    if (updateInterval) clearInterval(updateInterval);
+    stopLoops();
   });
 </script>
 

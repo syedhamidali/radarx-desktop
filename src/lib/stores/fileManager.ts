@@ -54,7 +54,7 @@ export const activeFile = derived(
  * Register a newly-opened file and make it active.
  * Called after the server responds to `open_file` with a `file_id`.
  */
-export function addFile(entry: FileEntry): void {
+export function addFile(entry: FileEntry, opts: { skipSaveOutgoing?: boolean } = {}): void {
   openFiles.update((files) => {
     // Replace if same id already exists (re-open)
     const idx = files.findIndex((f) => f.id === entry.id);
@@ -65,7 +65,7 @@ export function addFile(entry: FileEntry): void {
     }
     return [...files, entry];
   });
-  setActiveFile(entry.id);
+  setActiveFile(entry.id, { force: true, skipSaveOutgoing: opts.skipSaveOutgoing });
 }
 
 /**
@@ -97,9 +97,15 @@ export function removeFile(id: string): string | null {
 /**
  * Switch the active tab and sync the legacy stores.
  */
-export function setActiveFile(id: string): void {
+export function setActiveFile(
+  id: string,
+  opts: { force?: boolean; skipSaveOutgoing?: boolean } = {},
+): void {
+  // Re-selecting the already-active tab must not drop the sweep cache and reload.
+  if (!opts.force && get(activeFileId) === id) return;
+
   // Save current variable/sweep selection back to the outgoing file entry
-  _saveCurrentSelection();
+  if (!opts.skipSaveOutgoing) _saveCurrentSelection();
 
   activeFileId.set(id);
   const files = get(openFiles);
@@ -114,6 +120,14 @@ export function getActiveFile(): FileEntry | null {
   const id = get(activeFileId);
   if (!id) return null;
   return get(openFiles).find((f) => f.id === id) ?? null;
+}
+
+/**
+ * Persist the live variable/sweep selection into the active file's entry.
+ * Call before overwriting the legacy stores for a different file.
+ */
+export function saveActiveSelection(): void {
+  _saveCurrentSelection();
 }
 
 /**

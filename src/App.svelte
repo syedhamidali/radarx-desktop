@@ -61,6 +61,7 @@
 
   // --- Non-reactive locals ---
   let unlistenDragDrop: (() => void) | null = null;
+  let destroyed = false;
   let unsubFileOpened: (() => void) | null = null;
   let animTimer: ReturnType<typeof setInterval> | null = null;
   let isResizingLeft = false;
@@ -106,6 +107,7 @@
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const unlisten = await getCurrentWindow().onDragDropEvent((event) => {
+        if (destroyed) return;
         const type = event.payload.type;
         if (type === 'over' || type === 'enter') {
           isDragOver = true;
@@ -120,7 +122,9 @@
           }
         }
       });
-      unlistenDragDrop = unlisten;
+      // The component may have been destroyed while the listener was registering.
+      if (destroyed) unlisten();
+      else unlistenDragDrop = unlisten;
     } catch (err) {
       console.warn('[App] Tauri drag-drop listener unavailable:', err);
     }
@@ -128,14 +132,29 @@
   });
 
   onDestroy(() => {
+    destroyed = true;
     window.removeEventListener('keydown', handleKeyDown);
+    // Sidebar drag may still be in progress (listeners are attached lazily).
+    window.removeEventListener('mousemove', onResizeMove);
+    window.removeEventListener('mouseup', onResizeEnd);
     stopAnimation();
     if (unlistenDragDrop) unlistenDragDrop();
     unsubFileOpened?.();
   });
 
+  /** True when keystrokes are meant for a form control / editable element. */
+  function isEditableTarget(t: EventTarget | null): boolean {
+    const el = t as HTMLElement | null;
+    if (!el || typeof el.tagName !== 'string') return false;
+    const tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
+  }
+
   async function handleKeyDown(e: KeyboardEvent) {
     const ctrl = e.ctrlKey || e.metaKey;
+    // Plain (unmodified) shortcuts must not hijack typing or button activation.
+    const typing = isEditableTarget(e.target);
+    const onButton = (e.target as HTMLElement | null)?.tagName === 'BUTTON';
     if (ctrl && e.key === 'k') {
       e.preventDefault();
       commandPaletteVisible = !commandPaletteVisible;
@@ -150,10 +169,10 @@
       e.preventDefault();
       rightSidebarOpen = !rightSidebarOpen;
       syncWorkspace();
-    } else if (e.key === ' ' && totalSweeps > 0) {
+    } else if (e.key === ' ' && !typing && !onButton && totalSweeps > 0) {
       e.preventDefault();
       toggleAnimation();
-    } else if (e.key === '?' && !ctrl && !e.altKey) {
+    } else if (e.key === '?' && !ctrl && !e.altKey && !typing) {
       e.preventDefault();
       shortcutsSheetVisible = !shortcutsSheetVisible;
     } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'a') {
@@ -162,9 +181,14 @@
     } else if (e.key === 'F12' || (e.altKey && ctrl && e.key.toLowerCase() === 'i')) {
       e.preventDefault();
       try {
-        const { getCurrentWebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-        getCurrentWebviewWindow().openDevtools();
-      } catch {}
+        // The JS API has no openDevtools(); Tauri exposes it as a webview plugin
+        // command (granted by core:default). Only available in debug builds or
+        // when the Rust `devtools` feature is on, so failure is expected in release.
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('plugin:webview|internal_toggle_devtools');
+      } catch {
+        /* devtools unavailable in this build */
+      }
     }
   }
 

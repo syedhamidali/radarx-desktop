@@ -10,33 +10,58 @@ import {
 } from '../stores/radarData';
 import { addToast } from '../stores/toasts';
 import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './ppiRenderer';
-import { addFile, getActiveFile, type FileEntry } from '../stores/fileManager';
+import { addFile, getActiveFile, saveActiveSelection, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
-import type { BinaryWorkerInput, BinaryWorkerOutput } from '../workers/binaryWorker';
 
 type MessageHandler = (data: any) => void;
+
+/** State of one binary payload being reassembled (JSON header + N binary frames). */
+interface InflightBinary {
+  header: any;
+  /** Number of binary frames announced by the header (-1 = unknown, use byte count). */
+  expectedChunks: number;
+  /** Total payload size in bytes derived from the header (-1 = unknown). */
+  expectedBytes: number;
+  chunksSeen: number;
+  received: number;
+  /** Preallocated destination when the total size is known. */
+  buf: Uint8Array | null;
+  /** Fallback accumulation when the total size is unknown. */
+  parts: Uint8Array[];
+  /** Zero-copy fast path: the single frame itself. */
+  single: ArrayBuffer | null;
+  startedAt: number;
+}
+
+const MAX_RETRY_DELAY_MS = 5000;
+/** Messages queued while the socket is still CONNECTING (flushed on open). */
+const MAX_QUEUED_MESSAGES = 64;
+/** Prefetch / de-duplication bookkeeping entries older than this are ignored. */
+const PENDING_REQUEST_TTL_MS = 8000;
 
 class WebSocketManager {
   private ws: WebSocket | null = null;
   private port: number | null = null;
   private retryCount = 0;
-  private maxRetries = 15;
+  private maxRetries = 60;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private messageHandlers: Map<string, MessageHandler[]> = new Map();
   private baseDelay = 500; // ms
   private authToken: string | null = null;
   private authTokenPromise: Promise<string | null> | null = null;
+  /** Messages submitted while the socket is CONNECTING. */
+  private sendQueue: Record<string, any>[] = [];
 
-  // Binary reassembly worker
-  private binaryWorker: Worker | null = null;
-  private binaryWorkerReady = false;
-  /** Queue to track isQc flag for in-flight binary worker requests (FIFO). */
-  private binaryWorkerQcQueue: boolean[] = [];
-  /** Queue to track original message type for in-flight binary worker requests (FIFO). */
-  private _binaryWorkerTypeQueue: string[] = [];
+  // Prefetch tracking — "variable:sweep" keys currently being prefetched
+  // (responses for these must not be broadcast as sweep_data_ready, otherwise a
+  // prefetched neighbour sweep would replace the sweep the user is looking at).
+  private prefetchInFlight = new Map<string, number>();
+  /** Recently issued interactive sweep requests (key -> {time, fileId}), used to drop duplicates. */
+  private recentRequests = new Map<string, { t: number; fileId: string }>();
 
-  // Prefetch tracking — set of "variable:sweep" keys currently being prefetched
-  private prefetchInFlight = new Set<string>();
+  // Timers for transient notifications (so a new message cancels the old timer)
+  private progressClearTimer: ReturnType<typeof setTimeout> | null = null;
+  private exportClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Connect to the Python sidecar WebSocket server.
@@ -57,51 +82,27 @@ class WebSocketManager {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
-    this.initBinaryWorker();
     this.doConnect();
   }
 
-  /** Spawn the binary reassembly Web Worker. */
-  private initBinaryWorker(): void {
-    if (this.binaryWorker) return; // already initialized
-    try {
-      this.binaryWorker = new Worker(
-        new URL('../workers/binaryWorker.ts', import.meta.url),
-        { type: 'module' }
-      );
-      this.binaryWorkerReady = true;
-
-      this.binaryWorker.onmessage = (e: MessageEvent<BinaryWorkerOutput>) => {
-        const { azimuth, range, values, header, reassemblyTimeMs } = e.data;
-        perfStats.update(s => ({ ...s, dataTransferTimeMs: reassemblyTimeMs }));
-
-        const entry: SweepDataEntry = {
-          variable: header.variable,
-          sweep: header.sweep,
-          azimuth,
-          range,
-          values,
-          nAz: header.n_az,
-          nRange: header.n_range,
-          maxRange: header.max_range,
-          vmin: header.vmin,
-          vmax: header.vmax,
-          units: header.units,
-        };
-
-        const isQc = this.binaryWorkerQcQueue.shift() ?? false;
-        const msgType = this._binaryWorkerTypeQueue.shift() ?? 'sweep_data';
-        this.finalizeSweepEntry(entry, isQc, msgType);
-      };
-
-      this.binaryWorker.onerror = (err) => {
-        console.warn('[WS] Binary worker error, falling back to main thread:', err);
-        this.binaryWorkerReady = false;
-      };
-    } catch (err) {
-      console.warn('[WS] Could not create binary worker, using main thread:', err);
-      this.binaryWorkerReady = false;
+  /** Manually restart the connection (e.g. after retries were exhausted). */
+  reconnect(): void {
+    if (this.port == null) return;
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+    this.retryCount = 0;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
+    this.doConnect();
+  }
+
+  /** Drop all per-connection protocol state (called on connect, close, disconnect). */
+  private resetConnectionState(): void {
+    this.inflight = null;
+    this.prefetchInFlight.clear();
+    this.recentRequests.clear();
+    this.sendQueue.length = 0;
   }
 
   private doConnect(): void {
@@ -109,58 +110,84 @@ class WebSocketManager {
 
     // Clean up any existing connection
     if (this.ws) {
-      this.ws.onopen = null;
-      this.ws.onclose = null;
-      this.ws.onmessage = null;
-      this.ws.onerror = null;
-      if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
-        this.ws.close();
+      const old = this.ws;
+      old.onopen = null;
+      old.onclose = null;
+      old.onmessage = null;
+      old.onerror = null;
+      if (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING) {
+        try { old.close(); } catch { /* ignore */ }
       }
+      this.ws = null;
     }
+    this.resetConnectionState();
 
     connectionStatus.set('connecting');
     const url = `ws://localhost:${this.port}`;
 
+    let ws: WebSocket;
     try {
-      this.ws = new WebSocket(url);
-      this.ws.binaryType = 'arraybuffer';
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
     } catch (err) {
       console.error('[WS] Failed to create WebSocket:', err);
       this.scheduleReconnect();
       return;
     }
+    this.ws = ws;
 
-    this.ws.onopen = () => {
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
       console.log(`[WS] Connected to ${url}`);
       connectionStatus.set('connected');
       this.retryCount = 0;
-
+      this.flushSendQueue();
     };
 
-    this.ws.onclose = (event) => {
+    ws.onclose = (event) => {
+      if (this.ws !== ws) return;
       console.log(`[WS] Disconnected (code: ${event.code}, reason: ${event.reason})`);
+      // Anything half-received on this connection is unusable now.
+      this.resetConnectionState();
       connectionStatus.set('disconnected');
       this.scheduleReconnect();
     };
 
-    this.ws.onerror = (event) => {
+    ws.onerror = (event) => {
       console.error('[WS] Error:', event);
     };
 
-    this.ws.onmessage = (event) => {
-      this.handleMessage(event.data);
+    ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
+      try {
+        this.handleMessage(event.data);
+      } catch (err) {
+        // Never let a bad message kill the socket's message pump.
+        console.error('[WS] Unhandled error while processing message:', err);
+      }
     };
   }
 
+  private authResolved = false;
+
   private async getAuthToken(): Promise<string | null> {
-    if (this.authToken !== null) return this.authToken;
+    if (this.authResolved) return this.authToken;
     if (this.authTokenPromise) return this.authTokenPromise;
+
+    // Outside Tauri there is no token to fetch: settle once, forever.
+    if (typeof window !== 'undefined' && !(window as any).__TAURI_INTERNALS__) {
+      this.authResolved = true;
+      this.authToken = null;
+      return null;
+    }
 
     this.authTokenPromise = (async () => {
       try {
         const { invoke } = await import('@tauri-apps/api/core');
         const token = await invoke<string>('get_sidecar_token');
         this.authToken = typeof token === 'string' && token.length > 0 ? token : null;
+        // Only a real token settles the lookup; a failure (sidecar not up yet) is retried.
+        this.authResolved = this.authToken !== null;
       } catch {
         this.authToken = null;
       } finally {
@@ -176,11 +203,12 @@ class WebSocketManager {
     if (this.retryCount >= this.maxRetries) {
       console.warn(`[WS] Max retries (${this.maxRetries}) reached. Giving up.`);
       connectionStatus.set('disconnected');
-
       return;
     }
 
-    const delay = this.baseDelay * Math.pow(2, this.retryCount);
+    // Exponential backoff, capped: the sidecar monitor restarts the server on
+    // the same port within seconds, so waiting minutes between attempts is useless.
+    const delay = Math.min(this.baseDelay * Math.pow(2, this.retryCount), MAX_RETRY_DELAY_MS);
     this.retryCount++;
     console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})...`);
 
@@ -189,47 +217,172 @@ class WebSocketManager {
     }
 
     this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
       this.doConnect();
     }, delay);
   }
 
-  private pendingSweepHeader: any = null;
-  private pendingChunks: Uint8Array[] = [];
-  private pendingChunksExpected = 0;
+  /** Binary payload currently being reassembled (the server sends frames strictly in order). */
+  private inflight: InflightBinary | null = null;
 
-  /** Track the path of the file currently being opened (set before send). */
+  /** Path of the file currently being opened (set before send, consumed by file_opened). */
   private _pendingOpenPath: string | null = null;
 
+  /** Types whose JSON header is followed by binary frames. */
+  private static readonly BINARY_TYPES = new Set([
+    'sweep_data',
+    'qc_result',
+    'difference_result',
+    'retrieval_data',
+    'volume_data',
+    'cross_section_3d_data',
+  ]);
+
+  /** Start tracking a binary payload announced by `header`. */
+  private beginBinary(header: any): void {
+    if (this.inflight) {
+      console.warn(
+        `[WS] New '${header.type}' header while '${this.inflight.header.type}' was incomplete ` +
+        `(${this.inflight.chunksSeen}/${this.inflight.expectedChunks} frames) — dropping the stale payload`,
+      );
+      this.releaseInflightPrefetch(this.inflight.header);
+    }
+
+    // Total payload size, derived from whichever byte counts the header carries.
+    let expectedBytes = -1;
+    if (typeof header.azimuth_bytes === 'number' && typeof header.range_bytes === 'number') {
+      const valBytes =
+        typeof header.values_bytes === 'number' ? header.values_bytes
+        : typeof header.diff_bytes === 'number' ? header.diff_bytes
+        : (typeof header.n_az === 'number' && typeof header.n_range === 'number')
+          ? header.n_az * header.n_range * 4
+          : -1;
+      if (valBytes >= 0) expectedBytes = header.azimuth_bytes + header.range_bytes + valBytes;
+    } else if (typeof header.byte_length === 'number') {
+      expectedBytes = header.byte_length;
+    }
+
+    // Frame count: trust the header; `difference_result` omits it, so fall back to bytes.
+    let expectedChunks = -1;
+    if (typeof header.chunks === 'number' && header.chunks >= 0) expectedChunks = header.chunks;
+    else if (expectedBytes < 0) expectedChunks = 1;
+
+    this.inflight = {
+      header,
+      expectedChunks,
+      expectedBytes,
+      chunksSeen: 0,
+      received: 0,
+      buf: null,
+      parts: [],
+      single: null,
+      startedAt: performance.now(),
+    };
+
+    // A payload with zero frames (empty array) completes immediately.
+    if (expectedChunks === 0 || expectedBytes === 0) {
+      this.completeBinary(new ArrayBuffer(0));
+    }
+  }
+
+  /** Append one binary frame to the in-flight payload; finalise when complete. */
+  private onBinaryFrame(raw: ArrayBuffer): void {
+    const st = this.inflight;
+    if (!st) {
+      console.warn(`[WS] Dropping unexpected binary frame (${raw.byteLength} bytes) — no header pending`);
+      return;
+    }
+
+    st.chunksSeen++;
+    const len = raw.byteLength;
+
+    if (st.expectedBytes >= 0 && st.received + len > st.expectedBytes) {
+      console.error(
+        `[WS] '${st.header.type}' payload overflow (${st.received + len} > ${st.expectedBytes} bytes) — discarding`,
+      );
+      this.abortInflight();
+      return;
+    }
+
+    if (st.chunksSeen === 1 && len === st.expectedBytes) {
+      // Whole payload arrived in one frame: use it directly, no copy at all.
+      st.single = raw;
+    } else if (st.expectedBytes >= 0) {
+      // Known size: copy each frame once into a single preallocated buffer.
+      if (!st.buf) st.buf = new Uint8Array(st.expectedBytes);
+      st.buf.set(new Uint8Array(raw), st.received);
+    } else {
+      st.parts.push(new Uint8Array(raw));
+    }
+    st.received += len;
+
+    const done = st.expectedChunks >= 0
+      ? st.chunksSeen >= st.expectedChunks
+      : st.received >= st.expectedBytes;
+    if (!done) return;
+
+    let buffer: ArrayBuffer;
+    if (st.single) {
+      buffer = st.single;
+    } else if (st.buf) {
+      buffer = st.buf.buffer as ArrayBuffer;
+    } else if (st.parts.length === 1) {
+      const p = st.parts[0];
+      buffer = (p.byteOffset === 0 && p.byteLength === p.buffer.byteLength
+        ? p.buffer
+        : p.slice().buffer) as ArrayBuffer;
+    } else {
+      const out = new Uint8Array(st.received);
+      let off = 0;
+      for (const p of st.parts) { out.set(p, off); off += p.byteLength; }
+      buffer = out.buffer as ArrayBuffer;
+    }
+
+    if (st.expectedBytes >= 0 && st.received !== st.expectedBytes) {
+      console.error(
+        `[WS] '${st.header.type}' payload truncated (${st.received}/${st.expectedBytes} bytes) — discarding`,
+      );
+      this.abortInflight();
+      return;
+    }
+    this.completeBinary(buffer);
+  }
+
+  /** Dispatch a fully reassembled payload and clear the in-flight slot. */
+  private completeBinary(buffer: ArrayBuffer): void {
+    const st = this.inflight;
+    if (!st) return;
+    this.inflight = null;
+
+    const header = st.header;
+    const transferMs = performance.now() - st.startedAt;
+    perfStats.update((s) => ({ ...s, dataTransferTimeMs: transferMs }));
+
+    const type: string = header.type;
+    if (type === 'volume_data' || type === 'cross_section_3d_data' || type === 'retrieval_data') {
+      // Raw float32 grids, not azimuth+range+values
+      this.handleRawBinaryData(header, buffer);
+    } else {
+      this.handleBinarySweepData(header, buffer);
+    }
+  }
+
+  private abortInflight(): void {
+    const st = this.inflight;
+    this.inflight = null;
+    if (st) this.releaseInflightPrefetch(st.header);
+  }
+
+  private releaseInflightPrefetch(header: any): void {
+    if (header && typeof header.variable === 'string') {
+      this.prefetchInFlight.delete(`${header.variable}:${header.sweep}`);
+    }
+  }
+
   private handleMessage(raw: string | ArrayBuffer): void {
-    // Binary message → chunk of sweep data following a sweep_data JSON header
+    // Binary message → chunk of data following a JSON header
     if (typeof raw !== 'string') {
-      if (this.pendingSweepHeader) {
-        this.pendingChunks.push(new Uint8Array(raw as ArrayBuffer));
-
-        if (this.pendingChunks.length >= this.pendingChunksExpected) {
-          const header = this.pendingSweepHeader;
-          const chunks = this.pendingChunks;
-          this.pendingSweepHeader = null;
-          this.pendingChunks = [];
-          this.pendingChunksExpected = 0;
-
-          // Reassemble contiguous buffer
-          const totalBytes = chunks.reduce((s, c) => s + c.byteLength, 0);
-          const combined = new Uint8Array(totalBytes);
-          let offset = 0;
-          for (const chunk of chunks) {
-            combined.set(chunk, offset);
-            offset += chunk.byteLength;
-          }
-
-          // Volume/cross-section data is a raw float32 grid, not azimuth+range+values
-          if (header.type === 'volume_data' || header.type === 'cross_section_3d_data') {
-            this.handleRawBinaryData(header, combined.buffer);
-          } else {
-            this.handleBinarySweepData(header, combined.buffer);
-          }
-        }
-      }
+      this.onBinaryFrame(raw as ArrayBuffer);
       return;
     }
 
@@ -237,7 +390,7 @@ class WebSocketManager {
     try {
       msg = JSON.parse(raw);
     } catch (err) {
-      console.error('[WS] Failed to parse message:', raw);
+      console.error('[WS] Failed to parse message:', raw.length > 200 ? raw.slice(0, 200) + '…' : raw);
       return;
     }
 
@@ -259,8 +412,15 @@ class WebSocketManager {
           const openedPath = this._pendingOpenPath ?? msg.data?.source ?? '';
           this._pendingOpenPath = null;
 
+          // Store the outgoing file's selection before the stores are reset below
+          // (addFile would otherwise save the already-reset values into it).
+          saveActiveSelection();
+
           processingProgress.set(null);
           clearSweepCache();
+          // Requests issued against the previous file are moot.
+          this.prefetchInFlight.clear();
+          this.recentRequests.clear();
 
           const firstVar = vars.length > 0 ? vars[0] : null;
           const firstSweep = swps.length > 0 ? swps[0].index : 0;
@@ -292,7 +452,7 @@ class WebSocketManager {
               selectedVariable: firstVar,
               selectedSweep: firstSweep,
             };
-            addFile(entry);
+            addFile(entry, { skipSaveOutgoing: true });
           }
 
           if (firstVar) {
@@ -316,10 +476,8 @@ class WebSocketManager {
       case 'retrieval_data':
       case 'volume_data':
       case 'cross_section_3d_data':
-        // JSON header for incoming binary data — store it and wait for chunk frames
-        this.pendingSweepHeader = msg;
-        this.pendingChunks = [];
-        this.pendingChunksExpected = typeof msg.chunks === 'number' ? msg.chunks : 1;
+        // JSON header for incoming binary data — wait for the chunk frames
+        this.beginBinary(msg);
         break;
 
       case 'render_result':
@@ -334,27 +492,31 @@ class WebSocketManager {
           percent: msg.percent ?? 0,
           message: msg.message ?? '',
         });
-        // Clear progress when complete
+        // Clear progress when complete (a newer progress message cancels the pending clear)
+        if (this.progressClearTimer) {
+          clearTimeout(this.progressClearTimer);
+          this.progressClearTimer = null;
+        }
         if (msg.percent >= 100) {
-          setTimeout(() => processingProgress.set(null), 2000);
+          this.progressClearTimer = setTimeout(() => {
+            this.progressClearTimer = null;
+            processingProgress.set(null);
+          }, 2000);
         }
         break;
 
       case 'export_complete':
-        exportNotification.set(msg.path ?? 'Export complete');
-        setTimeout(() => exportNotification.set(null), 5000);
+        this.showExportNotification(msg.path ?? 'Export complete');
         break;
 
       case 'batch_export_complete':
-        exportNotification.set(
+        this.showExportNotification(
           `Batch export complete: ${msg.count ?? 0} files in ${msg.output_dir ?? 'temp'}`
         );
-        setTimeout(() => exportNotification.set(null), 5000);
         break;
 
       case 'animation_export_complete':
-        exportNotification.set(msg.path ?? 'Animation export complete');
-        setTimeout(() => exportNotification.set(null), 5000);
+        this.showExportNotification(msg.path ?? 'Animation export complete');
         break;
 
       case 'cross_section_result':
@@ -371,6 +533,10 @@ class WebSocketManager {
         console.error('[WS] Server error:', msg.message);
         // Also clear any processing progress on error
         processingProgress.set(null);
+        // The failed request will never produce data: forget in-flight bookkeeping
+        // so later requests for the same sweep are not suppressed.
+        this.prefetchInFlight.clear();
+        this.recentRequests.clear();
         // Notify user
         this.notifyError(msg.message ?? 'Unknown error from server');
         break;
@@ -392,6 +558,15 @@ class WebSocketManager {
     }
   }
 
+  private showExportNotification(text: string): void {
+    exportNotification.set(text);
+    if (this.exportClearTimer) clearTimeout(this.exportClearTimer);
+    this.exportClearTimer = setTimeout(() => {
+      this.exportClearTimer = null;
+      exportNotification.set(null);
+    }, 5000);
+  }
+
   private notifyError(message: string): void {
     addToast('error', message, 8000);
   }
@@ -400,68 +575,58 @@ class WebSocketManager {
    * Register a custom handler for a specific message type.
    */
   onMessage(type: string, handler: MessageHandler): () => void {
-    if (!this.messageHandlers.has(type)) {
-      this.messageHandlers.set(type, []);
-    }
-    this.messageHandlers.get(type)!.push(handler);
+    // Copy-on-write: dispatch iterates the array it grabbed, so a handler that
+    // (un)subscribes during dispatch cannot cause others to be skipped.
+    const current = this.messageHandlers.get(type);
+    this.messageHandlers.set(type, current ? [...current, handler] : [handler]);
 
-    // Return an unsubscribe function
+    // Return an unsubscribe function (idempotent)
     return () => {
       const handlers = this.messageHandlers.get(type);
-      if (handlers) {
-        const idx = handlers.indexOf(handler);
-        if (idx >= 0) handlers.splice(idx, 1);
+      if (!handlers) return;
+      const idx = handlers.indexOf(handler);
+      if (idx < 0) return;
+      if (handlers.length === 1) {
+        this.messageHandlers.delete(type);
+      } else {
+        this.messageHandlers.set(type, [...handlers.slice(0, idx), ...handlers.slice(idx + 1)]);
       }
     };
   }
 
   /**
    * Handle binary sweep data received after a sweep_data JSON header.
-   * Delegates to the binary worker when available, otherwise parses on main thread.
+   *
+   * The reassembled buffer is laid out as [azimuth][range][values] (float32).
+   * The three arrays are zero-copy views over that single buffer.
    */
   private handleBinarySweepData(header: any, buffer: ArrayBuffer): void {
     const azBytes = header.azimuth_bytes as number;
     const rngBytes = header.range_bytes as number;
     const msgType: string = header.type ?? 'sweep_data';
     const isQc = msgType === 'qc_result';
+    const key = `${header.variable}:${header.sweep}`;
 
-    // Try binary worker path
-    if (this.binaryWorkerReady && this.binaryWorker) {
-      // We need to send the buffer as a transferable chunk
-      const input: BinaryWorkerInput = {
-        chunks: [buffer],
-        azimuthBytes: azBytes,
-        rangeBytes: rngBytes,
-        header: {
-          variable: header.variable,
-          sweep: header.sweep,
-          n_az: header.n_az,
-          n_range: header.n_range,
-          max_range: header.max_range,
-          vmin: header.vmin,
-          vmax: header.vmax,
-          units: header.units,
-        },
-      };
-      // Track QC flag and message type in FIFO queues (worker messages arrive in order)
-      this.binaryWorkerQcQueue.push(isQc);
-      this._binaryWorkerTypeQueue.push(msgType);
-
-      this.binaryWorker.postMessage(input, [buffer]);
+    const nValues = Math.floor((buffer.byteLength - azBytes - rngBytes) / 4);
+    if (
+      !Number.isInteger(azBytes) || !Number.isInteger(rngBytes) ||
+      azBytes < 0 || rngBytes < 0 || azBytes % 4 !== 0 || rngBytes % 4 !== 0 ||
+      nValues < 0 || nValues < header.n_az * header.n_range
+    ) {
+      console.error(
+        `[WS] Malformed '${msgType}' payload for ${key}: ${buffer.byteLength} bytes, ` +
+        `az=${azBytes}, range=${rngBytes}, grid=${header.n_az}x${header.n_range}`,
+      );
+      this.prefetchInFlight.delete(key);
       return;
     }
-
-    // Fallback: parse on main thread
-    const azimuth = new Float32Array(buffer, 0, azBytes / 4);
-    const range = new Float32Array(buffer, azBytes, rngBytes / 4);
-    const values = new Float32Array(buffer, azBytes + rngBytes);
 
     const entry: SweepDataEntry = {
       variable: header.variable,
       sweep: header.sweep,
-      azimuth,
-      range,
-      values,
+      azimuth: new Float32Array(buffer, 0, azBytes / 4),
+      range: new Float32Array(buffer, azBytes, rngBytes / 4),
+      values: new Float32Array(buffer, azBytes + rngBytes, nValues),
       nAz: header.n_az,
       nRange: header.n_range,
       maxRange: header.max_range,
@@ -474,25 +639,40 @@ class WebSocketManager {
   }
 
   /**
-   * Handle raw binary grid data (volume_data, cross_section_3d_data).
+   * Handle raw binary grid data (volume_data, cross_section_3d_data, retrieval_data).
    * These are flat Float32Arrays without azimuth/range preamble.
    */
   private handleRawBinaryData(header: any, buffer: ArrayBuffer): void {
+    if (buffer.byteLength % 4 !== 0) {
+      console.error(`[WS] '${header.type}' payload is not float32-aligned (${buffer.byteLength} bytes)`);
+      return;
+    }
     const data = new Float32Array(buffer);
-    const eventType = header.type === 'volume_data' ? 'volume_data' : 'cross_section_3d_data';
     const payload = { ...header, data };
-    this._dispatchHandlers(eventType, payload);
+    this._dispatchHandlers(header.type, payload);
+    if (header.type === 'retrieval_data') {
+      this._dispatchHandlers('retrieval_data_ready', payload);
+    }
   }
 
   /**
-   * Common path after binary data has been parsed (from worker or main thread).
+   * Common path after binary data has been parsed.
    * Caches the entry, notifies listeners, and triggers prefetch.
    */
   private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data'): void {
-    // Clear prefetch in-flight flag
-    this.prefetchInFlight.delete(`${entry.variable}:${entry.sweep}`);
+    const key = `${entry.variable}:${entry.sweep}`;
+    const prefetchT = this.prefetchInFlight.get(key);
+    this.prefetchInFlight.delete(key);
+    const wasPrefetch =
+      msgType === 'sweep_data' && prefetchT !== undefined && performance.now() - prefetchT < PENDING_REQUEST_TTL_MS * 4;
+    this.recentRequests.delete(key);
 
     cacheSweepData(entry);
+
+    // A prefetched neighbour sweep only warms the cache. Broadcasting it as
+    // sweep_data_ready would make the viewer display it instead of the sweep
+    // the user selected.
+    if (wasPrefetch) return;
 
     // Dispatch to type-specific handlers
     if (isQc) {
@@ -500,9 +680,6 @@ class WebSocketManager {
     }
     if (msgType === 'difference_result') {
       this._dispatchHandlers('difference_data_ready', entry);
-    }
-    if (msgType === 'retrieval_data') {
-      this._dispatchHandlers('retrieval_data_ready', entry);
     }
 
     // Always fire sweep_data_ready so the viewer refreshes
@@ -547,11 +724,11 @@ class WebSocketManager {
 
       // Already cached or in-flight — skip
       if (getCachedSweep(variable, s)) continue;
-      if (this.prefetchInFlight.has(key)) continue;
+      if (this.isPendingFresh(this.prefetchInFlight.get(key))) continue;
+      if (this.isPendingFresh(this.recentRequests.get(key)?.t)) continue;
 
-      this.prefetchInFlight.add(key);
-      console.log(`[WS] Prefetching ${key}`);
-      this.requestSweepData(variable, s);
+      this.prefetchInFlight.set(key, performance.now());
+      this.sendSweepRequest(variable, s);
     }
   }
 
@@ -560,6 +737,30 @@ class WebSocketManager {
    * Optionally target a specific open file by its server-assigned id.
    */
   requestSweepData(variable: string, sweep: number, fileId?: string): void {
+    const key = `${variable}:${sweep}`;
+
+    // An interactive request takes over a prefetch that is already on its way:
+    // its response will now be broadcast like a normal one.
+    if (this.isPendingFresh(this.prefetchInFlight.get(key))) {
+      this.prefetchInFlight.delete(key);
+      this.recentRequests.set(key, { t: performance.now(), fileId: fileId ?? '' });
+      return;
+    }
+
+    // Identical request already outstanding (e.g. viewer + file_opened handler
+    // both asking for the first sweep): its response reaches every listener anyway.
+    const recent = this.recentRequests.get(key);
+    if (recent && recent.fileId === (fileId ?? '') && this.isPendingFresh(recent.t)) return;
+
+    this.recentRequests.set(key, { t: performance.now(), fileId: fileId ?? '' });
+    this.sendSweepRequest(variable, sweep, fileId);
+  }
+
+  private isPendingFresh(t: number | undefined): boolean {
+    return t !== undefined && performance.now() - t < PENDING_REQUEST_TTL_MS;
+  }
+
+  private sendSweepRequest(variable: string, sweep: number, fileId?: string): void {
     const msg: Record<string, any> = { type: 'get_sweep_data', variable, sweep };
     if (fileId) msg.file_id = fileId;
     this.send(msg);
@@ -585,13 +786,20 @@ class WebSocketManager {
    * Send a JSON message to the server.
    */
   async send(message: Record<string, any>): Promise<void> {
+    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+      // Not open yet: hold the message and flush it from onopen (bounded queue).
+      if (this.sendQueue.length >= MAX_QUEUED_MESSAGES) this.sendQueue.shift();
+      this.sendQueue.push(message);
+      return;
+    }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      console.warn('[WS] Cannot send, not connected. Message:', message);
+      console.warn('[WS] Cannot send, not connected. Message type:', message.type);
       return;
     }
 
     const payloadMessage = { ...message };
-    const token = await this.getAuthToken();
+    // Once the token lookup has settled, stay synchronous so messages keep call order.
+    const token = this.authResolved ? this.authToken : await this.getAuthToken();
     if (token) {
       payloadMessage.token = token;
     }
@@ -625,6 +833,12 @@ class WebSocketManager {
     }
   }
 
+  private flushSendQueue(): void {
+    if (this.sendQueue.length === 0) return;
+    const queued = this.sendQueue.splice(0);
+    for (const msg of queued) void this.send(msg);
+  }
+
   /**
    * Disconnect from the server and stop reconnection attempts.
    */
@@ -636,17 +850,18 @@ class WebSocketManager {
     this.retryCount = this.maxRetries; // Prevent reconnects
 
     if (this.ws) {
-      this.ws.onclose = null; // Prevent reconnect on intentional close
-      this.ws.close();
+      // Detach every handler so nothing fires after an intentional close.
+      this.ws.onopen = null;
+      this.ws.onclose = null;
+      this.ws.onmessage = null;
+      this.ws.onerror = null;
+      try { this.ws.close(); } catch { /* ignore */ }
       this.ws = null;
     }
+    this.resetConnectionState();
 
-    // Terminate binary worker
-    if (this.binaryWorker) {
-      this.binaryWorker.terminate();
-      this.binaryWorker = null;
-      this.binaryWorkerReady = false;
-    }
+    if (this.progressClearTimer) { clearTimeout(this.progressClearTimer); this.progressClearTimer = null; }
+    if (this.exportClearTimer) { clearTimeout(this.exportClearTimer); this.exportClearTimer = null; }
 
     connectionStatus.set('disconnected');
   }

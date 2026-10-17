@@ -72,6 +72,16 @@
   let lastMouse   = [0, 0];
   let dirty       = true;
   let animId      = 0;
+  let resizeObs: ResizeObserver | null = null;
+  let buildTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastBuildMs = 0;
+  let destroyed   = false;
+
+  /** Request a redraw. Draws happen on demand: no rAF loop runs while the view is idle. */
+  function markDirty() {
+    dirty = true;
+    if (!animId && gl && !destroyed) animId = requestAnimationFrame(renderFrame);
+  }
   let prevVariable = '';
 
   // GL resources
@@ -479,21 +489,14 @@
         ? (range[range.length - 1] - range[0]) / (range.length - 1) / 1000
         : entry.maxRange / nRange / 1000;
 
-      // Remap rays into a uniform azimuth grid [0°, 360°) with nAz slots
-      const gridData = new Float32Array(nAz * nRange).fill(-9999);
+      // Remap rays into a uniform azimuth grid [0°, 360°) with nAz slots, writing each
+      // ray straight into its row of the packed volume (rows shorter than maxNRange
+      // keep the -9999 padding from the initial fill).
       for (let ai = 0; ai < nAz; ai++) {
         let gridIdx = Math.round((azimuth[ai] / 360) * nAz) % nAz;
         if (gridIdx < 0) gridIdx += nAz;
         const src = ai * nRange;
-        const dst = gridIdx * nRange;
-        for (let ri = 0; ri < nRange; ri++) gridData[dst + ri] = values[src + ri];
-      }
-
-      // Copy into volume texture (rows may be shorter than maxNRange — pad with nodata)
-      for (let ai = 0; ai < nAz; ai++) {
-        const dst = (azOffset + ai) * maxNRange;
-        const src = ai * nRange;
-        for (let ri = 0; ri < nRange; ri++) volData[dst + ri] = gridData[src + ri];
+        volData.set(values.subarray(src, src + nRange), (azOffset + gridIdx) * maxNRange);
       }
 
       // Pack metadata
@@ -532,7 +535,7 @@
     // Build angle→sweep index lookup
     buildAngleIndex(sweepMetas);
 
-    dirty = true;
+    markDirty();
   }
 
   // ── AngleIndex texture ────────────────────────────────────────────────────
@@ -622,8 +625,9 @@
   // ── Render ────────────────────────────────────────────────────────────────
 
   function renderFrame() {
-    animId = requestAnimationFrame(renderFrame);
-    if (!dirty || !gl || !prog || !quadVAO || !canvas) return;
+    animId = 0;
+    if (destroyed || !dirty || !gl || !prog || !quadVAO || !canvas) return;
+    // Textures not uploaded yet: buildVolumeTexture() calls markDirty() once they are.
     if (!volumeTex || !angleIdxTex || !sweepMetaTex || !tfTex) return;
     dirty = false;
 
@@ -651,7 +655,7 @@
         camTgt[2] + (camTgtTarget[2] - camTgt[2]) * lf,
       ];
       camDist += (camDistTarget - camDist) * lf;
-      dirty = true;
+      dirty = true; // keep animating: scheduled again at the end of this frame
     }
 
     const { eye, fwd, right, up } = getCamVectors();
@@ -704,6 +708,8 @@
 
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.bindVertexArray(null);
+
+    if (dirty && !animId) animId = requestAnimationFrame(renderFrame);
   }
 
   // ── Resize ────────────────────────────────────────────────────────────────
@@ -712,12 +718,20 @@
     if (!canvas || !container) return;
     const rect = container.getBoundingClientRect();
     const dpr  = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width  = Math.round(rect.width  * dpr);
-    canvas.height = Math.round(rect.height * dpr);
+    const w = Math.round(rect.width  * dpr);
+    const h = Math.round(rect.height * dpr);
+    // Assigning width/height clears the canvas even if unchanged: skip no-op resizes.
+    if (w === canvas.width && h === canvas.height) return;
+    canvas.width  = w;
+    canvas.height = h;
     canvas.style.width  = rect.width  + 'px';
     canvas.style.height = rect.height + 'px';
     gl?.viewport(0, 0, canvas.width, canvas.height);
     dirty = true;
+    // ResizeObserver callbacks run after this frame's rAF phase; draw now so the
+    // cleared canvas is never presented blank.
+    if (animId) { cancelAnimationFrame(animId); animId = 0; }
+    renderFrame();
   }
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -757,6 +771,36 @@
     }
   });
 
+  /**
+   * Sweeps stream in one by one, and every rebuild repacks and re-uploads the whole
+   * volume (tens of MB). Coalesce arrivals: wait at least twice as long as the last
+   * rebuild took, and rebuild immediately once the last sweep is in.
+   */
+  function scheduleBuild() {
+    if (loadedSweeps.size >= sweeps.length) { buildAndRender(); return; }
+    if (buildTimer) return;
+    buildTimer = setTimeout(() => {
+      buildTimer = null;
+      buildAndRender();
+    }, Math.max(100, lastBuildMs * 2));
+  }
+
+  function onContextLost(e: Event) {
+    e.preventDefault(); // lets 'webglcontextrestored' fire
+    if (animId) { cancelAnimationFrame(animId); animId = 0; }
+    gl = null;
+    prog = null; quadVAO = null;
+    volumeTex = angleIdxTex = sweepMetaTex = tfTex = null;
+  }
+
+  function onContextRestored() {
+    if (destroyed || !canvas) return;
+    if (!initGL()) return;
+    uploadTransferFn();
+    buildVolumeTexture();
+    markDirty();
+  }
+
   async function buildAndRender() {
     if (loadedSweeps.size === 0 || !container) return;
     await tick();
@@ -764,13 +808,20 @@
     if (!gl) {
       if (!canvas || !initGL()) return;
       resizeCanvas();
-      new ResizeObserver(resizeCanvas).observe(container);
-      renderFrame();
+      resizeObs?.disconnect();
+      resizeObs = new ResizeObserver(resizeCanvas);
+      resizeObs.observe(container);
+      canvas.addEventListener('webglcontextlost', onContextLost);
+      canvas.addEventListener('webglcontextrestored', onContextRestored);
+      markDirty();
     }
 
+    if (buildTimer) { clearTimeout(buildTimer); buildTimer = null; }
     const firstBuild = volNSweeps === 0;
+    const t0 = performance.now();
     uploadTransferFn();
     buildVolumeTexture();
+    lastBuildMs = performance.now() - t0;
     if (firstBuild && volNSweeps > 0) resetCamera();
     hasRendered = true;
     errorMsg    = '';
@@ -804,7 +855,7 @@
       camTheta += dx * 0.4;
       camPhi    = Math.max(-85, Math.min(89, camPhi - dy * 0.4));
     }
-    dirty = true;
+    markDirty();
   }
   function onMouseUp() { isDragging = false; isShiftDrag = false; }
   function onWheel(e: WheelEvent) {
@@ -812,7 +863,7 @@
     e.stopPropagation();
     camDist = Math.max(10, Math.min(5000, camDist * (1 + e.deltaY * 0.001)));
     camDistTarget = camDist;  // don't fight manual zoom
-    dirty = true;
+    markDirty();
   }
   function onKeyDown(e: KeyboardEvent) {
     const step = e.shiftKey ? 15 : 5;
@@ -827,21 +878,21 @@
       default: return;
     }
     e.preventDefault();
-    dirty = true;
+    markDirty();
   }
 
   function resetCamera() {
     camTheta      = -30; camPhi = 25;
     camDistTarget = volMaxRange * 1.8;
     camTgtTarget  = [0, 0, 0];
-    dirty         = true;
+    markDirty();
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   $effect(() => {
     const clip = $selectedBox;
-    dirty = true;
+    markDirty();
     if (clip) {
       camTgtTarget = [
         (clip.xMin + clip.xMax) / 2 / 1000,
@@ -866,13 +917,19 @@
       loadedSweeps.set(entry.sweep, entry);
       loadedSweeps = loadedSweeps;
       isLoading = loadedSweeps.size < sweeps.length;
-      buildAndRender();
+      scheduleBuild();
     });
   });
 
   onDestroy(() => {
+    destroyed = true;
     unsubData?.();
-    if (animId) cancelAnimationFrame(animId);
+    if (animId) { cancelAnimationFrame(animId); animId = 0; }
+    if (buildTimer) { clearTimeout(buildTimer); buildTimer = null; }
+    resizeObs?.disconnect();
+    resizeObs = null;
+    canvas?.removeEventListener('webglcontextlost', onContextLost);
+    canvas?.removeEventListener('webglcontextrestored', onContextRestored);
     if (gl) {
       [volumeTex, angleIdxTex, sweepMetaTex, tfTex].forEach(t => t && gl!.deleteTexture(t));
       if (prog)    gl.deleteProgram(prog);
@@ -890,14 +947,14 @@
       <div class="ctrl-group">
         <label for="step-ctrl">Step</label>
         <input id="step-ctrl" type="range" min="0.25" max="3" step="0.25"
-               bind:value={stepKm} oninput={() => { dirty = true; }} />
+               bind:value={stepKm} oninput={() => { markDirty(); }} />
         <span class="ctrl-val">{stepKm}km</span>
       </div>
 
       <div class="ctrl-group">
         <label for="opacity-ctrl">Opacity</label>
         <input id="opacity-ctrl" type="range" min="0.1" max="1" step="0.05"
-               bind:value={opacityScale} oninput={() => { dirty = true; }} />
+               bind:value={opacityScale} oninput={() => { markDirty(); }} />
         <span class="ctrl-val">{Math.round(opacityScale * 100)}%</span>
       </div>
 
@@ -919,7 +976,7 @@
       <div class="tfe-panel">
         <TransferFunctionEditor
           bind:transferFunction={tfData}
-          onchange={() => { uploadTransferFn(); dirty = true; }}
+          onchange={() => { uploadTransferFn(); markDirty(); }}
         />
       </div>
     {/if}

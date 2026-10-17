@@ -36,13 +36,18 @@
 
   function startPlayback() {
     if (files.length < 2) return;
+    if (playTimer !== null) clearInterval(playTimer); // never stack timers
     timelinePlaybackActive.set(true);
     playTimer = setInterval(() => {
-      timelineIndex.update((idx) => {
-        const next = (idx + 1) % files.length;
-        activateFile(next);
-        return next;
-      });
+      // Files may have been closed since playback started.
+      if (files.length < 2) {
+        stopPlayback();
+        return;
+      }
+      // Side effects (activateFile) must not run inside a store update callback.
+      const next = (currentIdx + 1) % files.length;
+      timelineIndex.set(next);
+      activateFile(next);
     }, intervalMs);
   }
 
@@ -126,6 +131,9 @@
       activateFile(next);
     }
   }
+
+  // Closing files down to <2 hides the timeline: make sure playback does not keep cycling.
+  $: if (files.length < 2 && playTimer !== null) stopPlayback();
 
   onDestroy(() => {
     stopPlayback();

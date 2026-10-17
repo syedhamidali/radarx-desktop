@@ -178,16 +178,35 @@
     return v.toFixed(2);
   }
 
+  // Colour scale for the cell backgrounds: computed once per data window (this used to be
+  // recomputed -- flattening the whole window -- for every visible cell on every render).
+  const colorRange = $derived.by(() => computeColorRange(values));
+
+  function computeColorRange(vals: number[][]): { min: number; max: number; hasData: boolean } {
+    // Same definition as before: min/max over the first 1000 valid values (row-major).
+    let min = Infinity;
+    let max = -Infinity;
+    let n = 0;
+    outer:
+    for (const row of vals) {
+      for (const x of row) {
+        if (x === null || x === undefined || isNaN(x) || x === -9999) continue;
+        if (x < min) min = x;
+        if (x > max) max = x;
+        if (++n >= 1000) break outer;
+      }
+    }
+    return { min, max, hasData: n > 0 };
+  }
+
   function cellColor(row: DisplayRow, colIdx: number): string {
     const ci = displayCols[colIdx];
     if (ci === undefined) return 'transparent';
     const v = row.values[ci];
     if (v === null || v === undefined || isNaN(v) || v === -9999) return 'transparent';
     // Simple blue-to-red colormap based on position in data range
-    const allVals = values.flat().filter(x => x !== null && !isNaN(x) && x !== -9999);
-    if (!allVals.length) return 'transparent';
-    const min = Math.min(...allVals.slice(0, 1000));
-    const max = Math.max(...allVals.slice(0, 1000));
+    const { min, max, hasData } = colorRange;
+    if (!hasData) return 'transparent';
     if (max === min) return 'rgba(91, 108, 247, 0.2)';
     const t = Math.max(0, Math.min(1, (v - min) / (max - min)));
     const r = Math.round(t * 255);
