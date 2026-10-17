@@ -16,6 +16,10 @@ on:
       - "python/packaging/**"
       - "src-tauri/tauri.bundle*.json"
 
+# Creating the GitHub release (and uploading the installers to it) needs write access to contents.
+permissions:
+  contents: write
+
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
