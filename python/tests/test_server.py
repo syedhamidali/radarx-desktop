@@ -626,8 +626,20 @@ class TestModules:
             await handler.handle_message(
                 json.dumps({"type": "run_module", "module": "srv_test_count"})
             )
-        assert handler._sent[-1]["type"] == "module_error"
-        assert "no file" in handler._sent[-1]["message"].lower()
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1
+        assert "no file" in errors[0]["message"].lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("module", ["srv_test_count", "does_not_exist"])
+    async def test_run_module_always_closes_progress(self, test_module, module) -> None:
+        """Success and failure both end with progress=100 so the UI status bar clears."""
+        server._register_reader(_reader_with_tree())
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps({"type": "run_module", "module": module}))
+        progress = [m for m in handler._sent if m["type"] == "progress"]
+        assert progress and progress[-1]["percent"] == 100
+        assert handler._sent[-1] is progress[-1]
 
     @pytest.mark.asyncio
     async def test_arco_placeholder_sweep_loads_on_demand(self, test_module) -> None:
@@ -775,7 +787,7 @@ class TestModuleFields:
         await handler.handle_message(
             json.dumps({"type": "run_module", "module": "srv_test_needs_pkg"})
         )
-        assert handler._sent[-1]["type"] == "module_error"
+        assert [m["type"] for m in handler._sent if m["type"] == "module_error"] == ["module_error"]
 
 
 class TestSaveTextFile:

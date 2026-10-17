@@ -2092,6 +2092,10 @@ class ConnectionHandler:
                     "message": f"{type(exc).__name__}: {exc}",
                 }
             )
+        finally:
+            # The module reports progress while it runs; always close the bar so the status
+            # line does not stay stuck at e.g. "Classifying hydrometeors (40%)".
+            await self.send_progress(100, "Module finished")
 
     async def _run_module(self, msg: dict[str, Any]) -> None:
         module_id = msg.get("module")
