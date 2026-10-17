@@ -213,6 +213,29 @@ export interface DisplayedField {
 
 export const displayedField = writable<DisplayedField | null>(null);
 
+// ── Auto-show: a finished run puts its (first) gridded product on the map ─────────
+const AUTO_SHOW_KEY = 'xradar.modules.autoShow.v1';
+function loadAutoShow(): boolean {
+  try {
+    return localStorage.getItem(AUTO_SHOW_KEY) !== '0';
+  } catch {
+    return true;
+  }
+}
+/** When on (default), a module's first field is drawn on the PPI as soon as it arrives. */
+export const autoShowResults = writable<boolean>(loadAutoShow());
+autoShowResults.subscribe((v) => {
+  try {
+    localStorage.setItem(AUTO_SHOW_KEY, v ? '1' : '0');
+  } catch {
+    /* storage unavailable — ignore */
+  }
+});
+/** module id -> name of the field to display when its data arrives. */
+const pendingAutoShow = new Map<string, string>();
+/** Set when a run finishes so the panel can scroll that module's card into view. */
+export const lastFinishedModule = writable<{ id: string; at: number } | null>(null);
+
 /** Colour assigned to a module by its position in the module list. */
 export const moduleColors = derived(modulesState, ($s) => {
   const out: Record<string, string> = {};
@@ -1065,11 +1088,39 @@ function handleModuleResult(msg: any): void {
     selectedFeature.set(null);
   }
 
-  addToast('success', `${moduleTitle(id)}: done in ${formatElapsed(result.elapsed_ms)}`, 3000);
+  const firstField = blocks.find((b) => b.type === 'field') as { name?: string; title?: string } | undefined;
+  const willShow = !!firstField?.name && get(autoShowResults);
+  if (willShow && firstField?.name) pendingAutoShow.set(id, String(firstField.name));
+  else pendingAutoShow.delete(id);
+  lastFinishedModule.set({ id, at: Date.now() });
+
+  const nShapes = result.features.length;
+  const what = blocks.some((b) => b.type === 'overlay')
+    ? nShapes > 0
+      ? ` — ${nShapes} outline${nShapes === 1 ? '' : 's'} drawn on the map`
+      : ' — nothing found with these settings'
+    : '';
+  addToast(
+    'success',
+    willShow
+      ? `${moduleTitle(id)}: done in ${formatElapsed(result.elapsed_ms)} — showing it on the map (use "Back to" to return)`
+      : `${moduleTitle(id)}: done in ${formatElapsed(result.elapsed_ms)}${what}`,
+    5000,
+  );
 }
 
 function handleModuleField(entry: ModuleFieldEntry): void {
   moduleFields.update((f) => ({ ...f, [fieldKey(entry.module, entry.name)]: entry }));
+  if (pendingAutoShow.get(entry.module) === entry.name) {
+    pendingAutoShow.delete(entry.module);
+    if (entry.sweep === get(selectedSweep)) {
+      const auto = buildDisplayedField(entry.module, entry.name, entry);
+      if (auto) {
+        displayedField.set(auto);
+        return;
+      }
+    }
+  }
   // A field already on screen is refreshed in place when its module is re-run.
   const shown = get(displayedField);
   if (shown && shown.module === entry.module && shown.name === entry.name) {
@@ -1084,6 +1135,7 @@ function handleModuleError(msg: any): void {
   if (id && consumeIgnored(id)) return;
   const reason = String(msg.message ?? 'failed');
   if (id) {
+    pendingAutoShow.delete(id);
     setRunning(id, false);
     endRunOp(id, 'fail', reason);
   } else clearAllRunning(reason);
