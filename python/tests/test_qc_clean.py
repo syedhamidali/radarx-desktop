@@ -81,8 +81,8 @@ def test_missing_optional_fields_skip_those_tests_and_say_so() -> None:
         if b["type"] == "scalars"
         for i in b["items"]
     }
-    assert "SNR" in scalars["Tests skipped (missing field)"]
-    assert "speckle" in scalars["Tests used"]
+    assert "SNR" in scalars["Rules skipped (missing field)"]
+    assert "speckle" in scalars["Rules applied"]
     assert "Cleaned ZDR" not in fields and "Cleaned velocity" not in fields
     assert "QC flags" in fields
 
@@ -116,3 +116,60 @@ def test_aliases_find_cow_style_names() -> None:
     ds = ds.rename({"DBZH": "DBZHCC", "VEL": "VEL"})  # DBZHCC / SNRHC / VEL are COW names
     _, fields = _run(ds)
     assert "Cleaned reflectivity" in fields and "Cleaned velocity" in fields
+
+
+def _rain_with_holes():
+    """Uniform rain; a small 2x3 bad patch (filled) and a big 60x40 bad block (must stay empty)."""
+    ds = _sweep()
+    snr = ds["SNRHC"].values.copy()
+    snr[100:102, 50:53] = 0.0  # tiny hole well inside good data
+    snr[200:260, 30:70] = 0.0  # large noisy region
+    return _sweep(SNRHC=snr)
+
+
+def test_small_holes_are_filled_large_regions_are_not() -> None:
+    # 500 m gates here: a 2.5 km radius spans the 2x3-gate hole but not the big block
+    payload, fields = _run(_rain_with_holes(), despeckle_min=0, fill_radius_km=2.5)
+    flags = fields["QC flags"]
+    assert (flags[100:102, 50:53] == 7).all()  # FILLED
+    filled = fields["Gap-filled reflectivity"]
+    assert np.allclose(filled[100:102, 50:53], 30.0, atol=0.5)  # interpolated from rain at 30 dBZ
+    assert np.isnan(fields["Cleaned reflectivity"][100:102, 50:53]).all()  # plain field untouched
+    assert (flags[210:250, 40:60] == LOW_SNR).all()  # the core of the big block stays removed
+    assert np.isnan(filled[220:240, 45:55]).all()
+    scalars = {
+        i["label"]: i["value"]
+        for b in payload["blocks"]
+        if b["type"] == "scalars"
+        for i in b["items"]
+    }
+    assert float(scalars["Filled (interpolated)"].split()[0]) > 0
+    json.dumps(payload, allow_nan=False)
+
+
+def test_every_rule_can_be_switched_off() -> None:
+    ds = _rain_with_holes()
+    _, off = _run(
+        ds,
+        use_snr=False,
+        use_ncp=False,
+        use_rhohv=False,
+        remove_clutter=False,
+        despeckle_min=0,
+        fill_gaps=False,
+    )
+    assert (off["QC flags"] == CLEAN).all()
+    assert np.allclose(off["Cleaned reflectivity"], ds["DBZH"].values, atol=1e-4, equal_nan=True)
+    assert not any(k.startswith("Gap-filled") for k in off)
+    _, no_snr = _run(ds, use_snr=False, despeckle_min=0, fill_gaps=False)
+    assert not (no_snr["QC flags"] == LOW_SNR).any()
+
+
+def test_fill_off_and_smooth_on_outputs() -> None:
+    ds = _rain_with_holes()
+    _, nofill = _run(ds, fill_gaps=False)
+    assert not any(k.startswith("Gap-filled") for k in nofill)
+    _, sm = _run(ds, smooth=True, fill_gaps=False)
+    smoothed = sm["Smoothed reflectivity"]
+    assert np.isnan(smoothed[100:102, 50:53]).all()  # smoothing only touches clean gates
+    assert np.isfinite(smoothed[0, 0])

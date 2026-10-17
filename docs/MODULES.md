@@ -73,7 +73,16 @@ map that shows why each gate was removed.
 * **Clean radar data (quick thresholds)** (`qc_clean`): no-dependency fallback with fixed SNR / NCP / RhoHV /
   clutter / speckle thresholds.
 
-Outputs: *Cleaned reflectivity*, *Cleaned ZDR*, *Cleaned velocity*, *Cleaned RhoHV* and *QC flags*
+**Every step is optional** (SNR gate, echo mask, speckle, gap fill, smoothing: each has its own switch;
+with all of them off nothing is removed). **Gap filling** interpolates removed patches that are well
+surrounded by clean data (normalised Gaussian, distance-weighted) and only where enough of the
+neighbourhood is clean, so large noisy regions stay empty. Filled values are separate *Gap-filled ...*
+outputs and are marked in the flag map; the plain *Cleaned ...* fields are never altered, and velocity is
+never interpolated. The fill radius sets the largest patch it will bridge: ~0.6 km closes tiny holes,
+2-3 km also bridges narrow blocked radials; larger values start to grow echo edges. Filled gates are
+estimates, not measurements.
+
+Outputs: *Cleaned / Gap-filled / Smoothed* reflectivity, ZDR and RhoHV, *Cleaned velocity* and *QC flags*
 (categorical). Press **All sweeps -> 3D** to get them as variables for every sweep. Tune per radar.
 
 Neither fixes partial beam blockage (radial streaks / dark wedges with ZDR spikes; use radarx

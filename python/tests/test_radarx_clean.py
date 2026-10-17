@@ -93,7 +93,7 @@ def test_without_snr_the_echo_mask_still_separates_noise() -> None:
         if b["type"] == "scalars"
         for i in b["items"]
     }
-    assert "skipped" in scalars["SNR gate"]
+    assert "SNR gate skipped" in scalars["Steps applied"]
 
 
 def test_stricter_threshold_removes_at_least_as_much() -> None:
@@ -163,3 +163,45 @@ def test_real_cow_sweep_keeps_the_storm_and_drops_noise() -> None:
     }
     kept = float(scalars["Kept (clean)"].split()[0])
     assert 55.0 < kept < 80.0, kept
+
+
+def _scene_with_hole():
+    ds, east, noisy = _scene()
+    snr = ds["SNR"].values.copy()
+    snr[80:82, 100:103] = 0.0  # a tiny noisy patch inside the smooth rain
+    ds["SNR"] = (("azimuth", "range"), snr)
+    return ds, east, noisy
+
+
+def test_small_gap_in_rain_is_filled_but_noise_region_stays_empty() -> None:
+    ds, _, noisy = _scene_with_hole()
+    _, fields = _run(ds, fill_radius_km=1.5)
+    flags = fields["QC flags"]
+    assert (flags[80:82, 100:103] == 5).all()  # FILLED
+    filled = fields["Gap-filled reflectivity"][80:82, 100:103]
+    assert np.isfinite(filled).all() and abs(float(filled.mean()) - 35.0) < 3.0
+    assert np.isnan(fields["Cleaned reflectivity"][80:82, 100:103]).all()
+    assert np.isnan(fields["Gap-filled reflectivity"][noisy]).mean() > 0.95  # nothing invented
+    assert "Gap-filled velocity" not in fields  # velocity is never interpolated
+
+
+def test_every_step_can_be_switched_off() -> None:
+    ds, _, _ = _scene_with_hole()
+    valid = np.isfinite(ds["DBZH"].values)
+    _, off = _run(
+        ds, use_snr_gate=False, use_echo_mask=False, remove_speckle=False, fill_gaps=False
+    )
+    assert (off["QC flags"][valid] == CLEAN).all()
+    assert np.allclose(off["Cleaned reflectivity"], ds["DBZH"].values, atol=1e-4, equal_nan=True)
+    assert not any(k.startswith("Gap-filled") for k in off)
+    _, only_snr = _run(ds, use_echo_mask=False, remove_speckle=False, fill_gaps=False)
+    assert (only_snr["QC flags"] == LOW_SNR).any() and not (only_snr["QC flags"] == NON_MET).any()
+    _, no_snr = _run(ds, use_snr_gate=False, fill_gaps=False)
+    assert not (no_snr["QC flags"] == LOW_SNR).any()
+
+
+def test_smoothing_output_only_on_request() -> None:
+    ds, _, _ = _scene_with_hole()
+    _, default = _run(ds)
+    _, smoothed = _run(ds, smooth=True)
+    assert "Smoothed reflectivity" not in default and "Smoothed reflectivity" in smoothed
