@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import contextlib
 import io
 import logging
 import os
+import re
+import shutil
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
 import matplotlib
 import numpy as np
 import xarray as xr
+
+from engine.reader import sorted_sweep_names
 
 matplotlib.use("Agg")  # Non-interactive backend
 
@@ -144,7 +149,7 @@ def _extract_sweep_dataset(
     sweep: int,
 ) -> xr.Dataset:
     """Extract the dataset for a given sweep index."""
-    sweep_nodes = sorted([n for n in datatree.children if n.startswith("sweep_")])
+    sweep_nodes = sorted_sweep_names(datatree)
     if sweep < 0 or sweep >= len(sweep_nodes):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_nodes) - 1})")
     return datatree[sweep_nodes[sweep]].to_dataset()
@@ -153,11 +158,14 @@ def _extract_sweep_dataset(
 def _extract_datetime(datatree: xr.DataTree, sweep_ds: xr.Dataset) -> str:
     """Best-effort datetime extraction for titles."""
     # Try time coordinate in sweep
-    if "time" in sweep_ds.coords:
-        t = sweep_ds.coords["time"].values
-        if hasattr(t, "__len__") and len(t) > 0:
-            t0 = np.datetime_as_string(t[0], unit="s")
-            return str(t0).replace("T", " ")
+    try:
+        if "time" in sweep_ds.coords:
+            t = np.atleast_1d(sweep_ds.coords["time"].values)
+            if t.size > 0 and np.issubdtype(t.dtype, np.datetime64) and not np.isnat(t[0]):
+                t0 = np.datetime_as_string(t[0], unit="s")
+                return str(t0).replace("T", " ")
+    except (TypeError, ValueError):
+        pass
     # Try root attributes
     try:
         root_ds = datatree.to_dataset()
@@ -184,9 +192,108 @@ def _count_sweep_nodes(datatree: xr.DataTree) -> int:
     return len([n for n in datatree.children if n.startswith("sweep_")])
 
 
+def _opt_float(options: dict[str, Any], key: str, default: float, lo: float, hi: float) -> float:
+    """Read a numeric option, falling back to *default* and clamping to [lo, hi].
+
+    Options come straight from the client; an absurd ``fig_size`` would
+    otherwise try to allocate a gigantic canvas.
+    """
+    try:
+        value = float(options.get(key, default))
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(value):
+        return default
+    return min(max(value, lo), hi)
+
+
+# ---------------------------------------------------------------------------
+# Output-path helpers
+# ---------------------------------------------------------------------------
+
+_FORMAT_EXT: dict[str, str] = {
+    "png": "png",
+    "svg": "svg",
+    "pdf": "pdf",
+    "netcdf": "nc",
+    "cfradial2": "nc",
+    "csv": "csv",
+    "zarr": "zarr",
+    "geotiff": "tif",
+}
+
+
+def _safe_stem(name: str) -> str:
+    """Make *name* safe to use as (part of) a file name: no separators or '..'."""
+    stem = re.sub(r"[^\w.\-]+", "_", str(name)).strip("._")
+    return stem or "var"
+
+
+@contextlib.contextmanager
+def _output_target(
+    output_path: str | None,
+    *,
+    suffix: str,
+    prefix: str,
+    directory: bool = False,
+) -> Iterator[str]:
+    """Yield the path to write to; clean up a temp target if the body fails.
+
+    A user-supplied *output_path* gets its parent directories created.  When
+    *output_path* is ``None`` a unique temp file (or directory) is created and
+    removed again if the export raises, so failures do not litter the temp dir.
+    """
+    created_temp = output_path is None
+    if output_path is None:
+        if directory:
+            path = tempfile.mkdtemp(prefix=prefix, suffix=suffix)
+        else:
+            fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
+            os.close(fd)
+    else:
+        path = str(Path(output_path).expanduser())
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        yield path
+    except BaseException:
+        if created_temp:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Publication-quality figure rendering
 # ---------------------------------------------------------------------------
+
+
+def _polar_edges(azimuth_deg: np.ndarray, range_km: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Cell edges (azimuth in radians, range in km) for gate/ray *centres*.
+
+    Edges sit half-way between neighbouring centres (extrapolated at the ends)
+    so each ray/gate is drawn centred on its coordinate instead of shifted by
+    half a beamwidth / gate.
+    """
+    az_u = np.unwrap(np.deg2rad(azimuth_deg))
+    if len(az_u) > 1:
+        d = np.diff(az_u)
+        az_edges = np.concatenate([[az_u[0] - d[0] / 2], az_u[:-1] + d / 2, [az_u[-1] + d[-1] / 2]])
+    else:
+        half = np.deg2rad(0.5)
+        az_edges = np.array([az_u[0] - half, az_u[0] + half])
+
+    if len(range_km) > 1:
+        dr = np.diff(range_km)
+        range_edges = np.concatenate(
+            [[range_km[0] - dr[0] / 2], range_km[:-1] + dr / 2, [range_km[-1] + dr[-1] / 2]]
+        )
+        range_edges = np.maximum(range_edges, 0.0)
+    else:
+        range_edges = np.array([0.0, max(range_km[0] * 2, 1e-3)])
+    return az_edges, range_edges
 
 
 def render_publication_figure(
@@ -202,10 +309,14 @@ def render_publication_figure(
     show_title: bool = True,
     title_override: str | None = None,
     dark_background: bool = False,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> plt.Figure:
     """Create a publication-quality matplotlib figure of a PPI sweep.
 
-    Returns the Figure object (caller is responsible for saving/closing).
+    *vmin*/*vmax* override the colour range (otherwise the per-variable default
+    or the data range is used).  Returns the Figure object (caller is
+    responsible for saving/closing).
     """
     sweep_ds = _extract_sweep_dataset(datatree, sweep)
 
@@ -216,7 +327,7 @@ def render_publication_figure(
         raise KeyError(f"Variable '{variable}' not found in sweep {sweep}. Available: {available}")
 
     da = sweep_ds[variable]
-    values = da.values.astype(np.float64)
+    values = da.values
 
     # Polar coordinates
     if "azimuth" in da.coords:
@@ -230,23 +341,9 @@ def render_publication_figure(
         range_m = np.arange(values.shape[-1], dtype=np.float64)
 
     range_km = range_m / 1000.0
-    az_rad = np.deg2rad(azimuth)
 
-    # Create meshgrid for pcolormesh
-    # Add an extra azimuth bin for wrapping
-    az_edges = np.concatenate([az_rad, [az_rad[0] + 2 * np.pi]])
-    # Range edges: midpoints between bins, extended at start/end
-    if len(range_km) > 1:
-        dr = np.diff(range_km)
-        range_edges = np.concatenate(
-            [
-                [range_km[0] - dr[0] / 2],
-                range_km[:-1] + dr / 2,
-                [range_km[-1] + dr[-1] / 2],
-            ]
-        )
-    else:
-        range_edges = np.array([0, range_km[0] * 2])
+    # Edges for pcolormesh (flat shading needs n+1 edges per axis)
+    az_edges, range_edges = _polar_edges(azimuth, range_km)
 
     # Cartesian transform
     r_grid, az_grid = np.meshgrid(range_edges, az_edges)
@@ -254,11 +351,19 @@ def render_publication_figure(
     y = r_grid * np.cos(az_grid)
 
     # Color range
-    vmin, vmax = _get_range(variable)
+    default_lo, default_hi = _get_range(variable)
     if vmin is None:
-        vmin = float(np.nanmin(values))
+        vmin = default_lo
     if vmax is None:
-        vmax = float(np.nanmax(values))
+        vmax = default_hi
+    if vmin is None or vmax is None:
+        finite = values[np.isfinite(values)]
+        if vmin is None:
+            vmin = float(finite.min()) if finite.size else 0.0
+        if vmax is None:
+            vmax = float(finite.max()) if finite.size else 1.0
+    if vmax <= vmin:
+        vmax = vmin + 1.0
 
     units = _get_units(variable, dict(da.attrs))
     cmap_name = _get_cmap(variable)
@@ -284,125 +389,108 @@ def render_publication_figure(
         figsize=(fig_size, fig_size),
         dpi=dpi,
     )
+    try:
+        # Plot PPI.  The mesh is rasterised so SVG/PDF output embeds one image
+        # (instead of ~n_az*n_range vector quads: minutes and hundreds of MB).
+        mesh = ax.pcolormesh(
+            x,
+            y,
+            values,
+            cmap=cmap_name,
+            vmin=vmin,
+            vmax=vmax,
+            shading="flat",
+            rasterized=True,
+        )
 
-    # Plot PPI
-    mesh = ax.pcolormesh(
-        x,
-        y,
-        values,
-        cmap=cmap_name,
-        vmin=vmin,
-        vmax=vmax,
-        shading="flat",
-    )
+        # Equal aspect ratio
+        ax.set_aspect("equal")
+        max_r = float(range_km.max())
+        if not np.isfinite(max_r) or max_r <= 0:
+            max_r = 1.0
+        ax.set_xlim(-max_r, max_r)
+        ax.set_ylim(-max_r, max_r)
 
-    # Equal aspect ratio
-    ax.set_aspect("equal")
-    max_r = float(range_km.max())
-    ax.set_xlim(-max_r, max_r)
-    ax.set_ylim(-max_r, max_r)
+        # Axis labels
+        ax.set_xlabel("East-West Distance (km)")
+        ax.set_ylabel("North-South Distance (km)")
 
-    # Axis labels
-    ax.set_xlabel("East-West Distance (km)")
-    ax.set_ylabel("North-South Distance (km)")
-
-    # Range rings
-    if show_rings:
-        ring_interval = _pick_ring_interval_km(max_r)
-        for r in np.arange(ring_interval, max_r + ring_interval, ring_interval):
-            if r > max_r * 1.01:
-                break
+        # Range rings
+        if show_rings:
+            ring_interval = _pick_ring_interval_km(max_r)
             theta = np.linspace(0, 2 * np.pi, 360)
-            ax.plot(
-                r * np.cos(theta),
-                r * np.sin(theta),
-                color="gray",
-                linewidth=0.5,
-                linestyle="--",
-                alpha=0.5,
-            )
-            # Label ring at 45-degree position
-            ax.text(
-                r * np.cos(np.pi / 4) + max_r * 0.01,
-                r * np.sin(np.pi / 4) + max_r * 0.01,
-                f"{r:.0f} km",
-                fontsize=font_size - 3,
-                color="gray",
-                alpha=0.7,
-            )
+            for r in np.arange(ring_interval, max_r + ring_interval, ring_interval):
+                if r > max_r * 1.01:
+                    break
+                ax.plot(
+                    r * np.cos(theta),
+                    r * np.sin(theta),
+                    color="gray",
+                    linewidth=0.5,
+                    linestyle="--",
+                    alpha=0.5,
+                )
+                # Label ring at 45-degree position
+                ax.text(
+                    r * np.cos(np.pi / 4) + max_r * 0.01,
+                    r * np.sin(np.pi / 4) + max_r * 0.01,
+                    f"{r:.0f} km",
+                    fontsize=font_size - 3,
+                    color="gray",
+                    alpha=0.7,
+                )
 
-        # Crosshair lines
-        ax.axhline(0, color="gray", linewidth=0.3, alpha=0.4)
-        ax.axvline(0, color="gray", linewidth=0.3, alpha=0.4)
+            # Crosshair lines
+            ax.axhline(0, color="gray", linewidth=0.3, alpha=0.4)
+            ax.axvline(0, color="gray", linewidth=0.3, alpha=0.4)
 
-        # Cardinal direction labels
-        offset = max_r * 1.05
-        ax.text(
-            0,
-            offset,
-            "N",
-            ha="center",
-            va="bottom",
-            fontsize=font_size - 1,
-            fontweight="bold",
-            color="gray",
-        )
-        ax.text(
-            0,
-            -offset,
-            "S",
-            ha="center",
-            va="top",
-            fontsize=font_size - 1,
-            fontweight="bold",
-            color="gray",
-        )
-        ax.text(
-            offset,
-            0,
-            "E",
-            ha="left",
-            va="center",
-            fontsize=font_size - 1,
-            fontweight="bold",
-            color="gray",
-        )
-        ax.text(
-            -offset,
-            0,
-            "W",
-            ha="right",
-            va="center",
-            fontsize=font_size - 1,
-            fontweight="bold",
-            color="gray",
-        )
+            # Cardinal direction labels
+            offset = max_r * 1.05
+            for label, lx, ly, ha, va in (
+                ("N", 0, offset, "center", "bottom"),
+                ("S", 0, -offset, "center", "top"),
+                ("E", offset, 0, "left", "center"),
+                ("W", -offset, 0, "right", "center"),
+            ):
+                ax.text(
+                    lx,
+                    ly,
+                    label,
+                    ha=ha,
+                    va=va,
+                    fontsize=font_size - 1,
+                    fontweight="bold",
+                    color="gray",
+                )
 
-    # Colorbar
-    if show_colorbar:
-        cbar = fig.colorbar(mesh, ax=ax, pad=0.02, fraction=0.046)
-        label = f"{variable}"
-        if units:
-            label += f" ({units})"
-        cbar.set_label(label)
+        # Colorbar
+        if show_colorbar:
+            cbar = fig.colorbar(mesh, ax=ax, pad=0.02, fraction=0.046)
+            label = f"{variable}"
+            if units:
+                label += f" ({units})"
+            cbar.set_label(label)
 
-    # Title
-    if show_title:
-        if title_override:
-            title = title_override
-        else:
-            elev = _extract_elevation(sweep_ds)
-            dt_str = _extract_datetime(datatree, sweep_ds)
-            parts = [variable]
-            if elev != "?":
-                parts.append(f"Elev: {elev} deg")
-            parts.append(f"Sweep {sweep}")
-            if dt_str:
-                parts.append(dt_str)
-            title = " | ".join(parts)
-        ax.set_title(title, pad=12)
+        # Title
+        if show_title:
+            if title_override:
+                title = title_override
+            else:
+                elev = _extract_elevation(sweep_ds)
+                dt_str = _extract_datetime(datatree, sweep_ds)
+                parts = [variable]
+                if elev != "?":
+                    parts.append(f"Elev: {elev} deg")
+                parts.append(f"Sweep {sweep}")
+                if dt_str:
+                    parts.append(dt_str)
+                title = " | ".join(parts)
+            ax.set_title(title, pad=12)
 
-    fig.tight_layout()
+        fig.tight_layout()
+    except BaseException:
+        plt.close(fig)
+        raise
     return fig
 
 
@@ -413,7 +501,7 @@ def _pick_ring_interval_km(max_range_km: float) -> float:
         n = int(max_range_km / spacing)
         if 3 <= n <= 6:
             return float(spacing)
-    return max_range_km / 5.0
+    return max(max_range_km / 5.0, 1e-3)
 
 
 # ---------------------------------------------------------------------------
@@ -504,8 +592,8 @@ class RadarExporter:
     ) -> str:
         progress(10, f"Preparing publication-quality {fmt.upper()} export")
 
-        fig_size = options.get("fig_size", DEFAULT_FIG_SIZE)
-        font_size = options.get("font_size", DEFAULT_FONT_SIZE)
+        fig_size = _opt_float(options, "fig_size", DEFAULT_FIG_SIZE, 2.0, 30.0)
+        font_size = int(_opt_float(options, "font_size", DEFAULT_FONT_SIZE, 6, 48))
         show_rings = options.get("show_rings", True)
         show_colorbar = options.get("show_colorbar", True)
         show_title = options.get("show_title", True)
@@ -528,23 +616,21 @@ class RadarExporter:
             dark_background=dark_bg,
         )
 
-        progress(70, "Saving file")
+        try:
+            progress(70, "Saving file")
+            with _output_target(output_path, suffix=f".{fmt}", prefix="xradar_export_") as target:
+                fig.savefig(
+                    target,
+                    format=fmt,
+                    dpi=dpi,
+                    bbox_inches="tight",
+                    facecolor=fig.get_facecolor(),
+                    edgecolor="none",
+                )
+        finally:
+            plt.close(fig)
 
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=f".{fmt}", prefix="xradar_export_")
-            os.close(fd)
-
-        fig.savefig(
-            output_path,
-            format=fmt,
-            dpi=dpi,
-            bbox_inches="tight",
-            facecolor=fig.get_facecolor(),
-            edgecolor="none",
-        )
-        plt.close(fig)
-
-        output_path = str(Path(output_path).resolve())
+        output_path = str(Path(target).resolve())
         progress(100, f"Export complete: {output_path}")
         logger.info("Exported %s to %s", fmt, output_path)
         return output_path
@@ -567,21 +653,36 @@ class RadarExporter:
     ) -> list[str]:
         """Batch export multiple variables/sweeps.
 
-        Returns list of saved file paths.
+        Returns list of saved file paths.  Individual failures are logged and
+        skipped; if *nothing* could be exported the last error is raised.
         """
         if options is None:
             options = {}
 
-        if output_dir is None:
-            output_dir = tempfile.mkdtemp(prefix="xradar_batch_")
-        else:
-            os.makedirs(output_dir, exist_ok=True)
+        # Fail fast on arguments that would make every single export fail.
+        if not isinstance(fmt, str) or fmt.lower().strip() not in _FORMAT_EXT:
+            raise ValueError(f"Unsupported export format '{fmt}'. Supported: {sorted(_FORMAT_EXT)}")
+        fmt = fmt.lower().strip()
+        if not isinstance(dpi, int) or dpi < MIN_DPI or dpi > MAX_DPI:
+            raise ValueError(f"DPI must be an integer between {MIN_DPI} and {MAX_DPI}, got {dpi}")
 
+        # De-duplicate while keeping order so duplicates cannot overwrite each other.
+        variables = list(dict.fromkeys(variables))
+        sweeps = list(dict.fromkeys(sweeps))
         total = len(variables) * len(sweeps)
         if total == 0:
             raise ValueError("No variables or sweeps selected for batch export")
 
+        if output_dir is None:
+            output_dir = tempfile.mkdtemp(prefix="xradar_batch_")
+        else:
+            output_dir = str(Path(output_dir).expanduser())
+            os.makedirs(output_dir, exist_ok=True)
+
+        ext = _FORMAT_EXT[fmt]
         saved: list[str] = []
+        last_error: Exception | None = None
+        used_names: set[str] = set()
         count = 0
 
         for var in variables:
@@ -590,7 +691,14 @@ class RadarExporter:
                 pct = int(count / total * 90) + 5  # 5-95%
                 progress(pct, f"Exporting {var} sweep {sw} ({count}/{total})")
 
-                filename = f"{var}_sweep{sw:02d}.{fmt}"
+                # Variable names come from the client: never let them escape output_dir.
+                base = f"{_safe_stem(var)}_sweep{sw:02d}"
+                filename = f"{base}.{ext}"
+                n = 2
+                while filename.lower() in used_names:  # distinct names that sanitise equally
+                    filename = f"{base}_{n}.{ext}"
+                    n += 1
+                used_names.add(filename.lower())
                 filepath = str(Path(output_dir) / filename)
 
                 try:
@@ -607,7 +715,13 @@ class RadarExporter:
                     saved.append(path)
                 except Exception as exc:
                     logger.warning("Batch export failed for %s sweep %d: %s", var, sw, exc)
+                    last_error = exc
                     # Continue with remaining exports
+
+        if not saved and last_error is not None:
+            raise RuntimeError(f"Batch export failed for all {total} item(s): {last_error}") from (
+                last_error
+            )
 
         progress(100, f"Batch export complete: {len(saved)}/{total} files")
         return saved
@@ -636,10 +750,22 @@ class RadarExporter:
             options = {}
         if not sweeps:
             raise ValueError("No sweeps specified for animation")
+        fig_size = _opt_float({"fig_size": fig_size}, "fig_size", 8.0, 2.0, 30.0)
 
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".gif", prefix="xradar_anim_")
-            os.close(fd)
+        # One colour scale for the whole animation, otherwise variables without a
+        # fixed range (e.g. unknown names) would rescale every frame and flicker.
+        vmin, vmax = _get_range(variable)
+        if vmin is None or vmax is None:
+            lo, hi = np.inf, -np.inf
+            for sw in sweeps:
+                sweep_ds = _extract_sweep_dataset(datatree, sw)
+                if variable not in sweep_ds.data_vars:
+                    continue
+                vals = sweep_ds[variable].values
+                finite = vals[np.isfinite(vals)]
+                if finite.size:
+                    lo, hi = min(lo, float(finite.min())), max(hi, float(finite.max()))
+            vmin, vmax = (lo, hi) if np.isfinite(lo) else (None, None)
 
         frames: list[PILImage.Image] = []
         total = len(sweeps)
@@ -654,42 +780,64 @@ class RadarExporter:
                 sw,
                 dpi=dpi,
                 fig_size=fig_size,
-                font_size=options.get("font_size", DEFAULT_FONT_SIZE),
+                font_size=int(_opt_float(options, "font_size", DEFAULT_FONT_SIZE, 6, 48)),
                 show_rings=options.get("show_rings", True),
                 show_colorbar=True,
                 show_title=True,
                 dark_background=options.get("dark_background", False),
+                vmin=vmin,
+                vmax=vmax,
             )
 
-            # Render figure to PIL Image
-            buf = io.BytesIO()
-            fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
-            plt.close(fig)
-            buf.seek(0)
-            frame = PILImage.open(buf).convert("RGBA")
-            frames.append(frame)
+            # Render figure to an opaque RGB PIL image (alpha composited on white)
+            try:
+                with io.BytesIO() as buf:
+                    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight")
+                    buf.seek(0)
+                    with PILImage.open(buf) as png:
+                        rgba = png.convert("RGBA")
+            finally:
+                plt.close(fig)
+            rgb = PILImage.new("RGB", rgba.size, (255, 255, 255))
+            rgb.paste(rgba, mask=rgba.getchannel("A"))
+            rgba.close()
+            frames.append(rgb)
 
         progress(90, "Assembling GIF")
 
-        # Convert RGBA to RGB with white background for GIF
-        rgb_frames: list[PILImage.Image] = []
-        for frame in frames:
-            bg = PILImage.new("RGB", frame.size, (255, 255, 255))
-            bg.paste(frame, mask=frame.split()[3])
-            rgb_frames.append(bg)
+        # bbox_inches="tight" can yield slightly different frame sizes (title or
+        # tick-label widths).  GIF frames are drawn on top of each other
+        # (disposal "none"), so a smaller frame would leave remnants of the
+        # previous one visible: pad every frame to a common canvas.
+        width = max(f.width for f in frames)
+        height = max(f.height for f in frames)
+        for k, frame in enumerate(frames):
+            if frame.size != (width, height):
+                canvas = PILImage.new("RGB", (width, height), frame.getpixel((0, 0)))
+                canvas.paste(frame, ((width - frame.width) // 2, (height - frame.height) // 2))
+                frame.close()
+                frames[k] = canvas
 
-        rgb_frames[0].save(
-            output_path,
-            save_all=True,
-            append_images=rgb_frames[1:],
-            duration=frame_duration_ms,
-            loop=0,
-            optimize=True,
-        )
+        try:
+            with _output_target(output_path, suffix=".gif", prefix="xradar_anim_") as target:
+                frames[0].save(
+                    target,
+                    format="GIF",
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=frame_duration_ms,
+                    loop=0,
+                    optimize=True,
+                    disposal=1,
+                )
+        finally:
+            n_frames = len(frames)
+            for frame in frames:
+                frame.close()
 
-        output_path = str(Path(output_path).resolve())
+        output_path = str(Path(target).resolve())
         progress(100, f"Animation export complete: {output_path}")
-        logger.info("Exported GIF animation to %s (%d frames)", output_path, len(frames))
+        logger.info("Exported GIF animation to %s (%d frames)", output_path, n_frames)
         return output_path
 
     # ------------------------------------------------------------------
@@ -711,14 +859,11 @@ class RadarExporter:
         from xradar.io.export.cfradial1 import to_cfradial1
 
         progress(10, "Preparing CfRadial1 NetCDF export")
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".nc", prefix="xradar_export_")
-            os.close(fd)
+        with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
+            to_cfradial1(dtree=datatree, filename=target)
 
-        to_cfradial1(dtree=datatree, filename=output_path)
-
-        progress(100, f"CfRadial1 export complete: {output_path}")
-        return str(Path(output_path).resolve())
+        progress(100, f"CfRadial1 export complete: {target}")
+        return str(Path(target).resolve())
 
     def _export_cfradial2(
         self,
@@ -735,14 +880,11 @@ class RadarExporter:
         from xradar.io.export.cfradial2 import to_cfradial2
 
         progress(10, "Preparing CfRadial2 export")
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".nc", prefix="xradar_cfradial2_")
-            os.close(fd)
+        with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
+            to_cfradial2(datatree, target)
 
-        to_cfradial2(datatree, output_path)
-
-        progress(100, f"CfRadial2 export complete: {output_path}")
-        return str(Path(output_path).resolve())
+        progress(100, f"CfRadial2 export complete: {target}")
+        return str(Path(target).resolve())
 
     def _export_csv(
         self,
@@ -781,26 +923,24 @@ class RadarExporter:
 
         progress(40, "Building data table")
 
-        az_2d, rng_2d = np.meshgrid(azimuth, range_m, indexing="ij")
-        mask = np.isfinite(values)
+        # Index the 1-D coordinates by the finite gates instead of materialising
+        # two full-size meshgrids and boolean-masking each of them.
+        ray_idx, gate_idx = np.nonzero(np.isfinite(values))
 
         df = pd.DataFrame(
             {
-                "azimuth_deg": az_2d[mask].ravel(),
-                "range_m": rng_2d[mask].ravel(),
-                variable: values[mask].ravel(),
+                "azimuth_deg": azimuth[ray_idx],
+                "range_m": range_m[gate_idx],
+                variable: values[ray_idx, gate_idx],
             }
         )
 
         progress(70, "Writing CSV")
 
-        if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".csv", prefix="xradar_export_")
-            os.close(fd)
+        with _output_target(output_path, suffix=".csv", prefix="xradar_export_") as target:
+            df.to_csv(target, index=False, float_format="%.4f")
 
-        df.to_csv(output_path, index=False, float_format="%.4f")
-
-        output_path = str(Path(output_path).resolve())
+        output_path = str(Path(target).resolve())
         progress(100, f"CSV export complete: {output_path}")
         logger.info("Exported CSV to %s (%d rows)", output_path, len(df))
         return output_path
@@ -825,10 +965,10 @@ class RadarExporter:
         options: dict[str, Any],
     ) -> str:
         progress(10, "Preparing Zarr export")
-        if output_path is None:
-            output_path = tempfile.mkdtemp(prefix="xradar_export_", suffix=".zarr")
+        with _output_target(
+            output_path, suffix=".zarr", prefix="xradar_export_", directory=True
+        ) as target:
+            datatree.to_zarr(target, mode="w")
 
-        datatree.to_zarr(output_path, mode="w")
-
-        progress(100, f"Zarr export complete: {output_path}")
-        return str(Path(output_path).resolve())
+        progress(100, f"Zarr export complete: {target}")
+        return str(Path(target).resolve())

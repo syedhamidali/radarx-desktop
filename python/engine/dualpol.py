@@ -12,6 +12,8 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine.reader import sorted_sweep_names
+
 logger = logging.getLogger(__name__)
 
 # Canonical variable name aliases (same as in retrievals.py)
@@ -39,9 +41,7 @@ def _find_var(ds: xr.Dataset, name: str) -> xr.DataArray | None:
 
 def _get_sweep_ds(datatree: xr.DataTree, sweep: int) -> xr.Dataset:
     """Extract a sweep Dataset from a DataTree."""
-    sweep_nodes = sorted(
-        [n for n in datatree.children if n.startswith("sweep_")],
-    )
+    sweep_nodes = sorted_sweep_names(datatree)
     if sweep >= len(sweep_nodes):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_nodes) - 1})")
     return datatree[sweep_nodes[sweep]].to_dataset()
@@ -85,8 +85,8 @@ def scatter_data(
     if da2 is None:
         raise ValueError(f"Variable '{var2}' not found in sweep {sweep}")
 
-    v1 = da1.values.ravel().astype(np.float64)
-    v2 = da2.values.ravel().astype(np.float64)
+    v1 = da1.values.ravel()
+    v2 = da2.values.ravel()
 
     # Mask where both are valid
     valid = np.isfinite(v1) & np.isfinite(v2)
@@ -96,12 +96,12 @@ def scatter_data(
     if color_var:
         da_c = _find_var(ds, color_var)
         if da_c is not None:
-            vc = da_c.values.ravel().astype(np.float64)
+            vc = da_c.values.ravel()
             valid &= np.isfinite(vc)
             color_vals = vc
             color_units = str(da_c.attrs.get("units", ""))
 
-    idx_valid = np.where(valid)[0]
+    idx_valid = np.flatnonzero(valid)
     n_valid = len(idx_valid)
 
     # Subsample if needed
@@ -115,8 +115,8 @@ def scatter_data(
     result: dict[str, Any] = {
         "var1": var1,
         "var2": var2,
-        "x": v1[idx_sample].tolist(),
-        "y": v2[idx_sample].tolist(),
+        "x": v1[idx_sample].astype(np.float64).tolist(),
+        "y": v2[idx_sample].astype(np.float64).tolist(),
         "units1": str(da1.attrs.get("units", "")),
         "units2": str(da2.attrs.get("units", "")),
         "n_total": len(v1),
@@ -125,7 +125,7 @@ def scatter_data(
     }
 
     if color_vals is not None:
-        result["color"] = color_vals[idx_sample].tolist()
+        result["color"] = color_vals[idx_sample].astype(np.float64).tolist()
         result["color_var"] = color_var
         result["color_units"] = color_units
 
@@ -189,12 +189,16 @@ def histogram_data(
     # Gaussian fit: use mean and std
     bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     bin_width = float(bin_edges[1] - bin_edges[0])
-    gaussian = (
-        len(valid)
-        * bin_width
-        / (std * np.sqrt(2 * np.pi))
-        * np.exp(-0.5 * ((bin_centers - mean) / std) ** 2)
-    )
+    if std > 0:
+        gaussian = (
+            len(valid)
+            * bin_width
+            / (std * np.sqrt(2 * np.pi))
+            * np.exp(-0.5 * ((bin_centers - mean) / std) ** 2)
+        )
+    else:
+        # Constant field: a Gaussian fit is undefined (and inf/NaN is not valid JSON)
+        gaussian = np.zeros_like(bin_centers)
 
     return {
         "variable": variable,
@@ -260,25 +264,34 @@ def region_stats(
         else np.arange(da.shape[-1], dtype=np.float64)
     )
 
-    # Build mask for region
-    if az_min <= az_max:
-        az_mask = (az >= az_min) & (az <= az_max)
+    # Build mask for region.  Azimuth limits are normalised to [0, 360) so that
+    # e.g. (-10, 10) or (350, 370) select the sector through north; a span of
+    # 360 degrees or more selects every ray.
+    az_arr = np.asarray(az, dtype=np.float64)
+    if az_max - az_min >= 360.0:
+        az_mask = np.ones(az_arr.shape, dtype=bool)
     else:
-        # Handle wrap-around (e.g. 350-10 degrees)
-        az_mask = (az >= az_min) | (az <= az_max)
+        lo = az_min % 360.0
+        hi = az_max % 360.0
+        az_mod = np.mod(az_arr, 360.0)
+        # lo > hi means the sector wraps through north (e.g. 350-10 degrees)
+        wraps = lo > hi
+        az_mask = ((az_mod >= lo) | (az_mod <= hi)) if wraps else ((az_mod >= lo) & (az_mod <= hi))
 
     rng_mask = (rng >= range_min) & (rng <= range_max)
 
-    # Apply mask: az along first axis, range along second
-    vals = da.values[np.ix_(az_mask, rng_mask)].ravel().astype(np.float64)
-    valid = vals[np.isfinite(vals)]
+    # Apply mask: az along first axis, range along second.  Convert to float64
+    # only after dropping non-finite gates (avoids a full-region copy).
+    region = da.values[np.ix_(az_mask, rng_mask)].ravel()
+    n_total = region.size
+    valid = region[np.isfinite(region)].astype(np.float64, copy=False)
 
     if len(valid) == 0:
         return {
             "variable": variable,
             "stats": {},
             "n_valid": 0,
-            "n_total": len(vals),
+            "n_total": n_total,
             "units": str(da.attrs.get("units", "")),
         }
 
@@ -297,6 +310,6 @@ def region_stats(
             "count": len(valid),
         },
         "n_valid": len(valid),
-        "n_total": len(vals),
+        "n_total": n_total,
         "units": str(da.attrs.get("units", "")),
     }

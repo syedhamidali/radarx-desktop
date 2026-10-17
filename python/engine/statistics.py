@@ -12,7 +12,28 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine.reader import sorted_sweep_names
+
 logger = logging.getLogger(__name__)
+
+
+_REFLECTIVITY_ALIASES = ("DBZH", "DBZ", "reflectivity", "Z")
+
+
+def _is_reflectivity_name(name: str) -> bool:
+    low = name.lower()
+    return name in _REFLECTIVITY_ALIASES or low.startswith(("dbz", "refl", "zh", "corrected_refl"))
+
+
+def _sweep_elevation(ds: xr.Dataset) -> float:
+    """Best-effort fixed elevation angle (degrees) of a sweep dataset."""
+    if "sweep_fixed_angle" in ds.attrs:
+        return float(ds.attrs["sweep_fixed_angle"])
+    if "sweep_fixed_angle" in ds:
+        return float(ds["sweep_fixed_angle"].values)
+    if "elevation" in ds:
+        return float(np.nanmean(ds["elevation"].values))
+    return 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +134,7 @@ def area_averaged_profile(
         ``stds`` (list[float]), ``counts`` (list[int]),
         ``variable`` (str).
     """
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
+    sweep_names = sorted_sweep_names(datatree)
     elevations: list[float] = []
     means: list[float] = []
     stds: list[float] = []
@@ -128,19 +149,7 @@ def area_averaged_profile(
         vals = da.values.ravel()
         valid = vals[np.isfinite(vals)]
 
-        # Get elevation angle
-        elev = None
-        if "sweep_fixed_angle" in ds.attrs:
-            elev = float(ds.attrs["sweep_fixed_angle"])
-        elif "sweep_fixed_angle" in ds:
-            elev = float(ds["sweep_fixed_angle"].values)
-        elif "elevation" in ds:
-            elev = float(np.nanmean(ds["elevation"].values))
-
-        if elev is None:
-            elev = 0.0
-
-        elevations.append(elev)
+        elevations.append(_sweep_elevation(ds))
         if len(valid) > 0:
             means.append(float(np.mean(valid)))
             stds.append(float(np.std(valid)))
@@ -187,7 +196,7 @@ def compute_cell_stats(
         Keys: ``max_reflectivity`` (float), ``vil_estimate`` (float,
         kg/m^2), ``echo_top_km`` (float), ``n_sweeps`` (int).
     """
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
+    sweep_names = sorted_sweep_names(datatree)
 
     # Collect per-sweep max reflectivity and elevation info
     max_dbz = -999.0
@@ -206,7 +215,13 @@ def compute_cell_stats(
 
         # Find reflectivity variable
         dbz_da = None
-        for alias in [dbz_variable, "DBZH", "DBZ", "reflectivity", "Z"]:
+        # Only honour the requested name if it is a reflectivity field; asking
+        # for cell stats while a velocity / ZDR field is selected must not
+        # report that field's maximum as "max_reflectivity".
+        candidates = list(_REFLECTIVITY_ALIASES)
+        if _is_reflectivity_name(dbz_variable):
+            candidates.insert(0, dbz_variable)
+        for alias in candidates:
             if alias in ds.data_vars:
                 dbz_da = ds[alias]
                 break
@@ -223,13 +238,7 @@ def compute_cell_stats(
         max_dbz = max(max_dbz, sweep_max)
 
         # Get elevation angle for height estimation
-        elev_deg = 0.0
-        if "sweep_fixed_angle" in ds.attrs:
-            elev_deg = float(ds.attrs["sweep_fixed_angle"])
-        elif "sweep_fixed_angle" in ds:
-            elev_deg = float(ds["sweep_fixed_angle"].values)
-        elif "elevation" in ds:
-            elev_deg = float(np.nanmean(ds["elevation"].values))
+        elev_deg = _sweep_elevation(ds)
 
         # Approximate beam height at mid-range
         if "range" in ds.coords:
@@ -243,7 +252,7 @@ def compute_cell_stats(
         height_m = mid_range_m * np.sin(elev_rad) + (mid_range_m**2) / (2.0 * re_eff)
 
         # Echo top: if any gate exceeds threshold at this elevation
-        if np.any(valid >= echo_top_thresh_dbz):
+        if sweep_max >= echo_top_thresh_dbz:
             echo_top_km = max(echo_top_km, height_m / 1000.0)
 
         # VIL contribution from this layer
@@ -352,7 +361,7 @@ def get_statistics(
         return compute_cell_stats(datatree, dbz_variable=variable, **params)
 
     # For histogram and qc, we need sweep-level data
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
+    sweep_names = sorted_sweep_names(datatree)
     if sweep >= len(sweep_names):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_names) - 1})")
 

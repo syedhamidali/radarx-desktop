@@ -17,6 +17,120 @@ logger = logging.getLogger(__name__)
 
 
 # ======================================================================
+# Helpers
+# ======================================================================
+
+
+def _azimuth_axis(data: xr.DataArray) -> int:
+    """Index of the azimuth axis (the first axis unless a dim is named ``azimuth``)."""
+    if "azimuth" in data.dims:
+        return int(data.get_axis_num("azimuth"))
+    return 0
+
+
+def _is_full_circle(data: xr.DataArray) -> bool:
+    """True if the azimuth coordinate covers 360 degrees without a large hole.
+
+    Only then is it legitimate to wrap 2-D filters around the azimuth axis.
+    """
+    if "azimuth" not in data.coords:
+        return False
+    az = np.asarray(data.coords["azimuth"].values, dtype=np.float64).ravel()
+    az = az[np.isfinite(az)]
+    if az.size < 3:
+        return False
+    az = np.sort(np.mod(az, 360.0))
+    gaps = np.diff(np.concatenate([az, [az[0] + 360.0]]))
+    typical = float(np.median(gaps[gaps > 0])) if np.any(gaps > 0) else 0.0
+    if typical <= 0:
+        return False
+    return bool(gaps.max() <= 3.0 * typical)
+
+
+def _filter_modes(data: xr.DataArray, *, edge: str = "reflect") -> tuple[str, ...]:
+    """Per-axis boundary modes: ``wrap`` on azimuth (full sweeps), *edge* elsewhere."""
+    modes = [edge] * data.ndim
+    if data.ndim >= 1 and _is_full_circle(data):
+        modes[_azimuth_axis(data)] = "wrap"
+    return tuple(modes)
+
+
+def _nearest_index(mask: np.ndarray) -> tuple[np.ndarray, ...] | None:
+    """Index arrays mapping every gate to its nearest valid gate (None if no gaps)."""
+    if not mask.any() or mask.all():
+        return None
+    idx = ndimage.distance_transform_edt(mask, return_distances=False, return_indices=True)
+    return tuple(idx)
+
+
+def _fill_nearest(
+    values: np.ndarray,
+    mask: np.ndarray,
+    index: tuple[np.ndarray, ...] | None = None,
+) -> np.ndarray:
+    """Replace masked gates by the value of the nearest valid gate.
+
+    Unlike zero-filling this does not bias rank / moving-window filters near
+    gaps in the data.  *mask* is True where ``values`` is missing.  Pass a
+    precomputed *index* (:func:`_nearest_index`) when filling repeatedly.
+    """
+    if index is None:
+        index = _nearest_index(mask)
+    if index is None:
+        return np.where(mask, 0.0, values)
+    return values[index]
+
+
+def _local_nan_stats(
+    values: np.ndarray,
+    valid: np.ndarray,
+    size: int,
+    modes: tuple[str, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """NaN-aware local mean and (population) standard deviation in a box window.
+
+    Computed with separable box filters, so the cost is independent of *size*.
+    Gates with no valid neighbour get NaN mean and zero std.
+    """
+    # Out-of-grid cells must not count as valid data; only azimuth wrap brings
+    # real data in, so map "reflect"/"nearest" to "constant".
+    box_modes = tuple("wrap" if m == "wrap" else "constant" for m in modes)
+    n_win = float(size**values.ndim)
+    shift = float(values[valid].mean()) if valid.any() else 0.0
+    x0 = np.where(valid, values - shift, 0.0)
+    cnt = ndimage.uniform_filter(valid.astype(np.float64), size=size, mode=box_modes)
+    s1 = ndimage.uniform_filter(x0, size=size, mode=box_modes)
+    s2 = ndimage.uniform_filter(x0 * x0, size=size, mode=box_modes)
+    ok = cnt > 0.5 / n_win
+    safe = np.where(ok, cnt, 1.0)
+    mean0 = s1 / safe
+    var = np.maximum(s2 / safe - mean0 * mean0, 0.0)
+    mean = np.where(ok, mean0 + shift, np.nan)
+    std = np.where(ok, np.sqrt(var), 0.0)
+    return mean, std
+
+
+def _median_filter(values: np.ndarray, size: int, modes: tuple[str, ...]) -> np.ndarray:
+    """Median filter honouring per-axis ``wrap`` modes.
+
+    ``scipy.ndimage`` rank filters accept only a single boundary mode, so
+    wrapped axes are padded explicitly and the padding cropped afterwards.
+    """
+    half = size // 2
+    pad = [(half, half) if m == "wrap" else (0, 0) for m in modes]
+    if not any(p != (0, 0) for p in pad):
+        return ndimage.median_filter(values, size=size, mode="reflect")
+    out = ndimage.median_filter(np.pad(values, pad, mode="wrap"), size=size, mode="reflect")
+    crop = tuple(slice(p[0], out.shape[i] - p[1]) for i, p in enumerate(pad))
+    return out[crop]
+
+
+def _odd(n: int, minimum: int = 3) -> int:
+    n = max(int(n), minimum)
+    return n if n % 2 == 1 else n + 1
+
+
+# ======================================================================
 # Individual QC algorithms
 # ======================================================================
 
@@ -30,30 +144,34 @@ def despeckle(
 
     Pixels whose value deviates from the local median by more than
     *threshold* times the local standard deviation are replaced by NaN.
+    Missing gates are ignored (not treated as zeros) and the filters wrap
+    around the azimuth axis for full 360-degree sweeps.
 
     Parameters
     ----------
     data : xr.DataArray
         2-D radar field (azimuth x range).
     window_size : int
-        Side length of the square median-filter kernel.
+        Side length of the square median-filter kernel (forced odd).
     threshold : float
         Number of local standard deviations to tolerate before masking.
     """
     values = data.values.astype(np.float64)
     mask = np.isnan(values)
-    filled = np.where(mask, 0.0, values)
+    size = _odd(window_size)
+    modes = _filter_modes(data)
 
-    median = ndimage.median_filter(filled, size=window_size)
-    local_std = ndimage.generic_filter(filled, np.nanstd, size=window_size)
-    local_std = np.where(local_std == 0, 1.0, local_std)
+    filled = _fill_nearest(values, mask)
+    median = _median_filter(filled, size, modes)
+    _, local_std = _local_nan_stats(values, ~mask, size, modes)
+    local_std = np.where(local_std < 1e-9, 1.0, local_std)
 
-    deviation = np.abs(filled - median) / local_std
-    speckle = deviation > threshold
+    with np.errstate(invalid="ignore"):
+        speckle = np.abs(filled - median) / local_std > threshold
     result = np.where(speckle & ~mask, np.nan, values)
 
     out = data.copy(data=result)
-    out.attrs = {**data.attrs, "qc_despeckle": f"window={window_size}, threshold={threshold}"}
+    out.attrs = {**data.attrs, "qc_despeckle": f"window={size}, threshold={threshold}"}
     return out
 
 
@@ -67,8 +185,8 @@ def remove_clutter(
     """Mask ground clutter using texture and optional RhoHV thresholding.
 
     Clutter is identified where the local texture (standard deviation in a
-    3x3 window) exceeds *texture_threshold* **or** where RhoHV is below
-    *rhohv_threshold* (if RhoHV data is available).
+    3x3 window, ignoring missing gates) exceeds *texture_threshold* **or**
+    where RhoHV is below *rhohv_threshold* (if RhoHV data is available).
 
     Parameters
     ----------
@@ -83,11 +201,10 @@ def remove_clutter(
     """
     values = data.values.astype(np.float64)
     mask = np.isnan(values)
-    filled = np.where(mask, 0.0, values)
 
-    texture = ndimage.generic_filter(filled, np.nanstd, size=3)
+    _, texture = _local_nan_stats(values, ~mask, 3, _filter_modes(data))
     # Normalise texture to [0, 1] for thresholding
-    tex_max = np.nanmax(texture)
+    tex_max = float(texture.max()) if texture.size else 0.0
     if tex_max > 0:
         texture = texture / tex_max
 
@@ -95,7 +212,8 @@ def remove_clutter(
 
     if rhohv is not None:
         rhv = rhohv.values.astype(np.float64)
-        clutter = clutter | (rhv < rhohv_threshold)
+        with np.errstate(invalid="ignore"):
+            clutter = clutter | (rhv < rhohv_threshold)
 
     result = np.where(clutter & ~mask, np.nan, values)
     out = data.copy(data=result)
@@ -106,42 +224,162 @@ def remove_clutter(
     return out
 
 
+_DEALIAS_MAX_ITER = 2
+_DEALIAS_MAX_SHIFT = 3  # Nyquist intervals
+_DEALIAS_MIN_REGION = 8  # gates; smaller regions are left to the local-median pass
+
+
+def _region_unfold(values: np.ndarray, nyq: float, wrap_az: bool) -> np.ndarray:
+    """Region-based unfolding of a 2-D (azimuth x range) velocity field.
+
+    1. Gates are grouped into regions connected through neighbours that differ
+       by no more than the Nyquist velocity (no fold between them).
+    2. Where two regions touch across a jump larger than the Nyquist velocity,
+       the jump implies an integer number of Nyquist intervals between them.
+    3. The most strongly connected region graph (maximum spanning tree) is walked
+       from the largest region, accumulating the interval shift of each region.
+
+    Returns the field with every region shifted by a multiple of ``2 * nyq``.
+    """
+    from collections import deque
+
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components, minimum_spanning_tree
+
+    ny, nx = values.shape
+    valid = np.isfinite(values)
+    if valid.sum() < 2:
+        return values
+    interval = 2.0 * nyq
+    idx = np.arange(ny * nx).reshape(ny, nx)
+    flat = values.ravel()
+
+    ea: list[np.ndarray] = []
+    eb: list[np.ndarray] = []
+    slabs = [
+        ((slice(None), slice(0, -1)), (slice(None), slice(1, None))),  # along range
+        ((slice(0, -1), slice(None)), (slice(1, None), slice(None))),  # along azimuth
+    ]
+    if wrap_az and ny > 2:
+        slabs.append(((slice(-1, None), slice(None)), (slice(0, 1), slice(None))))
+    for sa, sb in slabs:
+        ok = valid[sa] & valid[sb]
+        ea.append(idx[sa][ok])
+        eb.append(idx[sb][ok])
+    a = np.concatenate(ea)
+    b = np.concatenate(eb)
+    if a.size == 0:
+        return values
+    d = flat[b] - flat[a]
+    smooth = np.abs(d) <= nyq
+
+    graph = coo_matrix((np.ones(int(smooth.sum())), (a[smooth], b[smooth])), shape=(ny * nx,) * 2)
+    _, label = connected_components(graph, directed=False)
+    sizes = np.bincount(label[valid.ravel()], minlength=label.max() + 1)
+    big = sizes >= _DEALIAS_MIN_REGION
+    if not big.any():
+        return values
+
+    la, lb = label[a], label[b]
+    cross = (~smooth) & big[la] & big[lb] & (la != lb)
+    if not cross.any():
+        return values
+    la, lb = la[cross], lb[cross]
+    # Shift (in intervals) region lb needs relative to region la so that they agree.
+    rel = -np.round(d[cross] / interval).astype(np.int64)
+    swap = la > lb
+    la, lb = np.where(swap, lb, la), np.where(swap, la, lb)
+    rel = np.where(swap, -rel, rel)
+
+    triples, counts = np.unique(np.stack([la, lb, rel], axis=1), axis=0, return_counts=True)
+    order = np.lexsort((-counts, triples[:, 1], triples[:, 0]))  # per pair: best vote first
+    triples, counts = triples[order], counts[order]
+    first = np.ones(len(triples), dtype=bool)
+    first[1:] = (triples[1:, 0] != triples[:-1, 0]) | (triples[1:, 1] != triples[:-1, 1])
+    pair_start = np.flatnonzero(first)
+    pair_weight = np.add.reduceat(counts, pair_start)
+    pairs = triples[pair_start]  # columns: region a, region b, best rel
+
+    regions, inv = np.unique(pairs[:, :2], return_inverse=True)
+    inv = inv.reshape(-1, 2)
+    n_reg = len(regions)
+    tree = minimum_spanning_tree(
+        coo_matrix((1.0 / pair_weight, (inv[:, 0], inv[:, 1])), shape=(n_reg, n_reg)).tocsr()
+    ).tocoo()
+
+    adj: list[list[tuple[int, int]]] = [[] for _ in range(n_reg)]
+    rel_of = {(int(i), int(j)): int(r) for (i, j), r in zip(inv, pairs[:, 2], strict=True)}
+    for i, j in zip(tree.row.tolist(), tree.col.tolist(), strict=True):
+        r = rel_of[(i, j)] if (i, j) in rel_of else -rel_of[(j, i)]
+        adj[i].append((j, r))
+        adj[j].append((i, -r))
+
+    shift = np.zeros(n_reg, dtype=np.int64)
+    seen = np.zeros(n_reg, dtype=bool)
+    for root in np.argsort(-sizes[regions], kind="stable"):  # largest region first
+        if seen[root]:
+            continue
+        seen[root] = True
+        queue = deque([int(root)])
+        while queue:
+            i = queue.popleft()
+            for j, r in adj[i]:
+                if not seen[j]:
+                    seen[j] = True
+                    shift[j] = shift[i] + r
+                    queue.append(j)
+
+    label_shift = np.zeros(label.max() + 1, dtype=np.int64)
+    # Real winds rarely exceed a few Nyquist intervals; bound the damage when
+    # noisy data lets region votes accumulate nonsense along a long tree path.
+    label_shift[regions] = np.clip(shift, -_DEALIAS_MAX_SHIFT, _DEALIAS_MAX_SHIFT)
+    return values + label_shift[label].reshape(ny, nx) * interval
+
+
 def velocity_dealiasing(
     data: xr.DataArray,
     nyquist_vel: float,
 ) -> xr.DataArray:
-    """Simple region-based velocity dealiasing.
+    """Region-based velocity dealiasing.
 
-    Uses a 2-pass approach: first corrects obvious folds (values near
-    +-Nyquist boundary) using neighbour context, then smooths residual
-    discontinuities.
+    Contiguous regions of gates (no jump larger than the Nyquist velocity
+    between neighbours) are identified, and the integer number of Nyquist
+    intervals (``2 * nyquist_vel``) separating adjacent regions is
+    propagated outwards from the largest region.  A short local-median pass
+    then fixes isolated gates.  Missing gates are ignored and the azimuth
+    axis wraps for full sweeps.  Unfolded velocities may legitimately exceed
+    +-Nyquist.
 
     Parameters
     ----------
     data : xr.DataArray
-        Radial velocity field.
+        Radial velocity field (2-D, azimuth x range).
     nyquist_vel : float
         Nyquist velocity (m/s) — half the unambiguous velocity interval.
     """
-    values = data.values.astype(np.float64).copy()
+    if not np.isfinite(nyquist_vel) or nyquist_vel <= 0:
+        raise ValueError(f"nyquist_vel must be a positive number, got {nyquist_vel}")
+
+    values = data.values.astype(np.float64)
     mask = np.isnan(values)
     interval = 2.0 * nyquist_vel
+    modes = _filter_modes(data)
 
-    # Pass 1: correct obvious folds using local median comparison
-    filled = np.where(mask, 0.0, values)
-    local_med = ndimage.median_filter(filled, size=5)
+    if not mask.all():
+        if values.ndim == 2:
+            az_axis = _azimuth_axis(data)
+            work = np.moveaxis(values, az_axis, 0)
+            work = _region_unfold(work, nyquist_vel, modes[az_axis] == "wrap")
+            values = np.moveaxis(work, 0, az_axis)
 
-    diff = values - local_med
-    n_folds = np.round(diff / interval)
-    values = values - n_folds * interval
-
-    # Pass 2: clamp any remaining out-of-range values
-    values = np.where(
-        (~mask) & (np.abs(values) > nyquist_vel),
-        values - np.sign(values) * interval,
-        values,
-    )
-    values = np.where(mask, np.nan, values)
+        nearest = _nearest_index(mask)  # gaps are fixed, so compute once
+        for _ in range(_DEALIAS_MAX_ITER):
+            filled = _fill_nearest(values, mask, nearest)
+            ref = _median_filter(filled, 5, modes)
+            n_folds = np.where(mask, 0.0, np.round((filled - ref) / interval))
+            if not n_folds.any():
+                break
+            values = values - n_folds * interval
 
     out = data.copy(data=values)
     out.attrs = {**data.attrs, "qc_dealiased": f"nyquist_vel={nyquist_vel}"}
@@ -191,13 +429,18 @@ def range_correction(
             logger.warning("range_correction: no range coordinate found; returning data unchanged")
             return data
 
-    r = range_m.copy()
+    r = np.array(range_m, dtype=np.float64)  # copy; accepts lists / int arrays
+    if r.size == 0:
+        return data
     r[r <= 0] = r[r > 0].min() if np.any(r > 0) else 1.0
     r_ref = r[0]
 
     correction = 20.0 * np.log10(r / r_ref)
-    # Broadcast along range dimension (assumed last axis)
-    values = data.values.astype(np.float64) + correction[np.newaxis, :]
+    # Broadcast along the range dimension (the last axis unless named otherwise)
+    range_axis = data.get_axis_num("range") if "range" in data.dims else data.ndim - 1
+    shape = [1] * data.ndim
+    shape[range_axis] = -1
+    values = data.values.astype(np.float64) + correction.reshape(shape)
 
     out = data.copy(data=values)
     out.attrs = {**data.attrs, "qc_range_correction": "1/r^2"}
@@ -211,6 +454,9 @@ def smooth_data(
 ) -> xr.DataArray:
     """Apply Gaussian or median smoothing.
 
+    Missing gates do not contribute to (or bias) the smoothed values, and
+    full 360-degree sweeps wrap around the azimuth axis.
+
     Parameters
     ----------
     data : xr.DataArray
@@ -218,16 +464,22 @@ def smooth_data(
     method : str
         ``"gaussian"`` or ``"median"``.
     sigma : float
-        For Gaussian: standard deviation.  For median: kernel size.
+        For Gaussian: standard deviation.  For median: kernel size
+        (rounded up to an odd integer, minimum 3).
     """
     values = data.values.astype(np.float64)
     mask = np.isnan(values)
-    filled = np.where(mask, 0.0, values)
+    modes = _filter_modes(data)
 
     if method == "gaussian":
-        smoothed = ndimage.gaussian_filter(filled, sigma=sigma)
+        # Normalised convolution: smooth(value * valid) / smooth(valid)
+        weight = ndimage.gaussian_filter((~mask).astype(np.float64), sigma=sigma, mode=modes)
+        num = ndimage.gaussian_filter(np.where(mask, 0.0, values), sigma=sigma, mode=modes)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            smoothed = np.where(weight > 1e-6, num / weight, values)
     elif method == "median":
-        smoothed = ndimage.median_filter(filled, size=max(int(sigma), 3))
+        filled = _fill_nearest(values, mask)
+        smoothed = _median_filter(filled, _odd(sigma), modes)
     else:
         logger.warning("smooth_data: unknown method '%s'; returning data unchanged", method)
         return data

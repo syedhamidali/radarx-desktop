@@ -7,6 +7,7 @@ import pyarrow as pa
 import pyarrow.ipc as ipc
 import pytest
 import xarray as xr
+
 from engine.arrow_bridge import (
     _to_flat_arrow,
     dataarray_to_arrow,
@@ -173,3 +174,41 @@ class TestDataArrayToArrow:
         batch = _read_ipc_bytes(raw)
         recovered = np.array(batch.column("precise").to_pylist(), dtype=np.float32)
         np.testing.assert_array_equal(original, recovered)
+
+
+# ---------------------------------------------------------------------------
+# Padding regressions
+# ---------------------------------------------------------------------------
+
+
+class TestPadding:
+    def test_integer_coord_shorter_than_variable(self) -> None:
+        """Padding used to go through np.nan and crashed for integer columns."""
+        ds = xr.Dataset(
+            {"grid": (["y", "x"], np.arange(6, dtype=np.float32).reshape(2, 3))},
+            coords={"x": [0, 1, 2], "y": [10, 20]},
+        )
+        batch = _read_ipc_bytes(dataset_to_arrow(ds))
+        assert batch.num_rows == 6
+        assert batch.schema.field("__coord_x").type == pa.int64()  # type preserved
+        assert batch.column("__coord_x").to_pylist() == [0, 1, 2, None, None, None]
+        assert batch.column("__coord_y").to_pylist() == [10, 20, None, None, None, None]
+        assert batch.column("grid").to_pylist() == pytest.approx([0, 1, 2, 3, 4, 5])
+
+    def test_dataarray_padding_keeps_types(self) -> None:
+        da = xr.DataArray(
+            np.arange(6, dtype=np.float32).reshape(2, 3),
+            dims=["y", "x"],
+            coords={"x": [5, 6, 7]},
+            name="v",
+        )
+        batch = _read_ipc_bytes(dataarray_to_arrow(da))
+        assert batch.schema.field("v").type == pa.float32()
+        assert batch.schema.field("__coord_x").type == pa.int64()
+        assert batch.column("__coord_x").null_count == 3
+
+    def test_equal_length_columns_untouched(self) -> None:
+        ds = xr.Dataset({"a": (["x"], np.array([1, 2], dtype=np.int32))}, coords={"x": [3, 4]})
+        batch = _read_ipc_bytes(dataset_to_arrow(ds))
+        assert batch.column("a").null_count == 0
+        assert batch.schema.field("a").type == pa.int32()
