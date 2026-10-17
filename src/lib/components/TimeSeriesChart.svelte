@@ -137,13 +137,17 @@
     points: { x: number; y: number; value: number | null; label: string }[];
   }
 
-  $: lines = computeLines(series, selectedVars, plotW, plotH);
+  // zoomLevel/panOffset are passed explicitly: Svelte only tracks variables named in the
+  // `$:` statement itself, so reads inside the function would not re-run it on zoom/pan.
+  $: lines = computeLines(series, selectedVars, plotW, plotH, zoomLevel, panOffset);
 
   function computeLines(
     seriesMap: Map<string, TimeSeriesData>,
     vars: string[],
     pw: number,
     ph: number,
+    zoom: number,
+    pan: number,
   ): LineSeries[] {
     const result: LineSeries[] = [];
 
@@ -160,10 +164,10 @@
       const yRange = yMax - yMin || 1;
 
       const n = sd.points.length;
-      const totalW = pw * zoomLevel;
+      const totalW = pw * zoom;
       const points = sd.points.map((p, i) => {
         const rawX = n > 1 ? (i / (n - 1)) * totalW : totalW / 2;
-        const x = rawX + panOffset;
+        const x = rawX + pan;
         const y = p.value !== null ? ph - ((p.value - yMin) / yRange) * ph : ph;
         return { x, y, value: p.value, label: p.label };
       });
@@ -209,12 +213,14 @@
   }
 
   // ── X-axis ticks ───────────────────────────────────────────────────────
-  $: xTicks = computeXTicks(series, selectedVars, plotW);
+  $: xTicks = computeXTicks(series, selectedVars, plotW, zoomLevel, panOffset);
 
   function computeXTicks(
     seriesMap: Map<string, TimeSeriesData>,
     vars: string[],
     pw: number,
+    zoom: number,
+    pan: number,
   ): { x: number; label: string }[] {
     for (const v of vars) {
       const sd = seriesMap.get(v);
@@ -222,11 +228,11 @@
       const n = sd.points.length;
       if (n === 0) continue;
 
-      const totalW = pw * zoomLevel;
+      const totalW = pw * zoom;
       const step = Math.max(1, Math.floor(n / 6));
       const ticks: { x: number; label: string }[] = [];
       for (let i = 0; i < n; i += step) {
-        const x = (n > 1 ? (i / (n - 1)) * totalW : totalW / 2) + panOffset;
+        const x = (n > 1 ? (i / (n - 1)) * totalW : totalW / 2) + pan;
         if (x >= 0 && x <= pw) {
           const pt = sd.points[i];
           const label = pt.timestamp ? pt.timestamp.slice(11, 16) : `#${i + 1}`;

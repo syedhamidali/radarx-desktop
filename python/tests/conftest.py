@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -94,3 +95,58 @@ def tmp_dir(tmp_path: Path) -> Path:
 def tmp_output_file(tmp_path: Path) -> Path:
     """Provide a temporary file path for export tests (file does not exist yet)."""
     return tmp_path / "output.png"
+
+
+# ---------------------------------------------------------------------------
+# Fake ARCO (icechunk) store
+# ---------------------------------------------------------------------------
+
+ARCO_SCAN_KEY = "VCP-12"
+ARCO_LAT, ARCO_LON, ARCO_ALT = 41.604, -88.085, 202.0
+
+
+def make_arco_session(n_sweeps: int = 12, n_az: int = 36, n_rng: int = 20, n_times: int = 2) -> Any:
+    """Build an in-memory icechunk repo shaped like the NEXRAD ARCO store.
+
+    Returns a read-only session.
+
+    Sweep ``i`` has fixed angle ``0.5 + i`` and ``DBZH == 10 * i + t`` for vcp_time ``t``.
+    """
+    icechunk = pytest.importorskip("icechunk")
+    repo = icechunk.Repository.create(icechunk.in_memory_storage())
+    ws = repo.writable_session("main")
+    xr.Dataset(
+        {"latitude": ((), ARCO_LAT), "longitude": ((), ARCO_LON), "altitude": ((), ARCO_ALT)}
+    ).to_zarr(ws.store, group=ARCO_SCAN_KEY, mode="w", consolidated=False)
+    for i in range(n_sweeps):
+        times = (
+            np.datetime64("2024-01-01T00:00:00")
+            + np.arange(n_times)[:, None] * np.timedelta64(300, "s")
+            + np.arange(n_az)[None, :] * np.timedelta64(1, "s")
+        )
+        data = np.full((n_times, n_az, n_rng), 10.0 * i, dtype=np.float32)
+        data += np.arange(n_times, dtype=np.float32)[:, None, None]
+        ds = xr.Dataset(
+            {
+                "DBZH": (("vcp_time", "azimuth", "range"), data),
+                "sweep_fixed_angle": (("vcp_time",), np.full(n_times, 0.5 + i, np.float32)),
+            },
+            coords={
+                "azimuth": np.arange(n_az) * (360.0 / n_az),
+                "range": 250.0 + np.arange(n_rng) * 250.0,
+                "time": (("vcp_time", "azimuth"), times),
+            },
+        )
+        ds.to_zarr(ws.store, group=f"{ARCO_SCAN_KEY}/sweep_{i}", mode="w", consolidated=False)
+    ws.commit("init")
+    return repo.readonly_session("main")
+
+
+@pytest.fixture()
+def fake_arco(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Route ``engine.cloud._open_icechunk_session`` to an in-memory ARCO-like store."""
+    session = make_arco_session()
+    import engine.cloud as cloud
+
+    monkeypatch.setattr(cloud, "_open_icechunk_session", lambda station: session)
+    return session

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-import gzip
+import atexit
 import logging
 import math
 import os
+import shutil
 import tempfile
+import threading
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +17,8 @@ import numpy as np
 import xarray as xr
 
 logger = logging.getLogger(__name__)
+
+_SWEEP_PREFIX = "sweep_"
 
 # Map of xradar opener functions keyed by format name.
 # Each entry: (format_label, opener_function_name, supported_extensions)
@@ -29,22 +34,72 @@ _FORMAT_TABLE: list[tuple[str, str, set[str]]] = [
     ("hpl", "open_hpl_datatree", set()),
     ("metek", "open_metek_datatree", set()),
 ]
+_OPENER_NAMES: dict[str, str] = {label: fname for label, fname, _ in _FORMAT_TABLE}
+
+# Temp files that could not be unlinked right away (Windows keeps open files locked).
+_LEFTOVER_TMP_FILES: set[str] = set()
 
 
+@atexit.register
+def _cleanup_leftover_tmp_files() -> None:
+    for tmp in list(_LEFTOVER_TMP_FILES):
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            continue
+        _LEFTOVER_TMP_FILES.discard(tmp)
+
+
+def _unlink_quietly(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        _LEFTOVER_TMP_FILES.add(path)
+
+
+# ----------------------------------------------------------------------
+# Sweep ordering helpers (public: other engine modules should use these)
+# ----------------------------------------------------------------------
+
+
+def sweep_index(name: str) -> int:
+    """Return the numeric index of a ``sweep_N`` node name (huge if unparsable)."""
+    try:
+        return int(name[len(_SWEEP_PREFIX) :])
+    except ValueError:
+        return 1 << 30
+
+
+def sorted_sweep_names(dtree: xr.DataTree) -> list[str]:
+    """Names of ``sweep_N`` children in numeric order (``sweep_2`` before ``sweep_10``).
+
+    A plain ``sorted()`` is lexicographic and scrambles volumes with 11+ sweeps
+    (e.g. NEXRAD VCPs), which makes sweep index N map to the wrong elevation.
+    """
+    names = [n for n in dtree.children if n.startswith(_SWEEP_PREFIX)]
+    names.sort(key=lambda n: (sweep_index(n), n))
+    return names
+
+
+# ----------------------------------------------------------------------
+# Format detection
+# ----------------------------------------------------------------------
+
+
+@cache
 def _get_opener(format_name: str):
     """Dynamically import the xradar opener for the given format."""
     import xradar as xd
 
-    # xradar exposes openers at xradar.io.<name>
-    io_mod = xd.io
-    func_name = None
-    for label, fname, _ in _FORMAT_TABLE:
-        if label == format_name:
-            func_name = fname
-            break
+    func_name = _OPENER_NAMES.get(format_name)
     if func_name is None:
         raise ValueError(f"Unknown format: {format_name}")
-    opener = getattr(io_mod, func_name, None)
+    # xradar exposes openers at xradar.io.<name>
+    opener = getattr(xd.io, func_name, None)
     if opener is None:
         raise ImportError(f"xradar.io.{func_name} not available in installed xradar version")
     return opener
@@ -53,6 +108,8 @@ def _get_opener(format_name: str):
 def _decompress_if_needed(path: str) -> tuple[str, bool]:
     """If *path* is gzip-compressed, decompress to a temp file and return (tmp_path, True).
     Otherwise return (path, False). Caller is responsible for unlinking the temp file."""
+    import gzip
+
     try:
         with open(path, "rb") as f:
             magic = f.read(2)
@@ -60,16 +117,20 @@ def _decompress_if_needed(path: str) -> tuple[str, bool]:
         return path, False
     if magic != b"\x1f\x8b":
         return path, False
+    tmp_path: str | None = None
     try:
         suffix = Path(path).stem  # strip .gz → use inner name as suffix hint
         fd, tmp_path = tempfile.mkstemp(suffix=f"_{suffix}")
         os.close(fd)
+        # Stream: never hold a whole decompressed volume in memory.
         with gzip.open(path, "rb") as gz, open(tmp_path, "wb") as out:
-            out.write(gz.read())
+            shutil.copyfileobj(gz, out, length=1 << 20)
         logger.info("Decompressed %s → %s", path, tmp_path)
         return tmp_path, True
     except Exception as exc:
         logger.warning("Failed to decompress %s: %s", path, exc)
+        if tmp_path is not None:
+            _unlink_quietly(tmp_path)
         return path, False
 
 
@@ -113,63 +174,49 @@ def _sniff_magic(path: str) -> str | None:
         return "nexrad_level2"
 
     # Bzip2-compressed: could be NEXRAD
-    if header[:2] == b"BZ":
+    if header[:3] == b"BZh":
         return "nexrad_level2"
 
     return None
 
 
 def _guess_formats_by_extension(path: str) -> list[str]:
-    """Return a priority-ordered list of format names to try based on file extension."""
+    """Return a priority-ordered list of format names to try (each at most once)."""
     p = Path(path)
     suffixes = {s.lower() for s in p.suffixes}
     name_upper = p.name.upper()
 
     ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(fmt: str) -> None:
+        if fmt not in seen:
+            seen.add(fmt)
+            ordered.append(fmt)
 
     # 1. Magic byte sniffing — fastest, most reliable
     magic_fmt = _sniff_magic(path)
     if magic_fmt:
-        ordered.append(magic_fmt)
+        add(magic_fmt)
 
-    # 2. Extension-based hints (deduped against magic result)
-    seen = set(ordered)
-
-    if (not p.suffix or ".gz" in suffixes or ".bz2" in suffixes) and "nexrad_level2" not in seen:
-        ordered.append("nexrad_level2")
-        seen.add("nexrad_level2")
-
-    if suffixes & {".nc", ".ncf", ".cdf"} and "cfradial1" not in seen:
-        ordered.append("cfradial1")
-        seen.add("cfradial1")
-
+    # 2. Extension-based hints
+    if not p.suffix or suffixes & {".gz", ".bz2"}:
+        add("nexrad_level2")
+    if suffixes & {".nc", ".ncf", ".cdf"}:
+        add("cfradial1")
     if suffixes & {".h5", ".hdf5", ".hdf"}:
-        for fmt in ("odim", "gamic"):
-            if fmt not in seen:
-                ordered.append(fmt)
-                seen.add(fmt)
+        add("odim")
+        add("gamic")
+    if suffixes & {".raw"} or "RAW" in name_upper:
+        add("iris")
+    if suffixes & {".scn", ".scnx"}:
+        add("furuno")
+    if suffixes & {".vol", ".azi"}:
+        add("rainbow")
 
-    if (suffixes & {".raw"} or "RAW" in name_upper) and "iris" not in seen:
-        ordered.append("iris")
-        seen.add("iris")
-
-    if suffixes & {".scn", ".scnx"} and "furuno" not in seen:
-        ordered.append("furuno")
-        seen.add("furuno")
-
-    if suffixes & {".vol", ".azi"} and "rainbow" not in seen:
-        ordered.append("rainbow")
-        seen.add("rainbow")
-
-    # 3. If nothing matched, try all formats
-    if not ordered:
-        ordered = [fmt for fmt, _, _ in _FORMAT_TABLE]
-
-    # 4. Append remaining formats as fallbacks (deduped)
+    # 3. Remaining formats as fallbacks (deduped)
     for fmt, _, _ in _FORMAT_TABLE:
-        if fmt not in seen:
-            ordered.append(fmt)
-            seen.add(fmt)
+        add(fmt)
 
     return ordered
 
@@ -181,84 +228,94 @@ def _open_generic_netcdf(path: str) -> xr.DataTree:
     and coordinate arrays like radialAzim, radialElev, gateSize.
     We wrap them into a DataTree that looks like xradar output.
     """
-    ds = xr.open_dataset(path)
+    with xr.open_dataset(path) as ds:
+        # Identify 2D float moment variables
+        moment_vars = [v for v in ds.data_vars if ds[v].ndim == 2 and ds[v].dtype.kind == "f"]
+        if not moment_vars:
+            raise ValueError("No 2D float variables found — not a radar file")
 
-    # Identify 2D float moment variables
-    moment_vars = [v for v in ds.data_vars if ds[v].ndim == 2 and ds[v].dtype.kind == "f"]
-    if not moment_vars:
-        raise ValueError("No 2D float variables found — not a radar file")
+        # Find azimuth and range coordinates
+        azimuth = None
+        for candidate in ("radialAzim", "azimuth", "Azimuth", "azi"):
+            if candidate in ds:
+                azimuth = ds[candidate].values.astype(np.float64)
+                break
 
-    # Find azimuth and range coordinates
-    azimuth = None
-    for candidate in ("radialAzim", "azimuth", "Azimuth", "azi"):
-        if candidate in ds:
-            azimuth = ds[candidate].values.astype(np.float64)
-            break
+        # Build range array from gate metadata or existing coord
+        range_arr = None
+        for candidate in ("range", "Range", "distance"):
+            if candidate in ds and ds[candidate].ndim == 1:
+                range_arr = ds[candidate].values.astype(np.float64)
+                break
+        if range_arr is None and "gateSize" in ds and "firstGateRange" in ds:
+            gate_size = float(ds["gateSize"].values)
+            first_range = float(ds["firstGateRange"].values)
+            n_gates = ds[moment_vars[0]].shape[-1]
+            range_arr = np.arange(n_gates, dtype=np.float64) * gate_size + first_range
 
-    # Build range array from gate metadata or existing coord
-    range_arr = None
-    for candidate in ("range", "Range", "distance"):
-        if candidate in ds and ds[candidate].ndim == 1:
-            range_arr = ds[candidate].values.astype(np.float64)
-            break
-    if range_arr is None and "gateSize" in ds and "firstGateRange" in ds:
-        gate_size = float(ds["gateSize"].values)
-        first_range = float(ds["firstGateRange"].values)
-        n_gates = ds[moment_vars[0]].shape[-1]
-        range_arr = np.arange(n_gates, dtype=np.float64) * gate_size + first_range
+        # Get elevation
+        elevation = None
+        for candidate in ("elevationAngle", "elevation", "Elevation", "elev"):
+            if candidate in ds:
+                val = ds[candidate].values
+                elevation = float(val.flat[0]) if val.ndim > 0 else float(val)
+                break
 
-    # Get elevation
-    elevation = None
-    for candidate in ("elevationAngle", "elevation", "Elevation", "elev"):
-        if candidate in ds:
-            val = ds[candidate].values
-            elevation = float(val.flat[0]) if val.ndim > 0 else float(val)
-            break
+        # Build a single-sweep dataset with xradar-compatible coords
+        sweep_ds_vars = {
+            v: xr.DataArray(ds[v].values, dims=("azimuth", "range")) for v in moment_vars
+        }
 
-    # Build a single-sweep dataset with xradar-compatible coords
-    sweep_ds_vars = {}
+        coords: dict[str, Any] = {}
+        if azimuth is not None:
+            coords["azimuth"] = ("azimuth", azimuth)
+        if range_arr is not None:
+            coords["range"] = ("range", range_arr)
 
-    for v in moment_vars:
-        sweep_ds_vars[v] = xr.DataArray(
-            ds[v].values,
-            dims=("azimuth", "range"),
-        )
+        sweep_ds = xr.Dataset(sweep_ds_vars, coords=coords)
+        if elevation is not None:
+            sweep_ds.attrs["sweep_fixed_angle"] = elevation
 
-    coords: dict[str, Any] = {}
-    if azimuth is not None:
-        coords["azimuth"] = ("azimuth", azimuth)
-    if range_arr is not None:
-        coords["range"] = ("range", range_arr)
-
-    sweep_ds = xr.Dataset(sweep_ds_vars, coords=coords)
-    if elevation is not None:
-        sweep_ds.attrs["sweep_fixed_angle"] = elevation
-
-    # Preserve useful global attrs
-    for attr_key in ("siteLat", "siteLon", "siteAlt", "title", "Conventions", "history"):
-        if attr_key in ds.attrs:
-            sweep_ds.attrs[attr_key] = ds.attrs[attr_key]
-
-    ds.close()
+        # Preserve useful global attrs
+        for attr_key in ("siteLat", "siteLon", "siteAlt", "title", "Conventions", "history"):
+            if attr_key in ds.attrs:
+                sweep_ds.attrs[attr_key] = ds.attrs[attr_key]
 
     # Wrap in DataTree (xarray >= 2024 API: children dict)
     sweep_node = xr.DataTree(dataset=sweep_ds, name="sweep_0")
-    root = xr.DataTree(children={"sweep_0": sweep_node}, name="root")
-    return root
+    return xr.DataTree(children={"sweep_0": sweep_node}, name="root")
+
+
+def _is_placeholder(ds: xr.Dataset) -> bool:
+    """True for the attrs-only stand-ins used for not-yet-loaded ARCO sweeps."""
+    return not ds.data_vars and "_sweep_variables" in ds.attrs
 
 
 class RadarReader:
-    """Opens radar files via xradar and provides access to sweep data and metadata."""
+    """Opens radar files via xradar and provides access to sweep data and metadata.
+
+    Thread-safety: ``get_sweep_data`` / ``get_sweep_dataset`` may be called from
+    several executor threads at once.  Lazily-loaded ARCO sweeps are guarded by
+    per-sweep locks so concurrent requests for the same sweep download it once.
+
+    ``_dtree`` / ``_path`` / ``_format`` may be assigned from outside (the server
+    shares trees between readers); all caches are therefore keyed on the identity
+    of the tree object and rebuilt automatically when it changes.
+    """
 
     def __init__(self) -> None:
         self._dtree: xr.DataTree | None = None
         self._path: str | None = None
         self._format: str | None = None
-        # ARCO lazy-loading state
+        # (tree, n_children, [sweep nodes]) — rebuilt when the tree object changes
+        self._nodes_cache: tuple[xr.DataTree, int, list[xr.DataTree]] | None = None
+        # ARCO lazy-loading state (reset by ``_commit`` whenever a new file is opened)
         self._arco_session: Any = None
         self._arco_scan_key: str | None = None
         self._arco_sweep_names: list[str] = []
         self._arco_loaded_sweeps: dict[int, xr.Dataset] = {}
+        self._lock = threading.RLock()
+        self._sweep_locks: dict[int, threading.Lock] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -267,7 +324,9 @@ class RadarReader:
     def open_file(self, path: str) -> dict[str, Any]:
         """Open a radar file, auto-detecting the format.
 
-        Returns the schema dict (same shape as ``get_schema()``).
+        Returns the schema dict (same shape as ``get_schema()``).  The reader's
+        state is only replaced once a format has opened *and* its schema was
+        built successfully, so a failed open leaves the previous file intact.
 
         Raises
         ------
@@ -285,63 +344,55 @@ class RadarReader:
         # the resolved path doesn't escape via '..' tricks.
         if not p.is_absolute():
             raise ValueError(f"Only absolute file paths are accepted, got: {path}")
-        resolved = p.resolve()
-        # Ensure the resolved path doesn't differ from what we'd expect
-        # (e.g. symlink escape).  The key check is that '..' doesn't appear
-        # in the resolved components — Path.resolve() normalises those away,
-        # so if the original contains '..' but resolves differently, that's
-        # acceptable as long as the resolved target exists.
-        if ".." in resolved.parts:
+        if ".." in p.resolve().parts:
             raise ValueError(f"Path contains disallowed '..' components: {path}")
 
         if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
+        if p.is_dir():
+            raise ValueError(f"Path is a directory, not a radar file: {path}")
 
         # Transparently decompress gzip files — xradar can't handle the gzip wrapper directly.
         open_path, is_tmp = _decompress_if_needed(path)
 
-        formats_to_try = _guess_formats_by_extension(open_path)
-        last_exc: Exception | None = None
-
+        errors: list[tuple[str, Exception]] = []
         try:
-            for fmt in formats_to_try:
+            for fmt in _guess_formats_by_extension(open_path):
                 try:
                     opener = _get_opener(fmt)
                     logger.info("Trying format '%s' for %s", fmt, open_path)
                     dtree = opener(open_path)
-                    self._dtree = dtree
-                    self._path = path  # keep original path for display
-                    self._format = fmt
-                    logger.info("Opened %s as %s", path, fmt)
-                    return self.get_schema()
-                except (ValueError, TypeError, KeyError, OSError, ImportError) as exc:
+                    schema = self._build_schema(dtree)
+                except Exception as exc:  # any backend may raise anything on a wrong format
                     logger.debug("Format '%s' failed for %s: %s", fmt, open_path, exc)
-                    last_exc = exc
+                    errors.append((fmt, exc))
                     continue
-                except Exception as exc:
-                    logger.debug("Format '%s' failed unexpectedly for %s: %s", fmt, open_path, exc)
-                    last_exc = exc
-                    continue
+                self._commit(dtree, path, fmt)
+                logger.info("Opened %s as %s", path, fmt)
+                return schema
 
             # Last resort: try generic NetCDF (IMD/IRIS-origin single-sweep files, etc.)
             try:
                 logger.info("Trying generic NetCDF fallback for %s", open_path)
                 dtree = _open_generic_netcdf(open_path)
-                self._dtree = dtree
-                self._path = path
-                self._format = "generic_netcdf"
-                logger.info("Opened %s as generic NetCDF", path)
-                return self.get_schema()
+                schema = self._build_schema(dtree)
             except Exception as exc:
                 logger.debug("Generic NetCDF fallback failed: %s", exc)
+                errors.append(("generic_netcdf", exc))
+            else:
+                self._commit(dtree, path, "generic_netcdf")
+                logger.info("Opened %s as generic NetCDF", path)
+                return schema
 
-            raise ValueError(f"Could not open {path} with any supported format. Last error: {last_exc}")
+            # Report the most informative failures (the sniffed/preferred formats come first).
+            detail = "; ".join(f"{fmt}: {exc}" for fmt, exc in errors[:3])
+            raise ValueError(
+                f"Could not open {path} with any supported format ({len(errors)} tried). "
+                f"First errors: {detail}"
+            ) from (errors[0][1] if errors else None)
         finally:
             if is_tmp:
-                try:
-                    os.unlink(open_path)
-                except OSError:
-                    pass
+                _unlink_quietly(open_path)
 
     def open_s3_file(self, s3_path: str) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).
@@ -351,105 +402,91 @@ class RadarReader:
         s3_path:
             Full S3 URL, e.g. ``s3://noaa-nexrad-level2/2024/01/01/KLOT/KLOT20240101_000000_V06``
         """
-        import boto3
-        import os
-        import tempfile
-        from botocore import UNSIGNED
-        from botocore.config import Config
+        from engine.cloud import _s3
 
         key = s3_path.removeprefix("s3://")
         bucket, _, obj_key = key.partition("/")
+        if not bucket or not obj_key:
+            raise ValueError(f"Invalid S3 path (expected s3://bucket/key): {s3_path}")
         filename = obj_key.split("/")[-1]
 
-        client = boto3.client(
-            "s3",
-            config=Config(signature_version=UNSIGNED),
-            region_name="us-east-1",
-        )
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}") as tmp:
-            tmp_path = tmp.name
-
+        fd, tmp_path = tempfile.mkstemp(suffix=f"_{filename}")
+        os.close(fd)
         try:
             logger.info("Downloading s3://%s/%s -> %s", bucket, obj_key, tmp_path)
-            client.download_file(bucket, obj_key, tmp_path)
+            try:
+                _s3().download_file(bucket, obj_key, tmp_path)
+            except Exception as exc:
+                raise RuntimeError(f"Could not download {s3_path}: {exc}") from exc
             result = self.open_file(tmp_path)
+            # Report the S3 URL, not the (deleted) temp file, as the file's origin.
+            self._path = s3_path
             result["source"] = s3_path
             result["source_type"] = "nexrad_l2_s3"
             return result
         finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+            _unlink_quietly(tmp_path)
 
     def open_arco_scan(self, station: str, scan_key: str) -> dict[str, Any]:
         """Open a VCP type from the NEXRAD ARCO icechunk store.
 
         Only sweep_0 is opened eagerly; all other sweeps are loaded on demand
         when ``get_sweep_data`` is called for them. This reduces open latency
-        from 30–170 s (17 sequential S3 requests) to ~5–10 s (1 request).
+        from 30-170 s (17 sequential S3 requests) to ~5-10 s (1 request).
         """
         try:
-            import icechunk
             import zarr
         except ImportError as exc:
             raise RuntimeError("icechunk and zarr required: pip install icechunk zarr") from exc
 
-        import numpy as np
+        from engine.cloud import _open_icechunk_session
 
         station_upper = station.upper()
         arco_bucket = "nexrad-arco"
         store_url = f"icechunk://{arco_bucket}/{station_upper}/{scan_key}"
         logger.info("Opening ARCO %s %s (lazy mode)", station_upper, scan_key)
 
-        from engine.cloud import _open_icechunk_session
         session = _open_icechunk_session(station_upper)
 
         root_zarr = zarr.open_group(session.store, mode="r")
         vcp_zarr = root_zarr[scan_key]
-        sweep_names = sorted(
-            k for k in vcp_zarr.keys()
-            if k.startswith("sweep_") and isinstance(vcp_zarr[k], zarr.Group)
-        )
+        sweep_groups = {
+            name: grp for name, grp in vcp_zarr.groups() if name.startswith(_SWEEP_PREFIX)
+        }
+        sweep_names = sorted(sweep_groups, key=lambda n: (sweep_index(n), n))
         if not sweep_names:
             raise RuntimeError(f"No sweep groups found in {scan_key}")
 
         # Extract radar site coordinates from VCP-level arrays
-        lat: float | None = None
-        lon: float | None = None
-        alt: float | None = None
-        for coord_key, target in (("latitude", "lat"), ("longitude", "lon"), ("altitude", "alt")):
+        site: dict[str, float] = {}
+        for coord_key in ("latitude", "longitude", "altitude"):
             if coord_key in vcp_zarr:
                 try:
-                    val = float(np.array(vcp_zarr[coord_key]).flat[0])
-                    if target == "lat":
-                        lat = val
-                    elif target == "lon":
-                        lon = val
-                    else:
-                        alt = val
-                except Exception:
-                    pass
+                    val = float(np.asarray(vcp_zarr[coord_key]).flat[0])
+                except Exception as exc:
+                    logger.debug("ARCO %s unreadable: %s", coord_key, exc)
+                    continue
+                if math.isfinite(val):
+                    site[coord_key] = val
 
         # Read sweep metadata from zarr in-memory tree — instant, no extra S3 calls.
         sweep_elevations: dict[str, float | None] = {}
         sweep_variables: dict[str, list[str]] = {}
         for sweep_name in sweep_names:
-            sweep_zarr = vcp_zarr[sweep_name]
+            sweep_zarr = sweep_groups[sweep_name]
             elev: float | None = None
             for elev_key in ("sweep_fixed_angle", "fixed_angle"):
                 if elev_key in sweep_zarr:
                     try:
-                        elev = float(np.array(sweep_zarr[elev_key]).flat[0])
+                        elev = float(np.asarray(sweep_zarr[elev_key]).flat[0])
                         break
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("ARCO %s/%s unreadable: %s", sweep_name, elev_key, exc)
             if elev is None and "elevation" in sweep_zarr:
                 try:
                     elev = float(sweep_zarr["elevation"][0, 0])
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("ARCO %s/elevation unreadable: %s", sweep_name, exc)
             sweep_elevations[sweep_name] = elev
             # Variable names come from zarr array metadata (in-memory, no S3 round-trip)
             vars_in: list[str] = []
@@ -460,15 +497,20 @@ class RadarReader:
                 arr_iter = (
                     sweep_zarr.arrays()
                     if hasattr(sweep_zarr, "arrays")
-                    else ((k, sweep_zarr[k]) for k in sweep_zarr.keys())
+                    else ((k, sweep_zarr[k]) for k in sweep_zarr.keys())  # noqa: SIM118
                 )
                 for k, m in arr_iter:
-                    if hasattr(m, "ndim") and hasattr(m, "dtype") and m.ndim >= 2 and np.dtype(m.dtype).kind == "f":
+                    if (
+                        hasattr(m, "ndim")
+                        and hasattr(m, "dtype")
+                        and m.ndim >= 2
+                        and np.dtype(m.dtype).kind == "f"
+                    ):
                         vars_in.append(k)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ARCO %s variable listing failed: %s", sweep_name, exc)
             sweep_variables[sweep_name] = sorted(
-                v for v in vars_in if not v.startswith("ray_") and v not in ("sweep_fixed_angle",)
+                v for v in vars_in if not v.startswith("ray_") and v != "sweep_fixed_angle"
             )
 
         # Open ONLY sweep_0 fully — all other sweeps get placeholder Datasets
@@ -480,62 +522,62 @@ class RadarReader:
                 try:
                     t_scalar = ds0["time"].isel(vcp_time=-1).isel(azimuth=0).values
                     scan_time_str = str(np.datetime64(t_scalar, "s"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("ARCO scan time unreadable: %s", exc)
             ds0 = _squeeze_vcp_time(ds0)
 
         # Build DataTree: real Dataset for sweep_0, attrs-only placeholders for the rest
-        sweep_dict: dict[str, xr.Dataset] = {sweep_names[0]: ds0}
+        # Site coordinates live on the root node so engine helpers that look for the
+        # radar position in the tree (cross-sections, profiles, plugins) can find them.
+        sweep_dict: dict[str, xr.Dataset] = {
+            "/": xr.Dataset(attrs=dict(site)),
+            sweep_names[0]: ds0,
+        }
         for sweep_name in sweep_names[1:]:
-            elev = sweep_elevations.get(sweep_name)
             attrs: dict[str, Any] = {"_sweep_variables": sweep_variables.get(sweep_name, [])}
+            elev = sweep_elevations.get(sweep_name)
             if elev is not None:
                 attrs["sweep_fixed_angle"] = elev
             sweep_dict[sweep_name] = xr.Dataset(attrs=attrs)
 
-        self._dtree = xr.DataTree.from_dict(sweep_dict)
-        self._path = store_url
-        self._format = "nexrad_arco"
-        self._arco_session = session
-        self._arco_scan_key = scan_key
-        self._arco_sweep_names = sweep_names
-        self._arco_loaded_sweeps = {}
-
-        logger.info("ARCO %s %s opened (%d sweeps, lazy)", station_upper, scan_key, len(sweep_names))
-
-        result = self.get_schema()
-        if lat is not None:
-            result["attributes"]["latitude"] = lat
-        if lon is not None:
-            result["attributes"]["longitude"] = lon
-        if alt is not None:
-            result["attributes"]["altitude"] = alt
+        dtree = xr.DataTree.from_dict(sweep_dict)
+        result = self._build_schema(dtree)
+        attributes = result["attributes"]
+        for key in ("latitude", "longitude", "altitude"):
+            if key in site:
+                attributes[key] = site[key]
         if scan_time_str:
-            result["attributes"]["scan_time"] = scan_time_str
+            attributes["scan_time"] = scan_time_str
         result["source"] = store_url
         result["source_type"] = "nexrad_arco"
         result["vcp"] = scan_key
         result["station"] = station_upper
+
+        with self._lock:
+            self._commit(dtree, store_url, "nexrad_arco")
+            self._arco_session = session
+            self._arco_scan_key = scan_key
+            self._arco_sweep_names = sweep_names
+            self._arco_loaded_sweeps = {}
+
+        logger.info(
+            "ARCO %s %s opened (%d sweeps, lazy)", station_upper, scan_key, len(sweep_names)
+        )
         return result
 
-    def _load_arco_sweep(self, sweep_idx: int) -> xr.Dataset:
-        """Load a single ARCO sweep on demand and cache it."""
-        if sweep_idx in self._arco_loaded_sweeps:
-            return self._arco_loaded_sweeps[sweep_idx]
+    def close(self) -> None:
+        """Release the open file: drop the tree, caches and ARCO session.
 
-        sweep_name = self._arco_sweep_names[sweep_idx]
-        group = f"{self._arco_scan_key}/{sweep_name}"
-        logger.info("Lazy-loading ARCO sweep %d (%s)", sweep_idx, group)
-
-        ds = xr.open_dataset(
-            self._arco_session.store,
-            engine="zarr",
-            group=group,
-            consolidated=False,
-        )
-        ds = _squeeze_vcp_time(ds)
-        self._arco_loaded_sweeps[sweep_idx] = ds
-        return ds
+        The DataTree is deliberately not ``.close()``d: the server shares one tree
+        between several readers (``_shared_reader._dtree = reader._dtree``), and
+        closing it here would break the others.  Dropping our references lets
+        xarray's file manager close the handles once the last owner lets go.
+        """
+        with self._lock:
+            self._dtree = None
+            self._path = None
+            self._format = None
+            self._reset_caches()
 
     def get_schema(self) -> dict[str, Any]:
         """Extract metadata from the currently-open datatree.
@@ -548,134 +590,30 @@ class RadarReader:
         """
         self._ensure_open()
         assert self._dtree is not None
+        return self._build_schema(self._dtree)
 
-        dtree = self._dtree
+    def get_sweep_dataset(self, sweep: int) -> xr.Dataset:
+        """Return the full ``xr.Dataset`` of one sweep (all variables and coords).
 
-        # Collect sweep nodes — xradar stores sweeps as children named
-        # "sweep_0", "sweep_1", etc.
-        sweep_nodes = self._sweep_nodes()
+        Placeholder sweeps of an ARCO scan are loaded on demand (once, thread-safe)
+        and the real dataset is returned.  Non-ARCO sweeps return the node's dataset
+        (a cheap view sharing the underlying arrays; no data is copied).
 
-        # Extract variables and dimensions from first sweep.
-        # Only include actual radar moment variables (2D: azimuth x range).
-        variables: set[str] = set()
-        dimensions: dict[str, int] = {}
-        _ds0_cached: xr.Dataset | None = None
-        if sweep_nodes:
-            _ds0_cached = sweep_nodes[0].to_dataset()
-            for v in _ds0_cached.data_vars:
-                da = _ds0_cached[v]
-                if da.ndim == 2 and da.dtype.kind == "f":
-                    variables.add(str(v))
-            for dim, size in _ds0_cached.sizes.items():
-                dimensions[str(dim)] = int(size)
-
-        # Extract per-sweep elevation and variable lists.
-        # Placeholder ARCO sweeps store available variables in attrs["_sweep_variables"].
-        sweeps: list[dict[str, Any]] = []
-        for idx, node in enumerate(sweep_nodes):
-            elevation: float | None = None
-            sweep_vars: list[str] | None = None
-            try:
-                ds = _ds0_cached if idx == 0 and _ds0_cached is not None else node.to_dataset()
-                if "sweep_fixed_angle" in ds.attrs:
-                    elevation = float(ds.attrs["sweep_fixed_angle"])
-                elif "sweep_fixed_angle" in ds:
-                    elevation = float(ds["sweep_fixed_angle"].values)
-                elif "elevation" in ds:
-                    elevation = float(ds["elevation"].values.flat[0])
-                # Replace NaN/Inf with None so JSON.parse() doesn't reject the message
-                if elevation is not None and (math.isnan(elevation) or math.isinf(elevation)):
-                    elevation = None
-                # Per-sweep variable list: from real data_vars or stored attrs
-                if ds.data_vars:
-                    sweep_vars = sorted(
-                        str(v) for v in ds.data_vars
-                        if ds[v].ndim == 2 and ds[v].dtype.kind == "f"
-                    )
-                elif "_sweep_variables" in ds.attrs:
-                    sweep_vars = list(ds.attrs["_sweep_variables"])
-            except Exception:
-                pass
-            entry: dict[str, Any] = {"index": idx, "elevation": elevation}
-            if sweep_vars:
-                entry["variables"] = sweep_vars
-                variables.update(sweep_vars)
-            sweeps.append(entry)
-
-        # Global attributes — from root node
-        root_attrs: dict[str, Any] = {}
-        try:
-            root_ds = dtree.to_dataset()
-            for k, v in root_ds.attrs.items():
-                root_attrs[str(k)] = _serializable(v)
-        except (ValueError, KeyError, AttributeError) as exc:
-            logger.debug("Could not extract root attributes: %s", exc)
-
-        # Extract radar site coordinates from coords/data_vars/attrs
-        # xradar stores these as coordinate variables, not always as attrs
-        if "latitude" not in root_attrs or "longitude" not in root_attrs:
-            lat, lon = self._extract_site_coords(dtree, sweep_nodes)
-            if lat is not None:
-                root_attrs["latitude"] = lat
-            if lon is not None:
-                root_attrs["longitude"] = lon
-
-        return {
-            "variables": sorted(variables),
-            "dimensions": dimensions,
-            "attributes": root_attrs,
-            "sweeps": sweeps,
-        }
-
-    @staticmethod
-    def _extract_site_coords(
-        dtree: Any, sweep_nodes: list[Any]
-    ) -> tuple[float | None, float | None]:
-        """Try to find radar site lat/lon from the DataTree."""
-        lat: float | None = None
-        lon: float | None = None
-
-        lat_keys = ("latitude", "origin_latitude", "siteLat")
-        lon_keys = ("longitude", "origin_longitude", "siteLon")
-
-        # 1. Check root dataset coords and data_vars
-        try:
-            root_ds = dtree.to_dataset()
-            for k in lat_keys:
-                if k in root_ds.coords:
-                    lat = float(root_ds.coords[k].values)
-                    break
-                if k in root_ds:
-                    lat = float(root_ds[k].values)
-                    break
-            for k in lon_keys:
-                if k in root_ds.coords:
-                    lon = float(root_ds.coords[k].values)
-                    break
-                if k in root_ds:
-                    lon = float(root_ds[k].values)
-                    break
-        except Exception:
-            pass
-
-        # 2. Fallback: check first sweep's coords
-        if (lat is None or lon is None) and sweep_nodes:
-            try:
-                ds0 = sweep_nodes[0].to_dataset()
-                for k in lat_keys:
-                    if lat is None and k in ds0.coords:
-                        lat = float(ds0.coords[k].values)
-                    if lat is None and k in ds0:
-                        lat = float(ds0[k].values)
-                for k in lon_keys:
-                    if lon is None and k in ds0.coords:
-                        lon = float(ds0.coords[k].values)
-                    if lon is None and k in ds0:
-                        lon = float(ds0[k].values)
-            except Exception:
-                pass
-
-        return lat, lon
+        Raises
+        ------
+        RuntimeError
+            If no file is open.
+        IndexError
+            If *sweep* is out of range.
+        """
+        self._ensure_open()
+        nodes = self._sweep_nodes()
+        if not isinstance(sweep, (int, np.integer)) or sweep < 0 or sweep >= len(nodes):
+            raise IndexError(f"Sweep index {sweep} out of range (0..{len(nodes) - 1})")
+        ds = nodes[sweep].to_dataset()
+        if _is_placeholder(ds) and self._format == "nexrad_arco":
+            ds = self._load_arco_sweep(int(sweep))
+        return ds
 
     def get_sweep_data(self, sweep: int, variable: str) -> xr.DataArray:
         """Return the DataArray for a specific sweep index and variable.
@@ -691,18 +629,17 @@ class RadarReader:
         -------
         xr.DataArray
         """
-        self._ensure_open()
-        nodes = self._sweep_nodes()
-        if sweep < 0 or sweep >= len(nodes):
-            raise IndexError(f"Sweep index {sweep} out of range (0..{len(nodes) - 1})")
-        ds = nodes[sweep].to_dataset()
-        # Placeholder ARCO sweeps have no data vars — load the real data on demand
-        if variable not in ds.data_vars and self._format == "nexrad_arco" and sweep < len(self._arco_sweep_names):
-            ds = self._load_arco_sweep(sweep)
+        ds = self.get_sweep_dataset(sweep)
         if variable not in ds.data_vars:
             available = sorted(str(v) for v in ds.data_vars)
             raise KeyError(f"Variable '{variable}' not in sweep {sweep}. Available: {available}")
-        return ds[variable]
+        da = ds[variable]
+        if self._arco_active(sweep):
+            # Remote (zarr/S3) arrays: read once under a per-sweep lock so concurrent
+            # renders of the same sweep don't download it several times.
+            with self._sweep_lock(int(sweep)):
+                da.load()
+        return da
 
     @property
     def datatree(self) -> xr.DataTree | None:
@@ -717,14 +654,206 @@ class RadarReader:
         if self._dtree is None:
             raise RuntimeError("No file is currently open. Call open_file() first.")
 
+    def _reset_caches(self) -> None:
+        self._nodes_cache = None
+        self._arco_session = None
+        self._arco_scan_key = None
+        self._arco_sweep_names = []
+        self._arco_loaded_sweeps = {}
+        self._sweep_locks = {}
+
+    def _commit(self, dtree: xr.DataTree, path: str, fmt: str) -> None:
+        """Atomically make *dtree* the open file and drop everything derived from the old one."""
+        with self._lock:
+            self._reset_caches()
+            self._dtree = dtree
+            self._path = path
+            self._format = fmt
+
+    def _sweep_lock(self, sweep: int) -> threading.Lock:
+        with self._lock:
+            lock = self._sweep_locks.get(sweep)
+            if lock is None:
+                lock = self._sweep_locks[sweep] = threading.Lock()
+            return lock
+
+    def _arco_active(self, sweep: int) -> bool:
+        """True if an ARCO scan is open and *sweep* is one of its (remote, lazy) sweeps."""
+        return (
+            self._format == "nexrad_arco"
+            and self._arco_session is not None
+            and 0 <= sweep < len(self._arco_sweep_names)
+        )
+
+    def _load_arco_sweep(self, sweep_idx: int) -> xr.Dataset:
+        """Load a single ARCO sweep on demand and cache it (thread-safe)."""
+        with self._sweep_lock(sweep_idx):
+            cached = self._arco_loaded_sweeps.get(sweep_idx)
+            if cached is not None:
+                return cached
+
+            session = self._arco_session
+            if session is None or not 0 <= sweep_idx < len(self._arco_sweep_names):
+                raise RuntimeError(f"Sweep {sweep_idx} is not an ARCO sweep of the open file")
+            sweep_name = self._arco_sweep_names[sweep_idx]
+            group = f"{self._arco_scan_key}/{sweep_name}"
+            logger.info("Lazy-loading ARCO sweep %d (%s)", sweep_idx, group)
+
+            ds = xr.open_dataset(session.store, engine="zarr", group=group, consolidated=False)
+            ds = _squeeze_vcp_time(ds)
+            self._arco_loaded_sweeps[sweep_idx] = ds
+            return ds
+
     def _sweep_nodes(self) -> list[xr.DataTree]:
-        """Return child nodes that represent sweeps, sorted by name."""
-        assert self._dtree is not None
-        nodes: list[xr.DataTree] = []
-        for name in sorted(self._dtree.children):
-            if name.startswith("sweep_"):
-                nodes.append(self._dtree[name])
+        """Return child nodes that represent sweeps, in numeric order (cached per tree)."""
+        tree = self._dtree
+        assert tree is not None
+        cached = self._nodes_cache
+        n_children = len(tree.children)
+        if cached is not None and cached[0] is tree and cached[1] == n_children:
+            return cached[2]
+        children = tree.children
+        nodes = [children[name] for name in sorted_sweep_names(tree)]
+        self._nodes_cache = (tree, n_children, nodes)
         return nodes
+
+    def _build_schema(self, dtree: xr.DataTree) -> dict[str, Any]:
+        """Build the schema dict for *dtree* without touching reader state."""
+        children = dtree.children
+        sweep_nodes = [children[name] for name in sorted_sweep_names(dtree)]
+
+        # Extract variables and dimensions from first sweep.
+        # Only include actual radar moment variables (2D float: azimuth x range).
+        # Uses Dataset.variables (metadata only) — never constructs DataArrays or loads data.
+        variables: set[str] = set()
+        dimensions: dict[str, int] = {}
+        ds0: xr.Dataset | None = None
+        if sweep_nodes:
+            ds0 = sweep_nodes[0].to_dataset()
+            variables.update(_moment_names(ds0))
+            for dim, size in ds0.sizes.items():
+                dimensions[str(dim)] = int(size)
+
+        # Extract per-sweep elevation and variable lists.
+        # Placeholder ARCO sweeps store available variables in attrs["_sweep_variables"].
+        sweeps: list[dict[str, Any]] = []
+        for idx, node in enumerate(sweep_nodes):
+            elevation: float | None = None
+            sweep_vars: list[str] | None = None
+            try:
+                ds = ds0 if idx == 0 and ds0 is not None else node.to_dataset()
+                elevation = _finite_or_none(_sweep_elevation(ds))
+                # Per-sweep variable list: from real data_vars or stored attrs
+                if ds.data_vars:
+                    sweep_vars = sorted(_moment_names(ds))
+                elif "_sweep_variables" in ds.attrs:
+                    sweep_vars = list(ds.attrs["_sweep_variables"])
+            except Exception as exc:
+                logger.debug("Could not read metadata of sweep %d: %s", idx, exc)
+            entry: dict[str, Any] = {"index": idx, "elevation": elevation}
+            if sweep_vars:
+                entry["variables"] = sweep_vars
+                variables.update(sweep_vars)
+            sweeps.append(entry)
+
+        # Global attributes — from root node
+        root_attrs: dict[str, Any] = {}
+        root_ds: xr.Dataset | None = None
+        try:
+            root_ds = dtree.to_dataset()
+            for k, v in root_ds.attrs.items():
+                root_attrs[str(k)] = _serializable(v)
+        except (ValueError, KeyError, AttributeError) as exc:
+            logger.debug("Could not extract root attributes: %s", exc)
+
+        # Extract radar site coordinates from coords/data_vars/attrs
+        # xradar stores these as coordinate variables, not always as attrs
+        if "latitude" not in root_attrs or "longitude" not in root_attrs:
+            lat, lon = self._extract_site_coords(dtree, sweep_nodes, root_ds, ds0)
+            if lat is not None:
+                root_attrs["latitude"] = lat
+            if lon is not None:
+                root_attrs["longitude"] = lon
+
+        return {
+            "variables": sorted(variables),
+            "dimensions": dimensions,
+            "attributes": root_attrs,
+            "sweeps": sweeps,
+        }
+
+    @staticmethod
+    def _extract_site_coords(
+        dtree: Any,
+        sweep_nodes: list[Any],
+        root_ds: xr.Dataset | None = None,
+        ds0: xr.Dataset | None = None,
+    ) -> tuple[float | None, float | None]:
+        """Try to find radar site lat/lon from the DataTree."""
+        lat: float | None = None
+        lon: float | None = None
+
+        lat_keys = ("latitude", "origin_latitude", "siteLat")
+        lon_keys = ("longitude", "origin_longitude", "siteLon")
+
+        def find(ds: xr.Dataset, keys: tuple[str, ...]) -> float | None:
+            for k in keys:
+                if k in ds.variables:  # coords and data_vars alike
+                    try:
+                        return _finite_or_none(float(ds.variables[k].values.flat[0]))
+                    except Exception as exc:
+                        logger.debug("Site coordinate %s unreadable: %s", k, exc)
+            return None
+
+        # 1. Check root dataset coords and data_vars
+        try:
+            if root_ds is None:
+                root_ds = dtree.to_dataset()
+            lat = find(root_ds, lat_keys)
+            lon = find(root_ds, lon_keys)
+        except Exception as exc:
+            logger.debug("Root site coordinates unavailable: %s", exc)
+
+        # 2. Fallback: check first sweep's coords
+        if (lat is None or lon is None) and sweep_nodes:
+            try:
+                if ds0 is None:
+                    ds0 = sweep_nodes[0].to_dataset()
+                if lat is None:
+                    lat = find(ds0, lat_keys)
+                if lon is None:
+                    lon = find(ds0, lon_keys)
+            except Exception as exc:
+                logger.debug("Sweep site coordinates unavailable: %s", exc)
+
+        return lat, lon
+
+
+def _moment_names(ds: xr.Dataset) -> list[str]:
+    """Names of 2-D float data variables (radar moments); metadata-only, no data access."""
+    variables = ds.variables
+    return [
+        str(name)
+        for name in ds.data_vars
+        if variables[name].ndim == 2 and variables[name].dtype.kind == "f"
+    ]
+
+
+def _sweep_elevation(ds: xr.Dataset) -> float | None:
+    if "sweep_fixed_angle" in ds.attrs:
+        return float(ds.attrs["sweep_fixed_angle"])
+    if "sweep_fixed_angle" in ds.variables:
+        return float(ds.variables["sweep_fixed_angle"].values.flat[0])
+    if "elevation" in ds.variables:
+        return float(ds.variables["elevation"].values.flat[0])
+    return None
+
+
+def _finite_or_none(value: float | None) -> float | None:
+    """NaN/Inf become None so JSON.parse() doesn't reject the message."""
+    if value is None or math.isnan(value) or math.isinf(value):
+        return None
+    return value
 
 
 def _squeeze_vcp_time(ds: xr.Dataset) -> xr.Dataset:
@@ -739,13 +868,18 @@ def _serializable(value: Any) -> Any:
 
     NaN and Inf are replaced with None because JSON.parse() rejects them.
     """
-    if isinstance(value, np.integer):
-        return int(value)
-    if isinstance(value, (np.floating, float)):
-        v = float(value)
-        return None if (math.isnan(v) or math.isinf(v)) else v
     if isinstance(value, np.ndarray):
-        return value.tolist()
+        return _serializable(value.tolist())
+    if isinstance(value, np.generic):
+        return _serializable(value.item())
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        return None if (math.isnan(value) or math.isinf(value)) else value
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
+    if isinstance(value, (list, tuple)):
+        return [_serializable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _serializable(v) for k, v in value.items()}
     return value

@@ -4,21 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
+import math
 import os
+import re
 import signal
 import sys
 import traceback
 import uuid
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 _server_dir = Path(__file__).resolve().parent
 if str(_server_dir) not in sys.path:
     sys.path.insert(0, str(_server_dir))
 
 import websockets
+from websockets.asyncio.server import ServerConnection
+
+from engine import plugins
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -30,7 +39,7 @@ from engine.exporter import RadarExporter
 from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
 from engine.qc import QC_REGISTRY, QCPipeline
 from engine.reader import RadarReader, _serializable
-from engine.renderer import RadarRenderer
+from engine.renderer import RadarRenderer, _resolve_range
 from engine.retrievals import RETRIEVAL_REGISTRY, run_retrieval
 from engine.statistics import get_statistics
 from engine.temporal import (
@@ -40,7 +49,6 @@ from engine.temporal import (
 )
 from engine.tracking import identify_cells, track_cells
 from engine.volume import extract_cross_section_3d, extract_volume
-from websockets.asyncio.server import ServerConnection
 
 logging.basicConfig(
     level=logging.INFO,
@@ -61,32 +69,121 @@ ALLOWED_ORIGIN_PREFIXES = (
     "http://127.0.0.1:",
 )
 
+# Binary frames stay comfortably under WKWebView's 1 MB WebSocket message cap.
+CHUNK_SIZE = 900 * 1024
+# Sentinel the client interprets as "no data" in binary value arrays.
+NODATA_SENTINEL = -9999.0
+
 
 # Shared application state — survives across WebSocket reconnections
-_shared_reader = RadarReader()
 _shared_renderer = RadarRenderer()
 _shared_processor = RadarProcessor()
 _shared_exporter = RadarExporter()
 
-# Multi-file support: dict of file_id -> RadarReader instances
+# Multi-file support: dict of file_id -> RadarReader instances (insertion ordered).
 _file_readers: dict[str, RadarReader] = {}
 _last_file_id: str | None = None  # most recently opened file
-_render_lock = asyncio.Lock()
-_mutation_lock = asyncio.Lock()
+# Placeholder reader used only when no file is open (never holds data).
+_shared_reader = RadarReader()
+# Bumped whenever a reader's datatree is replaced (e.g. by ``process``) so the
+# renderer cache never serves stale pixels for a previous incarnation of the data.
+_generations: dict[str, int] = {}
+# Strong refs to fire-and-forget tasks so they are not garbage collected mid-run.
+_background_tasks: set[asyncio.Task[Any]] = set()
+
+_RENDER_ACCEPTS_TOKEN = "cache_token" in inspect.signature(RadarRenderer.render_sweep).parameters
+
+
+class _LoopLocks:
+    """Named asyncio locks that are (re)created per running event loop.
+
+    Module-level ``asyncio.Lock`` objects can end up bound to a stale loop (tests,
+    server restarts); resolving them lazily avoids "attached to a different loop".
+    """
+
+    def __init__(self) -> None:
+        self._locks: dict[str, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+    def get(self, name: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        entry = self._locks.get(name)
+        if entry is None or entry[0] is not loop:
+            entry = (loop, asyncio.Lock())
+            self._locks[name] = entry
+        return entry[1]
+
+
+_locks = _LoopLocks()
+
+
+def _render_lock() -> asyncio.Lock:
+    """Serialises access to the (non thread-safe) datashader renderer."""
+    return _locks.get("render")
+
+
+def _mutation_lock() -> asyncio.Lock:
+    """Serialises operations that mutate/consume shared processor/exporter state."""
+    return _locks.get("mutation")
+
+
+class UnknownFileError(KeyError):
+    """Raised when a request references a file_id that is not (or no longer) open."""
+
+    def __str__(self) -> str:
+        return str(self.args[0]) if self.args else "unknown file"
+
+
+def _resolve_reader(file_id: str | None) -> tuple[str | None, RadarReader]:
+    """Resolve a file_id to ``(file_id, reader)``.
+
+    * An explicit ``file_id`` must refer to an open file — silently serving a
+      different file's data would be far worse than an error.
+    * No ``file_id`` (older clients) means "the most recently opened file".
+    * With nothing open, the empty placeholder reader is returned so callers can
+      report "no file is open".
+    """
+    if file_id:
+        reader = _file_readers.get(file_id)
+        if reader is None:
+            raise UnknownFileError(f"Unknown or closed file_id '{file_id}'")
+        return file_id, reader
+    if _last_file_id and _last_file_id in _file_readers:
+        return _last_file_id, _file_readers[_last_file_id]
+    return None, _shared_reader
 
 
 def _get_reader(file_id: str | None) -> RadarReader:
-    """Resolve a file_id to its RadarReader, falling back to the shared reader."""
-    global _last_file_id
-    if file_id and file_id in _file_readers:
-        return _file_readers[file_id]
-    if _last_file_id and _last_file_id in _file_readers:
-        return _file_readers[_last_file_id]
-    return _shared_reader
+    return _resolve_reader(file_id)[1]
 
 
 def _get_datatree(file_id: str | None):
     return _get_reader(file_id).datatree
+
+
+def _register_reader(reader: RadarReader) -> str:
+    """Store a freshly opened reader under a new file_id and make it the active one."""
+    global _last_file_id
+    file_id = str(uuid.uuid4())
+    _file_readers[file_id] = reader
+    _generations[file_id] = 0
+    _last_file_id = file_id
+    if not _RENDER_ACCEPTS_TOKEN:  # legacy renderer cache has no data identity
+        _shared_renderer.invalidate_cache()
+    return file_id
+
+
+def _cache_token(file_id: str | None) -> tuple[str, int] | None:
+    """Identity of the data behind a reader: (file_id, generation)."""
+    if file_id is None:
+        return None
+    return file_id, _generations.get(file_id, 0)
+
+
+def _spawn(coro: Any) -> asyncio.Task[Any]:
+    task = asyncio.get_running_loop().create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
 
 
 def _origin_allowed(ws: ServerConnection) -> bool:
@@ -100,25 +197,221 @@ def _origin_allowed(ws: ServerConnection) -> bool:
     return any(origin.startswith(prefix) for prefix in ALLOWED_ORIGIN_PREFIXES)
 
 
+# ---------------------------------------------------------------------------
+# JSON + binary helpers
+# ---------------------------------------------------------------------------
+
+
+def _natural_key(name: str) -> list[Any]:
+    """Sort key so ``sweep_2`` comes before ``sweep_10``."""
+    return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", str(name))]
+
+
+def _json_default(obj: Any) -> Any:
+    result = _serializable(obj)
+    if result is not obj:
+        return result
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _sanitize(obj: Any) -> Any:
+    """Make *obj* strictly JSON-safe: numpy -> python, NaN/Inf -> None."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize(v) for v in obj]
+    if isinstance(obj, np.ndarray):
+        return _sanitize(obj.tolist())
+    if isinstance(obj, np.generic):
+        return _sanitize(obj.item())
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, bytes):
+        return obj.decode("utf-8", errors="replace")
+    return obj
+
+
+def _dumps(msg: dict[str, Any]) -> str:
+    """Serialise *msg*; NaN/Inf become ``null`` instead of failing the request."""
+    try:
+        return json.dumps(msg, default=_json_default, allow_nan=False)
+    except ValueError:
+        # NaN/Inf somewhere in the payload: clean it and retry (slow path only).
+        return json.dumps(_sanitize(msg), default=_json_default, allow_nan=False)
+
+
+def _byte_views(arrays: Sequence[Any]) -> list[memoryview]:
+    """Zero-copy flat byte views over C-contiguous arrays / bytes-like objects."""
+    views: list[memoryview] = []
+    for arr in arrays:
+        if isinstance(arr, (bytes, bytearray, memoryview)):
+            views.append(memoryview(arr).cast("B"))
+        else:
+            views.append(memoryview(np.ascontiguousarray(arr)).cast("B"))
+    return views
+
+
+def _iter_chunks(views: Sequence[memoryview], chunk_size: int = CHUNK_SIZE) -> Iterator[Any]:
+    """Yield the concatenation of *views* in ``chunk_size`` frames.
+
+    A frame that lies within one view is a zero-copy slice; only frames that
+    straddle two arrays are joined (at most ``chunk_size`` bytes each).
+    """
+    parts: list[memoryview] = []
+    filled = 0
+    for view in views:
+        pos, size = 0, len(view)
+        while pos < size:
+            take = min(size - pos, chunk_size - filled)
+            parts.append(view[pos : pos + take])
+            filled += take
+            pos += take
+            if filled == chunk_size:
+                yield parts[0] if len(parts) == 1 else b"".join(parts)
+                parts, filled = [], 0
+    if filled:
+        yield parts[0] if len(parts) == 1 else b"".join(parts)
+
+
+def _finite_range(values: np.ndarray) -> tuple[float, float] | None:
+    """(min, max) of the finite values in one pass, ``None`` if there are none."""
+    if values.size == 0:
+        return None
+    lo = float(np.fmin.reduce(values, axis=None))
+    hi = float(np.fmax.reduce(values, axis=None))
+    if math.isfinite(lo) and math.isfinite(hi):
+        return lo, hi
+    # NaN-only (fmin returns NaN) or Inf present: fall back to a masked scan.
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return None
+    return float(finite.min()), float(finite.max())
+
+
+def _pack_field(
+    data: Any, variable: str, *, nodata: float = NODATA_SENTINEL
+) -> tuple[dict[str, Any], list[np.ndarray]]:
+    """Prepare a 2-D field for the ``[azimuth][range][values]`` wire format.
+
+    Returns ``(header_fields, [azimuth_f32, range_f32, values_f32])``. Pure CPU
+    work — call it from an executor thread.
+    """
+    azimuth = (
+        np.ascontiguousarray(data.coords["azimuth"].values, dtype=np.float32)
+        if "azimuth" in data.coords
+        else np.arange(data.shape[0], dtype=np.float32)
+    )
+    range_m = (
+        np.ascontiguousarray(data.coords["range"].values, dtype=np.float32)
+        if "range" in data.coords
+        else np.arange(data.shape[-1], dtype=np.float32)
+    )
+    # One copy (also detaches from any cached source array); sentinel fill is in-place.
+    values = np.array(data.values, dtype=np.float32, order="C", copy=True)
+    observed = _finite_range(values)
+    np.nan_to_num(values, copy=False, nan=nodata)
+
+    vmin, vmax = _resolve_range(variable)
+    if vmin is None:
+        vmin = observed[0] if observed else 0.0
+    if vmax is None:
+        vmax = observed[1] if observed else 1.0
+
+    fields = {
+        "n_az": len(azimuth),
+        "n_range": len(range_m),
+        "azimuth_bytes": azimuth.nbytes,
+        "range_bytes": range_m.nbytes,
+        "values_bytes": values.nbytes,
+        "vmin": float(vmin),
+        "vmax": float(vmax),
+        "units": str(data.attrs.get("units", data.attrs.get("unit", ""))),
+        "max_range": float(range_m.max()) if range_m.size else 0.0,
+    }
+    return fields, [azimuth, range_m, values]
+
+
 class ConnectionHandler:
     """Manages message routing for a single WebSocket connection, using shared state."""
 
     def __init__(self, ws: ServerConnection) -> None:
         self.ws = ws
+        # Header + binary chunks of one response must reach the client contiguously
+        # (it has a single "pending binary header" slot), so all sends share a lock.
+        self._send_lock = asyncio.Lock()
+        # Storm-cell tracking state is per connection; the lock keeps
+        # identify_cells -> track_cells in arrival order despite concurrent dispatch.
+        self._previous_cells: list[Any] | None = None
+        self._cells_lock = asyncio.Lock()
+
+    async def _send_text(self, msg: dict[str, Any]) -> None:
+        """Send one JSON message. Caller must hold ``_send_lock``."""
+        try:
+            payload = _dumps(msg)
+        except (TypeError, ValueError) as exc:
+            # Never leave the client hanging: report the failure for this request.
+            logger.error("JSON serialization error for '%s': %s", msg.get("type"), exc)
+            payload = json.dumps(
+                {"type": "error", "message": f"Could not encode '{msg.get('type')}': {exc}"}
+            )
+        await self.ws.send(payload)
 
     async def send(self, msg: dict[str, Any]) -> None:
         try:
-            await self.ws.send(json.dumps(msg, default=_json_default, allow_nan=False))
-        except ValueError as exc:
-            logger.error("JSON serialization error (NaN/Inf in message?): %s", exc)
+            async with self._send_lock:
+                await self._send_text(msg)
         except websockets.exceptions.ConnectionClosed:
             logger.warning("Connection closed while sending message")
+
+    async def _send_binary_chunks(
+        self,
+        arrays: Sequence[Any],
+        header: dict[str, Any] | None = None,
+        *,
+        count_key: str | None = "chunks",
+        length_key: str | None = None,
+    ) -> None:
+        """Send an optional JSON *header* followed by *arrays* as binary frames.
+
+        The arrays are concatenated on the wire and split into ``CHUNK_SIZE``
+        frames without copying the whole payload. The header (if any) receives
+        the frame count under ``count_key`` and the total byte count under
+        ``length_key``. Header and frames are sent atomically with respect to
+        other messages on this connection.
+        """
+        views = _byte_views(arrays)
+        total = sum(len(v) for v in views)
+        n_chunks = -(-total // CHUNK_SIZE)
+        if header is not None:
+            header = dict(header)
+            if count_key:
+                header[count_key] = n_chunks
+            if length_key:
+                header[length_key] = total
+        try:
+            async with self._send_lock:
+                if header is not None:
+                    await self._send_text(header)
+                for chunk in _iter_chunks(views):
+                    await self.ws.send(chunk)
+        except websockets.exceptions.ConnectionClosed:
+            logger.warning("Connection closed while sending binary data")
 
     async def send_error(self, message: str) -> None:
         await self.send({"type": "error", "message": message})
 
     async def send_progress(self, percent: int, message: str) -> None:
         await self.send({"type": "progress", "percent": percent, "message": message})
+
+    def _progress_callback(self, loop: asyncio.AbstractEventLoop) -> Callable[[int, str], None]:
+        """Thread-safe progress reporter for work running in an executor."""
+
+        def progress_sync(percent: int, message: str) -> None:
+            if loop.is_closed():
+                return
+            asyncio.run_coroutine_threadsafe(self.send_progress(percent, message), loop)
+
+        return progress_sync
 
     async def handle_message(self, raw: str) -> None:
         try:
@@ -176,6 +469,8 @@ class ConnectionHandler:
             "get_region_stats": self._handle_get_region_stats,
             "get_volume": self._handle_get_volume,
             "get_cross_section_3d": self._handle_get_cross_section_3d,
+            "list_modules": self._handle_list_modules,
+            "run_module": self._handle_run_module,
         }.get(msg_type)
 
         if handler is None:
@@ -328,8 +623,6 @@ class ConnectionHandler:
 
         Response: JSON header followed by chunked binary Float32 data.
         """
-        import numpy as np
-
         variable = msg.get("variable")
         box = msg.get("box")
         resolution = msg.get("resolution", 100)
@@ -372,6 +665,7 @@ class ConnectionHandler:
                     box,
                     resolution=resolution,
                     z_max=float(z_max_val),
+                    sweep_loader=reader.get_sweep_dataset,
                 ),
             )
         except ValueError as exc:
@@ -379,27 +673,11 @@ class ConnectionHandler:
             return
 
         flat_data: np.ndarray = result.pop("data")
-        val_bytes = flat_data.tobytes()
-
-        chunk_size = 900 * 1024
-        chunks = [val_bytes[i : i + chunk_size] for i in range(0, len(val_bytes), chunk_size)]
-
-        # Send JSON header
-        await self.send(
-            {
-                "type": "volume_data",
-                **result,
-                "chunks": len(chunks),
-                "byte_length": len(val_bytes),
-            }
+        await self._send_binary_chunks(
+            [flat_data],
+            {"type": "volume_data", **result},
+            length_key="byte_length",
         )
-
-        # Send binary chunks
-        try:
-            for chunk in chunks:
-                await self.ws.send(chunk)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed while sending volume data")
 
     async def _handle_get_cross_section_3d(self, msg: dict[str, Any]) -> None:
         """Extract a vertical curtain cross-section along a Cartesian line.
@@ -412,8 +690,6 @@ class ConnectionHandler:
 
         Response: JSON header followed by chunked binary Float32 data.
         """
-        import numpy as np
-
         variable = msg.get("variable")
         start = msg.get("start")
         end = msg.get("end")
@@ -457,6 +733,7 @@ class ConnectionHandler:
                     start,
                     end,
                     width=float(width),
+                    sweep_loader=reader.get_sweep_dataset,
                 ),
             )
         except ValueError as exc:
@@ -464,31 +741,18 @@ class ConnectionHandler:
             return
 
         flat_data: np.ndarray = result.pop("data")
-        val_bytes = flat_data.tobytes()
-
-        chunk_size = 900 * 1024
-        chunks = [val_bytes[i : i + chunk_size] for i in range(0, len(val_bytes), chunk_size)]
-
-        # Send JSON header
-        await self.send(
-            {
-                "type": "cross_section_3d_data",
-                **result,
-                "chunks": len(chunks),
-                "byte_length": len(val_bytes),
-            }
+        await self._send_binary_chunks(
+            [flat_data],
+            {"type": "cross_section_3d_data", **result},
+            length_key="byte_length",
         )
-
-        # Send binary chunks
-        try:
-            for chunk in chunks:
-                await self.ws.send(chunk)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed while sending cross-section 3D data")
 
     async def _handle_ping(self, msg: dict[str, Any]) -> None:
         """Health check handler — responds with pong and server status."""
-        has_file = _get_datatree(msg.get("file_id")) is not None
+        try:
+            has_file = _get_datatree(msg.get("file_id")) is not None
+        except UnknownFileError:
+            has_file = False
         await self.send(
             {
                 "type": "pong",
@@ -516,52 +780,54 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
         try:
             files = await loop.run_in_executor(None, list_nexrad_l2_files, station, date)
-            await self.send({"type": "nexrad_l2_files", "station": station, "date": date, "files": files})
+            await self.send(
+                {"type": "nexrad_l2_files", "station": station, "date": date, "files": files}
+            )
         except Exception as exc:
             await self.send_error(f"list_nexrad_l2_files failed: {exc}")
 
+    async def _open_with_new_reader(
+        self, opener: Callable[[RadarReader], dict[str, Any]], *, timeout: float | None = None
+    ) -> None:
+        """Open a source in a brand-new reader and announce it as a new file_id.
+
+        Every open gets its own :class:`RadarReader`, so previously opened files
+        keep their data and ``close_file`` on one never affects another.
+        """
+        loop = asyncio.get_running_loop()
+        reader = RadarReader()
+        job = loop.run_in_executor(None, opener, reader)
+        schema = await (asyncio.wait_for(job, timeout) if timeout else job)
+        file_id = _register_reader(reader)
+        await self.send_progress(100, "Loaded")
+        schema_serial = {k: _serializable(v) for k, v in schema.items()}
+        await self.send({"type": "file_opened", "data": schema_serial, "file_id": file_id})
+
     async def _handle_open_nexrad_l2(self, msg: dict[str, Any]) -> None:
-        global _last_file_id
         s3_path = msg.get("path", "")
-        if not s3_path:
+        if not s3_path or not isinstance(s3_path, str):
             await self.send_error("open_nexrad_l2: 'path' required")
             return
         await self.send_progress(5, "Connecting to S3...")
-        loop = asyncio.get_running_loop()
-        async with _mutation_lock:
-            try:
-                await self.send_progress(15, f"Downloading {s3_path.split('/')[-1]}...")
-                schema = await loop.run_in_executor(None, _shared_reader.open_s3_file, s3_path)
-                await self.send_progress(100, "Loaded")
-                file_id = str(uuid.uuid4())
-                _last_file_id = file_id
-                _file_readers[file_id] = _shared_reader
-                schema_serial = {k: _serializable(v) for k, v in schema.items()}
-                await self.send({"type": "file_opened", "data": schema_serial, "file_id": file_id})
-            except Exception as exc:
-                await self.send_error(f"open_nexrad_l2 failed: {exc}")
+        try:
+            await self.send_progress(15, f"Downloading {s3_path.split('/')[-1]}...")
+            await self._open_with_new_reader(lambda r: r.open_s3_file(s3_path))
+        except Exception as exc:
+            await self.send_error(f"open_nexrad_l2 failed: {exc}")
 
     async def _handle_open_nexrad_realtime(self, msg: dict[str, Any]) -> None:
-        global _last_file_id
         station = msg.get("station", "")
-        if not station:
+        if not station or not isinstance(station, str):
             await self.send_error("open_nexrad_realtime: 'station' required")
             return
         await self.send_progress(5, f"Finding latest scan for {station}...")
         loop = asyncio.get_running_loop()
-        async with _mutation_lock:
-            try:
-                latest = await loop.run_in_executor(None, get_latest_nexrad_l2, station)
-                await self.send_progress(15, f"Downloading {latest['name']}...")
-                schema = await loop.run_in_executor(None, _shared_reader.open_s3_file, latest["path"])
-                await self.send_progress(100, "Loaded")
-                file_id = str(uuid.uuid4())
-                _last_file_id = file_id
-                _file_readers[file_id] = _shared_reader
-                schema_serial = {k: _serializable(v) for k, v in schema.items()}
-                await self.send({"type": "file_opened", "data": schema_serial, "file_id": file_id})
-            except Exception as exc:
-                await self.send_error(f"open_nexrad_realtime failed: {exc}")
+        try:
+            latest = await loop.run_in_executor(None, get_latest_nexrad_l2, station)
+            await self.send_progress(15, f"Downloading {latest['name']}...")
+            await self._open_with_new_reader(lambda r: r.open_s3_file(latest["path"]))
+        except Exception as exc:
+            await self.send_error(f"open_nexrad_realtime failed: {exc}")
 
     async def _handle_list_arco_scans(self, msg: dict[str, Any]) -> None:
         station = msg.get("station", "KLOT")
@@ -574,36 +840,24 @@ class ConnectionHandler:
             await self.send_error(f"list_arco_scans failed: {exc}")
 
     async def _handle_open_arco_scan(self, msg: dict[str, Any]) -> None:
-        global _last_file_id
         station = msg.get("station", "")
         scan_key = msg.get("scan_key", "")
         if not station or not scan_key:
             await self.send_error("open_arco_scan: 'station' and 'scan_key' required")
             return
-        await self.send_progress(5, f"Connecting to ARCO store (first open ~30s, cached after)…")
-        loop = asyncio.get_running_loop()
-        async with _mutation_lock:
-            try:
-                schema = await asyncio.wait_for(
-                    loop.run_in_executor(None, _shared_reader.open_arco_scan, station, scan_key),
-                    timeout=120.0,
-                )
-                await self.send_progress(100, "Loaded")
-                file_id = str(uuid.uuid4())
-                _last_file_id = file_id
-                _file_readers[file_id] = _shared_reader
-                schema_serial = {k: _serializable(v) for k, v in schema.items()}
-                await self.send({"type": "file_opened", "data": schema_serial, "file_id": file_id})
-            except asyncio.TimeoutError:
-                await self.send_error(
-                    f"open_arco_scan timed out after 120s — the ARCO store may be slow or unavailable"
-                )
-            except Exception as exc:
-                await self.send_error(f"open_arco_scan failed: {exc}")
+        await self.send_progress(5, "Connecting to ARCO store (first open ~30s, cached after)…")
+        try:
+            await self._open_with_new_reader(
+                lambda r: r.open_arco_scan(station, scan_key), timeout=120.0
+            )
+        except asyncio.TimeoutError:
+            await self.send_error(
+                "open_arco_scan timed out after 120s — the ARCO store may be slow or unavailable"
+            )
+        except Exception as exc:
+            await self.send_error(f"open_arco_scan failed: {exc}")
 
     async def _handle_open_file(self, msg: dict[str, Any]) -> None:
-        global _last_file_id
-
         path = msg.get("path")
         if not path:
             await self.send_error("open_file: missing 'path'")
@@ -615,10 +869,7 @@ class ConnectionHandler:
         filename = Path(path).name
         await self.send_progress(5, f"Detecting format for {filename}...")
 
-        file_id = str(uuid.uuid4())
         reader = RadarReader()
-
-        _shared_renderer.invalidate_cache()
         loop = asyncio.get_running_loop()
 
         await self.send_progress(15, f"Opening {filename}...")
@@ -626,20 +877,16 @@ class ConnectionHandler:
 
         await self.send_progress(80, f"Building metadata for {filename}...")
 
-        _file_readers[file_id] = reader
-        _last_file_id = file_id
-        _shared_reader._dtree = reader._dtree
-        _shared_reader._path = reader._path
-        _shared_reader._format = reader._format
+        # No renderer-cache flush needed: cache entries are keyed by (file_id, generation).
+        file_id = _register_reader(reader)
 
         await self.send_progress(100, f"Loaded {filename}")
         await self.send({"type": "file_opened", "data": schema, "file_id": file_id})
 
-        # Pre-render first variable / sweep 0 in background for instant display
+        # Warm the reader's lazy sweep data for the most likely first request.
         if schema.get("variables") and schema.get("sweeps"):
-            first_var = schema["variables"][0]
-            self._prerender_task = asyncio.create_task(
-                self._prerender(first_var, 0, loop, file_id),
+            _spawn(
+                self._prefetch(reader, schema["sweeps"][0].get("index", 0), schema["variables"][0])
             )
 
     async def _handle_close_file(self, msg: dict[str, Any]) -> None:
@@ -652,39 +899,32 @@ class ConnectionHandler:
             return
 
         removed = _file_readers.pop(file_id, None)
+        _generations.pop(file_id, None)
         if removed is None:
             logger.debug("close_file: file_id %s not found (already closed?)", file_id)
+        else:
+            # Entries are token-keyed so they could never be served again; free the memory.
+            _shared_renderer.invalidate_cache()
 
-        # If we closed the last active file, update the pointer
+        # If we closed the active file, fall back to the most recently opened remaining one.
         if _last_file_id == file_id:
-            _last_file_id = next(iter(_file_readers), None)
+            _last_file_id = next(reversed(_file_readers), None)
 
         await self.send({"type": "file_closed", "file_id": file_id})
         logger.info("Closed file %s (%d files still open)", file_id, len(_file_readers))
 
-    async def _prerender(
-        self, variable: str, sweep: int, loop: asyncio.AbstractEventLoop, file_id: str | None = None
-    ) -> None:
-        """Pre-render a sweep in background so the first render request is instant."""
+    async def _prefetch(self, reader: RadarReader, sweep: int, variable: str) -> None:
+        """Load a sweep's values in the background so the first get_sweep_data is instant.
+
+        xarray's lazily-indexed arrays memoise on first ``.values``, and the reader
+        hands out views of the same variables, so this warms the reader itself.
+        """
+        loop = asyncio.get_running_loop()
         try:
-            reader = _get_reader(file_id)
-            data = await loop.run_in_executor(
-                None,
-                reader.get_sweep_data,
-                sweep,
-                variable,
-            )
-            async with _render_lock:
-                await loop.run_in_executor(
-                    None,
-                    _shared_renderer.render_sweep,
-                    data,
-                    variable,
-                    sweep,
-                )
-            logger.info("Pre-rendered %s sweep %d", variable, sweep)
+            await loop.run_in_executor(None, lambda: reader.get_sweep_data(sweep, variable).values)
+            logger.info("Prefetched %s sweep %d", variable, sweep)
         except Exception:
-            logger.debug("Pre-render failed (non-fatal)", exc_info=True)
+            logger.debug("Prefetch failed (non-fatal)", exc_info=True)
 
     async def _handle_render(self, msg: dict[str, Any]) -> None:
         variable = msg.get("variable")
@@ -717,24 +957,25 @@ class ConnectionHandler:
                 await self.send_error("render: 'bbox' values must be numbers")
                 return
 
+        resolved_id, reader = _resolve_reader(file_id)
+        # Snapshot the token *before* loading so a concurrent `process` can only
+        # make us cache under the older generation, never under the newer one.
+        token = _cache_token(resolved_id)
+
         await self.send_progress(10, f"Rendering {variable} sweep {sweep}...")
 
         loop = asyncio.get_running_loop()
-
-        reader = _get_reader(file_id)
         data = await loop.run_in_executor(None, reader.get_sweep_data, sweep, variable)
 
-        async with _render_lock:
-            result = await loop.run_in_executor(
-                None,
-                _shared_renderer.render_sweep,
-                data,
-                variable,
-                sweep,
-                width,
-                height,
-                bbox,
-            )
+        def _render() -> dict[str, Any]:
+            if _RENDER_ACCEPTS_TOKEN:
+                return _shared_renderer.render_sweep(
+                    data, variable, sweep, width, height, bbox, cache_token=token
+                )
+            return _shared_renderer.render_sweep(data, variable, sweep, width, height, bbox)
+
+        async with _render_lock():
+            result = await loop.run_in_executor(None, _render)
 
         await self.send({"type": "render_result", **result})
 
@@ -743,9 +984,10 @@ class ConnectionHandler:
 
         The response is a JSON header followed by binary Float32Arrays:
         {type: "sweep_data", variable, sweep, n_az, n_range,
-         azimuth_offset, range_offset, values_offset, vmin, vmax, units,
-         byte_length}
-        Then a single binary message: [azimuth f32] [range f32] [values f32]
+         azimuth_bytes, range_bytes, values_bytes, vmin, vmax, units,
+         max_range, chunks}
+        Then ``chunks`` binary messages whose concatenation is
+        [azimuth f32] [range f32] [values f32].
 
         Optional ``file_id`` selects which open file to read from (defaults
         to the most recently opened file for backward compatibility).
@@ -766,76 +1008,14 @@ class ConnectionHandler:
         logger.info("get_sweep_data: variable=%s sweep=%d file_id=%s", variable, sweep, file_id)
 
         loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(
-            None,
-            reader.get_sweep_data,
-            sweep,
-            variable,
+
+        def _load_and_pack() -> tuple[dict[str, Any], list[np.ndarray]]:
+            return _pack_field(reader.get_sweep_data(sweep, variable), variable)
+
+        fields, arrays = await loop.run_in_executor(None, _load_and_pack)
+        await self._send_binary_chunks(
+            arrays, {"type": "sweep_data", "variable": variable, "sweep": sweep, **fields}
         )
-
-        import numpy as np
-
-        azimuth = (
-            data.coords["azimuth"].values.astype(np.float32)
-            if "azimuth" in data.coords
-            else np.arange(data.shape[0], dtype=np.float32)
-        )
-        range_m = (
-            data.coords["range"].values.astype(np.float32)
-            if "range" in data.coords
-            else np.arange(data.shape[-1], dtype=np.float32)
-        )
-        values = np.nan_to_num(data.values.astype(np.float32), nan=-9999.0)
-
-        # Pack into a single binary buffer: [azimuth][range][values]
-        az_bytes = azimuth.tobytes()
-        rng_bytes = range_m.tobytes()
-        val_bytes = values.tobytes()
-
-        buf = az_bytes + rng_bytes + val_bytes
-
-        # Resolve colormap range
-        from engine.renderer import _resolve_range
-
-        vmin, vmax = _resolve_range(variable)
-        if vmin is None:
-            vmin = float(np.nanmin(data.values))
-        if vmax is None:
-            vmax = float(np.nanmax(data.values))
-
-        units = str(data.attrs.get("units", data.attrs.get("unit", "")))
-
-        # Chunk the buffer to stay under WKWebView's 1 MB WebSocket message limit.
-
-        chunk_size = 900 * 1024  # 900 KB — comfortably under the 1 MB WKWebView cap
-        chunks = [buf[i : i + chunk_size] for i in range(0, len(buf), chunk_size)]
-        n_chunks = len(chunks)
-
-        # Send JSON header first
-        await self.send(
-            {
-                "type": "sweep_data",
-                "variable": variable,
-                "sweep": sweep,
-                "n_az": len(azimuth),
-                "n_range": len(range_m),
-                "azimuth_bytes": len(az_bytes),
-                "range_bytes": len(rng_bytes),
-                "values_bytes": len(val_bytes),
-                "vmin": vmin,
-                "vmax": vmax,
-                "units": units,
-                "max_range": float(range_m.max()),
-                "chunks": n_chunks,
-            }
-        )
-
-        # Send each chunk as a separate binary WebSocket message.
-        try:
-            for chunk in chunks:
-                await self.ws.send(chunk)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed while sending binary sweep data")
 
     async def _handle_process(self, msg: dict[str, Any]) -> None:
         pipeline = msg.get("pipeline", {})
@@ -844,18 +1024,16 @@ class ConnectionHandler:
             await self.send_error("process: 'pipeline' must be an object")
             return
 
-        reader = _get_reader(file_id)
+        resolved_id, reader = _resolve_reader(file_id)
         datatree = reader.datatree
         if datatree is None:
             await self.send_error("process: no file is open")
             return
 
         loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
 
-        def progress_sync(percent: int, message: str) -> None:
-            asyncio.run_coroutine_threadsafe(self.send_progress(percent, message), loop)
-
-        async with _mutation_lock:
+        async with _mutation_lock():
             result_tree = await loop.run_in_executor(
                 None,
                 _shared_processor.process,
@@ -864,9 +1042,13 @@ class ConnectionHandler:
                 progress_sync,
             )
 
+        # Swap the data and bump the generation together (no await in between) so
+        # no render can pair the new generation with the old tree or vice versa.
         reader._dtree = result_tree
-        if reader is _shared_reader or file_id == _last_file_id:
-            _shared_reader._dtree = result_tree
+        if resolved_id is not None and resolved_id in _generations:
+            _generations[resolved_id] += 1
+        if not _RENDER_ACCEPTS_TOKEN:
+            _shared_renderer.invalidate_cache()
 
         await self.send_progress(100, "Processing complete")
 
@@ -906,10 +1088,9 @@ class ConnectionHandler:
 
         loop = asyncio.get_running_loop()
 
-        def progress_sync(percent: int, message: str) -> None:
-            asyncio.run_coroutine_threadsafe(self.send_progress(percent, message), loop)
+        progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock:
+        async with _mutation_lock():
             saved_path = await loop.run_in_executor(
                 None,
                 lambda: _shared_exporter.export(
@@ -960,10 +1141,9 @@ class ConnectionHandler:
 
         loop = asyncio.get_running_loop()
 
-        def progress_sync(percent: int, message: str) -> None:
-            asyncio.run_coroutine_threadsafe(self.send_progress(percent, message), loop)
+        progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock:
+        async with _mutation_lock():
             saved_paths = await loop.run_in_executor(
                 None,
                 lambda: _shared_exporter.batch_export(
@@ -1025,10 +1205,9 @@ class ConnectionHandler:
 
         loop = asyncio.get_running_loop()
 
-        def progress_sync(percent: int, message: str) -> None:
-            asyncio.run_coroutine_threadsafe(self.send_progress(percent, message), loop)
+        progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock:
+        async with _mutation_lock():
             saved_path = await loop.run_in_executor(
                 None,
                 lambda: _shared_exporter.export_animation(
@@ -1073,30 +1252,21 @@ class ConnectionHandler:
         await self.send_progress(10, f"Running retrieval: {name}...")
 
         loop = asyncio.get_running_loop()
-        result_da = await loop.run_in_executor(
-            None,
-            run_retrieval,
-            datatree,
-            name,
-            sweep,
-            params,
-        )
 
-        import numpy as np
-
-        values = result_da.values.astype(np.float32)
-        valid = values[np.isfinite(values)]
-        stats: dict[str, Any] = {}
-        if len(valid) > 0:
-            stats = {
-                "min": float(np.min(valid)),
-                "max": float(np.max(valid)),
-                "mean": float(np.mean(valid)),
-                "std": float(np.std(valid)),
-            }
-
-        await self.send(
-            {
+        def _compute() -> tuple[dict[str, Any], np.ndarray]:
+            result_da = run_retrieval(datatree, name, sweep, params)
+            values = np.array(result_da.values, dtype=np.float32, copy=True)
+            observed = _finite_range(values)
+            stats: dict[str, Any] = {}
+            if observed is not None:
+                valid = values[np.isfinite(values)]
+                stats = {
+                    "min": observed[0],
+                    "max": observed[1],
+                    "mean": float(np.mean(valid)),
+                    "std": float(np.std(valid)),
+                }
+            info = {
                 "type": "retrieval_result",
                 "name": name,
                 "sweep": sweep,
@@ -1105,30 +1275,25 @@ class ConnectionHandler:
                 "long_name": str(result_da.attrs.get("long_name", name)),
                 "stats": stats,
             }
-        )
+            np.nan_to_num(values, copy=False, nan=NODATA_SENTINEL)
+            return info, values
+
+        info, values = await loop.run_in_executor(None, _compute)
+
+        await self.send(info)
 
         # Send the data as binary (chunked like sweep_data)
-        val_bytes = np.nan_to_num(values, nan=-9999.0).tobytes()
-        chunk_size = 900 * 1024
-        chunks = [val_bytes[i : i + chunk_size] for i in range(0, len(val_bytes), chunk_size)]
-
-        await self.send(
+        await self._send_binary_chunks(
+            [values],
             {
                 "type": "retrieval_data",
                 "name": name,
                 "sweep": sweep,
                 "n_az": values.shape[0] if values.ndim >= 1 else 1,
                 "n_range": values.shape[1] if values.ndim >= 2 else values.shape[0],
-                "chunks": len(chunks),
-                "byte_length": len(val_bytes),
-            }
+            },
+            length_key="byte_length",
         )
-
-        try:
-            for chunk in chunks:
-                await self.ws.send(chunk)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed while sending retrieval data")
 
     async def _handle_list_retrievals(self, msg: dict[str, Any]) -> None:
         """List available retrievals with their metadata."""
@@ -1179,13 +1344,16 @@ class ConnectionHandler:
         await self.send_progress(10, "Extracting cross-section...")
 
         loop = asyncio.get_running_loop()
+        loader = _get_reader(msg.get("file_id")).get_sweep_dataset
         result = await loop.run_in_executor(
             None,
-            extract_cross_section,
-            datatree,
-            tuple(start),
-            tuple(end),
-            variable,
+            lambda: extract_cross_section(
+                datatree,
+                tuple(start),
+                tuple(end),
+                variable,
+                sweep_loader=loader,
+            ),
         )
 
         await self.send({"type": "cross_section_result", **result})
@@ -1211,13 +1379,16 @@ class ConnectionHandler:
         await self.send_progress(10, "Extracting vertical profile...")
 
         loop = asyncio.get_running_loop()
+        loader = _get_reader(msg.get("file_id")).get_sweep_dataset
         result = await loop.run_in_executor(
             None,
-            extract_vertical_profile,
-            datatree,
-            float(lat),
-            float(lon),
-            variable,
+            lambda: extract_vertical_profile(
+                datatree,
+                float(lat),
+                float(lon),
+                variable,
+                sweep_loader=loader,
+            ),
         )
 
         await self.send({"type": "vertical_profile_result", **result})
@@ -1320,66 +1491,23 @@ class ConnectionHandler:
 
         await self.send_progress(30, f"Running {len(pipeline)} QC steps...")
 
-        cleaned = await loop.run_in_executor(None, pipeline.run, data)
+        def _run_and_pack() -> tuple[dict[str, Any], list[np.ndarray]]:
+            return _pack_field(pipeline.run(data), variable)
+
+        fields, arrays = await loop.run_in_executor(None, _run_and_pack)
 
         await self.send_progress(80, "Sending QC results...")
 
-        import numpy as np
-
-        azimuth = (
-            cleaned.coords["azimuth"].values.astype(np.float32)
-            if "azimuth" in cleaned.coords
-            else np.arange(cleaned.shape[0], dtype=np.float32)
-        )
-        range_m = (
-            cleaned.coords["range"].values.astype(np.float32)
-            if "range" in cleaned.coords
-            else np.arange(cleaned.shape[-1], dtype=np.float32)
-        )
-        values = np.nan_to_num(cleaned.values.astype(np.float32), nan=-9999.0)
-
-        az_bytes = azimuth.tobytes()
-        rng_bytes = range_m.tobytes()
-        val_bytes = values.tobytes()
-        buf = az_bytes + rng_bytes + val_bytes
-
-        from engine.renderer import _resolve_range
-
-        vmin, vmax = _resolve_range(variable)
-        if vmin is None:
-            vmin = float(np.nanmin(cleaned.values))
-        if vmax is None:
-            vmax = float(np.nanmax(cleaned.values))
-
-        units = str(cleaned.attrs.get("units", cleaned.attrs.get("unit", "")))
-
-        chunk_size = 900 * 1024
-        chunks = [buf[i : i + chunk_size] for i in range(0, len(buf), chunk_size)]
-
-        await self.send(
+        await self._send_binary_chunks(
+            arrays,
             {
                 "type": "qc_result",
                 "variable": variable,
                 "sweep": sweep,
-                "n_az": len(azimuth),
-                "n_range": len(range_m),
-                "azimuth_bytes": len(az_bytes),
-                "range_bytes": len(rng_bytes),
-                "values_bytes": len(val_bytes),
-                "vmin": vmin,
-                "vmax": vmax,
-                "units": units,
-                "max_range": float(range_m.max()),
-                "chunks": len(chunks),
+                **fields,
                 "steps_applied": pipeline.to_dict(),
-            }
+            },
         )
-
-        try:
-            for chunk in chunks:
-                await self.ws.send(chunk)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed while sending QC data")
 
         await self.send_progress(100, "QC pipeline complete")
 
@@ -1492,17 +1620,12 @@ class ConnectionHandler:
         az_bytes_raw = result.pop("azimuth")
         rng_bytes_raw = result.pop("range")
 
-        await self.send({"type": "difference_result", **result})
-
-        buf = az_bytes_raw + rng_bytes_raw + diff_bytes
-        chunk_size = 900 * 1024
-        chunks = [buf[i : i + chunk_size] for i in range(0, len(buf), chunk_size)]
-
-        try:
-            for chunk in chunks:
-                await self.ws.send(chunk)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("Connection closed while sending difference data")
+        # The header now also carries the frame count (the client defaults to a single
+        # frame when it is missing, which truncated differences larger than 900 KB).
+        await self._send_binary_chunks(
+            [az_bytes_raw, rng_bytes_raw, diff_bytes],
+            {"type": "difference_result", **result},
+        )
 
     async def _handle_get_accumulation(self, msg: dict[str, Any]) -> None:
         """Accumulate a variable across multiple files."""
@@ -1549,6 +1672,14 @@ class ConnectionHandler:
     # ------------------------------------------------------------------
 
     async def _handle_identify_cells(self, msg: dict[str, Any]) -> None:
+        async with self._cells_lock:
+            await self._identify_cells_locked(msg)
+
+    async def _handle_track_cells(self, msg: dict[str, Any]) -> None:
+        async with self._cells_lock:
+            await self._track_cells_locked(msg)
+
+    async def _identify_cells_locked(self, msg: dict[str, Any]) -> None:
         """Identify storm cells in a reflectivity sweep.
 
         Expected message::
@@ -1569,6 +1700,9 @@ class ConnectionHandler:
             return
         if not isinstance(sweep_idx, int) or sweep_idx < 0:
             await self.send_error("identify_cells: 'sweep' must be a non-negative integer")
+            return
+        if not isinstance(params, dict):
+            await self.send_error("identify_cells: 'params' must be an object")
             return
 
         reader = _get_reader(msg.get("file_id"))
@@ -1614,7 +1748,7 @@ class ConnectionHandler:
             }
         )
 
-    async def _handle_track_cells(self, msg: dict[str, Any]) -> None:
+    async def _track_cells_locked(self, msg: dict[str, Any]) -> None:
         """Track cells between the previous identification and a new sweep.
 
         Expected message::
@@ -1634,6 +1768,12 @@ class ConnectionHandler:
         if not isinstance(variable, str):
             await self.send_error("track_cells: 'variable' must be a string")
             return
+        if not isinstance(sweep_idx, int) or sweep_idx < 0:
+            await self.send_error("track_cells: 'sweep' must be a non-negative integer")
+            return
+        if not isinstance(params, dict):
+            await self.send_error("track_cells: 'params' must be an object")
+            return
 
         reader = _get_reader(msg.get("file_id"))
         datatree = reader.datatree
@@ -1641,7 +1781,7 @@ class ConnectionHandler:
             await self.send_error("track_cells: no file is open")
             return
 
-        if not hasattr(self, "_previous_cells") or not self._previous_cells:
+        if not self._previous_cells:
             await self.send_error("track_cells: no previous cells — run identify_cells first")
             return
 
@@ -1708,8 +1848,6 @@ class ConnectionHandler:
             {type: "data_table_result", azimuths: [...], ranges: [...],
              values: [[...], ...], total_az: N, total_range: M}
         """
-        import numpy as np
-
         variable = msg.get("variable")
         sweep = msg.get("sweep", 0)
         az_start = msg.get("az_start", 0)
@@ -1730,60 +1868,44 @@ class ConnectionHandler:
             return
 
         loop = asyncio.get_running_loop()
-        data = await loop.run_in_executor(
-            None,
-            reader.get_sweep_data,
-            sweep,
-            variable,
-        )
 
-        # Extract coordinate arrays
-        azimuth = (
-            data.coords["azimuth"].values
-            if "azimuth" in data.coords
-            else np.arange(data.shape[0], dtype=np.float64)
-        )
-        range_m = (
-            data.coords["range"].values
-            if "range" in data.coords
-            else np.arange(data.shape[-1], dtype=np.float64)
-        )
-        vals = data.values
+        def _build() -> dict[str, Any]:
+            data = reader.get_sweep_data(sweep, variable)
+            azimuth = (
+                data.coords["azimuth"].values
+                if "azimuth" in data.coords
+                else np.arange(data.shape[0], dtype=np.float64)
+            )
+            range_m = (
+                data.coords["range"].values
+                if "range" in data.coords
+                else np.arange(data.shape[-1], dtype=np.float64)
+            )
+            vals = data.values
 
-        total_az = len(azimuth)
-        total_range = len(range_m)
+            total_az = len(azimuth)
+            total_range = len(range_m)
 
-        # Clamp window indices
-        az_s = max(0, min(int(az_start), total_az))
-        az_e = max(az_s, min(int(az_end), total_az))
-        rng_s = max(0, min(int(range_start), total_range))
-        rng_e = max(rng_s, min(int(range_end), total_range))
+            # Clamp window indices
+            az_s = max(0, min(int(az_start), total_az))
+            az_e = max(az_s, min(int(az_end), total_az))
+            rng_s = max(0, min(int(range_start), total_range))
+            rng_e = max(rng_s, min(int(range_end), total_range))
 
-        sliced_az = azimuth[az_s:az_e].tolist()
-        sliced_rng = range_m[rng_s:rng_e].tolist()
-        sliced_vals = vals[az_s:az_e, rng_s:rng_e]
+            window = np.round(np.asarray(vals[az_s:az_e, rng_s:rng_e], dtype=np.float64), 6)
+            cells = window.astype(object)
+            cells[~np.isfinite(window)] = None  # NaN/Inf -> null
 
-        # Replace NaN with None-friendly sentinel for JSON
-        out_vals = []
-        for row in sliced_vals:
-            out_row = []
-            for v in row:
-                if np.isnan(v) or np.isinf(v):
-                    out_row.append(None)
-                else:
-                    out_row.append(round(float(v), 6))
-            out_vals.append(out_row)
-
-        await self.send(
-            {
+            return {
                 "type": "data_table_result",
-                "azimuths": [round(float(a), 4) for a in sliced_az],
-                "ranges": [round(float(r), 4) for r in sliced_rng],
-                "values": out_vals,
+                "azimuths": np.round(azimuth[az_s:az_e].astype(np.float64), 4).tolist(),
+                "ranges": np.round(range_m[rng_s:rng_e].astype(np.float64), 4).tolist(),
+                "values": cells.tolist(),
                 "total_az": total_az,
                 "total_range": total_range,
             }
-        )
+
+        await self.send(await loop.run_in_executor(None, _build))
 
     # ------------------------------------------------------------------
     # Metadata tree handler — full DataTree structure as nested dict
@@ -1797,8 +1919,6 @@ class ConnectionHandler:
             {type: "metadata_tree_result",
              tree: [{name, type, children, dtype, shape, ...}, ...]}
         """
-        import numpy as np
-
         reader = _get_reader(msg.get("file_id"))
         if reader.datatree is None:
             await self.send_error("get_metadata_tree: no file is open")
@@ -1897,7 +2017,7 @@ class ConnectionHandler:
 
             # Recurse into children
             if hasattr(node, "children"):
-                for child_name in sorted(node.children):
+                for child_name in sorted(node.children, key=_natural_key):
                     child_node = node[child_name]
                     result["children"].append(_build_node(child_name, child_node))
 
@@ -1918,6 +2038,119 @@ class ConnectionHandler:
             }
         )
 
+    # ------------------------------------------------------------------
+    # Plugin modules
+    # ------------------------------------------------------------------
+
+    async def _handle_list_modules(self, msg: dict[str, Any]) -> None:
+        """List discovered plugin modules (``reload: true`` re-scans the module dirs)."""
+        loop = asyncio.get_running_loop()
+        if msg.get("reload"):
+            async with _locks.get("modules"):
+                await loop.run_in_executor(None, plugins.discover_modules)
+        listing = plugins.list_modules()
+        await self.send(
+            {
+                "type": "modules_list",
+                "modules": listing["modules"],
+                "errors": listing["errors"],
+                "dirs": listing["dirs"],
+            }
+        )
+
+    async def _handle_run_module(self, msg: dict[str, Any]) -> None:
+        """Run a plugin module on a sweep.
+
+        Expected message::
+
+            {type: "run_module", module: "hot_gates", sweep: 0,
+             params: {threshold: 50}, file_id: "..."}
+
+        Success: ``{type: "module_result", module, sweep, params, elapsed_ms, blocks,
+        file_id}``. Any failure: ``{type: "module_error", module, message}`` so the UI
+        can always leave its busy state.
+        """
+        module_id = msg.get("module")
+        label = module_id if isinstance(module_id, str) else None
+        try:
+            await self._run_module(msg)
+        except plugins.ModuleError as exc:
+            logger.warning("Module '%s' error: %s", label, exc)
+            await self.send({"type": "module_error", "module": label, "message": str(exc)})
+        except KeyError as exc:
+            message = str(exc.args[0]) if exc.args else "not found"
+            await self.send({"type": "module_error", "module": label, "message": message})
+        except Exception as exc:
+            logger.error("Module '%s' failed: %s\n%s", label, exc, traceback.format_exc())
+            await self.send(
+                {
+                    "type": "module_error",
+                    "module": label,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
+
+    async def _run_module(self, msg: dict[str, Any]) -> None:
+        module_id = msg.get("module")
+        sweep = msg.get("sweep", 0)
+        params = msg.get("params", {})
+        if not module_id or not isinstance(module_id, str):
+            raise plugins.ModuleError("run_module: missing or invalid 'module'")
+        if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+            raise plugins.ModuleError("run_module: 'sweep' must be a non-negative integer")
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            raise plugins.ModuleError("run_module: 'params' must be an object")
+        if module_id not in plugins.MODULES:
+            raise plugins.ModuleError(f"Unknown module '{module_id}'")
+
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        datatree = reader.datatree
+        if datatree is None:
+            raise plugins.ModuleError("No file is open")
+
+        await self.send_progress(5, f"Running module {module_id}...")
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+
+        payload = await loop.run_in_executor(
+            None,
+            lambda: plugins.run_module(
+                module_id,
+                datatree,
+                sweep,
+                params,
+                get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
+                progress=progress_sync,
+            ),
+        )
+        await self.send(
+            {"type": "module_result", **payload, "file_id": resolved_id or msg.get("file_id")}
+        )
+
+
+def _sweep_dataset(reader: RadarReader, index: int):
+    """Full ``xr.Dataset`` of one sweep, loading lazy (ARCO) sweeps on demand."""
+    getter = getattr(reader, "get_sweep_dataset", None)  # public API if the reader has one
+    if getter is not None:
+        return getter(index)
+    nodes = reader._sweep_nodes()
+    if index < 0 or index >= len(nodes):
+        raise IndexError(f"Sweep index {index} out of range (0..{len(nodes) - 1})")
+    ds = nodes[index].to_dataset()
+    loader = getattr(reader, "_load_arco_sweep", None)
+    is_arco = getattr(reader, "_format", None) == "nexrad_arco"
+    if not ds.data_vars and loader is not None and is_arco:
+        ds = loader(index)  # placeholder sweep: fetch the real data
+    return ds
+
+
+async def _dispatch(handler: ConnectionHandler, raw_message: str | bytes) -> None:
+    if isinstance(raw_message, bytes):
+        raw_message = raw_message.decode("utf-8", errors="replace")
+    await handler.handle_message(raw_message)
+
 
 async def _handle_connection(ws: ServerConnection) -> None:
     remote = ws.remote_address
@@ -1931,23 +2164,33 @@ async def _handle_connection(ws: ServerConnection) -> None:
 
     logger.info("Client connected from %s", remote)
     handler = ConnectionHandler(ws)
+    # Each message runs as its own task so one slow request (export, QC, cloud open)
+    # never blocks pings or other requests. Binary responses stay contiguous thanks
+    # to the handler's send lock.
+    tasks: set[asyncio.Task[Any]] = set()
 
     try:
         async for raw_message in ws:
-            if isinstance(raw_message, bytes):
-                raw_message = raw_message.decode("utf-8", errors="replace")
-            await handler.handle_message(raw_message)
+            task = asyncio.get_running_loop().create_task(_dispatch(handler, raw_message))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
     except websockets.exceptions.ConnectionClosed as exc:
         logger.info("Client %s disconnected: %s", remote, exc)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.warning("Protocol error from %s: %s", remote, exc)
     except Exception as exc:
         logger.error("Unexpected error for %s: %s\n%s", remote, exc, traceback.format_exc())
     finally:
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("Connection from %s closed", remote)
 
 
 async def _run_server(port: int) -> None:
+    try:
+        plugins.discover_modules()
+    except Exception:
+        logger.exception("Module discovery failed (continuing without plugins)")
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -1972,13 +2215,6 @@ async def _run_server(port: int) -> None:
         await stop_event.wait()
 
     logger.info("Server shut down cleanly")
-
-
-def _json_default(obj: Any) -> Any:
-    result = _serializable(obj)
-    if result is not obj:
-        return result
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
 def main() -> None:

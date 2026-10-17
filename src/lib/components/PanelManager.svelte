@@ -9,6 +9,7 @@
   import CrossSectionPanel from './CrossSectionPanel.svelte';
   import VolumePanel from './VolumePanel.svelte';
   import CloudDataPanel from './CloudDataPanel.svelte';
+  import ModulesPanel from './ModulesPanel.svelte';
 
   const PANEL_MAP: Record<string, { component: any; label: string; icon: string }> = {
     cloud: { component: CloudDataPanel, label: 'Cloud Data', icon: '☁' },
@@ -17,6 +18,7 @@
     crosssection: { component: CrossSectionPanel, label: 'Cross-Section', icon: '///' },
     qc: { component: QCPanel, label: 'Quality Control', icon: '\u2714' },
     storm: { component: StormPanel, label: 'Storm Cells', icon: '\u26C8' },
+    modules: { component: ModulesPanel, label: 'Modules', icon: '\u{1F9E9}' },
     processing: { component: ProcessingPanel, label: 'Processing', icon: '\u2699' },
     export: { component: ExportPanel, label: 'Export', icon: '\u21E9' },
   };

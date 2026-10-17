@@ -24,7 +24,8 @@ def dataset_to_arrow(ds: xr.Dataset) -> bytes:
 
     Each data variable becomes a column in the resulting Arrow RecordBatch.
     Coordinate arrays are included as additional columns with a ``__coord_``
-    prefix to avoid name collisions.
+    prefix to avoid name collisions.  Columns shorter than the longest one are
+    padded with nulls (their Arrow type is preserved).
 
     Parameters
     ----------
@@ -48,33 +49,11 @@ def dataset_to_arrow(ds: xr.Dataset) -> bytes:
     for name in ds.coords:
         arr = _to_flat_arrow(ds.coords[name].values, str(name))
         if arr is not None:
-            col_name = f"__coord_{name}"
-            arrays[col_name] = arr
+            arrays[f"__coord_{name}"] = arr
 
     if not arrays:
         logger.warning("dataset_to_arrow: no columns produced — returning empty batch")
-        schema = pa.schema([])
-        batch = pa.record_batch([], schema=schema)
-    else:
-        # All columns must have the same length; pad shorter ones with nulls
-        max_len = max(len(a) for a in arrays.values())
-        padded: dict[str, pa.Array] = {}
-        for col_name, arr in arrays.items():
-            if len(arr) < max_len:
-                # Use zero-copy: convert arrow array to numpy, then pad
-                existing = arr.to_numpy(zero_copy_only=False)
-                padded_np = np.empty(max_len, dtype=existing.dtype)
-                padded_np[: len(arr)] = existing
-                padded_np[len(arr) :] = np.nan
-                # Build validity mask for null padding
-                mask = np.ones(max_len, dtype=bool)
-                mask[len(arr) :] = False
-                padded[col_name] = pa.array(padded_np, mask=~mask)
-            else:
-                padded[col_name] = arr
-        batch = pa.record_batch(padded)
-
-    return _batch_to_ipc_bytes(batch)
+    return _batch_to_ipc_bytes(_assemble_batch(arrays))
 
 
 def dataarray_to_arrow(da: xr.DataArray) -> bytes:
@@ -106,22 +85,7 @@ def dataarray_to_arrow(da: xr.DataArray) -> bytes:
         if coord_arr is not None:
             arrays[f"__coord_{coord_name}"] = coord_arr
 
-    if not arrays:
-        schema = pa.schema([])
-        batch = pa.record_batch([], schema=schema)
-    else:
-        max_len = max(len(a) for a in arrays.values())
-        padded: dict[str, pa.Array] = {}
-        for name, a in arrays.items():
-            if len(a) < max_len:
-                extended = np.full(max_len, np.nan)
-                extended[: len(a)] = a.to_numpy()
-                padded[name] = pa.array(extended)
-            else:
-                padded[name] = a
-        batch = pa.record_batch(padded)
-
-    return _batch_to_ipc_bytes(batch)
+    return _batch_to_ipc_bytes(_assemble_batch(arrays))
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +120,23 @@ def _to_flat_arrow(values: Any, name: str) -> pa.Array | None:
         ):
             logger.warning("Skipping column '%s' — cannot convert to Arrow", name)
             return None
+
+
+def _assemble_batch(arrays: dict[str, pa.Array]) -> pa.RecordBatch:
+    """Build a RecordBatch, padding shorter columns with nulls of the same Arrow type.
+
+    (The previous implementation padded through NumPy with ``np.nan``, which raised
+    for integer columns and silently turned every padded column into float64.)
+    """
+    if not arrays:
+        return pa.record_batch([], schema=pa.schema([]))
+    max_len = max(len(a) for a in arrays.values())
+    padded: dict[str, pa.Array] = {}
+    for name, arr in arrays.items():
+        if len(arr) < max_len:
+            arr = pa.concat_arrays([arr, pa.nulls(max_len - len(arr), type=arr.type)])
+        padded[name] = arr
+    return pa.record_batch(padded)
 
 
 def _batch_to_ipc_bytes(batch: pa.RecordBatch) -> bytes:

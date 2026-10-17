@@ -13,7 +13,11 @@ from typing import Any, Literal
 import numpy as np
 import xarray as xr
 
+from engine.reader import sorted_sweep_names
+
 logger = logging.getLogger(__name__)
+
+NODATA = -9999.0
 
 
 def compute_time_series(
@@ -44,23 +48,20 @@ def compute_time_series(
         ``{file_ids: [...], values: [...], timestamps: [...], variable, sweep,
           azimuth, range_m}``
     """
-    file_ids: list[str] = []
-    values: list[float | None] = []
-    timestamps: list[str | None] = []
+    rows: list[tuple[str, float | None, str | None]] = []
 
     for fid, reader in readers.items():
         try:
             da = reader.get_sweep_data(sweep, variable)
-            val = _sample_point(da, point_az, point_range)
-            ts = _extract_timestamp(reader)
-            file_ids.append(fid)
-            values.append(val)
-            timestamps.append(ts)
+            rows.append((fid, _sample_point(da, point_az, point_range), _extract_timestamp(reader)))
         except Exception as exc:
             logger.debug("Skipping file %s in time series: %s", fid, exc)
-            file_ids.append(fid)
-            values.append(None)
-            timestamps.append(None)
+            rows.append((fid, None, None))
+
+    rows = _sort_chronologically(rows)
+    file_ids = [r[0] for r in rows]
+    values = [r[1] for r in rows]
+    timestamps = [r[2] for r in rows]
 
     return {
         "file_ids": file_ids,
@@ -99,23 +100,23 @@ def compute_difference(
     da1 = reader1.get_sweep_data(sweep, variable)
     da2 = reader2.get_sweep_data(sweep, variable)
 
-    v1 = da1.values.astype(np.float64)
-    v2 = da2.values.astype(np.float64)
+    v1 = np.asarray(da1.values, dtype=np.float32)
+    v2 = np.asarray(da2.values, dtype=np.float32)
 
     # Handle shape mismatch by trimming to smallest common shape
     min_az = min(v1.shape[0], v2.shape[0])
     min_rng = min(v1.shape[1], v2.shape[1])
-    v1 = v1[:min_az, :min_rng]
-    v2 = v2[:min_az, :min_rng]
 
-    diff = v2 - v1
-
-    # Replace NaN-contaminated cells
-    diff = np.where(np.isfinite(diff), diff, np.nan)
-
-    valid = diff[np.isfinite(diff)]
-    vmin = float(np.nanmin(valid)) if len(valid) > 0 else -1.0
-    vmax = float(np.nanmax(valid)) if len(valid) > 0 else 1.0
+    # float32 is plenty for radar moments; inf-inf etc. become NaN, which we mask below
+    with np.errstate(invalid="ignore"):
+        diff = v2[:min_az, :min_rng] - v1[:min_az, :min_rng]
+    finite = np.isfinite(diff)
+    if finite.any():
+        valid = diff[finite]
+        vmin = float(valid.min())
+        vmax = float(valid.max())
+    else:
+        vmin, vmax = -1.0, 1.0
 
     # Make symmetric about zero for diverging colormaps
     abs_max = max(abs(vmin), abs(vmax))
@@ -134,7 +135,7 @@ def compute_difference(
     az1 = az1[:min_az]
     rng1 = rng1[:min_rng]
 
-    diff_f32 = np.nan_to_num(diff.astype(np.float32), nan=-9999.0)
+    diff_f32 = np.where(finite, diff, np.float32(NODATA)).astype(np.float32, copy=False)
 
     return {
         "diff_values": diff_f32.tobytes(),
@@ -147,9 +148,9 @@ def compute_difference(
         "max_range": float(rng1.max()) if len(rng1) > 0 else 1.0,
         "variable": variable,
         "sweep": sweep,
-        "azimuth_bytes": len(az1.tobytes()),
-        "range_bytes": len(rng1.tobytes()),
-        "diff_bytes": len(diff_f32.tobytes()),
+        "azimuth_bytes": az1.nbytes,
+        "range_bytes": rng1.nbytes,
+        "diff_bytes": diff_f32.nbytes,
     }
 
 
@@ -177,48 +178,70 @@ def compute_accumulation(
         ``{values: list[list[float]], n_az, n_range, vmin, vmax, n_files,
           method, variable, sweep}``
     """
-    arrays: list[np.ndarray] = []
-    ref_da = None
+    if method not in ("sum", "mean", "max"):
+        raise ValueError(f"Unknown accumulation method: {method}")
+
+    # Running accumulators instead of stacking every file (memory is O(one sweep),
+    # not O(n_files x sweep)); NaN means "no echo" and is skipped.
+    acc: np.ndarray | None = None
+    cnt: np.ndarray | None = None
+    n_files = 0
+    errors: list[str] = []
 
     for fid, reader in readers.items():
         try:
-            da = reader.get_sweep_data(sweep, variable)
-            if ref_da is None:
-                ref_da = da
-            arrays.append(da.values.astype(np.float64))
+            arr = np.asarray(reader.get_sweep_data(sweep, variable).values)
         except Exception as exc:
             logger.debug("Skipping file %s in accumulation: %s", fid, exc)
+            errors.append(f"{fid}: {exc}")
+            continue
+        if arr.ndim != 2:
+            errors.append(f"{fid}: expected a 2-D sweep, got {arr.ndim}-D")
+            continue
 
-    if not arrays or ref_da is None:
-        raise ValueError("No valid data found for accumulation")
+        if acc is None:
+            acc = np.full(arr.shape, np.nan if method == "max" else 0.0, dtype=np.float64)
+            cnt = np.zeros(arr.shape, dtype=np.int32)
+        else:
+            # Align to the smallest common shape
+            min_az = min(acc.shape[0], arr.shape[0])
+            min_rng = min(acc.shape[1], arr.shape[1])
+            acc, cnt = acc[:min_az, :min_rng], cnt[:min_az, :min_rng]  # type: ignore[index]
+        part = arr[: acc.shape[0], : acc.shape[1]]
+        ok = np.isfinite(part)
+        if method == "max":
+            np.fmax(acc, np.where(ok, part, np.nan) if not ok.all() else part, out=acc)
+        else:
+            acc += np.where(ok, part, 0.0)
+        cnt += ok  # type: ignore[operator]
+        n_files += 1
 
-    # Align to smallest common shape
-    min_az = min(a.shape[0] for a in arrays)
-    min_rng = min(a.shape[1] for a in arrays)
-    aligned = [a[:min_az, :min_rng] for a in arrays]
+    if acc is None or cnt is None:
+        detail = f" ({'; '.join(errors[:3])})" if errors else ""
+        raise ValueError(f"No valid data found for accumulation{detail}")
 
-    stack = np.stack(aligned, axis=0)
-
-    if method == "sum":
-        result = np.nansum(stack, axis=0)
-    elif method == "mean":
-        result = np.nanmean(stack, axis=0)
-    elif method == "max":
-        result = np.nanmax(stack, axis=0)
+    if method == "mean":
+        with np.errstate(invalid="ignore", divide="ignore"):
+            result = np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
     else:
-        raise ValueError(f"Unknown accumulation method: {method}")
+        # "sum" keeps the historical nansum behaviour (0 where nothing echoed);
+        # "max" is NaN there.
+        result = acc
 
-    valid = result[np.isfinite(result)]
-    vmin = float(np.nanmin(valid)) if len(valid) > 0 else 0.0
-    vmax = float(np.nanmax(valid)) if len(valid) > 0 else 1.0
+    finite = np.isfinite(result)
+    if finite.any():
+        valid = result[finite]
+        vmin, vmax = float(valid.min()), float(valid.max())
+    else:
+        vmin, vmax = 0.0, 1.0
 
     return {
-        "values": result.tolist(),
-        "n_az": min_az,
-        "n_range": min_rng,
+        "values": _nan_to_none_list(result),
+        "n_az": result.shape[0],
+        "n_range": result.shape[1],
         "vmin": vmin,
         "vmax": vmax,
-        "n_files": len(arrays),
+        "n_files": n_files,
         "method": method,
         "variable": variable,
         "sweep": sweep,
@@ -306,18 +329,70 @@ def compute_trend(
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 
+def _nan_to_none_list(arr: np.ndarray) -> list[Any]:
+    """Nested list with NaN/Inf as None (JSON.parse rejects NaN)."""
+    a = np.asarray(arr, dtype=np.float64)
+    obj = a.astype(object)
+    obj[~np.isfinite(a)] = None
+    return obj.tolist()
+
+
+def _parse_timestamp(ts: str | None) -> np.datetime64 | None:
+    if ts is None:
+        return None
+    try:
+        return np.datetime64(ts.strip().replace("Z", ""), "ns")
+    except (ValueError, TypeError):
+        return None
+
+
+def _sort_chronologically(
+    rows: list[tuple[str, float | None, str | None]],
+) -> list[tuple[str, float | None, str | None]]:
+    """Order (file_id, value, timestamp) rows by time; undated rows keep their order at the end.
+
+    If *no* timestamp can be parsed the original (file-open) order is kept.
+    """
+    parsed = [_parse_timestamp(r[2]) for r in rows]
+    if all(p is None for p in parsed):
+        return rows
+    dated = sorted((i for i, p in enumerate(parsed) if p is not None), key=lambda i: (parsed[i], i))
+    undated = [i for i, p in enumerate(parsed) if p is None]
+    return [rows[i] for i in dated + undated]
+
+
 def _sample_point(da: xr.DataArray, az_deg: float, range_m: float) -> float | None:
-    """Sample the nearest-neighbour value from a DataArray at (azimuth, range)."""
+    """Sample the nearest-neighbour value from a DataArray at (azimuth, range).
+
+    Azimuth distance is circular (359.9 is next to 0.1) and a point farther than
+    ~one gate beyond the sweep's range coverage, or an azimuth gap wider than twice
+    the ray spacing, yields ``None`` instead of the nearest edge gate.
+    """
     if "azimuth" not in da.coords or "range" not in da.coords:
         return None
 
-    az = da.coords["azimuth"].values
-    rng = da.coords["range"].values
+    az = np.asarray(da.coords["azimuth"].values, dtype=np.float64)
+    rng = np.asarray(da.coords["range"].values, dtype=np.float64)
+    if az.size == 0 or rng.size == 0:
+        return None
 
-    az_idx = int(np.argmin(np.abs(az - az_deg)))
+    az_dist = np.abs((az - az_deg + 180.0) % 360.0 - 180.0)
+    az_idx = int(np.argmin(az_dist))
     rng_idx = int(np.argmin(np.abs(rng - range_m)))
 
-    val = float(da.values[az_idx, rng_idx])
+    if rng.size > 1:
+        gate = float(np.median(np.abs(np.diff(rng))))
+        if abs(rng[rng_idx] - range_m) > max(gate, 1e-9):
+            return None
+    if az.size > 1:
+        spacing = float(np.median(np.abs(np.diff(np.sort(az)))))
+        if az_dist[az_idx] > max(2.0 * spacing, 1.0):
+            return None
+
+    if da.dims == ("azimuth", "range"):
+        val = float(da.values[az_idx, rng_idx])
+    else:
+        val = float(da.isel(azimuth=az_idx, range=rng_idx).values)
     return val if np.isfinite(val) else None
 
 
@@ -345,15 +420,14 @@ def _extract_timestamp(reader: Any) -> str | None:
                 return str(attrs[key])
 
         # Check for a time coordinate in the first sweep
-        for name in sorted(dtree.children):
-            if name.startswith("sweep_"):
-                ds = dtree[name].to_dataset()
-                if "time" in ds.coords:
-                    t = ds.coords["time"].values
-                    if hasattr(t, "__len__") and len(t) > 0:
-                        return str(t[0])
-                    return str(t)
-                break
+        names = sorted_sweep_names(dtree)
+        if names:
+            ds = dtree[names[0]].to_dataset()
+            if "time" in ds.coords:
+                t = ds.coords["time"].values
+                if t.ndim > 0 and t.size > 0:
+                    return str(t.flat[0])
+                return str(t)
     except Exception:
         pass
 

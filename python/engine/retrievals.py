@@ -7,10 +7,14 @@ an xarray DataArray and returns an xarray DataArray with proper metadata.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
 import xarray as xr
+from scipy import ndimage
+
+from engine.reader import sorted_sweep_names
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +32,9 @@ def estimate_kdp(
 ) -> xr.DataArray:
     """Estimate specific differential phase (KDP) from PhiDP.
 
-    Uses a centred finite-difference method with a moving-average smoother
-    applied to PhiDP before differentiation.
+    Uses the NaN-aware least-squares slope of PhiDP over a sliding window of
+    range gates (equivalent to a centred finite difference of a moving-average
+    smoothed PhiDP for linear data, but robust at ray ends and around gaps).
 
     Parameters
     ----------
@@ -46,37 +51,53 @@ def estimate_kdp(
     xr.DataArray
         KDP in degrees per kilometre, same shape as *phidp*.
     """
-    phi = phidp.values.copy().astype(np.float64)
+    phi = phidp.values.astype(np.float64)  # astype always copies
     mask = np.isnan(phi)
+    range_axis = phidp.get_axis_num("range") if "range" in phidp.dims else phidp.ndim - 1
 
     # Infer gate spacing
     if gate_spacing_m is None:
-        if "range" in phidp.coords:
-            rng = phidp.coords["range"].values
-            gate_spacing_m = float(np.median(np.diff(rng)))
+        spacing = None
+        if "range" in phidp.coords and phidp.coords["range"].size > 1:
+            spacing = abs(float(np.median(np.diff(phidp.coords["range"].values))))
+        if spacing is not None and np.isfinite(spacing) and spacing > 0:
+            gate_spacing_m = spacing
         else:
             gate_spacing_m = 250.0
-            logger.warning("No range coord; assuming gate_spacing=%.0f m", gate_spacing_m)
+            logger.warning("No usable range coord; assuming gate_spacing=%.0f m", gate_spacing_m)
 
-    # Fill NaN for smoothing
-    phi[mask] = 0.0
-
-    # Moving average smoothing along range axis
+    window_len = int(window_len)
     if window_len < 3:
         window_len = 3
     if window_len % 2 == 0:
         window_len += 1
-    kernel = np.ones(window_len) / window_len
-    smoothed = np.apply_along_axis(
-        lambda row: np.convolve(row, kernel, mode="same"), axis=-1, arr=phi
-    )
 
-    # Central finite-difference: KDP = d(PhiDP)/d(range) * 0.5
-    # Factor of 0.5 because PhiDP is the two-way differential phase
-    kdp = np.gradient(smoothed, gate_spacing_m, axis=-1) * 0.5
+    # NaN-aware local least-squares slope of PhiDP along range over a window of
+    # `window_len` gates.  Only valid gates enter the sums, so ray ends and gaps
+    # do not bias the result (zero-filling NaNs / zero-padding the ends did), and
+    # for a linear PhiDP it equals the centred finite difference of a moving
+    # average while using every sample in the window (less noisy).
+    n_gates = phi.shape[range_axis]
+    shape = [1] * phi.ndim
+    shape[range_axis] = n_gates
+    x = np.arange(n_gates, dtype=np.float64).reshape(shape)
+    valid = (~mask).astype(np.float64)
+    phi[mask] = 0.0
+    kw = {"size": window_len, "axis": range_axis, "mode": "constant", "cval": 0.0}
+    n = ndimage.uniform_filter1d(valid, **kw)
+    sx = ndimage.uniform_filter1d(valid * x, **kw)
+    sy = ndimage.uniform_filter1d(phi, **kw)
+    sxy = ndimage.uniform_filter1d(phi * x, **kw)
+    sxx = ndimage.uniform_filter1d(valid * x * x, **kw)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cov = sxy - sx * sy / n
+        var = sxx - sx * sx / n
+        ok = (n * window_len >= 2) & (var > 1e-4)  # >= 2 distinct valid gates
+        slope = np.where(ok, cov / np.where(ok, var, 1.0), np.nan)  # deg per gate
 
-    # Convert from deg/m to deg/km
-    kdp *= 1000.0
+    # KDP = 0.5 * dPhiDP/dr: factor 0.5 because PhiDP is the two-way differential
+    # phase; deg/m -> deg/km via 1000.
+    kdp = slope / gate_spacing_m * 0.5 * 1000.0
 
     # Restore NaN mask
     kdp[mask] = np.nan
@@ -121,9 +142,12 @@ def rain_rate_z(
     xr.DataArray
         Rainfall rate in mm/h.
     """
-    z_linear = 10.0 ** (dbz.values.astype(np.float64) / 10.0)
+    if not (a > 0 and b > 0):
+        raise ValueError(f"Z-R coefficients must be positive, got a={a}, b={b}")
+    dbz_vals = dbz.values.astype(np.float64)
+    z_linear = 10.0 ** (dbz_vals / 10.0)
     rain = (z_linear / a) ** (1.0 / b)
-    rain = np.where(np.isnan(dbz.values), np.nan, rain)
+    rain = np.where(np.isnan(dbz_vals), np.nan, rain)
     rain = np.clip(rain, 0.0, 500.0)
 
     return xr.DataArray(
@@ -161,8 +185,10 @@ def rain_rate_kdp(
         Rainfall rate in mm/h.
     """
     k = kdp.values.astype(np.float64)
-    rain = np.where(k > 0, a * np.power(k, b), 0.0)
-    rain = np.where(np.isnan(kdp.values), np.nan, rain)
+    positive = k > 0  # False for NaN and negative KDP
+    rain = np.zeros_like(k)
+    rain[positive] = a * np.power(k[positive], b)
+    rain = np.where(np.isnan(k), np.nan, rain)
     rain = np.clip(rain, 0.0, 500.0)
 
     return xr.DataArray(
@@ -187,7 +213,8 @@ def rain_rate_z_zdr(
 ) -> xr.DataArray:
     """Estimate rainfall rate from Z and ZDR.
 
-    R = a * Z_linear^b * 10^(c * ZDR)
+    R = a * Z_linear^b * ZDR_linear^c, with ZDR_linear = 10^(ZDR_dB / 10),
+    i.e. R = a * Z_linear^b * 10^(0.1 * c * ZDR_dB).
 
     Parameters
     ----------
@@ -196,7 +223,8 @@ def rain_rate_z_zdr(
     zdr : xr.DataArray
         Differential reflectivity in dB.
     a, b, c : float
-        Empirical coefficients.
+        Empirical coefficients (Bringi & Chandrasekar: ZDR exponent applies
+        to the *linear* ratio).
 
     Returns
     -------
@@ -205,7 +233,7 @@ def rain_rate_z_zdr(
     """
     z_lin = 10.0 ** (dbz.values.astype(np.float64) / 10.0)
     zdr_val = zdr.values.astype(np.float64)
-    rain = a * np.power(z_lin, b) * np.power(10.0, c * zdr_val)
+    rain = a * np.power(z_lin, b) * np.power(10.0, 0.1 * c * zdr_val)
     combined_mask = np.isnan(dbz.values) | np.isnan(zdr.values)
     rain = np.where(combined_mask, np.nan, rain)
     rain = np.clip(rain, 0.0, 500.0)
@@ -217,7 +245,7 @@ def rain_rate_z_zdr(
         attrs={
             "units": "mm/h",
             "long_name": "Rainfall Rate (Z-ZDR)",
-            "method": f"R = {a} * Z^{b} * 10^({c} * ZDR)",
+            "method": f"R = {a} * Z^{b} * ZDR^{c} (Z, ZDR linear)",
         },
     )
 
@@ -235,7 +263,9 @@ def correct_attenuation_phidp(
 ) -> xr.DataArray:
     """Apply simple path-integrated attenuation (PIA) correction using PhiDP.
 
-    PIA = alpha * PhiDP. The corrected reflectivity is Z_corr = Z + PIA.
+    PIA(r) = alpha * (PhiDP(r) - PhiDP_offset), made non-decreasing with
+    range; gates with missing PhiDP inherit the PIA accumulated so far. The
+    corrected reflectivity is Z_corr = Z + PIA.
 
     Parameters
     ----------
@@ -254,14 +284,23 @@ def correct_attenuation_phidp(
     phi_vals = phidp.values.astype(np.float64)
     z_vals = dbz.values.astype(np.float64)
 
-    # Compute cumulative PIA along range from PhiDP
-    # Use PhiDP directly (it's already cumulative differential phase)
-    pia = alpha * phi_vals
-    pia = np.clip(pia, 0.0, None)  # PIA should not be negative
+    # PIA is driven by the *propagation* phase accumulated since the radar, so
+    # remove the per-ray system offset (median of the first valid gates).
+    valid = np.isfinite(phi_vals)
+    first = valid & (np.cumsum(valid, axis=-1) <= 5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rays
+        offset = np.nanmedian(np.where(first, phi_vals, np.nan), axis=-1, keepdims=True)
+    offset = np.where(np.isfinite(offset), offset, 0.0)
 
-    z_corrected = z_vals + pia
-    combined_mask = np.isnan(dbz.values) | np.isnan(phidp.values)
-    z_corrected = np.where(combined_mask, np.nan, z_corrected)
+    pia = alpha * (phi_vals - offset)
+    pia = np.where(valid, np.clip(pia, 0.0, None), -np.inf)  # PIA is never negative
+    # PIA is cumulative: it cannot decrease with range, and gates with missing
+    # PhiDP inherit the attenuation accumulated so far instead of losing Z.
+    pia = np.maximum.accumulate(pia, axis=-1)
+    pia = np.where(np.isfinite(pia), pia, 0.0)
+
+    z_corrected = np.where(np.isnan(z_vals), np.nan, z_vals + pia)
 
     return xr.DataArray(
         z_corrected.astype(np.float32),
@@ -270,7 +309,7 @@ def correct_attenuation_phidp(
         attrs={
             "units": "dBZ",
             "long_name": "Attenuation-Corrected Reflectivity",
-            "correction_method": f"PIA = {alpha} * PhiDP",
+            "correction_method": f"PIA = {alpha} * (PhiDP - offset)",
         },
     )
 
@@ -415,18 +454,22 @@ def classify_echo(
     has_echo = ~np.isnan(z)
     is_clutter = np.zeros(z.shape, dtype=bool)
 
-    # Helper: compute texture as local standard deviation along range
+    # Helper: texture = local standard deviation along range (NaN-aware box filter)
+    w = max(int(texture_window), 3)
+
     def _texture(arr: np.ndarray) -> np.ndarray:
-        """Rolling std-dev along the last (range) axis."""
-        w = max(texture_window, 3)
-        half = w // 2
-        padded = np.pad(arr, ((0, 0), (half, half)), mode="reflect")
-        # Compute rolling std via the variance formula
-        out = np.zeros_like(arr)
-        for i in range(arr.shape[-1]):
-            window = padded[:, i : i + w]
-            out[:, i] = np.nanstd(window, axis=-1)
-        return out
+        """Rolling std-dev along the last (range) axis, ignoring NaNs."""
+        valid = np.isfinite(arr)
+        shift = float(arr[valid].mean()) if valid.any() else 0.0
+        x0 = np.where(valid, arr - shift, 0.0)
+        kw = {"size": w, "axis": -1, "mode": "constant", "cval": 0.0}
+        cnt = ndimage.uniform_filter1d(valid.astype(np.float64), **kw)
+        s1 = ndimage.uniform_filter1d(x0, **kw)
+        s2 = ndimage.uniform_filter1d(x0 * x0, **kw)
+        ok = cnt > 0.5 / w
+        safe = np.where(ok, cnt, 1.0)
+        mean = s1 / safe
+        return np.where(ok, np.sqrt(np.maximum(s2 / safe - mean * mean, 0.0)), np.nan)
 
     if zdr is not None:
         tex_zdr = _texture(zdr.values.astype(np.float64))
@@ -574,9 +617,7 @@ def run_retrieval(
     required_vars = entry["required_variables"]
 
     # Get sweep dataset
-    sweep_nodes = sorted(
-        [n for n in datatree.children if n.startswith("sweep_")],
-    )
+    sweep_nodes = sorted_sweep_names(datatree)
     if sweep >= len(sweep_nodes):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_nodes) - 1})")
 

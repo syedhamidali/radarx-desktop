@@ -9,6 +9,9 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine.reader import sorted_sweep_names
+from engine.volume import slant_range_and_height_from_ground
+
 logger = logging.getLogger(__name__)
 
 # Type alias for the progress callback: (percent: int, message: str) -> None
@@ -169,34 +172,47 @@ class RadarProcessor:
 # Cross-section and vertical profile extraction
 # ======================================================================
 
+SweepLoader = Callable[[int], xr.Dataset]
+
 
 def _get_sweep_data(
     datatree: xr.DataTree,
     sweep_idx: int,
     variable: str,
+    sweep_loader: SweepLoader | None = None,
+    sweep_names: list[str] | None = None,
 ) -> tuple[xr.DataArray | None, float, np.ndarray, np.ndarray]:
     """Extract a variable from a sweep, returning (data, elev_deg, azimuth, range).
 
-    Returns (None, 0, [], []) if the variable is not in the sweep.
+    The returned DataArray is ordered (azimuth, range).  Returns (None, 0, [], []) if
+    the variable is not in the sweep.  ``sweep_loader(i)`` (e.g.
+    ``RadarReader.get_sweep_dataset``) supplies lazily-loaded sweeps.
     """
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
+    empty = (None, 0.0, np.array([]), np.array([]))
+    if sweep_names is None:
+        sweep_names = sorted_sweep_names(datatree)
     if sweep_idx >= len(sweep_names):
-        return None, 0.0, np.array([]), np.array([])
+        return empty
 
-    ds = datatree[sweep_names[sweep_idx]].to_dataset()
+    if sweep_loader is not None:
+        ds = sweep_loader(sweep_idx)
+    else:
+        ds = datatree[sweep_names[sweep_idx]].to_dataset()
     if variable not in ds.data_vars:
-        return None, 0.0, np.array([]), np.array([])
+        return empty
 
     da = ds[variable]
+    if "azimuth" in da.dims and "range" in da.dims and da.dims != ("azimuth", "range"):
+        da = da.transpose("azimuth", "range")
 
     # Elevation
     elev = 0.0
     if "sweep_fixed_angle" in ds.attrs:
         elev = float(ds.attrs["sweep_fixed_angle"])
-    elif "sweep_fixed_angle" in ds:
-        elev = float(ds["sweep_fixed_angle"].values)
-    elif "elevation" in ds:
-        elev = float(np.nanmean(ds["elevation"].values))
+    elif "sweep_fixed_angle" in ds.variables:
+        elev = float(ds.variables["sweep_fixed_angle"].values.flat[0])
+    elif "elevation" in ds.variables:
+        elev = float(np.nanmean(ds.variables["elevation"].values))
 
     azimuth = (
         da.coords["azimuth"].values
@@ -212,15 +228,74 @@ def _get_sweep_data(
     return da, elev, azimuth.astype(np.float64), range_m.astype(np.float64)
 
 
-def _polar_to_xy(azimuth_deg: float, range_m: float) -> tuple[float, float]:
-    """Convert polar (azimuth, range) to local (x, y) in metres.
+def _sample_sweep(
+    values_2d: np.ndarray,
+    sweep_az: np.ndarray,
+    sweep_rng: np.ndarray,
+    az_pts: np.ndarray,
+    rng_pts: np.ndarray,
+) -> np.ndarray:
+    """Vectorised lookup: nearest ray (circular azimuth), linear interpolation in range.
 
-    Azimuth is clockwise from north.
+    NaN where the slant range lies outside the sweep's range coverage (or either
+    neighbouring gate is NaN).
     """
-    az_rad = np.radians(azimuth_deg)
-    x = range_m * np.sin(az_rad)
-    y = range_m * np.cos(az_rad)
-    return float(x), float(y)
+    az_pts = np.asarray(az_pts, dtype=np.float64)
+    rng_pts = np.asarray(rng_pts, dtype=np.float64)
+    out = np.full(rng_pts.shape, np.nan, dtype=np.float64)
+    if sweep_az.size == 0 or sweep_rng.size == 0:
+        return out
+
+    # Nearest azimuth on the circle, via the sorted rays' neighbours of each target
+    order = np.argsort(sweep_az)
+    az_sorted = sweep_az[order] % 360.0
+    resort = np.argsort(az_sorted)
+    az_sorted, order = az_sorted[resort], order[resort]
+    pos = np.searchsorted(az_sorted, az_pts % 360.0)
+    left = (pos - 1) % az_sorted.size
+    right = pos % az_sorted.size
+    d_left = np.abs((az_sorted[left] - az_pts + 180.0) % 360.0 - 180.0)
+    d_right = np.abs((az_sorted[right] - az_pts + 180.0) % 360.0 - 180.0)
+    az_idx = order[np.where(d_left <= d_right, left, right)]
+
+    # Range: linear between the two bracketing gates
+    rng = sweep_rng
+    if rng.size > 1 and np.any(np.diff(rng) < 0):
+        ro = np.argsort(rng)
+        rng, values_2d = rng[ro], values_2d[:, ro]
+    in_cov = (rng_pts >= rng[0]) & (rng_pts <= rng[-1])
+    if not in_cov.any():
+        return out
+    if rng.size == 1:
+        out[in_cov] = values_2d[az_idx[in_cov], 0]
+        return out
+    r = rng_pts[in_cov]
+    hi = np.clip(np.searchsorted(rng, r), 1, rng.size - 1)
+    lo = hi - 1
+    r0, r1 = rng[lo], rng[hi]
+    span = r1 - r0
+    frac = np.divide(r - r0, span, out=np.zeros_like(r), where=span != 0)
+    rows = az_idx[in_cov]
+    v0 = values_2d[rows, lo].astype(np.float64)
+    v1 = values_2d[rows, hi].astype(np.float64)
+    out[in_cov] = v0 + frac * (v1 - v0)
+    return out
+
+
+def _nan_to_none(arr: np.ndarray) -> list[Any]:
+    """Nested list with NaN/Inf as None (JSON.parse rejects NaN)."""
+    obj = np.asarray(arr, dtype=np.float64).astype(object)
+    obj[~np.isfinite(np.asarray(arr, dtype=np.float64))] = None
+    return obj.tolist()
+
+
+def _local_xy(
+    lat: np.ndarray | float, lon: np.ndarray | float, radar_lat: float, radar_lon: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Approximate local (x east, y north) metres of lat/lon relative to the radar."""
+    dx = (np.asarray(lon) - radar_lon) * 111320.0 * np.cos(np.radians(radar_lat))
+    dy = (np.asarray(lat) - radar_lat) * 110540.0
+    return dx, dy
 
 
 def extract_cross_section(
@@ -230,11 +305,14 @@ def extract_cross_section(
     variable: str,
     *,
     n_points: int = 200,
+    sweep_loader: SweepLoader | None = None,
 ) -> dict[str, Any]:
     """Extract an RHI-like cross-section between two geographic points.
 
     The cross-section interpolates across all sweeps to produce a
-    distance-vs-height slice.
+    distance-vs-height slice.  Heights and slant ranges use the 4/3 effective
+    Earth radius beam model (the sample point's *ground* distance from the radar is
+    converted to the slant range at which each sweep's beam reaches it).
 
     Parameters
     ----------
@@ -248,6 +326,8 @@ def extract_cross_section(
         Variable name (e.g. ``"DBZH"``).
     n_points : int
         Number of horizontal sample points.
+    sweep_loader : callable, optional
+        ``sweep_loader(i) -> xr.Dataset`` for lazily-loaded (ARCO) sweeps.
 
     Returns
     -------
@@ -256,91 +336,43 @@ def extract_cross_section(
         sweep), ``values`` (list of lists per sweep), ``variable`` (str),
         ``units`` (str), ``n_sweeps`` (int).
     """
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
-    n_sweeps = len(sweep_names)
-
-    # Compute azimuth and range along the line from radar to each sample point.
-    # Approximate: treat lat/lon as local offsets from radar origin.
-    # Get radar location from root attributes or first sweep.
+    sweep_names = sorted_sweep_names(datatree)
     radar_lat, radar_lon = _get_radar_location(datatree)
 
     lat1, lon1 = start_point
     lat2, lon2 = end_point
 
-    # Sample points along the line
+    # Sample points along the line (approximate: lat/lon as local offsets from the radar)
     lats = np.linspace(lat1, lat2, n_points)
     lons = np.linspace(lon1, lon2, n_points)
+    dx, dy = _local_xy(lats, lons, radar_lat, radar_lon)
 
-    # Convert to local coordinates (approximate metres from radar)
-    dx = (lons - radar_lon) * 111320.0 * np.cos(np.radians(radar_lat))
-    dy = (lats - radar_lat) * 110540.0
-
-    # Compute azimuth and range from radar for each sample point
-    sample_range = np.sqrt(dx**2 + dy**2)
+    ground_dist = np.hypot(dx, dy)
     sample_azimuth = np.degrees(np.arctan2(dx, dy)) % 360.0
 
     # Distance along the cross-section line
-    total_dx = dx[-1] - dx[0]
-    total_dy = dy[-1] - dy[0]
-    total_dist = np.sqrt(total_dx**2 + total_dy**2)
+    total_dist = float(np.hypot(dx[-1] - dx[0], dy[-1] - dy[0]))
     distance_km = np.linspace(0, total_dist / 1000.0, n_points)
 
-    re_eff = 8_493_000.0  # 4/3 earth radius in metres
     all_heights: list[list[float]] = []
-    all_values: list[list[float]] = []
+    all_values: list[list[float | None]] = []
     units = ""
 
-    for si in range(n_sweeps):
-        da, elev_deg, sweep_az, sweep_rng = _get_sweep_data(datatree, si, variable)
+    for si in range(len(sweep_names)):
+        da, elev_deg, sweep_az, sweep_rng = _get_sweep_data(
+            datatree, si, variable, sweep_loader, sweep_names
+        )
         if da is None:
             continue
 
         if not units and "units" in da.attrs:
             units = str(da.attrs["units"])
 
-        elev_rad = np.radians(elev_deg)
-        values_2d = da.values.astype(np.float64)
+        slant, height = slant_range_and_height_from_ground(ground_dist, elev_deg)
+        values = _sample_sweep(np.asarray(da.values), sweep_az, sweep_rng, sample_azimuth, slant)
 
-        # For each sample point, find nearest azimuth and interpolate in range
-        row_values: list[float] = []
-        row_heights: list[float] = []
-
-        for pi in range(n_points):
-            r = sample_range[pi]
-            az = sample_azimuth[pi]
-
-            # Height at this range and elevation
-            h = r * np.sin(elev_rad) + (r**2) / (2.0 * re_eff)
-            row_heights.append(h / 1000.0)
-
-            # Find nearest azimuth index
-            az_diff = np.abs(sweep_az - az)
-            az_diff = np.minimum(az_diff, 360.0 - az_diff)
-            az_idx = int(np.argmin(az_diff))
-
-            # Interpolate in range
-            if r < sweep_rng[0] or r > sweep_rng[-1]:
-                row_values.append(float("nan"))
-                continue
-
-            rng_idx = np.searchsorted(sweep_rng, r)
-            if rng_idx == 0:
-                val = float(values_2d[az_idx, 0])
-            elif rng_idx >= len(sweep_rng):
-                val = float(values_2d[az_idx, -1])
-            else:
-                # Linear interpolation between adjacent range gates
-                r0 = sweep_rng[rng_idx - 1]
-                r1 = sweep_rng[rng_idx]
-                v0 = float(values_2d[az_idx, rng_idx - 1])
-                v1 = float(values_2d[az_idx, rng_idx])
-                frac = (r - r0) / (r1 - r0) if r1 != r0 else 0.0
-                val = v0 + frac * (v1 - v0)
-
-            row_values.append(val)
-
-        all_heights.append(row_heights)
-        all_values.append(row_values)
+        all_heights.append(_nan_to_none(height / 1000.0))
+        all_values.append(_nan_to_none(values))
 
     return {
         "distance_km": distance_km.tolist(),
@@ -357,10 +389,12 @@ def extract_vertical_profile(
     lat: float,
     lon: float,
     variable: str,
+    *,
+    sweep_loader: SweepLoader | None = None,
 ) -> dict[str, Any]:
     """Extract a vertical profile (column) at a geographic point.
 
-    Interpolates the variable at the nearest gate for each sweep,
+    Interpolates the variable at the nearest ray for each sweep (linear in range),
     producing a profile of value vs. height.
 
     Parameters
@@ -371,6 +405,8 @@ def extract_vertical_profile(
         Geographic coordinates of the point.
     variable : str
         Variable name.
+    sweep_loader : callable, optional
+        ``sweep_loader(i) -> xr.Dataset`` for lazily-loaded (ARCO) sweeps.
 
     Returns
     -------
@@ -378,58 +414,33 @@ def extract_vertical_profile(
         Keys: ``heights_km`` (list), ``values`` (list),
         ``elevations_deg`` (list), ``variable`` (str), ``units`` (str).
     """
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
+    sweep_names = sorted_sweep_names(datatree)
     radar_lat, radar_lon = _get_radar_location(datatree)
 
-    # Convert point to local coords
-    dx = (lon - radar_lon) * 111320.0 * np.cos(np.radians(radar_lat))
-    dy = (lat - radar_lat) * 110540.0
-    point_range = np.sqrt(dx**2 + dy**2)
-    point_az = np.degrees(np.arctan2(dx, dy)) % 360.0
+    dx, dy = _local_xy(lat, lon, radar_lat, radar_lon)
+    ground = np.array([float(np.hypot(dx, dy))])
+    point_az = np.array([float(np.degrees(np.arctan2(dx, dy)) % 360.0)])
 
-    re_eff = 8_493_000.0
-    heights: list[float] = []
-    values: list[float] = []
+    heights: list[float | None] = []
+    values: list[float | None] = []
     elevations: list[float] = []
     units = ""
 
     for si in range(len(sweep_names)):
-        da, elev_deg, sweep_az, sweep_rng = _get_sweep_data(datatree, si, variable)
+        da, elev_deg, sweep_az, sweep_rng = _get_sweep_data(
+            datatree, si, variable, sweep_loader, sweep_names
+        )
         if da is None:
             continue
 
         if not units and "units" in da.attrs:
             units = str(da.attrs["units"])
 
-        elev_rad = np.radians(elev_deg)
-        h = point_range * np.sin(elev_rad) + (point_range**2) / (2.0 * re_eff)
+        slant, h = slant_range_and_height_from_ground(ground, elev_deg)
+        val = _sample_sweep(np.asarray(da.values), sweep_az, sweep_rng, point_az, slant)
 
-        values_2d = da.values.astype(np.float64)
-
-        # Nearest azimuth
-        az_diff = np.abs(sweep_az - point_az)
-        az_diff = np.minimum(az_diff, 360.0 - az_diff)
-        az_idx = int(np.argmin(az_diff))
-
-        # Interpolate in range
-        if point_range < sweep_rng[0] or point_range > sweep_rng[-1]:
-            val = float("nan")
-        else:
-            rng_idx = np.searchsorted(sweep_rng, point_range)
-            if rng_idx == 0:
-                val = float(values_2d[az_idx, 0])
-            elif rng_idx >= len(sweep_rng):
-                val = float(values_2d[az_idx, -1])
-            else:
-                r0 = sweep_rng[rng_idx - 1]
-                r1 = sweep_rng[rng_idx]
-                v0 = float(values_2d[az_idx, rng_idx - 1])
-                v1 = float(values_2d[az_idx, rng_idx])
-                frac = (point_range - r0) / (r1 - r0) if r1 != r0 else 0.0
-                val = v0 + frac * (v1 - v0)
-
-        heights.append(h / 1000.0)
-        values.append(val)
+        heights.append(_nan_to_none(h / 1000.0)[0])
+        values.append(_nan_to_none(val)[0])
         elevations.append(elev_deg)
 
     return {
@@ -467,7 +478,7 @@ def _get_radar_location(datatree: xr.DataTree) -> tuple[float, float]:
         pass
 
     # Check first sweep
-    sweep_names = sorted(n for n in datatree.children if n.startswith("sweep_"))
+    sweep_names = sorted_sweep_names(datatree)
     if sweep_names:
         try:
             ds = datatree[sweep_names[0]].to_dataset()

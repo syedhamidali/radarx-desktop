@@ -156,15 +156,31 @@ function createSettingsStore() {
   const initial = loadSettings();
   const { subscribe, set, update } = writable<AppSettings>(initial);
 
-  // Auto-persist on every change
+  // Auto-persist on change, debounced: sliders / pickers can update dozens of
+  // times per second and each save is a synchronous JSON.stringify + localStorage write.
   let skipFirst = true;
+  let latest: AppSettings = initial;
+  let dirty = false;
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  const flush = () => {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    if (dirty) { dirty = false; saveSettings(latest); }
+  };
   subscribe((value) => {
     if (skipFirst) {
       skipFirst = false;
       return;
     }
-    saveSettings(value);
+    latest = value;
+    dirty = true;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(flush, 250);
   });
+  if (typeof window !== 'undefined') {
+    // Never lose the last edit when the window closes.
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+  }
 
   return {
     subscribe,

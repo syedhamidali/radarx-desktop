@@ -98,16 +98,28 @@
 
   onDestroy(() => { unsub?.(); });
 
+  /** Single-pass min/max (no argument spreading: spread throws on very large arrays). */
+  function minMax(arr: ArrayLike<number>): [number, number] {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < arr.length; i++) {
+      const v = arr[i];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    return [lo, hi];
+  }
+
   function fitView() {
     if (!data || data.x.length === 0) return;
-    const xArr = data.x;
-    const yArr = data.y;
-    const xPad = (Math.max(...xArr) - Math.min(...xArr)) * 0.05 || 1;
-    const yPad = (Math.max(...yArr) - Math.min(...yArr)) * 0.05 || 1;
-    viewXMin = Math.min(...xArr) - xPad;
-    viewXMax = Math.max(...xArr) + xPad;
-    viewYMin = Math.min(...yArr) - yPad;
-    viewYMax = Math.max(...yArr) + yPad;
+    const [xLo, xHi] = minMax(data.x);
+    const [yLo, yHi] = minMax(data.y);
+    const xPad = (xHi - xLo) * 0.05 || 1;
+    const yPad = (yHi - yLo) * 0.05 || 1;
+    viewXMin = xLo - xPad;
+    viewXMax = xHi + xPad;
+    viewYMin = yLo - yPad;
+    viewYMax = yHi + yPad;
   }
 
   // ── Coordinate transforms ──────────────────────────────────────────────
@@ -151,15 +163,17 @@
   $: yTicks = makeTicks(viewYMin, viewYMax);
 
   // ── Point color ────────────────────────────────────────────────────────
+  // Colour range computed once per data set (pointColor runs once per plotted point,
+  // so scanning the whole colour array inside it was O(n^2) per render).
+  $: [colorMin, colorMax] = data?.color && data.color.length > 0 ? minMax(data.color) : [0, 1];
+
   function pointColor(i: number): string {
     if (selectedIndices.size > 0) {
       return selectedIndices.has(i) ? '#ff6b35' : 'rgba(100,100,130,0.2)';
     }
     if (data?.color && data.color.length > i) {
       const c = data.color;
-      const cMin = Math.min(...c);
-      const cMax = Math.max(...c);
-      const t = cMax > cMin ? (c[i] - cMin) / (cMax - cMin) : 0.5;
+      const t = colorMax > colorMin ? (c[i] - colorMin) / (colorMax - colorMin) : 0.5;
       return hslColor(t);
     }
     return 'rgba(91, 108, 247, 0.5)';

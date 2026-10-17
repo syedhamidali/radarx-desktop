@@ -67,6 +67,64 @@ class CellTrack:
 # ---------------------------------------------------------------------------
 
 
+def _circ_diff_deg(a: np.ndarray | float, b: np.ndarray | float) -> np.ndarray | float:
+    """Signed circular difference ``b - a`` in degrees, in [-180, 180)."""
+    return (np.asarray(b) - np.asarray(a) + 180.0) % 360.0 - 180.0
+
+
+def _covers_full_circle(azimuth: np.ndarray) -> bool:
+    """True when the last ray is circularly adjacent to the first (full 360 sweep)."""
+    n = azimuth.size
+    if n < 3:
+        return False
+    steps = np.abs(_circ_diff_deg(azimuth[:-1], azimuth[1:]))
+    med = float(np.median(steps))
+    if med <= 0.0:
+        return False
+    seam = abs(float(_circ_diff_deg(azimuth[-1], azimuth[0])))
+    # the rays must also span (almost) all of the circle, not a sector that
+    # happens to have its ends close together
+    total = float(np.sum(steps)) + seam
+    return seam <= 2.0 * med and total <= 360.0 * 1.01 + 2.0 * med
+
+
+def _merge_seam_labels(labels: np.ndarray, n_features: int) -> np.ndarray:
+    """Merge components that touch across the first/last-azimuth seam (8-connectivity)."""
+    first, last = labels[0], labels[-1]
+    pairs: set[tuple[int, int]] = set()
+    for shift in (-1, 0, 1):
+        if shift < 0:
+            f, l_ = first[:shift], last[-shift:]
+        elif shift > 0:
+            f, l_ = first[shift:], last[:-shift]
+        else:
+            f, l_ = first, last
+        sel = (f > 0) & (l_ > 0) & (f != l_)
+        pairs.update(zip(f[sel].tolist(), l_[sel].tolist(), strict=True))
+    if not pairs:
+        return labels
+
+    parent = list(range(n_features + 1))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for u, v in pairs:
+        ru, rv = find(u), find(v)
+        if ru != rv:
+            parent[max(ru, rv)] = min(ru, rv)
+    mapping = np.array([find(i) for i in range(n_features + 1)], dtype=labels.dtype)
+    return mapping[labels]
+
+
+def _polar_to_xy(az_deg: np.ndarray, rng_m: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    az = np.radians(az_deg)
+    return rng_m * np.sin(az), rng_m * np.cos(az)
+
+
 def identify_cells(
     data: xr.DataArray,
     threshold_dbz: float = 35.0,
@@ -87,23 +145,41 @@ def identify_cells(
     Returns
     -------
     list[CellInfo]
-        Identified cells sorted by descending ``max_dbz``.
+        Identified cells sorted by descending ``max_dbz``.  When the sweep
+        covers a full circle, cells touching the 0/360 seam are merged into
+        one cell and their azimuth centroid is a circular mean.
     """
-    values = np.asarray(data.values, dtype=np.float64)
+    if "azimuth" in data.dims and "range" in data.dims and data.ndim == 2:
+        data = data.transpose("azimuth", "range")
+    values = np.asarray(data.values)
+    if not np.issubdtype(values.dtype, np.floating):
+        values = values.astype(np.float32)
     azimuth = np.asarray(data.coords["azimuth"].values, dtype=np.float64)
     range_m = np.asarray(data.coords["range"].values, dtype=np.float64)
+    if values.shape != (azimuth.size, range_m.size):
+        raise ValueError(
+            f"data shape {values.shape} does not match azimuth/range "
+            f"({azimuth.size}, {range_m.size})"
+        )
+    if values.size == 0:
+        return []
 
     # Compute gate spacing for area estimation
     if len(range_m) >= 2:
-        gate_spacing_m = float(np.median(np.diff(range_m)))
+        gate_spacing_m = float(np.median(np.abs(np.diff(range_m))))
     else:
         gate_spacing_m = float(range_m[0]) if len(range_m) == 1 else 250.0
 
     n_az = len(azimuth)
-    az_spacing_deg = float(np.median(np.diff(np.sort(azimuth)))) if n_az >= 2 else 1.0
+    if n_az >= 2:
+        az_spacing_deg = float(np.median(np.abs(_circ_diff_deg(azimuth[:-1], azimuth[1:]))))
+    else:
+        az_spacing_deg = 1.0
+    az_spacing_rad = math.radians(az_spacing_deg)
 
-    # Binary mask: above threshold and not NaN
-    mask = np.where(np.isnan(values), False, values >= threshold_dbz)
+    # Binary mask: above threshold (NaN compares False)
+    with np.errstate(invalid="ignore"):
+        mask = values >= threshold_dbz
 
     # Connected-component labelling (8-connectivity)
     structure = ndimage.generate_binary_structure(2, 2)
@@ -113,59 +189,66 @@ def identify_cells(
         logger.info("No cells found above %.1f dBZ", threshold_dbz)
         return []
 
+    wrap = _covers_full_circle(azimuth)
+    if wrap:
+        labels = _merge_seam_labels(labels, n_features)
+
+    # ---- vectorised per-label statistics (single pass over the masked gates) ----
+    az_idx, rng_idx = np.nonzero(labels)
+    lab = labels[az_idx, rng_idx]
+    gate_area = np.abs(range_m[rng_idx]) * az_spacing_rad * gate_spacing_m  # m^2
+    vals = values[az_idx, rng_idx].astype(np.float64)
+    minlen = n_features + 1
+
+    count = np.bincount(lab, minlength=minlen)
+    area_m2 = np.bincount(lab, weights=gate_area, minlength=minlen)
+    val_sum = np.bincount(lab, weights=vals, minlength=minlen)
+
+    # Weights for centroids: area, falling back to unit weights if a cell has zero area.
+    w = np.where(area_m2[lab] > 0.0, gate_area, 1.0)
+    wsum = np.bincount(lab, weights=w, minlength=minlen)
+    rad = np.radians(azimuth[az_idx])
+    sin_sum = np.bincount(lab, weights=w * np.sin(rad), minlength=minlen)
+    cos_sum = np.bincount(lab, weights=w * np.cos(rad), minlength=minlen)
+    rng_sum = np.bincount(lab, weights=w * range_m[rng_idx], minlength=minlen)
+
+    present = np.nonzero(count)[0]
+    keep = present[area_m2[present] / 1e6 >= min_size_km2]
+    if keep.size == 0:
+        return []
+
+    # Bounding boxes of the (possibly seam-merged) components
+    objects = ndimage.find_objects(labels)
+
     cells: list[CellInfo] = []
-
-    for label_id in range(1, n_features + 1):
-        component_mask = labels == label_id
-        az_indices, rng_indices = np.where(component_mask)
-
-        if len(az_indices) == 0:
+    for label_id in keep.tolist():
+        sl = objects[label_id - 1]
+        if sl is None:
             continue
-
-        # Estimate area: each gate is approximately gate_spacing * (range * az_spacing_rad)
-        # For a more accurate estimate, weight by range.
-        component_ranges = range_m[rng_indices]
-        az_spacing_rad = math.radians(az_spacing_deg)
-        gate_areas_m2 = component_ranges * az_spacing_rad * gate_spacing_m
-        total_area_km2 = float(np.sum(gate_areas_m2)) / 1e6
-
-        if total_area_km2 < min_size_km2:
-            continue
-
-        # Cell statistics
-        cell_values = values[component_mask]
-        max_dbz = float(np.nanmax(cell_values))
-        mean_dbz = float(np.nanmean(cell_values))
-
-        # Centroid (area-weighted)
-        centroid_az = float(np.average(azimuth[az_indices], weights=gate_areas_m2))
-        centroid_range = float(np.average(range_m[rng_indices], weights=gate_areas_m2))
-
-        # Boundary extraction: find edge pixels of the component
+        component_mask = labels[sl] == label_id
+        centroid_az = math.degrees(math.atan2(sin_sum[label_id], cos_sum[label_id])) % 360.0
+        centroid_range = float(rng_sum[label_id] / wsum[label_id])
         boundary_points = _extract_boundary(
             component_mask,
-            azimuth,
-            range_m,
+            azimuth[sl[0]],
+            range_m[sl[1]],
             max_points=120,
+            wrap_az=wrap and sl[0].start == 0 and sl[0].stop == n_az,
         )
-
-        cell_id = f"C{label_id:03d}"
         cells.append(
             CellInfo(
-                id=cell_id,
+                id=f"C{label_id:03d}",
                 centroid_az=centroid_az,
                 centroid_range=centroid_range,
-                area_km2=total_area_km2,
-                max_dbz=max_dbz,
-                mean_dbz=mean_dbz,
+                area_km2=float(area_m2[label_id]) / 1e6,
+                max_dbz=float(values[sl][component_mask].max()),
+                mean_dbz=float(val_sum[label_id] / count[label_id]),
                 boundary_points=boundary_points,
             )
         )
 
-    # Sort by descending max dBZ
-    cells.sort(key=lambda c: c.max_dbz, reverse=True)
-
-    # Re-label IDs by strength rank
+    # Sort by descending max dBZ (ties: larger cell first), then re-label by rank
+    cells.sort(key=lambda c: (-c.max_dbz, -c.area_km2))
     for i, cell in enumerate(cells):
         cell.id = f"C{i + 1:03d}"
 
@@ -183,36 +266,38 @@ def _extract_boundary(
     azimuth: np.ndarray,
     range_m: np.ndarray,
     max_points: int = 120,
+    wrap_az: bool = False,
 ) -> list[list[float]]:
     """Extract boundary pixels from a binary mask and return as [az, range] pairs.
 
-    Uses morphological erosion to find edge pixels, then sub-samples to
-    *max_points* evenly spaced around the boundary.
+    Uses morphological erosion to find edge pixels, then orders them by angle
+    around the centroid (in Cartesian space, so the order is meaningful and
+    seam-safe) and sub-samples to at most *max_points* evenly spaced points.
+
+    *mask* is indexed ``[azimuth, range]``; *azimuth*/*range_m* are the matching
+    coordinate slices.  With *wrap_az* the first and last rows are neighbours
+    (full-circle sweep) so the seam itself is not reported as boundary.
     """
-    eroded = ndimage.binary_erosion(mask)
+    if wrap_az:
+        padded = np.pad(mask, ((1, 1), (0, 0)), mode="wrap")
+        eroded = ndimage.binary_erosion(padded)[1:-1]
+    else:
+        eroded = ndimage.binary_erosion(mask)
     edge = mask & ~eroded
 
-    az_idx, rng_idx = np.where(edge)
+    az_idx, rng_idx = np.nonzero(edge)
     if len(az_idx) == 0:
         # Fallback: component is only one pixel thick
-        az_idx, rng_idx = np.where(mask)
+        az_idx, rng_idx = np.nonzero(mask)
 
-    points = np.column_stack([azimuth[az_idx], range_m[rng_idx]])
-
-    if len(points) <= max_points:
-        return points.tolist()
-
-    # Sub-sample evenly by sorting by angle relative to centroid then picking
-    centroid_az = np.mean(points[:, 0])
-    centroid_rng = np.mean(points[:, 1])
-    angles = np.arctan2(
-        points[:, 1] - centroid_rng,
-        points[:, 0] - centroid_az,
-    )
-    order = np.argsort(angles)
-    step = max(1, len(order) // max_points)
-    sampled = points[order[::step]]
-    return sampled.tolist()
+    az_vals = np.mod(azimuth[az_idx], 360.0)
+    rng_vals = range_m[rng_idx]
+    x, y = _polar_to_xy(az_vals, rng_vals)
+    angles = np.arctan2(y - y.mean(), x - x.mean())
+    order = np.argsort(angles, kind="stable")
+    if len(order) > max_points:
+        order = order[np.linspace(0, len(order) - 1, max_points).astype(np.intp)]
+    return np.column_stack([az_vals[order], rng_vals[order]]).tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +314,7 @@ def _cell_distance_km(a: CellInfo, b: CellInfo) -> float:
     r1 = a.centroid_range
     r2 = b.centroid_range
     daz = math.radians(b.centroid_az - a.centroid_az)
-    dist_m = math.sqrt(r1**2 + r2**2 - 2 * r1 * r2 * math.cos(daz))
+    dist_m = math.sqrt(max(r1**2 + r2**2 - 2 * r1 * r2 * math.cos(daz), 0.0))
     return dist_m / 1000.0
 
 
@@ -260,32 +345,36 @@ def track_cells(
     tracks: list[CellTrack] = []
     used_t1: set[int] = set()
 
-    for c0 in cells_t0:
-        best_idx: int | None = None
-        best_dist = max_distance_km
-
+    # Global greedy assignment: take candidate pairs in order of increasing
+    # distance, so a cell is never stolen from its true nearest neighbour just
+    # because it appears earlier in the (max-dBZ ordered) list.
+    candidates: list[tuple[float, int, int]] = []
+    for i, c0 in enumerate(cells_t0):
         for j, c1 in enumerate(cells_t1):
-            if j in used_t1:
-                continue
             dist = _cell_distance_km(c0, c1)
-            if dist < best_dist:
-                best_dist = dist
-                best_idx = j
+            if dist < max_distance_km:
+                candidates.append((dist, i, j))
+    candidates.sort()
+    match: dict[int, int] = {}
+    for _dist, i, j in candidates:
+        if i in match or j in used_t1:
+            continue
+        match[i] = j
+        used_t1.add(j)
 
+    for i, c0 in enumerate(cells_t0):
+        best_idx = match.get(i)
         if best_idx is not None:
             c1 = cells_t1[best_idx]
-            used_t1.add(best_idx)
-
-            # Compute motion vector
             speed_mps, direction_deg = _compute_motion(c0, c1, dt_seconds)
-
-            track = CellTrack(
-                track_id=f"T{c0.id[1:]}",
-                cell_history=[c0, c1],
-                speed_mps=speed_mps,
-                direction_deg=direction_deg,
+            tracks.append(
+                CellTrack(
+                    track_id=f"T{c0.id[1:]}",
+                    cell_history=[c0, c1],
+                    speed_mps=speed_mps,
+                    direction_deg=direction_deg,
+                )
             )
-            tracks.append(track)
         else:
             # Cell from t0 with no match — ended
             tracks.append(
@@ -324,7 +413,7 @@ def _compute_motion(
     Direction follows meteorological convention: the direction *from which*
     the cell is moving.
     """
-    if dt_seconds <= 0:
+    if not dt_seconds > 0:  # also catches NaN
         return 0.0, 0.0
 
     # Convert polar to approximate Cartesian (metres)
@@ -344,6 +433,8 @@ def _compute_motion(
     # to meteorological "from" direction.
     heading_deg = (math.degrees(math.atan2(dx, dy)) + 360) % 360
     from_deg = (heading_deg + 180) % 360
+    if dist_m == 0.0:
+        return 0.0, 0.0  # stationary: direction undefined
 
     return speed_mps, from_deg
 
