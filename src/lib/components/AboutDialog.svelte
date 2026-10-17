@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
   import { fade, fly } from 'svelte/transition';
+  import { focusTrap } from '../utils/focusTrap';
 
   export let visible = false;
 
@@ -43,7 +44,7 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="about-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
-    <div class="about-dialog" transition:fly={{ y: 16, duration: 250 }}>
+    <div class="about-dialog" role="dialog" aria-modal="true" aria-label="About xradar desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
       <!-- Logo area -->
       <div class="about-logo">
         <div class="logo-icon">

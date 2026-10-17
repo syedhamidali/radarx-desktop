@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { wsManager } from '../utils/websocket';
-  import { connectionStatus } from '../stores/radarData';
+  import { connectionStatus, processingProgress } from '../stores/radarData';
+  import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
   import { activeFile } from '../stores/fileManager';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
@@ -42,15 +43,23 @@
   let arcoScans = $state<ArcoScan[]>([]);
   let loadingArco = $state(false);
 
-  // Opening state
+  // Opening state: one cloud open at a time, tracked as an operation in the tray.
+  // `openKey` identifies what is in flight ("realtime:KLOT", "l2:<path>", "arco:<station>:<key>")
+  // so only that control shows "Opening…".
   let isOpening = $state(false);
+  let openKey = $state<string | null>(null);
+  let cloudOp: OpHandle | null = null;
+  let cloudOpUnsub: (() => void) | null = null;
+  const CLOUD_OPEN_TIMEOUT_MS = 120_000;
+  /** Server errors that belong to the cloud open flows ("open_arco_scan failed: ...", "Invalid input for open_nexrad_l2: ..."). */
+  const OPEN_ERROR_RE = /(?:^|\b(?:in|for)\s+)(?:open_nexrad_realtime|open_nexrad_l2|open_arco_scan)\b/;
 
   // Radar network (several nearby sites at about the same time → mosaic)
   type NetRow = { id: string; state: 'pending' | 'running' | 'ok' | 'failed'; text: string };
   /** Longest tolerated gap between the requested time and a site's nearest volume. */
   const NET_MAX_GAP_MIN = 30;
   const LIST_TIMEOUT_MS = 60_000;
-  const OPEN_TIMEOUT_MS = 240_000;
+  const OPEN_TIMEOUT_MS = CLOUD_OPEN_TIMEOUT_MS;
   let netRadius = $state(200);
   let netMax = $state(4);
   let netTimeMode = $state<'latest' | 'time'>('latest');
@@ -88,6 +97,7 @@
   let unsubArco: (() => void) | null = null;
   let unsubOpened: (() => void) | null = null;
   let unsubError: (() => void) | null = null;
+  let unsubDrop: (() => void) | null = null;
 
   onMount(() => {
     unsubStations = wsManager.onMessage('nexrad_stations', (msg: any) => {
@@ -105,12 +115,20 @@
       loadingArco = false;
     });
     unsubOpened = wsManager.onMessage('file_opened', () => {
-      isOpening = false;
+      endCloudOp();
     });
-    unsubError = wsManager.onMessage('error', () => {
-      isOpening = false;
+    unsubError = wsManager.onMessage('error', (msg: any) => {
+      const text = String(msg?.message ?? 'Open failed');
+      // Only an error from one of the open flows ends the pending open; an unrelated error
+      // (a sweep, a module) must not re-enable the button while the download is still running.
+      if (OPEN_ERROR_RE.test(text)) endCloudOp(text.replace(/^[a-z_0-9]+ failed:\s*/i, ''));
       loadingFiles = false;
       loadingArco = false;
+    });
+
+    // A dropped connection ends a pending open now instead of after the 120 s timeout.
+    unsubDrop = connectionStatus.subscribe((s) => {
+      if (s !== 'connected' && cloudOp) endCloudOp('Connection to the sidecar was lost');
     });
 
     // Auto-fetch station list once connected
@@ -124,11 +142,13 @@
   });
 
   onDestroy(() => {
+    if (cloudOp) cancelOp(cloudOp.id);
     unsubStations?.();
     unsubFiles?.();
     unsubArco?.();
     unsubOpened?.();
     unsubError?.();
+    unsubDrop?.();
   });
 
   // ── Helpers ──────────────────────────────────────────────────────────────
@@ -168,25 +188,82 @@
     wsManager.send({ type: 'list_arco_scans', station: selectedStation, limit: 50 });
   }
 
+  /** Stop tracking the in-flight cloud open (success, or failure with a reason). */
+  function endCloudOp(error?: string) {
+    const op = cloudOp;
+    cloudOp = null;
+    cloudOpUnsub?.();
+    cloudOpUnsub = null;
+    isOpening = false;
+    openKey = null;
+    if (!op) return;
+    if (error) op.fail(error);
+    else op.done();
+  }
+
+  /**
+   * Show a cloud open in the operations tray: progress text from the global progress messages,
+   * Cancel = stop waiting (the server cannot abort the download), Retry re-sends, and a timeout
+   * fails the op so the button never stays stuck on "Opening…".
+   */
+  function beginCloudOp(key: string, label: string, send: () => void) {
+    if (cloudOp) cancelOp(cloudOp.id);
+    isOpening = true;
+    openKey = key;
+    const run = () => {
+      if (!isConnected || isOpening) return;
+      beginCloudOp(key, label, send);
+    };
+    const op: OpHandle = beginOp({
+      kind: 'open',
+      label,
+      slowMs: 8_000,
+      timeoutMs: CLOUD_OPEN_TIMEOUT_MS,
+      onCancel: () => {
+        if (cloudOp === op) endCloudOp();
+      },
+      onTimeout: () => {
+        if (cloudOp === op) {
+          cloudOp = null;
+          cloudOpUnsub?.();
+          cloudOpUnsub = null;
+          isOpening = false;
+          openKey = null;
+        }
+      },
+      onRetry: run,
+    });
+    cloudOp = op;
+    cloudOpUnsub = processingProgress.subscribe((p) => {
+      if (p && p.percent < 100 && cloudOp === op) {
+        op.update(`${p.message || 'Working'} (${Math.round(p.percent)}%)`);
+      }
+    });
+    addToast('info', `${label}...`);
+    send();
+  }
+
   function openRealtime() {
     if (!isConnected || !selectedStation || isOpening || netBusy) return;
-    isOpening = true;
-    addToast('info', `Fetching latest ${selectedStation} scan from AWS...`);
-    wsManager.send({ type: 'open_nexrad_realtime', station: selectedStation });
+    const station = selectedStation.trim().toUpperCase();
+    beginCloudOp(`realtime:${station}`, `Opening latest ${station} scan`, () =>
+      wsManager.send({ type: 'open_nexrad_realtime', station }),
+    );
   }
 
   function openL2File(file: L2File) {
     if (!isConnected || isOpening || netBusy) return;
-    isOpening = true;
-    addToast('info', `Opening ${file.name}...`);
-    wsManager.send({ type: 'open_nexrad_l2', path: file.path });
+    beginCloudOp(`l2:${file.path}`, `Opening ${file.name.slice(-19)}`, () =>
+      wsManager.send({ type: 'open_nexrad_l2', path: file.path }),
+    );
   }
 
   function openArcoScan(scan: ArcoScan) {
     if (!isConnected || isOpening || netBusy) return;
-    isOpening = true;
-    addToast('info', `Opening ARCO scan ${scan.key}...`);
-    wsManager.send({ type: 'open_arco_scan', station: selectedStation, scan_key: scan.key });
+    const station = selectedStation;
+    beginCloudOp(`arco:${station}:${scan.key}`, `Opening ARCO scan ${scan.key}`, () =>
+      wsManager.send({ type: 'open_arco_scan', station, scan_key: scan.key }),
+    );
   }
 
   // ── Radar network ────────────────────────────────────────────────────────
@@ -201,6 +278,7 @@
     match: (msg: any) => boolean,
     errorPrefix: string,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<any> {
     return new Promise((resolve, reject) => {
       const unsubs: Array<() => void> = [];
@@ -229,6 +307,12 @@
         if (st !== 'connected') finish(() => reject(new Error('connection lost')));
       });
       unsubs.push(unsubConn);
+      if (signal) {
+        if (signal.aborted) return finish(() => reject(new Error('cancelled')));
+        const onAbort = () => finish(() => reject(new Error('cancelled')));
+        signal.addEventListener('abort', onAbort, { once: true });
+        unsubs.push(() => signal.removeEventListener('abort', onAbort));
+      }
       send();
     });
   }
@@ -252,18 +336,43 @@
     return m.files ?? [];
   }
 
+  /**
+   * Run one network-site open as an operation in the tray (progress text, Cancel = stop waiting).
+   * The request's own timeout ends it; the op mirrors the outcome.
+   */
+  async function trackedOpen<T>(label: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const op = beginOp({ kind: 'open', label, slowMs: 8_000, timeoutMs: 0 });
+    const unsub = processingProgress.subscribe((p) => {
+      if (p && p.percent < 100) op.update(`${p.message || 'Working'} (${Math.round(p.percent)}%)`);
+    });
+    try {
+      const r = await run(op.signal);
+      op.done();
+      return r;
+    } catch (e) {
+      // A cancelled op is already finished by cancelOp; failing it again would overwrite that.
+      if (!op.signal.aborted) op.fail((e as Error).message ?? String(e));
+      throw e;
+    } finally {
+      unsub();
+    }
+  }
+
   /** Open one site's volume nearest the target (or its latest); resolves with the new file id. */
   async function openSite(i: number, station: string, total: number): Promise<string> {
     const tag = `${station} ${i + 1}/${total}`;
     let reply: any;
     if (netTimeMode === 'latest') {
       setRow(i, { state: 'running', text: `${tag} — fetching latest scan…` });
-      reply = await request(
-        () => wsManager.send({ type: 'open_nexrad_realtime', station }),
-        'file_opened',
-        () => true,
-        'open_nexrad_realtime',
-        OPEN_TIMEOUT_MS,
+      reply = await trackedOpen(`Opening latest ${tag}`, (signal) =>
+        request(
+          () => wsManager.send({ type: 'open_nexrad_realtime', station }),
+          'file_opened',
+          () => true,
+          'open_nexrad_realtime',
+          OPEN_TIMEOUT_MS,
+          signal,
+        ),
       );
     } else {
       setRow(i, { state: 'running', text: `${tag} — listing scans…` });
@@ -283,12 +392,15 @@
         throw new Error(`nearest scan is ${Math.round(gapMin)} min from the target`);
       }
       setRow(i, { state: 'running', text: `${tag} — opening ${pick.name.slice(-19)} (Δ${Math.round(gapMin)} min)…` });
-      reply = await request(
-        () => wsManager.send({ type: 'open_nexrad_l2', path: pick.path }),
-        'file_opened',
-        () => true,
-        'open_nexrad_l2',
-        OPEN_TIMEOUT_MS,
+      reply = await trackedOpen(`Opening ${tag} ${pick.name.slice(-19)}`, (signal) =>
+        request(
+          () => wsManager.send({ type: 'open_nexrad_l2', path: pick.path }),
+          'file_opened',
+          () => true,
+          'open_nexrad_l2',
+          OPEN_TIMEOUT_MS,
+          signal,
+        ),
       );
     }
     if (!reply?.file_id) throw new Error('server returned no file id');
@@ -367,9 +479,12 @@
     {#if mode === 'realtime'}
       <div class="cdp-section">
         <p class="cdp-hint">Opens the most recent NEXRAD Level II scan from <code>unidata-nexrad-level2</code> on AWS S3.</p>
-        <button class="cdp-btn primary full" on:click={openRealtime} disabled={!isConnected || isOpening || !selectedStation}>
-          {isOpening ? 'Loading…' : `Open Latest ${selectedStation}`}
+        <button class="cdp-btn primary full" on:click={openRealtime} disabled={!isConnected || isOpening || netBusy || !selectedStation.trim()} aria-busy={openKey?.startsWith('realtime:') ?? false}>
+          {openKey?.startsWith('realtime:') ? 'Opening…' : `Open Latest ${selectedStation}`}
         </button>
+        {#if openKey?.startsWith('realtime:')}
+          <p class="cdp-hint">Downloading from AWS. Progress and Cancel are in the operations tray (status bar).</p>
+        {/if}
       </div>
     {/if}
 
@@ -389,7 +504,7 @@
             {#each l2Files as file}
               <button class="cdp-file-row" on:click={() => openL2File(file)} disabled={isOpening}>
                 <span class="cdp-file-name">{file.name.slice(-19)}</span>
-                <span class="cdp-file-size">{formatBytes(file.size)}</span>
+                <span class="cdp-file-size">{openKey === `l2:${file.path}` ? 'opening…' : formatBytes(file.size)}</span>
               </button>
             {/each}
           </div>
@@ -416,7 +531,7 @@
             {#each arcoScans as scan}
               <button class="cdp-file-row" on:click={() => openArcoScan(scan)} disabled={isOpening}>
                 <span class="cdp-file-name">{scan.key}</span>
-                <span class="cdp-file-size">latest</span>
+                <span class="cdp-file-size">{openKey === `arco:${selectedStation}:${scan.key}` ? 'opening…' : 'latest'}</span>
               </button>
             {/each}
           </div>
@@ -619,7 +734,7 @@
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
     border: 1px solid var(--glass-border, rgba(255,255,255,0.1));
-    background: rgba(15, 15, 26, 0.6);
+    background: var(--field-bg);
     color: var(--text-secondary, rgba(255,255,255,0.7));
     cursor: pointer;
     transition: all 150ms;

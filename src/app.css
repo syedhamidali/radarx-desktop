@@ -28,6 +28,10 @@
   --glass-border: rgba(140, 160, 250, 0.1);
   --glass-blur: 20px;
   --glass-blur-heavy: 40px;
+  --field-bg: rgba(8, 10, 20, 0.6);
+  --overlay-bg: rgba(13, 16, 32, 0.92);
+  --card-bg: rgba(13, 16, 32, 0.55);
+  --panel-header-bg: rgba(17, 22, 40, 0.5);
   --glow-primary: rgba(91, 108, 247, 0.35);
   --glow-success: rgba(52, 211, 153, 0.35);
   --glow-warning: rgba(251, 191, 36, 0.35);
@@ -267,13 +271,16 @@ button:disabled {
 
 select,
 input[type="text"],
-input[type="number"] {
+input[type="number"],
+input[type="search"],
+input[type="date"],
+input[type="time"] {
   height: 30px;
   padding: var(--spacing-xs) var(--spacing-sm);
   font-family: var(--font-sans);
   font-size: 12px;
   color: var(--text-primary);
-  background: rgba(8, 10, 20, 0.6);
+  background: var(--field-bg);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-sm);
   outline: none;
@@ -282,7 +289,10 @@ input[type="number"] {
 
 select:focus,
 input[type="text"]:focus,
-input[type="number"]:focus {
+input[type="number"]:focus,
+input[type="search"]:focus,
+input[type="date"]:focus,
+input[type="time"]:focus {
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 2px rgba(91, 108, 247, 0.15), 0 0 12px rgba(91, 108, 247, 0.1);
 }
@@ -409,7 +419,7 @@ kbd {
   padding: 2px 6px;
   font-family: var(--font-mono);
   font-size: 10px;
-  background: rgba(8, 10, 20, 0.6);
+  background: var(--field-bg);
   border: 1px solid var(--glass-border);
   border-radius: 4px;
   color: var(--text-secondary);
@@ -453,6 +463,14 @@ input:disabled {
   --accent-success: #2d9a5a;
   --accent-warning: #c88a20;
   --accent-danger: #d04040;
+
+  --glass-bg: rgba(255, 255, 255, 0.8);
+  --glass-bg-heavy: rgba(245, 245, 248, 0.94);
+  --glass-border: rgba(40, 50, 110, 0.16);
+  --field-bg: #ffffff;
+  --overlay-bg: rgba(255, 255, 255, 0.97);
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --panel-header-bg: rgba(226, 229, 240, 0.92);
 
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
@@ -499,6 +517,17 @@ input:disabled {
     --accent-success: #2d9a5a;
     --accent-warning: #c88a20;
     --accent-danger: #d04040;
+
+    --glass-bg: rgba(255, 255, 255, 0.8);
+    --glass-bg-heavy: rgba(245, 245, 248, 0.94);
+    --glass-border: rgba(40, 50, 110, 0.16);
+    --field-bg: #ffffff;
+    --overlay-bg: rgba(255, 255, 255, 0.97);
+    --card-bg: rgba(255, 255, 255, 0.72);
+    --panel-header-bg: rgba(226, 229, 240, 0.92);
+  --overlay-bg: rgba(255, 255, 255, 0.97);
+  --card-bg: rgba(255, 255, 255, 0.72);
+  --panel-header-bg: rgba(226, 229, 240, 0.92);
 
     --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);

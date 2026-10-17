@@ -2,6 +2,7 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { settings, DEFAULT_SETTINGS, type AppSettings } from '../stores/settings';
   import { recentFiles } from '../stores/recentFiles';
+  import { focusTrap } from '../utils/focusTrap';
   import {
     SHORTCUT_REGISTRY,
     formatKeyCombo,
@@ -142,7 +143,8 @@
   }
 
   function setExportDpi(dpi: number) {
-    settings.updateSetting('export_', { dpi });
+    // Clamp to the control's own range: typing 5 or 99999 must not reach the exporter.
+    settings.updateSetting('export_', { dpi: Math.min(600, Math.max(72, Math.round(dpi) || 150)) });
   }
 
   function setExportDir(dir: string) {
@@ -184,11 +186,11 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="settings-overlay" on:click={handleOverlayClick}>
-    <div class="settings-dialog">
+    <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings" use:focusTrap={{ initial: '.tab-btn.active' }}>
       <!-- Header -->
       <div class="settings-header">
         <h2>Settings</h2>
-        <button class="close-btn" on:click={close} title="Close (Esc)">
+        <button class="close-btn" on:click={close} title="Close (Esc)" aria-label="Close settings">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
@@ -197,10 +199,12 @@
 
       <div class="settings-body">
         <!-- Tab bar -->
-        <nav class="settings-tabs">
+        <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
           {#each tabs as tab}
             <button
               class="tab-btn"
+              role="tab"
+              aria-selected={activeTab === tab.id}
               class:active={activeTab === tab.id}
               on:click={() => (activeTab = tab.id)}
             >
@@ -467,7 +471,7 @@
                     max="600"
                     step="1"
                     value={s.export_.dpi}
-                    on:change={(e) => setExportDpi(parseInt(e.currentTarget.value) || 150)}
+                    on:change={(e) => { setExportDpi(parseInt(e.currentTarget.value)); e.currentTarget.value = String($settings.export_.dpi); }}
                     style="width:80px"
                   />
                 </div>
@@ -542,7 +546,7 @@
 
       <!-- Footer -->
       <div class="settings-footer">
-        <button class="reset-btn" on:click={() => settings.resetToDefaults()}>
+        <button class="reset-btn" on:click={() => { if (confirm('Reset every setting (including recent files and shortcuts) to its default?')) settings.resetToDefaults(); }}>
           Reset All Settings
         </button>
         <button class="primary" on:click={close}>Done</button>

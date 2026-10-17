@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount, onDestroy, tick } from 'svelte';
-  import { radarData, selectedVariable, selectedSweep } from '../stores/radarData';
-  import { colormap } from '../stores/settings';
+  import { createEventDispatcher, tick } from 'svelte';
+  import { radarData, selectedVariable, selectedSweep, type RadarDataState } from '../stores/radarData';
+  import { focusTrap } from '../utils/focusTrap';
+  import { formatKeyCombo, SHORTCUT_REGISTRY } from '../utils/shortcuts';
+  import { settings } from '../stores/settings';
 
   export let visible = false;
 
@@ -20,16 +22,19 @@
     action: () => void;
   }
 
-  const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
-  const mod = isMac ? '\u2318' : 'Ctrl';
+  /** Display string of a (possibly user-rebound) shortcut. */
+  function keysFor(id: string, bindings: Record<string, { key: string }>): string {
+    const def = SHORTCUT_REGISTRY.find((d) => d.id === id);
+    return formatKeyCombo(bindings[id]?.key ?? def?.defaultKey ?? '');
+  }
 
-  function getActions(): PaletteAction[] {
+  function getActions(data: RadarDataState, bindings: Record<string, { key: string }>): PaletteAction[] {
     const actions: PaletteAction[] = [
       {
         id: 'open-file',
         label: 'Open File',
         category: 'File',
-        shortcut: `${mod}+O`,
+        shortcut: keysFor('open-file', bindings),
         icon: '\u{1F4C2}',
         action: () => dispatch('action', { type: 'open-file' }),
       },
@@ -37,7 +42,7 @@
         id: 'toggle-left-sidebar',
         label: 'Toggle Data Inspector',
         category: 'View',
-        shortcut: `${mod}+B`,
+        shortcut: keysFor('toggle-left-sidebar', bindings),
         icon: '\u{1F4CB}',
         action: () => dispatch('action', { type: 'toggle-left-sidebar' }),
       },
@@ -45,7 +50,7 @@
         id: 'toggle-right-sidebar',
         label: 'Toggle Tools Panel',
         category: 'View',
-        shortcut: `${mod}+E`,
+        shortcut: keysFor('toggle-right-sidebar', bindings),
         icon: '\u{1F527}',
         action: () => dispatch('action', { type: 'toggle-right-sidebar' }),
       },
@@ -53,7 +58,7 @@
         id: 'toggle-animation',
         label: 'Play / Pause Animation',
         category: 'Playback',
-        shortcut: 'Space',
+        shortcut: keysFor('play-pause', bindings),
         icon: '\u25B6',
         action: () => dispatch('action', { type: 'toggle-animation' }),
       },
@@ -71,10 +76,46 @@
         icon: '\u{1F30D}',
         action: () => dispatch('action', { type: 'set-view', value: '3d' }),
       },
+      {
+        id: 'view-dualpol',
+        label: 'Switch to Dual-Pol Dashboard',
+        category: 'View',
+        icon: '\u{1F4CA}',
+        action: () => dispatch('action', { type: 'set-view', value: 'dualpol' }),
+      },
+      {
+        id: 'open-settings',
+        label: 'Open Settings',
+        category: 'App',
+        shortcut: keysFor('settings', bindings),
+        icon: '\u2699',
+        action: () => dispatch('action', { type: 'open-settings' }),
+      },
+      {
+        id: 'show-shortcuts',
+        label: 'Keyboard Shortcuts',
+        category: 'App',
+        shortcut: '?',
+        icon: '\u2328',
+        action: () => dispatch('action', { type: 'show-shortcuts' }),
+      },
+      {
+        id: 'show-tour',
+        label: 'Replay Welcome Tour',
+        category: 'App',
+        icon: '\u{1F9ED}',
+        action: () => dispatch('action', { type: 'show-tour' }),
+      },
+      {
+        id: 'about',
+        label: 'About xradar desktop',
+        category: 'App',
+        icon: '\u2139',
+        action: () => dispatch('action', { type: 'about' }),
+      },
     ];
 
     // Add variable selection actions
-    const data = $radarData;
     for (const v of data.variables) {
       actions.push({
         id: `var-${v}`,
@@ -101,19 +142,8 @@
       });
     }
 
-    // Add colormap options
-    const cmaps = ['viridis', 'plasma', 'inferno', 'magma', 'cividis', 'turbo', 'jet', 'rainbow', 'coolwarm', 'RdBu_r', 'pyart_NWSRef', 'pyart_NWSVel'];
-    for (const cm of cmaps) {
-      actions.push({
-        id: `cmap-${cm}`,
-        label: `Colormap: ${cm}`,
-        category: 'Colormap',
-        icon: '\u{1F3A8}',
-        action: () => {
-          colormap.set(cm);
-        },
-      });
-    }
+    // (Colormap commands are intentionally absent: the viewer keeps its own colormap state and
+    // does not read settings.colormap, so such a command would silently do nothing.)
 
     // Export action
     actions.push({
@@ -137,7 +167,8 @@
     return words.every(word => lowerText.includes(word));
   }
 
-  $: allActions = getActions();
+  // Pass the data in so the list is rebuilt when a file's variables / sweeps change.
+  $: allActions = getActions($radarData, $settings.shortcuts);
   $: filtered = query === ''
     ? allActions.slice(0, 12)
     : allActions.filter(a => fuzzyMatch(`${a.label} ${a.category}`, query)).slice(0, 12);
@@ -145,6 +176,10 @@
 
   $: if (visible) {
     focusInput();
+  } else {
+    // Closed from outside (the Ctrl+K toggle): the next open must start clean.
+    query = '';
+    selectedIndex = 0;
   }
 
   async function focusInput() {
@@ -170,11 +205,11 @@
       close();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      selectedIndex = (selectedIndex + 1) % filtered.length;
+      if (filtered.length) selectedIndex = (selectedIndex + 1) % filtered.length;
       scrollToSelected();
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      selectedIndex = (selectedIndex - 1 + filtered.length) % filtered.length;
+      if (filtered.length) selectedIndex = (selectedIndex - 1 + filtered.length) % filtered.length;
       scrollToSelected();
     } else if (e.key === 'Enter') {
       e.preventDefault();
@@ -205,7 +240,7 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="cmd-backdrop" on:click={handleBackdropClick}>
-    <div class="cmd-palette" on:keydown={handleKeyDown}>
+    <div class="cmd-palette" role="dialog" tabindex="-1" aria-modal="true" aria-label="Command palette" on:keydown={handleKeyDown} use:focusTrap={{ initial: '.cmd-input' }}>
       <div class="cmd-input-wrap">
         <svg class="cmd-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8" />
@@ -218,13 +253,19 @@
           placeholder="Type a command..."
           spellcheck="false"
           autocomplete="off"
+          role="combobox"
+          aria-expanded="true"
+          aria-controls="cmd-listbox"
+          aria-autocomplete="list"
+          aria-activedescendant={filtered[selectedIndex] ? `cmd-opt-${filtered[selectedIndex].id}` : undefined}
+          aria-label="Command"
         />
         <kbd class="cmd-esc-hint">ESC</kbd>
       </div>
 
-      <div class="cmd-results">
+      <div class="cmd-results" id="cmd-listbox" role="listbox" aria-label="Commands">
         {#if filtered.length === 0}
-          <div class="cmd-empty">No matching commands</div>
+          <div class="cmd-empty" role="status">No matching commands</div>
         {:else}
           {#each filtered as action, i}
             <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -232,6 +273,8 @@
             <div
               class="cmd-item"
               class:selected={i === selectedIndex}
+              id="cmd-opt-{action.id}"
+              tabindex="-1"
               role="option"
               aria-selected={i === selectedIndex}
               on:click={() => executeAction(action)}
@@ -252,10 +295,10 @@
 
       <div class="cmd-footer">
         <span class="cmd-footer-hint">
-          <kbd>\u2191</kbd><kbd>\u2193</kbd> navigate
+          <kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate
         </span>
         <span class="cmd-footer-hint">
-          <kbd>\u21B5</kbd> select
+          <kbd>&crarr;</kbd> select
         </span>
         <span class="cmd-footer-hint">
           <kbd>esc</kbd> close
@@ -293,7 +336,7 @@
   .cmd-palette {
     width: 520px;
     max-width: 90vw;
-    background: rgba(13, 16, 32, 0.92);
+    background: var(--overlay-bg);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
     border: 1px solid rgba(140, 160, 250, 0.12);

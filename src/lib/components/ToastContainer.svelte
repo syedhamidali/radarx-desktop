@@ -4,9 +4,9 @@
   const items = $derived($toasts);
 </script>
 
-<div class="toast-container" aria-live="polite">
+<div class="toast-container" role="region" aria-label="Notifications" aria-live="polite" aria-relevant="additions">
   {#each items as toast (toast.id)}
-    <div class="toast toast-{toast.level}" role="alert">
+    <div class="toast toast-{toast.level}" role={toast.level === 'error' ? 'alert' : 'status'}>
       <div class="toast-icon">
         {#if toast.level === 'success'}
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
@@ -19,7 +19,7 @@
         {/if}
       </div>
       <span class="toast-message">{toast.message}</span>
-      <button class="toast-dismiss" on:click={() => dismissToast(toast.id)} title="Dismiss">&times;</button>
+      <button class="toast-dismiss" on:click={() => dismissToast(toast.id)} title="Dismiss" aria-label="Dismiss notification">&times;</button>
     </div>
   {/each}
 </div>

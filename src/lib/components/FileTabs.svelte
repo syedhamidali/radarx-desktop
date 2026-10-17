@@ -1,6 +1,6 @@
 <script lang="ts">
   import { openFiles, activeFileId, setActiveFile, removeFile } from '../stores/fileManager';
-  import type { FileEntry } from '../stores/fileManager';
+  import { wsManager } from '../utils/websocket';
   import { createEventDispatcher } from 'svelte';
 
   const dispatch = createEventDispatcher<{ openfile: void }>();
@@ -14,10 +14,14 @@
     }
   }
 
+  /** Close a tab and release the file's reader on the server (otherwise it is held until exit). */
+  function closeTab(id: string) {
+    if (removeFile(id) !== null) wsManager.closeFile(id);
+  }
+
   function onCloseTab(e: MouseEvent, id: string) {
     e.stopPropagation();
-    removeFile(id);
-    dispatch('closefile' as any, id);
+    closeTab(id);
   }
 
   function onAddClick() {
@@ -27,24 +31,45 @@
   function onMiddleClick(e: MouseEvent, id: string) {
     if (e.button === 1) {
       e.preventDefault();
-      removeFile(id);
+      closeTab(id);
+    }
+  }
+
+  function onTabKeydown(e: KeyboardEvent, id: string, idx: number) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onTabClick(id);
+    } else if (e.key === 'Delete' || (e.key === 'w' && (e.ctrlKey || e.metaKey))) {
+      e.preventDefault();
+      closeTab(id);
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      e.preventDefault();
+      const next = files[idx + (e.key === 'ArrowRight' ? 1 : -1)];
+      if (next) {
+        onTabClick(next.id);
+        // Move DOM focus with the selection (the tab list is re-rendered by the store update).
+        queueMicrotask(() =>
+          (document.querySelector(`.file-tabs .tab[data-file-id="${next.id}"]`) as HTMLElement | null)?.focus(),
+        );
+      }
     }
   }
 </script>
 
 {#if files.length > 0}
   <div class="file-tabs">
-    <div class="tabs-scroll">
-      {#each files as file (file.id)}
+    <div class="tabs-scroll" role="tablist" aria-label="Open files">
+      {#each files as file, idx (file.id)}
         <div
           class="tab"
           class:active={file.id === currentId}
           on:click={() => onTabClick(file.id)}
-          on:keydown={(e) => { if (e.key === 'Enter' || e.key === ' ') onTabClick(file.id); }}
+          on:keydown={(e) => onTabKeydown(e, file.id, idx)}
           on:mousedown={(e) => onMiddleClick(e, file.id)}
           title={file.path}
           role="tab"
-          tabindex="0"
+          tabindex={file.id === currentId ? 0 : -1}
+          data-file-id={file.id}
           aria-selected={file.id === currentId}
         >
           <span class="tab-name">{file.filename}</span>
@@ -52,6 +77,8 @@
             class="tab-close"
             on:click={(e) => onCloseTab(e, file.id)}
             title="Close tab"
+            aria-label="Close {file.filename}"
+            tabindex="-1"
           >
             <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
               <line x1="2" y1="2" x2="10" y2="10"/>
@@ -62,7 +89,7 @@
       {/each}
     </div>
 
-    <button class="tab-add" on:click={onAddClick} title="Open another file (Ctrl+O)">
+    <button class="tab-add" on:click={onAddClick} title="Open another file (Ctrl+O)" aria-label="Open another file">
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5">
         <line x1="6" y1="1" x2="6" y2="11"/>
         <line x1="1" y1="6" x2="11" y2="6"/>
@@ -114,6 +141,7 @@
     white-space: nowrap;
     min-width: 0;
     max-width: 180px;
+    flex-shrink: 0;
     user-select: none;
     transition: background 120ms ease, color 120ms ease;
     position: relative;
@@ -162,6 +190,7 @@
   }
 
   .tab:hover .tab-close,
+  .tab:focus-visible .tab-close,
   .tab.active .tab-close {
     opacity: 1;
   }

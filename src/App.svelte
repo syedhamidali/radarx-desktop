@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, untrack } from 'svelte';
+  import { onMount, onDestroy, untrack, tick } from 'svelte';
   import RadarViewer from './lib/components/RadarViewer.svelte';
   import RadarViewer3D from './lib/components/RadarViewer3D.svelte';
   import DualPolDashboard from './lib/components/DualPolDashboard.svelte';
@@ -15,6 +15,8 @@
   import OnboardingTour from './lib/components/OnboardingTour.svelte';
   import ShortcutsSheet from './lib/components/ShortcutsSheet.svelte';
   import AboutDialog from './lib/components/AboutDialog.svelte';
+  import SettingsDialog from './lib/components/SettingsDialog.svelte';
+  import FileTabs from './lib/components/FileTabs.svelte';
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
   import TimeSeriesChart from './lib/components/TimeSeriesChart.svelte';
@@ -23,7 +25,11 @@
   import CrossSectionPanel from './lib/components/CrossSectionPanel.svelte';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
-  import { sidecarPort } from './lib/stores/settings';
+  import { get } from 'svelte/store';
+  import { sidecarPort, settings } from './lib/stores/settings';
+  import { recentFiles } from './lib/stores/recentFiles';
+  import { openFiles, setActiveFile } from './lib/stores/fileManager';
+  import { matchesCombo, SHORTCUT_REGISTRY } from './lib/utils/shortcuts';
   import { wsManager } from './lib/utils/websocket';
   import { beginOp, cancelOp, dismissOp, type OpHandle } from './lib/utils/requestScheduler';
   import { startUiHealth, stopUiHealth } from './lib/utils/uiHealth';
@@ -56,6 +62,11 @@
   let aboutDialogVisible = $state(false);
   let notificationCenterOpen = $state(false);
   let onboardingVisible = $state(false);
+  let settingsOpen = $state(false);
+  /** Any modal layer open: global plain-key shortcuts must not act behind it. */
+  const modalOpen = $derived(
+    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible,
+  );
   let isDragOver = $state(false);
   let isPlaying = $state(false);
   let animSpeed = $state(1000);
@@ -64,11 +75,20 @@
 
   // --- Non-reactive locals ---
   let unlistenDragDrop: (() => void) | null = null;
+  let unlistenSidecarError: (() => void) | null = null;
+  let lastSidecarError = '';
   let destroyed = false;
   let unsubFileOpened: (() => void) | null = null;
   let unsubOpenError: (() => void) | null = null;
   let unsubConn: (() => void) | null = null;
   let openOp: OpHandle | null = null;
+  /** What to put back if the pending open fails or is cancelled. */
+  let openRestore: { variable: string | null; sweep: number; filePath: string | null } | null = null;
+  /** Local path of the pending open; recorded in Recent files once it succeeds. */
+  let pendingRecent: string | null = null;
+  /** Further files of a multi-file open, opened one after the other. */
+  let openQueue: string[] = [];
+  let autoLoadTried = false;
   let progressOp: OpHandle | null = null;
   const OPEN_TIMEOUT_MS = 90_000;
   const PROGRESS_SLOW_MS = 30_000;
@@ -112,9 +132,16 @@
       finishOpenOp();
     });
     // A rejected open (or a dropped connection) must not leave "Opening..." hanging.
-    unsubOpenError = wsManager.onMessage('error', (m) => finishOpenOp(String(m?.message ?? 'Open failed')));
+    unsubOpenError = wsManager.onMessage('error', (m) => {
+      const text = String(m?.message ?? 'Open failed');
+      if (isOpenFileError(text)) finishOpenOp(text);
+    });
     unsubConn = connectionStatus.subscribe((st) => {
       if (st !== 'connected') finishOpenOp('Connection to the sidecar was lost');
+      else if (!autoLoadTried) {
+        autoLoadTried = true;
+        autoLoadLast();
+      }
     });
     startUiHealth();
 
@@ -122,6 +149,21 @@
     // Check for first-launch onboarding
     if (!localStorage.getItem('xradar-onboarding-done')) {
       onboardingVisible = true;
+    }
+    // The shell could not start (or restart) the Python engine: say why instead of a silent
+    // "Disconnected". Listen first, then ask, so an error raised in between is not missed.
+    if ((window as any).__TAURI_INTERNALS__) {
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const { invoke } = await import('@tauri-apps/api/core');
+        const unlistenErr = await listen<string>('sidecar-error', (e) => reportSidecarError(String(e.payload)));
+        if (destroyed) unlistenErr();
+        else unlistenSidecarError = unlistenErr;
+        const pending = await invoke<string | null>('get_sidecar_error');
+        if (pending) reportSidecarError(pending);
+      } catch (err) {
+        console.warn('[App] sidecar error channel unavailable:', err);
+      }
     }
     try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
@@ -135,10 +177,7 @@
         } else if (type === 'drop') {
           isDragOver = false;
           const paths = (event.payload as any).paths as string[] | undefined;
-          if (paths && paths.length > 0) {
-            stopAnimation();
-            sendOpenFile(paths[0]);
-          }
+          if (paths && paths.length > 0) openPaths(paths);
         }
       });
       // The component may have been destroyed while the listener was registering.
@@ -158,11 +197,18 @@
     window.removeEventListener('mouseup', onResizeEnd);
     stopAnimation();
     if (unlistenDragDrop) unlistenDragDrop();
+    unlistenSidecarError?.();
     unsubFileOpened?.();
     unsubOpenError?.();
     unsubConn?.();
     stopUiHealth();
   });
+
+  function reportSidecarError(message: string) {
+    if (message === lastSidecarError) return;
+    lastSidecarError = message;
+    addToast('error', `Analysis engine problem: ${message}`, 0);
+  }
 
   /** True when keystrokes are meant for a form control / editable element. */
   function isEditableTarget(t: EventTarget | null): boolean {
@@ -172,34 +218,68 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
   }
 
+  /** Which registered shortcut (honouring user rebinding) matches this key event, if any. */
+  function shortcutFor(e: KeyboardEvent): string | null {
+    const bindings = get(settings).shortcuts;
+    // "mod" is Cmd on macOS; Ctrl is accepted there too so the documented Ctrl+K etc. keep working.
+    const mod = e.ctrlKey || e.metaKey;
+    const ev = { key: e.key, ctrlKey: mod, metaKey: mod, shiftKey: e.shiftKey, altKey: e.altKey } as KeyboardEvent;
+    for (const def of SHORTCUT_REGISTRY) {
+      if (matchesCombo(ev, bindings[def.id]?.key ?? def.defaultKey)) return def.id;
+    }
+    return null;
+  }
+
+  function stepSweep(delta: number | 'first' | 'last') {
+    const n = totalSweeps;
+    if (n === 0) return;
+    selectedSweep.update((s) =>
+      delta === 'first' ? 0 : delta === 'last' ? n - 1 : Math.min(n - 1, Math.max(0, s + delta)),
+    );
+  }
+
+  /** Expand the right sidebar and ask PanelManager to open (and scroll to) one panel. */
+  async function showPanel(id: string) {
+    if (!rightSidebarOpen) { rightSidebarOpen = true; syncWorkspace(); }
+    await tick();
+    window.dispatchEvent(new CustomEvent('xradar:show-panel', { detail: { id } }));
+  }
+
   async function handleKeyDown(e: KeyboardEvent) {
+    // The settings dialog records new bindings itself; nothing may fire behind it.
+    if (settingsOpen) return;
     const ctrl = e.ctrlKey || e.metaKey;
     // Plain (unmodified) shortcuts must not hijack typing or button activation.
     const typing = isEditableTarget(e.target);
     const onButton = (e.target as HTMLElement | null)?.tagName === 'BUTTON';
-    if (ctrl && e.key === 'k') {
+
+    const id = shortcutFor(e);
+    if (id) {
+      // A rebinding without a modifier behaves like Space: ignored while typing / in a dialog.
+      if (!ctrl && (typing || (modalOpen && id !== 'command-palette'))) return;
+      // Space on a focused button / tab activates that control instead.
+      if (id === 'play-pause' && (onButton || totalSweeps === 0 || (e.target as HTMLElement | null)?.closest?.('[role="tab"]'))) return;
       e.preventDefault();
-      commandPaletteVisible = !commandPaletteVisible;
-    } else if (ctrl && e.key === 'o') {
-      e.preventDefault();
-      openFile();
-    } else if (ctrl && e.key === 'b') {
-      e.preventDefault();
-      leftSidebarOpen = !leftSidebarOpen;
-      syncWorkspace();
-    } else if (ctrl && e.key === 'e') {
-      e.preventDefault();
-      rightSidebarOpen = !rightSidebarOpen;
-      syncWorkspace();
-    } else if (e.key === ' ' && !typing && !onButton && totalSweeps > 0) {
-      e.preventDefault();
-      toggleAnimation();
-    } else if (e.key === '?' && !ctrl && !e.altKey && !typing) {
+      switch (id) {
+        case 'command-palette': commandPaletteVisible = !commandPaletteVisible; break;
+        case 'open-file': openFile(); break;
+        case 'toggle-left-sidebar': toggleLeftSidebar(); break;
+        case 'toggle-right-sidebar': toggleRightSidebar(); break;
+        case 'play-pause': toggleAnimation(); break;
+        case 'settings': settingsOpen = !settingsOpen; break;
+      }
+      return;
+    }
+
+    if (e.key === '?' && !ctrl && !e.altKey && !typing && (!modalOpen || shortcutsSheetVisible)) {
       e.preventDefault();
       shortcutsSheetVisible = !shortcutsSheetVisible;
     } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'a') {
       e.preventDefault();
       aboutDialogVisible = !aboutDialogVisible;
+    } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 'e') {
+      e.preventDefault();
+      showPanel('export');
     } else if (e.key === 'F12' || (e.altKey && ctrl && e.key.toLowerCase() === 'i')) {
       e.preventDefault();
       try {
@@ -211,15 +291,29 @@
       } catch {
         /* devtools unavailable in this build */
       }
+    } else if (!ctrl && !e.altKey && !e.shiftKey && !typing && !modalOpen) {
+      // Plain navigation keys (advertised in the shortcuts sheet).
+      if (e.key === '2' || e.key === '3') {
+        e.preventDefault();
+        viewMode = e.key === '2' ? '2d' : '3d';
+        syncWorkspace();
+      } else if (viewMode === '2d' && !onButton && !(e.target as HTMLElement | null)?.closest?.('.timeline, [role="tab"]')) {
+        if (e.key === 'ArrowRight') { e.preventDefault(); stepSweep(1); }
+        else if (e.key === 'ArrowLeft') { e.preventDefault(); stepSweep(-1); }
+        else if (e.key === 'Home') { e.preventDefault(); stepSweep('first'); }
+        else if (e.key === 'End') { e.preventDefault(); stepSweep('last'); }
+      }
     }
   }
 
   async function openFile() {
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
+      const dir = get(settings).data.defaultDirectory.trim();
       const selected = await open({
-        multiple: false,
+        multiple: true,
         title: 'Open Radar File',
+        ...(dir ? { defaultPath: dir } : {}),
         filters: [
           {
             name: 'Radar Files',
@@ -237,31 +331,74 @@
         ],
       });
       if (!selected) return;
-      const fp = typeof selected === 'string'
-        ? selected
-        : Array.isArray(selected)
-          ? selected[0]
-          : typeof selected === 'object' && 'path' in selected
-            ? (selected as any).path
-            : null;
-      if (fp) { stopAnimation(); sendOpenFile(fp); }
+      const picked: unknown[] = Array.isArray(selected) ? selected : [selected];
+      const paths = picked
+        .map((p) => (typeof p === 'string' ? p : p && typeof p === 'object' && 'path' in p ? (p as any).path : null))
+        .filter((p): p is string => typeof p === 'string' && p.length > 0);
+      openPaths(paths);
     } catch (err) {
       const path = prompt('Enter the path to a radar file:');
-      if (path) { stopAnimation(); sendOpenFile(path); }
+      if (path) openPaths([path.trim()]);
     }
+  }
+
+  /** Open one or more files; the first immediately, the rest one after the other. */
+  function openPaths(paths: string[]) {
+    const list = paths.filter(Boolean);
+    if (list.length === 0) return;
+    stopAnimation();
+    openQueue = list.slice(1);
+    if (!sendOpenFile(list[0])) nextQueued();
+  }
+
+  /** Start the next file of a multi-file open (skipping ones that are already open). */
+  function nextQueued() {
+    while (openQueue.length > 0) {
+      if (sendOpenFile(openQueue.shift()!)) return;
+    }
+  }
+
+  /** Put back the view that was on screen before a failed / cancelled open started. */
+  function restoreAfterOpen() {
+    const r = openRestore;
+    openRestore = null;
+    pendingRecent = null;
+    if (!r) return;
+    radarData.update((d) => ({ ...d, filePath: r.filePath }));
+    selectedSweep.set(r.sweep);
+    selectedVariable.set(r.variable);
+  }
+
+  /**
+   * Server errors are plain text naming the failed handler ("get_sweep_data failed: ...",
+   * "I/O error in render: ..."). An error from another handler (a sweep, a module) must not be
+   * taken for a failed file open.
+   */
+  function isOpenFileError(msg: string): boolean {
+    const m = /^([a-z_0-9]+)(?: failed)?:/.exec(msg) ?? /\b(?:in|for) ([a-z_0-9]+)\b/.exec(msg);
+    return !m || m[1] === 'open_file';
   }
 
   /** End the operations-tray entry of the local file open (success, or failure with a reason). */
   function finishOpenOp(error?: string) {
     const op = openOp;
     if (!op) return;
+    openOp = null;
     if (error) {
-      openOp = null;
+      const failedPath = pendingRecent;
+      restoreAfterOpen();
+      // A recent file that no longer exists should not stay in the list.
+      if (failedPath && /not found|no such file|does not exist|doesn't exist/i.test(error)) {
+        recentFiles.remove(failedPath);
+      }
+      openQueue = [];
       op.fail(error);
     } else {
-      // Keep a timed-out op reachable so a late file_opened still resolves it; clear otherwise.
-      openOp = null;
+      if (pendingRecent) recentFiles.add(pendingRecent);
+      pendingRecent = null;
+      openRestore = null;
       op.done();
+      nextQueued();
     }
   }
 
@@ -274,7 +411,11 @@
       slowMs: 8_000,
       timeoutMs: OPEN_TIMEOUT_MS,
       // The server cannot abort an open; stop waiting (a late file_opened still opens the file).
-      onCancel: () => { if (openOp === op) openOp = null; },
+      onCancel: () => {
+        if (openOp === op) { openOp = null; restoreAfterOpen(); openQueue = []; }
+      },
+      // Timed out: show the previous view again, but keep `openOp` so a late file_opened resolves it.
+      onTimeout: () => { if (openOp === op) restoreAfterOpen(); },
       onRetry: () => { stopAnimation(); sendOpenFile(path); },
     });
     openOp = op;
@@ -323,14 +464,97 @@
     untrack(() => trackProgress(p));
   });
 
-  function sendOpenFile(path: string) {
-    selectedVariable.set(null); // Clear before open so stale variable doesn't trigger a render on the old reader
-    radarData.update((d) => ({ ...d, filePath: path }));
-    selectedSweep.set(0);
-    beginOpenOp(path);
+  /** Request a file open. Returns false when the file is already open (its tab is activated). */
+  function sendOpenFile(path: string): boolean {
+    const name = path.split('/').pop() ?? path;
+    const existing = get(openFiles).find((f) => f.path === path);
+    if (existing) {
+      // A second reader of the same file would only duplicate its memory and its timeline entry.
+      setActiveFile(existing.id);
+      addToast('info', `${name} is already open. Close its tab first to reload it.`);
+      return false;
+    }
+    beginOpenOp(path); // also cancels (and restores the view for) a previous pending open
+    if (get(openFiles).length === 0) {
+      // First file: show the viewer straight away; put the empty state back if the open fails.
+      openRestore = { variable: get(selectedVariable), sweep: get(selectedSweep), filePath: get(radarData).filePath };
+      selectedVariable.set(null);
+      radarData.update((d) => ({ ...d, filePath: path }));
+      selectedSweep.set(0);
+    } else {
+      // A file is already on screen: leave it (and its variable / sweep) untouched until the new
+      // one arrives. Clearing them here would be saved as the outgoing file's selection when the
+      // new file registers, and that tab would come back blank.
+      openRestore = null;
+    }
+    pendingRecent = path.includes('://') ? null : path;
     wsManager.openFile(path);
-    addToast('info', `Opening ${path.split('/').pop() ?? path}...`);
+    addToast('info', `Opening ${name}...`);
+    return true;
   }
+
+  /** Re-open the most recent file on start-up when "Auto-load last file" is on. */
+  function autoLoadLast() {
+    const st = get(settings);
+    if (!st.data.autoLoadLast || get(openFiles).length > 0 || get(radarData).filePath) return;
+    const last = st.data.recentFiles.find((f) => !f.path.includes('://'));
+    if (last) openPaths([last.path]);
+  }
+
+  // --- Theme: mode (dark / light / follow OS), accent colour and base font size ---
+  const DEFAULT_ACCENT = '#5b6cf7';
+
+  function adjust(hex: string, amount: number): string {
+    // amount > 0 lightens toward white, < 0 darkens toward black.
+    const n = parseInt(hex.slice(1), 16);
+    const ch = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) =>
+      Math.round(amount >= 0 ? c + (255 - c) * amount : c * (1 + amount)),
+    );
+    return `#${ch.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
+  }
+
+  function applyTheme(mode: 'dark' | 'light' | 'auto', accent: string, fontSize: number) {
+    const root = document.documentElement;
+    root.classList.toggle('theme-light', mode === 'light');
+    root.classList.toggle('theme-auto', mode === 'auto');
+    root.style.colorScheme = mode === 'auto' ? 'light dark' : mode;
+    const isLight =
+      mode === 'light' || (mode === 'auto' && window.matchMedia?.('(prefers-color-scheme: light)').matches);
+    const props = ['--accent-primary', '--accent-hover', '--accent-muted', '--text-accent', '--bg-hover', '--bg-active'];
+    if (!/^#[0-9a-f]{6}$/i.test(accent) || accent.toLowerCase() === DEFAULT_ACCENT) {
+      props.forEach((p) => root.style.removeProperty(p));
+    } else {
+      const n = parseInt(accent.slice(1), 16);
+      const rgb = `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
+      root.style.setProperty('--accent-primary', accent);
+      root.style.setProperty('--accent-hover', adjust(accent, isLight ? -0.15 : 0.2));
+      root.style.setProperty('--text-accent', adjust(accent, isLight ? -0.15 : 0.25));
+      root.style.setProperty('--accent-muted', `rgba(${rgb}, 0.25)`);
+      root.style.setProperty('--bg-hover', `rgba(${rgb}, 0.08)`);
+      root.style.setProperty('--bg-active', `rgba(${rgb}, 0.15)`);
+    }
+    const px = Number.isFinite(fontSize) ? Math.min(18, Math.max(11, fontSize)) : 13;
+    root.style.fontSize = `${px}px`;
+  }
+
+  $effect(() => {
+    const t = $settings.theme;
+    applyTheme(t.mode, t.accentColor, t.fontSize);
+  });
+
+  // "Auto" follows the OS live: the accent shades depend on whether the OS is light or dark.
+  $effect(() => {
+    if ($settings.theme.mode !== 'auto' || !window.matchMedia) return;
+    const mq = window.matchMedia('(prefers-color-scheme: light)');
+    const on = () => { const t = get(settings).theme; applyTheme(t.mode, t.accentColor, t.fontSize); };
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  });
+
+  // Nothing left to play (all files closed): the animation timer would otherwise write NaN sweeps.
+  $effect(() => {
+    if (totalSweeps === 0 && isPlaying) stopAnimation();
+  });
 
   function toggleAnimation() {
     isPlaying ? stopAnimation() : startAnimation();
@@ -492,12 +716,17 @@
     <div class="toolbar-right">
       <NotificationCenter bind:open={notificationCenterOpen} />
       <div class="toolbar-separator"></div>
-      <button class="toolbar-btn icon-btn" on:click={() => (shortcutsSheetVisible = true)} title="Keyboard Shortcuts (?)">
+      <button class="toolbar-btn icon-btn" on:click={() => (shortcutsSheetVisible = true)} title="Keyboard Shortcuts (?)" aria-label="Keyboard shortcuts">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h0m4 0h0m4 0h0m4 0h0m-10 4h4"/>
         </svg>
       </button>
-      <button class="toolbar-btn icon-btn" on:click={() => (aboutDialogVisible = true)} title="About">
+      <button class="toolbar-btn icon-btn settings-btn" on:click={() => (settingsOpen = true)} title="Settings (Ctrl+,)" aria-label="Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <button class="toolbar-btn icon-btn" on:click={() => (aboutDialogVisible = true)} title="About" aria-label="About">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
         </svg>
@@ -528,6 +757,7 @@
       ></div>
     {/if}
     <div class="viewer-and-timeline">
+      <FileTabs on:openfile={openFile} />
       <section class="viewer-area">
         {#if filePath}
           {#if $diffMode === 'diff'}
@@ -542,7 +772,7 @@
         {:else}
           <WelcomeScreen
             on:open-file={openFile}
-            on:open-recent={(e) => { stopAnimation(); sendOpenFile(e.detail.path); }}
+            on:open-recent={(e) => openPaths([e.detail.path])}
             on:load-workspace={(e) => {
               const config = workspaceStore.loadWorkspace(e.detail.name);
               if (config) applyWorkspace(config);
@@ -604,14 +834,22 @@
   <CommandPalette bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
     if (type === 'open-file') openFile();
-    else if (type === 'toggle-left-sidebar') leftSidebarOpen = !leftSidebarOpen;
-    else if (type === 'toggle-right-sidebar') rightSidebarOpen = !rightSidebarOpen;
+    else if (type === 'toggle-left-sidebar') toggleLeftSidebar();
+    else if (type === 'toggle-right-sidebar') toggleRightSidebar();
     else if (type === 'toggle-animation') toggleAnimation();
     else if (type === 'set-view') { viewMode = value; syncWorkspace(); }
+    else if (type === 'open-settings') settingsOpen = true;
+    else if (type === 'show-shortcuts') shortcutsSheetVisible = true;
+    else if (type === 'show-tour') onboardingVisible = true;
+    else if (type === 'about') aboutDialogVisible = true;
+    else if (type === 'export') showPanel('export');
   }} />
   <OnboardingTour bind:visible={onboardingVisible} />
   <ShortcutsSheet bind:visible={shortcutsSheetVisible} />
   <AboutDialog bind:visible={aboutDialogVisible} />
+  {#if settingsOpen}
+    <SettingsDialog open={true} on:close={() => (settingsOpen = false)} />
+  {/if}
 </div>
 
 <style>
@@ -647,14 +885,14 @@
   .toolbar-left { min-width: 260px; gap: var(--spacing-md); }
   .toolbar-right { min-width: 160px; justify-content: flex-end; }
 
-  .app-title { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; user-select: none; }
+  .app-title { white-space: nowrap; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; user-select: none; }
   .title-x { color: var(--accent-primary); font-weight: 700; text-shadow: 0 0 12px rgba(91, 108, 247, 0.4); }
   .title-rest { color: var(--text-primary); }
   .title-desktop { color: var(--text-muted); font-weight: 400; margin-left: 4px; font-size: 13px; }
 
   .cmd-trigger {
     display: flex; align-items: center; gap: 6px; padding: 4px 10px; height: 28px;
-    font-size: 12px; color: var(--text-muted); background: rgba(8, 10, 20, 0.5);
+    font-size: 12px; color: var(--text-muted); background: var(--field-bg);
     border: 1px solid var(--glass-border); border-radius: var(--radius-md);
     cursor: pointer; transition: all var(--transition-fast); min-width: 140px;
   }
@@ -730,6 +968,22 @@
   .status-dot-sm { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; transition: background var(--transition-normal); }
   .status-dot-sm.pulse { animation: pulse-glow 2.5s ease-in-out infinite; }
   .file-path { font-size: 11px; color: var(--text-secondary); max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Narrow windows: drop the secondary toolbar labels first, then let the sidebars shrink so the
+     viewer keeps a usable width (sidebar px widths are a preference, not a minimum). */
+  @media (max-width: 1250px) {
+    .title-desktop, .cmd-trigger-label, .cmd-trigger :global(kbd), .status-text { display: none; }
+    .cmd-trigger { min-width: 0; padding: 4px 8px; }
+    .toolbar { padding: 0 var(--spacing-sm); }
+    .toolbar-left { min-width: 0; }
+    .toolbar-right { min-width: 0; }
+    .sidebar { max-width: 28vw; }
+  }
+  @media (max-width: 1000px) {
+    .speed-group, .toolbar-separator { display: none; }
+    .toolbar-btn { padding-left: var(--spacing-sm); padding-right: var(--spacing-sm); }
+    .sidebar { max-width: 25vw; }
+  }
 
   /* Resize handles */
   .resize-handle {

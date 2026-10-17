@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { fade, fly } from 'svelte/transition';
-  import { SHORTCUT_REGISTRY, formatKeyCombo, type ShortcutDef } from '../utils/shortcuts';
+  import { getBoundKey } from '../utils/shortcuts';
+  import { focusTrap } from '../utils/focusTrap';
+  import { settings } from '../stores/settings';
 
   let { visible = $bindable(false), onclose }: { visible?: boolean; onclose?: () => void } = $props();
 
@@ -18,27 +20,26 @@
     category: string;
   }
 
-  const extraShortcuts: DisplayShortcut[] = [
-    { description: 'Open file', keys: 'mod+o', category: 'File' },
-    { description: 'Command palette', keys: 'mod+k', category: 'Navigation' },
-    { description: 'Toggle left sidebar', keys: 'mod+b', category: 'View' },
-    { description: 'Toggle right sidebar', keys: 'mod+e', category: 'View' },
-    { description: 'Open settings', keys: 'mod+,', category: 'Navigation' },
-    { description: 'Play / Pause animation', keys: 'space', category: 'Playback' },
+  // Configurable bindings are read from the settings so a rebinding shows up here too.
+  const bound = (id: string) => ($settings.shortcuts[id]?.key ?? getBoundKey(id));
+  const extraShortcuts: DisplayShortcut[] = $derived([
+    { description: 'Open file', keys: bound('open-file'), category: 'File' },
+    { description: 'Command palette', keys: bound('command-palette'), category: 'Navigation' },
+    { description: 'Toggle left sidebar', keys: bound('toggle-left-sidebar'), category: 'View' },
+    { description: 'Toggle right sidebar', keys: bound('toggle-right-sidebar'), category: 'View' },
+    { description: 'Open settings', keys: bound('settings'), category: 'Navigation' },
+    { description: 'Play / Pause animation', keys: bound('play-pause'), category: 'Playback' },
     { description: 'Keyboard shortcuts', keys: '?', category: 'Navigation' },
     { description: 'About dialog', keys: 'mod+shift+a', category: 'Navigation' },
     { description: 'Close dialog / Cancel', keys: 'Escape', category: 'Navigation' },
     { description: 'Switch to 2D view', keys: '2', category: 'View' },
     { description: 'Switch to 3D view', keys: '3', category: 'View' },
-    { description: 'Zoom in', keys: 'mod++', category: 'View' },
-    { description: 'Zoom out', keys: 'mod+-', category: 'View' },
-    { description: 'Reset zoom', keys: 'mod+0', category: 'View' },
-    { description: 'Export current view', keys: 'mod+shift+e', category: 'Tools' },
+    { description: 'Show export panel', keys: 'mod+shift+e', category: 'Tools' },
     { description: 'Next sweep', keys: 'ArrowRight', category: 'Playback' },
     { description: 'Previous sweep', keys: 'ArrowLeft', category: 'Playback' },
     { description: 'First sweep', keys: 'Home', category: 'Playback' },
     { description: 'Last sweep', keys: 'End', category: 'Playback' },
-  ];
+  ]);
 
   const categories = ['Navigation', 'File', 'View', 'Tools', 'Playback'];
 
@@ -105,7 +106,7 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="shortcuts-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
-    <div class="shortcuts-dialog" transition:fly={{ y: -20, duration: 200 }}>
+    <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" transition:fly={{ y: -20, duration: 200 }} use:focusTrap={{ initial: '.search-input' }}>
       <div class="shortcuts-header">
         <h2>Keyboard Shortcuts</h2>
         <div class="shortcuts-search">
@@ -117,10 +118,11 @@
             bind:value={searchQuery}
             type="text"
             placeholder="Filter shortcuts..."
+            aria-label="Filter shortcuts"
             class="search-input"
           />
         </div>
-        <button class="close-btn" on:click={close} title="Close (Esc)">
+        <button class="close-btn" on:click={close} title="Close (Esc)" aria-label="Close">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
           </svg>
@@ -170,7 +172,7 @@
     width: 680px;
     max-width: 90vw;
     max-height: 80vh;
-    background: rgba(13, 16, 32, 0.85);
+    background: var(--overlay-bg);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
     border: 1px solid rgba(140, 160, 250, 0.15);
@@ -203,7 +205,7 @@
     gap: 8px;
     flex: 1;
     padding: 6px 10px;
-    background: rgba(8, 10, 20, 0.5);
+    background: var(--field-bg);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     color: var(--text-muted);
@@ -291,7 +293,7 @@
   .shortcut-keys {
     font-size: 11px;
     padding: 2px 8px;
-    background: rgba(8, 10, 20, 0.6);
+    background: var(--field-bg);
     border: 1px solid var(--glass-border);
     border-radius: 4px;
     color: var(--text-primary);
