@@ -176,6 +176,18 @@ sweeps to view the cleaned volume in 3D."""
             step=0.1,
         ),
         param(
+            "apply_to",
+            "select",
+            "all fields",
+            "Apply the mask to",
+            options=["all fields", "main fields only"],
+            help=(
+                "'all fields' also outputs a cleaned copy of every other polar field in the sweep "
+                "(KDP, PhiDP, SNR, WIDTH, V/H-channel and flagged variants ...). Gap-filling and "
+                "smoothing stay on the main fields (reflectivity, ZDR, RhoHV)."
+            ),
+        ),
+        param(
             "noise_correction",
             "bool",
             False,
@@ -199,6 +211,7 @@ def run(
     fill_min_coverage,
     smooth,
     smooth_radius_km,
+    apply_to,
     noise_correction,
 ):
     rt = A.rx()
@@ -275,6 +288,9 @@ def run(
             "Filled (interpolated)": f"{100.0 * n_fill / n_valid:.1f} %",
             "Still empty": f"{100.0 * (n_valid - n_keep - n_fill) / n_valid:.1f} %",
             "Steps applied": ", ".join(steps) or "none (nothing removed)",
+            "Fields cleaned": "main fields + all others"
+            if apply_to == "all fields"
+            else "main fields only",
             "radarx": A.radarx_version(),
         }
     )
@@ -328,6 +344,12 @@ def run(
         emit("RhoHV", A.polar_array(ds["RHOHV"], ds, "RHOHV"), "", 0.5, 1.0)
     if "VRADH" in ds.data_vars:  # not interpolated: velocity can fold between neighbouring gates
         emit("velocity", A.polar_array(ds["VRADH"], ds, "VRADH"), "m/s", fillable=False)
+
+    n_other = 0
+    if apply_to == "all fields":
+        for name, arr, units in G.other_polar_fields(ctx.dataset, z.shape):
+            res.field(f"Cleaned {name}", np.where(keep, arr, np.nan), units=units)
+            n_other += 1
 
     if noise_correction:
         if not has_snr:

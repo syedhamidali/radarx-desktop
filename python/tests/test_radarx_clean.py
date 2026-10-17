@@ -205,3 +205,20 @@ def test_smoothing_output_only_on_request() -> None:
     _, default = _run(ds)
     _, smoothed = _run(ds, smooth=True)
     assert "Smoothed reflectivity" not in default and "Smoothed reflectivity" in smoothed
+
+
+def test_mask_applies_to_every_polar_field_by_default() -> None:
+    ds, east, noisy = _scene()
+    shape = ds["DBZH"].shape
+    ds["KDP"] = (("azimuth", "range"), np.where(east | noisy, 0.8, np.nan))
+    ds["WIDTH"] = (("azimuth", "range"), np.where(east | noisy, 2.0, np.nan))
+    _, fields = _run(ds, fill_gaps=False)
+    flagged = fields["QC flags"] != CLEAN
+    for name in ("KDP", "WIDTH"):
+        out = fields[f"Cleaned {name}"]
+        assert out.shape == shape
+        assert np.isnan(out[flagged]).all(), name
+        kept = ~flagged & np.isfinite(ds["DBZH"].values)
+        assert np.isfinite(out[kept]).all(), name
+    _, main_only = _run(ds, apply_to="main fields only", fill_gaps=False)
+    assert "Cleaned KDP" not in main_only and "Cleaned reflectivity" in main_only

@@ -7,7 +7,6 @@ dependencies = [
     "xradar>=0.12,<1.0",
     "xarray>=2026.4,<2027.0",
     "dask[complete]>=2026.1,<2027.0",
-    "datashader>=0.16,<1.0",
     "pycairo>=1.25,<2.0",
     "websockets>=13.0,<17.0",
     "pyarrow>=15.0,<30.0",
@@ -20,10 +19,15 @@ dependencies = [
     "s3fs>=2024.1,<2027.0",
     "zarr>=2.18,<4.0",
     "pillow>=10.0,<14.0",
+    "matplotlib>=3.8,<4.0",
+    "colorcet>=3.0,<4.0",
+    "cmweather>=0.3,<1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
+# Building the self-contained engine shipped inside the installers (python/packaging/).
+bundle = ["pyinstaller>=6.16"]
 # Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
 radarx = ["radarx>=0.5.1; python_version >= '3.12'"]
 
