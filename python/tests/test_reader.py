@@ -11,6 +11,7 @@ import pytest
 import xarray as xr
 
 from engine.reader import (
+    _FORMAT_TABLE,
     RadarReader,
     _guess_formats_by_extension,
     _serializable,
@@ -245,7 +246,8 @@ class TestFormatGuessingRegressions:
 
     def test_unknown_extension_covers_all_formats_once(self) -> None:
         formats = _guess_formats_by_extension("radar.xyz")
-        assert len(formats) == 10
+        assert len(formats) == len(_FORMAT_TABLE)
+        assert set(formats) == {label for label, _, _ in _FORMAT_TABLE}
 
 
 class TestSweepDataset:

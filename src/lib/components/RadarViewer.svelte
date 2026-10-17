@@ -6,6 +6,7 @@
   import ColorBar from './ColorBar.svelte';
   import StormOverlay from './StormOverlay.svelte';
   import ModuleOverlay from './ModuleOverlay.svelte';
+  import { displayedField, hideField, type DisplayedField } from '../stores/modules';
   import MapBackground from './MapBackground.svelte';
   import GeoOverlay from './GeoOverlay.svelte';
   import MeasureTools from './MeasureTools.svelte';
@@ -69,6 +70,7 @@
   // Value probe
   let probeActive = $state(false);
   let probeValue: number | null = $state(null);
+  let probeLabel: string | null = $state(null);
   let probeX = $state(0);
   let probeY = $state(0);
   let currentEntry: SweepDataEntry | null = $state(null);
@@ -79,6 +81,10 @@
   let unsubSweepStore: (() => void) | null = null;
   let unsubVarStore: (() => void) | null = null;
   let lastRequestKey = '';
+  let unsubField: (() => void) | null = null;
+
+  // Module field currently replacing the variable (null = normal variable shown)
+  let fieldShown: DisplayedField | null = $state.raw(null);
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const variables = $derived($radarData.variables);
@@ -102,9 +108,26 @@
     }
   });
 
+  /** Forget the module-field override without re-rendering the variable (the caller does that). */
+  function dropFieldOverride() {
+    if (!fieldShown) return;
+    fieldShown = null;
+    hideField();
+  }
+
+  /** Field cleared from outside (Back button, file closed, module cleared): show the variable again. */
+  function restoreVariable() {
+    const v = $selectedVariable;
+    if (!v) return;
+    lastRequestKey = '';
+    requestNewData(v, $selectedSweep);
+  }
+
   function requestNewData(v: string, s: number) {
     const key = `${v}:${s}`;
     if (!v || key === lastRequestKey) return;
+    // Changing variable/sweep/file leaves the displayed module field.
+    dropFieldOverride();
     lastRequestKey = key;
     currentCmap = getDefaultCmap(v);
     const range = getDefaultRange(v);
@@ -126,7 +149,23 @@
     unsubSweepData = wsManager.onMessage('sweep_data_ready', (entry: SweepDataEntry) => {
       // A slow response for a sweep/variable the user already left must not repaint over the current view
       if (entry.variable !== $selectedVariable || entry.sweep !== $selectedSweep) return;
+      // Data for the selected variable (e.g. a QC result) replaces a displayed module field.
+      dropFieldOverride();
       renderSweepData(entry);
+    });
+
+    unsubField = displayedField.subscribe((f) => {
+      if (f) {
+        if (f.sweep !== $selectedSweep) {
+          hideField();
+          return;
+        }
+        fieldShown = f;
+        void renderSweepData(f.entry, f);
+      } else if (fieldShown) {
+        fieldShown = null;
+        restoreVariable();
+      }
     });
 
     // Subscribe to store changes for animation / external sweep updates
@@ -169,6 +208,7 @@
   onDestroy(() => {
     resizeObserver?.disconnect();
     unsubSweepData?.();
+    unsubField?.();
     unsubSweepStore?.();
     unsubVarStore?.();
     ppi?.destroy();
@@ -189,7 +229,7 @@
     return true;
   }
 
-  async function renderSweepData(entry: SweepDataEntry) {
+  async function renderSweepData(entry: SweepDataEntry, field: DisplayedField | null = null) {
     // Wait for Svelte to flush DOM updates (canvas may not exist yet if hasData just became true)
     await tick();
 
@@ -205,6 +245,8 @@
       isLoading = false;
       return;
     }
+    // The field was dismissed (or replaced) while we waited: do not paint it.
+    if (field && fieldShown !== field) return;
 
     const t0 = performance.now();
     currentEntry = entry;
@@ -212,8 +254,14 @@
     currentMaxRange = entry.maxRange;
     currentUnits = entry.units;
 
-    // Use server-reported range as fallback if no defaults exist
-    if (!getDefaultRange(entry.variable)) {
+    if (field) {
+      // Module field: colormap / range come from the module, not from the variable defaults
+      currentCmap = field.spec.cmap;
+      currentVmin = field.spec.vmin;
+      currentVmax = field.spec.vmax;
+      currentUnits = field.spec.units;
+    } else if (!getDefaultRange(entry.variable)) {
+      // Use server-reported range as fallback if no defaults exist
       currentVmin = entry.vmin;
       currentVmax = entry.vmax;
     }
@@ -397,6 +445,8 @@
 
     const val = entry.values[bestAi * entry.nRange + bestRi];
     probeValue = val <= -9998 ? null : val;
+    const cat = probeValue !== null ? fieldShown?.spec.categories?.find((c) => c.value === Math.round(probeValue!)) : undefined;
+    probeLabel = cat ? cat.label : null;
 
     // Update the temporal probe point for time series analysis
     setProbePoint({
@@ -687,7 +737,8 @@
 
       {#if probeActive && probeValue !== null}
         <div class="probe-tooltip" style="left: {probeX + 12}px; top: {probeY - 28}px">
-          {probeValue.toFixed(2)} {currentUnits}
+          {#if probeLabel}{probeLabel} ({probeValue})
+          {:else}{probeValue.toFixed(2)} {currentUnits}{/if}
         </div>
       {:else if probeActive && probeValue === null}
         <div class="probe-tooltip muted" style="left: {probeX + 12}px; top: {probeY - 28}px">
@@ -695,16 +746,40 @@
         </div>
       {/if}
 
+      {#if fieldShown}
+        <div class="field-badge" role="status">
+          <span class="field-badge-tag">Module field</span>
+          <span class="field-badge-name" title="{fieldShown.moduleTitle} / {fieldShown.name}">
+            {fieldShown.moduleTitle} &rsaquo; {fieldShown.title}
+          </span>
+          <span class="field-badge-sweep">sweep {fieldShown.sweep}</span>
+          <button type="button" class="field-badge-back" on:click={() => hideField()}
+                  title="Show {variable ?? 'the variable'} again">
+            Back to {variable ?? 'variable'}
+          </button>
+        </div>
+      {/if}
+
       {#if hasRendered}
         <div class="colorbar-wrapper">
-          <ColorBar
-            cmapName={currentCmap}
-            vmin={currentVmin}
-            vmax={currentVmax}
-            units={currentUnits}
-            onCmapChange={handleCmapChange}
-            onRangeChange={handleRangeChange}
-          />
+          {#if fieldShown?.spec.categories}
+            <div class="cat-legend" role="list" aria-label="{fieldShown.title} categories">
+              {#each fieldShown.spec.categories as c (c.value)}
+                <span class="cat-item" role="listitem">
+                  <span class="cat-swatch" style="background: {c.color}"></span>{c.label}
+                </span>
+              {/each}
+            </div>
+          {:else}
+            <ColorBar
+              cmapName={currentCmap}
+              vmin={currentVmin}
+              vmax={currentVmax}
+              units={currentUnits}
+              onCmapChange={handleCmapChange}
+              onRangeChange={handleRangeChange}
+            />
+          {/if}
         </div>
       {/if}
     </div>
@@ -919,6 +994,84 @@
     transform: translateX(-50%);
     z-index: 15;
     pointer-events: auto;
+  }
+
+  .field-badge {
+    position: absolute;
+    top: var(--spacing-md);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 16;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 160px);
+    padding: 4px 6px 4px 10px;
+    background: rgba(15, 15, 26, 0.88);
+    border: 1px solid var(--accent-primary);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--text-primary);
+    backdrop-filter: blur(4px);
+  }
+
+  .field-badge-tag {
+    flex: none;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent-primary);
+  }
+
+  .field-badge-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .field-badge-sweep {
+    flex: none;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+  }
+
+  .field-badge-back {
+    flex: none;
+    padding: 2px 8px;
+    font-size: 11px;
+    color: var(--text-primary);
+    background: rgba(91, 108, 247, 0.18);
+    border: 1px solid var(--accent-primary);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .field-badge-back:hover { background: rgba(91, 108, 247, 0.35); }
+
+  .cat-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 4px 12px;
+    max-width: min(640px, 80vw);
+    padding: 6px 10px;
+    background: rgba(15, 15, 26, 0.88);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    color: var(--text-secondary);
+    backdrop-filter: blur(4px);
+  }
+
+  .cat-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+  .cat-swatch {
+    width: 12px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
   }
 
   .probe-tooltip {

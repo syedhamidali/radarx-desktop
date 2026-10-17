@@ -73,6 +73,8 @@ ALLOWED_ORIGIN_PREFIXES = (
 CHUNK_SIZE = 900 * 1024
 # Sentinel the client interprets as "no data" in binary value arrays.
 NODATA_SENTINEL = -9999.0
+# Largest text file the UI may ask the engine to write (CSV / GeoJSON exports).
+SAVE_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
 
 # Shared application state — survives across WebSocket reconnections
@@ -471,6 +473,7 @@ class ConnectionHandler:
             "get_cross_section_3d": self._handle_get_cross_section_3d,
             "list_modules": self._handle_list_modules,
             "run_module": self._handle_run_module,
+            "save_text_file": self._handle_save_text_file,
         }.get(msg_type)
 
         if handler is None:
@@ -2114,20 +2117,143 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
 
-        payload = await loop.run_in_executor(
-            None,
-            lambda: plugins.run_module(
+        def _run() -> tuple[dict[str, Any], dict[str, Any], list[tuple[dict[str, Any], list]]]:
+            payload, fields = plugins.run_module(
                 module_id,
                 datatree,
                 sweep,
                 params,
                 get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
                 progress=progress_sync,
-            ),
+                return_fields=True,
+            )
+            packed = _pack_module_fields(module_id, fields, _sweep_dataset(reader, sweep))
+            return payload, fields, packed
+
+        payload, fields, packed = await loop.run_in_executor(None, _run)
+        out_file_id = resolved_id or msg.get("file_id")
+        await self.send({"type": "module_result", **payload, "file_id": out_file_id})
+        blocks = {b.get("name"): b for b in payload.get("blocks", []) if b.get("type") == "field"}
+        for name, (fields_hdr, arrays) in zip(fields, packed, strict=True):
+            block = blocks.get(name, {})
+            await self._send_binary_chunks(
+                arrays,
+                {
+                    "type": "module_field",
+                    "module": module_id,
+                    "name": name,
+                    "sweep": sweep,
+                    "units": str(block.get("units") or ""),
+                    "file_id": out_file_id,
+                    **fields_hdr,
+                    **_field_range(block, arrays[2]),
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # Text export (CSV / GeoJSON written by the UI)
+    # ------------------------------------------------------------------
+
+    async def _handle_save_text_file(self, msg: dict[str, Any]) -> None:
+        """Write a UTF-8 text file chosen by the user (atomic; no silent overwrite).
+
+        ``{type: "save_text_file", path, content, overwrite?}`` -> ``{type: "file_saved", path}``
+        """
+        path = msg.get("path")
+        content = msg.get("content")
+        if not isinstance(path, str) or not path.strip():
+            await self.send_error("save_text_file: 'path' must be a non-empty string")
+            return
+        if not isinstance(content, str):
+            await self.send_error("save_text_file: 'content' must be a string")
+            return
+        if "\x00" in path:
+            await self.send_error("save_text_file: invalid path")
+            return
+        if len(content) > SAVE_TEXT_MAX_BYTES:
+            await self.send_error(
+                f"save_text_file: content exceeds {SAVE_TEXT_MAX_BYTES // (1024 * 1024)} MB"
+            )
+            return
+        data = content.encode("utf-8")
+        if len(data) > SAVE_TEXT_MAX_BYTES:
+            await self.send_error(
+                f"save_text_file: content exceeds {SAVE_TEXT_MAX_BYTES // (1024 * 1024)} MB"
+            )
+            return
+        target = Path(path).expanduser()
+        if not target.parent.is_dir():
+            await self.send_error(f"save_text_file: folder does not exist: {target.parent}")
+            return
+        if target.is_dir():
+            await self.send_error(f"save_text_file: path is a folder: {target}")
+            return
+        if target.exists() and msg.get("overwrite") is not True:
+            await self.send_error(
+                f"save_text_file: {target} already exists (pass overwrite=true to replace it)"
+            )
+            return
+
+        def _write() -> None:
+            tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
+            try:
+                tmp.write_bytes(data)
+                os.replace(tmp, target)
+            finally:
+                with contextlib.suppress(OSError):
+                    tmp.unlink()
+
+        await asyncio.get_running_loop().run_in_executor(None, _write)
+        await self.send({"type": "file_saved", "path": str(target)})
+
+
+def _pack_module_fields(
+    module_id: str, fields: dict[str, Any], sweep_ds: Any
+) -> list[tuple[dict[str, Any], list[np.ndarray]]]:
+    """Validate module fields against the sweep grid and pack them for the wire.
+
+    Returns one ``(header_fields, [azimuth_f32, range_f32, values_f32])`` per field, in
+    ``fields`` order. Raises :class:`plugins.ModuleError` naming the module on a mismatch.
+    """
+    azimuth = np.ascontiguousarray(sweep_ds["azimuth"].values, dtype=np.float32)
+    range_m = np.ascontiguousarray(sweep_ds["range"].values, dtype=np.float32)
+    expected = (azimuth.size, range_m.size)
+    packed: list[tuple[dict[str, Any], list[np.ndarray]]] = []
+    for name, arr in fields.items():
+        values = np.asarray(arr)
+        if values.shape != expected:
+            raise plugins.ModuleError(
+                f"Module '{module_id}' field '{name}' has shape {tuple(values.shape)} but the "
+                f"sweep grid is (n_azimuth, n_range) = {expected}"
+            )
+        values = np.array(values, dtype=np.float32, order="C", copy=True)
+        np.nan_to_num(
+            values, copy=False, nan=NODATA_SENTINEL, posinf=NODATA_SENTINEL, neginf=NODATA_SENTINEL
         )
-        await self.send(
-            {"type": "module_result", **payload, "file_id": resolved_id or msg.get("file_id")}
-        )
+        header = {
+            "n_az": int(azimuth.size),
+            "n_range": int(range_m.size),
+            "azimuth_bytes": azimuth.nbytes,
+            "range_bytes": range_m.nbytes,
+            "values_bytes": values.nbytes,
+            "max_range": float(range_m.max()) if range_m.size else 0.0,
+        }
+        packed.append((header, [azimuth, range_m, values]))
+    return packed
+
+
+def _field_range(block: dict[str, Any], values: np.ndarray) -> dict[str, float]:
+    """vmin/vmax for the header: the block's, else the observed range (categorical fields)."""
+    vmin, vmax = block.get("vmin"), block.get("vmax")
+    if vmin is None or vmax is None:
+        valid = values[values != NODATA_SENTINEL]
+        lo = float(valid.min()) if valid.size else 0.0
+        hi = float(valid.max()) if valid.size else 1.0
+        vmin = lo if vmin is None else vmin
+        vmax = hi if vmax is None else vmax
+    if vmax <= vmin:
+        vmax = vmin + 1.0
+    return {"vmin": float(vmin), "vmax": float(vmax)}
 
 
 def _sweep_dataset(reader: RadarReader, index: int):
@@ -2206,7 +2332,8 @@ async def _run_server(port: int) -> None:
         _handle_connection,
         "localhost",
         port,
-        max_size=WS_MAX_SIZE,
+        # Incoming limit must admit the largest save_text_file payload (+ JSON overhead).
+        max_size=max(WS_MAX_SIZE, SAVE_TEXT_MAX_BYTES + 1024 * 1024),
         ping_interval=30,
         ping_timeout=60,
     ):

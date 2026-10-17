@@ -51,9 +51,41 @@ Build a `Result` from any mix of blocks:
 | `res.scalars({...})` | summary grid |
 | `res.table(title, columns, rows, id_key=...)` | sortable table; clicking a row highlights the overlay feature with the same id |
 | `res.overlay(title, [polygon(...), point(...), line(...)])` | drawn over the PPI. `frame="polar"` = `[azimuth_deg, range_m]`, `frame="xy"` = `[x_m, y_m]` |
+| `res.field(name, array, units=, vmin=, vmax=, cmap=, categories=)` | a gridded product on the sweep's `(azimuth, range)` grid, shown on the PPI via **Show on PPI** (continuous with a gradient legend, or categorical with `categories=[{"value":1,"label":"Rain","color":"#3b82f6"}]`) |
 | `res.text(body)` | notes / caveats |
 
-NaN/Inf and numpy types are cleaned automatically.
+NaN/Inf and numpy types are cleaned automatically. A field must have exactly the selected
+sweep's `(n_azimuth, n_range)` shape (the server rejects anything else). In the panel, table
+blocks have a **CSV** button and overlay blocks a **GeoJSON** button (needs a known radar site).
+
+## Optional dependencies
+
+Declare packages a module needs with `needs=["radarx"]` and import them **inside** the function.
+If a package is missing the module is still listed, but greyed out with a `pip install` hint, and
+refuses to run.
+
+## radarx modules
+
+With [radarx](https://github.com/syedhamidali/radarx) installed (`pip install "radarx>=0.5.1"`,
+Python 3.12+; or `pip install -e ".[radarx]"` from `python/`) the app gains `radarx_*` modules:
+
+| Module | Product |
+|---|---|
+| `radarx_echo_mask` | meteorological / non-meteorological / speckle field |
+| `radarx_kdp` | KDP, processed PhiDP or uncertainty field |
+| `radarx_hid` | hydrometeor classification (categorical field + class counts) |
+| `radarx_qpe` | rain-rate field (Z, Z-ZDR, KDP or HID-blended relations) |
+| `radarx_dealias` | dealiased velocity / fold-number field |
+| `radarx_shear` | azimuthal shear / radial divergence (LLSD) field |
+| `radarx_couplets` | rotation couplets: table + overlay |
+| `radarx_zdr_arc` | ZDR arc and KDP-ZDR separation per storm (Wilson & Van Den Broeke 2021) |
+| `radarx_zdr_column` | ZDR column depth and objects (Snyder et al. 2015) |
+| `radarx_vil` | VIL, VIL density or echo top |
+| `radarx_hail` | MESH / SHI / POSH / HKE field and hail cells |
+
+Notes: freezing level and the -20 C level are parameters (a file does not carry them); the
+Nyquist velocity is estimated when a file lacks it; on NEXRAD split cuts, sweep 0 holds dual-pol
+and sweep 1 holds velocity, so velocity and dual-pol modules run on different sweeps.
 
 ## Protocol (for tooling)
 
@@ -62,6 +94,11 @@ NaN/Inf and numpy types are cleaned automatically.
 → {type:"run_module", module, sweep, params, file_id?}
                                            ← {type:"module_result", module, sweep, params, elapsed_ms, blocks}
                                            ← {type:"module_error", module, message}
+                                           ← per field block: {type:"module_field", module, name, sweep,
+                                             n_az, n_range, azimuth_bytes, range_bytes, values_bytes,
+                                             vmin, vmax, units, max_range, chunks, file_id}
+                                             followed by `chunks` binary frames [azimuth f32][range f32][values f32]
+→ {type:"save_text_file", path, content, overwrite?}   ← {type:"file_saved", path} | {type:"error"}
 ```
 
 ## Notes

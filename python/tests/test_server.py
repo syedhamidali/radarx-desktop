@@ -653,3 +653,185 @@ class TestModules:
             )
         )
         assert any(m["type"] == "module_result" for m in handler._sent), handler._sent
+
+
+# ---------------------------------------------------------------------------
+# Module fields (gridded products) + save_text_file
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def field_module():
+    from engine.plugins import Result, module
+
+    before = dict(plugins.MODULES)
+
+    @module(id="srv_test_field", title="Field", category="Test", requires=["DBZH"])
+    def field(ctx):
+        z = ctx.field("DBZH").values.astype(np.float32).copy()
+        z[0, 0] = np.nan
+        cls = np.where(z > 10, 2.0, 1.0).astype(np.float32)
+        cls[0, 0] = np.nan
+        res = Result().scalars({"n": int(z.size)})
+        res.field("dbz2", z, units="dBZ", vmin=-10, vmax=60, cmap="turbo")
+        res.field(
+            "cls",
+            cls,
+            categories=[
+                {"value": 1, "label": "Low", "color": "#3b82f6"},
+                {"value": 2, "label": "High", "color": "#ef4444"},
+            ],
+        )
+        return res
+
+    @module(id="srv_test_badfield", title="Bad Field", category="Test")
+    def badfield(ctx):
+        return Result().field("oops", np.zeros((3, 4), dtype=np.float32))
+
+    yield
+    plugins.MODULES.clear()
+    plugins.MODULES.update(before)
+
+
+class TestModuleFields:
+    @pytest.mark.asyncio
+    async def test_field_sent_as_json_then_binary(self, field_module) -> None:
+        tree = make_synthetic_datatree(n_azimuth=20, n_range=30)
+        file_id = server._register_reader(_reader_with_tree(tree))
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps(
+                {"type": "run_module", "module": "srv_test_field", "sweep": 1, "file_id": file_id}
+            )
+        )
+        kinds = [(k, f["type"] if k == "json" else None) for k, f in handler._frames]
+        types = [t for k, t in kinds if k == "json" and t != "progress"]
+        assert types == ["module_result", "module_field", "module_field"]
+        result = next(m for m in handler._sent if m["type"] == "module_result")
+        assert [b["type"] for b in result["blocks"]] == ["scalars", "field", "field"]
+        fields = [m for m in handler._sent if m["type"] == "module_field"]
+        assert [f["name"] for f in fields] == ["dbz2", "cls"]
+        # Each header is immediately followed by exactly its frames.
+        idx = [
+            i
+            for i, (k, f) in enumerate(handler._frames)
+            if k == "json" and f["type"] == "module_field"
+        ]
+        assert idx[0] < idx[1]
+        for pos, hdr in zip(idx, fields, strict=True):
+            total = hdr["azimuth_bytes"] + hdr["range_bytes"] + hdr["values_bytes"]
+            frames = []
+            for k, f in handler._frames[pos + 1 :]:
+                if k != "bin":
+                    break
+                frames.append(f)
+            assert len(frames) == hdr["chunks"]
+            blob = b"".join(frames)
+            assert len(blob) == total
+            assert hdr["module"] == "srv_test_field" and hdr["sweep"] == 1
+            assert hdr["file_id"] == file_id
+            assert (hdr["n_az"], hdr["n_range"]) == (20, 30)
+            assert hdr["azimuth_bytes"] == 20 * 4 and hdr["range_bytes"] == 30 * 4
+            assert hdr["values_bytes"] == 20 * 30 * 4
+            values = np.frombuffer(blob[hdr["azimuth_bytes"] + hdr["range_bytes"] :], np.float32)
+            assert values[0] == -9999.0  # NaN -> sentinel
+            assert np.isfinite(values).all()
+        assert (fields[0]["vmin"], fields[0]["vmax"], fields[0]["units"]) == (-10, 60, "dBZ")
+        # categorical: vmin/vmax come from the observed values
+        assert (fields[1]["vmin"], fields[1]["vmax"]) == (1.0, 2.0)
+
+    @pytest.mark.asyncio
+    async def test_field_shape_mismatch_is_module_error(self, field_module) -> None:
+        server._register_reader(_reader_with_tree())
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps({"type": "run_module", "module": "srv_test_badfield"})
+        )
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1
+        assert errors[0]["module"] == "srv_test_badfield"
+        assert "srv_test_badfield" in errors[0]["message"] and "oops" in errors[0]["message"]
+        assert not any(m["type"] in ("module_result", "module_field") for m in handler._sent)
+        assert _binary(handler) == b""
+
+    @pytest.mark.asyncio
+    async def test_list_modules_has_availability(self, test_module) -> None:
+        @plugins.module(
+            id="srv_test_needs_pkg", title="Needs pkg", needs=["definitely_not_a_pkg_xyz"]
+        )
+        def needs_pkg(ctx):
+            return plugins.Result()
+
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps({"type": "list_modules"}))
+        mods = {m["id"]: m for m in handler._sent[0]["modules"]}
+        assert mods["srv_test_count"]["available"] is True
+        assert mods["srv_test_count"]["unavailable_reason"] is None
+        assert mods["srv_test_needs_pkg"]["available"] is False
+        assert (
+            "pip install definitely_not_a_pkg_xyz"
+            in mods["srv_test_needs_pkg"]["unavailable_reason"]
+        )
+        await handler.handle_message(
+            json.dumps({"type": "run_module", "module": "srv_test_needs_pkg"})
+        )
+        assert handler._sent[-1]["type"] == "module_error"
+
+
+class TestSaveTextFile:
+    @pytest.mark.asyncio
+    async def test_save_ok(self, tmp_path) -> None:
+        handler, _ = _make_handler()
+        target = tmp_path / "out.csv"
+        await handler.handle_message(
+            json.dumps({"type": "save_text_file", "path": str(target), "content": "a,b\n1,é\n"})
+        )
+        assert handler._sent[-1] == {"type": "file_saved", "path": str(target)}
+        assert target.read_text(encoding="utf-8") == "a,b\n1,é\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["out.csv"]  # no temp left behind
+
+    @pytest.mark.asyncio
+    async def test_refuse_overwrite_unless_flag(self, tmp_path) -> None:
+        handler, _ = _make_handler()
+        target = tmp_path / "out.csv"
+        target.write_text("old")
+        await handler.handle_message(
+            json.dumps({"type": "save_text_file", "path": str(target), "content": "new"})
+        )
+        assert handler._sent[-1]["type"] == "error"
+        assert "already exists" in handler._sent[-1]["message"]
+        assert target.read_text() == "old"
+        await handler.handle_message(
+            json.dumps(
+                {"type": "save_text_file", "path": str(target), "content": "new", "overwrite": True}
+            )
+        )
+        assert handler._sent[-1]["type"] == "file_saved"
+        assert target.read_text() == "new"
+
+    @pytest.mark.asyncio
+    async def test_oversize_rejected(self, tmp_path) -> None:
+        handler, _ = _make_handler()
+        target = tmp_path / "big.txt"
+        content = "x" * (server.SAVE_TEXT_MAX_BYTES + 1)
+        await handler.handle_message(
+            json.dumps({"type": "save_text_file", "path": str(target), "content": content})
+        )
+        assert handler._sent[-1]["type"] == "error"
+        assert "MB" in handler._sent[-1]["message"]
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"path": 5, "content": "x"},
+            {"path": "", "content": "x"},
+            {"path": "/tmp/x.txt", "content": 5},
+            {"path": "/definitely/not/a/dir/x.txt", "content": "x"},
+        ],
+    )
+    async def test_invalid_inputs(self, payload) -> None:
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps({"type": "save_text_file", **payload}))
+        assert handler._sent[-1]["type"] == "error"

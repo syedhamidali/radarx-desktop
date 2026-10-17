@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from functools import cache
 from typing import Any
 
 import numpy as np
@@ -289,13 +290,55 @@ def _nan_to_none(arr: np.ndarray) -> list[Any]:
     return obj.tolist()
 
 
-def _local_xy(
+@cache
+def _geod() -> Any:
+    """WGS84 geodesic calculator (pyproj is a hard dependency of xradar)."""
+    from pyproj import Geod
+
+    return Geod(ellps="WGS84")
+
+
+def _ground_range_azimuth(
     lat: np.ndarray | float, lon: np.ndarray | float, radar_lat: float, radar_lon: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Approximate local (x east, y north) metres of lat/lon relative to the radar."""
-    dx = (np.asarray(lon) - radar_lon) * 111320.0 * np.cos(np.radians(radar_lat))
-    dy = (np.asarray(lat) - radar_lat) * 110540.0
-    return dx, dy
+    """Geodesic ground distance (m) and forward azimuth (deg, 0-360, clockwise from
+    north) from the radar to each ``lat``/``lon`` point on the WGS84 ellipsoid.
+
+    Vectorised (Karney's algorithm via pyproj): accurate to well under a millimetre at
+    any range, unlike the flat-earth ``111320 * cos(lat)`` shortcut, which is off by
+    tenths of a percent at 150 km and worse away from the radar's latitude.
+    """
+    lat_a, lon_a = np.broadcast_arrays(
+        np.asarray(lat, dtype=np.float64), np.asarray(lon, dtype=np.float64)
+    )
+    az, _, dist = _geod().inv(
+        np.full(lon_a.shape, radar_lon),
+        np.full(lat_a.shape, radar_lat),
+        lon_a,
+        lat_a,
+        return_back_azimuth=True,
+    )
+    return np.asarray(dist, dtype=np.float64), np.asarray(az, dtype=np.float64) % 360.0
+
+
+def _geodesic_samples(
+    start: tuple[float, float], end: tuple[float, float], n_points: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``n_points`` evenly spaced points on the geodesic from *start* to *end*
+    (both ``(lat, lon)``).  Returns ``(lats, lons, distance_m_along_line)``."""
+    lat1, lon1 = start
+    lat2, lon2 = end
+    geod = _geod()
+    az12, _, total = geod.inv(lon1, lat1, lon2, lat2, return_back_azimuth=True)
+    along = np.linspace(0.0, float(total), n_points)
+    lons, lats, _ = geod.fwd(
+        np.full(n_points, lon1),
+        np.full(n_points, lat1),
+        np.full(n_points, az12),
+        along,
+        return_back_azimuth=True,
+    )
+    return np.asarray(lats, dtype=np.float64), np.asarray(lons, dtype=np.float64), along
 
 
 def extract_cross_section(
@@ -310,9 +353,11 @@ def extract_cross_section(
     """Extract an RHI-like cross-section between two geographic points.
 
     The cross-section interpolates across all sweeps to produce a
-    distance-vs-height slice.  Heights and slant ranges use the 4/3 effective
-    Earth radius beam model (the sample point's *ground* distance from the radar is
-    converted to the slant range at which each sweep's beam reaches it).
+    distance-vs-height slice.  Sample points lie on the WGS84 geodesic between the end
+    points and their ground distance/azimuth from the radar are geodesic too.  Heights
+    and slant ranges use the 4/3 effective Earth radius beam model (the sample point's
+    *ground* distance from the radar is converted to the slant range at which each
+    sweep's beam reaches it).
 
     Parameters
     ----------
@@ -341,18 +386,13 @@ def extract_cross_section(
 
     lat1, lon1 = start_point
     lat2, lon2 = end_point
+    n_points = max(int(n_points), 1)
 
-    # Sample points along the line (approximate: lat/lon as local offsets from the radar)
-    lats = np.linspace(lat1, lat2, n_points)
-    lons = np.linspace(lon1, lon2, n_points)
-    dx, dy = _local_xy(lats, lons, radar_lat, radar_lon)
-
-    ground_dist = np.hypot(dx, dy)
-    sample_azimuth = np.degrees(np.arctan2(dx, dy)) % 360.0
-
-    # Distance along the cross-section line
-    total_dist = float(np.hypot(dx[-1] - dx[0], dy[-1] - dy[0]))
-    distance_km = np.linspace(0, total_dist / 1000.0, n_points)
+    # Sample points evenly along the geodesic between the two end points, then get each
+    # point's ground distance and azimuth from the radar on the WGS84 ellipsoid.
+    lats, lons, along_m = _geodesic_samples((lat1, lon1), (lat2, lon2), n_points)
+    ground_dist, sample_azimuth = _ground_range_azimuth(lats, lons, radar_lat, radar_lon)
+    distance_km = along_m / 1000.0
 
     all_heights: list[list[float]] = []
     all_values: list[list[float | None]] = []
@@ -417,9 +457,7 @@ def extract_vertical_profile(
     sweep_names = sorted_sweep_names(datatree)
     radar_lat, radar_lon = _get_radar_location(datatree)
 
-    dx, dy = _local_xy(lat, lon, radar_lat, radar_lon)
-    ground = np.array([float(np.hypot(dx, dy))])
-    point_az = np.array([float(np.degrees(np.arctan2(dx, dy)) % 360.0)])
+    ground, point_az = _ground_range_azimuth(np.array([lat]), np.array([lon]), radar_lat, radar_lon)
 
     heights: list[float | None] = []
     values: list[float | None] = []

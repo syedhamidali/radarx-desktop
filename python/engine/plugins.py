@@ -227,6 +227,9 @@ class Result:
 
     def __init__(self) -> None:
         self.blocks: list[dict[str, Any]] = []
+        # name -> (n_azimuth, n_range) float32 array; kept out of the JSON blocks and
+        # sent separately as binary by the server.
+        self.fields: dict[str, np.ndarray] = {}
 
     def scalars(
         self, values: dict[str, Any] | list[dict[str, Any]], title: str = "Summary"
@@ -258,6 +261,56 @@ class Result:
     def overlay(self, title: str, features: list[dict[str, Any]]) -> Result:
         """Map overlay drawn on the PPI. See :func:`polygon`, :func:`point`, :func:`line`."""
         self.blocks.append({"type": "overlay", "title": title, "features": features})
+        return self
+
+    def field(
+        self,
+        name: str,
+        values: Any,
+        *,
+        units: str = "",
+        vmin: float | None = None,
+        vmax: float | None = None,
+        cmap: str | None = None,
+        categories: list[dict[str, Any]] | None = None,
+        title: str | None = None,
+    ) -> Result:
+        """A 2-D gridded product on the sweep's ``(azimuth, range)`` grid, shown on the PPI.
+
+        ``values`` is array-like of shape ``(n_azimuth, n_range)`` (NaN = no data). For a
+        categorical product (e.g. hydrometeor class) pass
+        ``categories=[{"value": 1, "label": "Rain", "color": "#3b82f6"}, ...]``; otherwise
+        ``vmin``/``vmax`` set the colour scale (defaults to the 2nd-98th percentile) and
+        ``cmap`` names a built-in colormap (``None`` = let the UI choose from ``units``).
+        """
+        if not name or not isinstance(name, str):
+            raise ValueError("field name must be a non-empty string")
+        arr = np.asarray(getattr(values, "values", values), dtype=np.float32)
+        if arr.ndim != 2:
+            raise ValueError(f"field '{name}' must be 2-D (azimuth, range), got shape {arr.shape}")
+        finite = arr[np.isfinite(arr)]
+        if categories is None and finite.size:
+            if vmin is None:
+                vmin = float(np.percentile(finite, 2))
+            if vmax is None:
+                vmax = float(np.percentile(finite, 98))
+            if vmax <= vmin:
+                vmax = vmin + 1.0
+        self.fields[name] = arr
+        self.blocks.append(
+            {
+                "type": "field",
+                "name": name,
+                "title": title or name,
+                "units": units,
+                "vmin": vmin,
+                "vmax": vmax,
+                "cmap": cmap,
+                "categories": categories,
+                "shape": [int(arr.shape[0]), int(arr.shape[1])],
+                "valid_fraction": float(finite.size / arr.size) if arr.size else 0.0,
+            }
+        )
         return self
 
     def text(self, body: str, title: str = "Notes") -> Result:
@@ -342,8 +395,14 @@ class ModuleSpec:
     source: str = "<unknown>"
     version: str = "1.0"
     optional: list[str] = field(default_factory=list)
+    needs: list[str] = field(default_factory=list)
+
+    def missing_packages(self) -> list[str]:
+        """Names from ``needs`` that cannot be imported right now."""
+        return [pkg for pkg in self.needs if importlib.util.find_spec(pkg) is None]
 
     def describe(self) -> dict[str, Any]:
+        missing = self.missing_packages()
         return {
             "id": self.id,
             "title": self.title,
@@ -354,6 +413,14 @@ class ModuleSpec:
             "params": self.params,
             "source": self.source,
             "version": self.version,
+            "needs": self.needs,
+            "available": not missing,
+            "unavailable_reason": (
+                f"Requires the Python package{'s' if len(missing) > 1 else ''} "
+                f"{', '.join(missing)} (pip install {' '.join(missing)})"
+                if missing
+                else None
+            ),
         }
 
 
@@ -372,8 +439,14 @@ def module(
     optional: list[str] | None = None,
     params: list[dict[str, Any]] | None = None,
     version: str = "1.0",
+    needs: list[str] | None = None,
 ) -> Callable[[Callable[..., Result]], Callable[..., Result]]:
-    """Register ``func(ctx, **params) -> Result`` as a module."""
+    """Register ``func(ctx, **params) -> Result`` as a module.
+
+    ``needs`` lists optional Python packages (import names, e.g. ``["radarx"]``). The module
+    is always listed, but is marked unavailable (and refuses to run) when one is missing, so
+    import those packages *inside* the function, not at module top level.
+    """
 
     def decorator(func: Callable[..., Result]) -> Callable[..., Result]:
         if not id or not id.replace("_", "").replace("-", "").isalnum():
@@ -394,6 +467,7 @@ def module(
             func=func,
             source=_current_source,
             version=version,
+            needs=list(needs or []),
         )
         return func
 
@@ -455,11 +529,22 @@ def run_module(
     *,
     get_sweep_dataset: Callable[[int], xr.Dataset],
     progress: Callable[[int, str], None] | None = None,
-) -> dict[str, Any]:
-    """Execute a module and return its JSON-safe result payload."""
+    return_fields: bool = False,
+) -> dict[str, Any] | tuple[dict[str, Any], dict[str, np.ndarray]]:
+    """Execute a module and return its JSON-safe result payload.
+
+    With ``return_fields=True`` returns ``(payload, fields)`` where ``fields`` maps field
+    names (see :meth:`Result.field`) to float32 arrays, for the caller to send as binary.
+    """
     spec = MODULES.get(module_id)
     if spec is None:
         raise KeyError(f"Unknown module '{module_id}'. Available: {sorted(MODULES)}")
+    missing = spec.missing_packages()
+    if missing:
+        raise ModuleError(
+            f"{spec.title} needs the Python package {', '.join(missing)} "
+            f"(pip install {' '.join(missing)})"
+        )
     params = _coerce_params(spec.params, raw_params or {})
     ctx = ModuleContext(datatree, sweep, get_sweep_dataset=get_sweep_dataset, progress=progress)
     for req in spec.requires:
@@ -481,4 +566,4 @@ def run_module(
         params=params,
         elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 1),
     )
-    return payload
+    return (payload, result.fields) if return_fields else payload

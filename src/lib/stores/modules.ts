@@ -9,10 +9,14 @@
  *
  *   -> {type:'list_modules', reload?}   <- {type:'modules_list', modules, errors, dirs}
  *   -> {type:'run_module', ...}         <- {type:'module_result', ...} | {type:'module_error', ...}
+ *                                      <- {type:'module_field', ...} + binary frames (per field block)
+ *   -> {type:'save_text_file', ...}     <- {type:'file_saved', path} | {type:'error', ...}
  */
 
 import { writable, derived, get } from 'svelte/store';
-import { wsManager } from '../utils/websocket';
+import { wsManager, type ModuleFieldEntry } from '../utils/websocket';
+import { COLORMAP_DATA } from '../utils/colormaps';
+import { getDefaultCmap, type SweepDataEntry } from '../utils/ppiRenderer';
 import { connectionStatus, radarData, selectedSweep } from './radarData';
 import { activeFileId, getActiveFile } from './fileManager';
 import { addToast } from './toasts';
@@ -43,6 +47,11 @@ export interface ModuleSpec {
   params: ModuleParam[];
   source?: string;
   version?: string;
+  /** Optional pip packages the module imports (import names). */
+  needs: string[];
+  /** False when a needed package is missing: listed, but cannot run. */
+  available: boolean;
+  unavailable_reason: string | null;
 }
 
 export interface ModuleLoadError {
@@ -57,7 +66,28 @@ export interface TableColumn {
   digits?: number;
 }
 
+export interface FieldCategory {
+  value: number;
+  label: string;
+  color: string;
+}
+
+/** A gridded product on the sweep's polar grid; the values arrive as a separate binary payload. */
+export interface FieldBlock {
+  type: 'field';
+  name: string;
+  title?: string;
+  units: string;
+  vmin: number | null;
+  vmax: number | null;
+  cmap: string | null;
+  categories: FieldCategory[] | null;
+  shape: [number, number];
+  valid_fraction: number;
+}
+
 export type ModuleBlock =
+  | FieldBlock
   | { type: 'scalars'; title?: string; items: { label: string; value: any; unit?: string }[] }
   | { type: 'table'; title?: string; columns: TableColumn[]; rows: Record<string, any>[]; id_key?: string }
   | { type: 'overlay'; title?: string; features: RawOverlayFeature[] }
@@ -155,6 +185,32 @@ export const overlayVisibility = writable<Record<string, boolean>>({});
 
 /** Currently selected overlay feature (shared between panel and overlay). */
 export const selectedFeature = writable<SelectedFeature | null>(null);
+
+/** Gridded module products received so far, keyed by `module/name` (see {@link fieldKey}). */
+export const moduleFields = writable<Record<string, ModuleFieldEntry>>({});
+
+/** How a displayed module field is drawn (resolved colormap + range + legend). */
+export interface FieldRenderSpec {
+  cmap: string;
+  vmin: number;
+  vmax: number;
+  units: string;
+  categories: FieldCategory[] | null;
+}
+
+/** A module field currently replacing the PPI's variable (null = the normal variable is shown). */
+export interface DisplayedField {
+  module: string;
+  moduleTitle: string;
+  name: string;
+  title: string;
+  sweep: number;
+  /** Stable renderer entry (identity matters: the renderer short-circuits on the same object). */
+  entry: SweepDataEntry;
+  spec: FieldRenderSpec;
+}
+
+export const displayedField = writable<DisplayedField | null>(null);
 
 /** Colour assigned to a module by its position in the module list. */
 export const moduleColors = derived(modulesState, ($s) => {
@@ -321,6 +377,435 @@ export function clearResult(moduleId: string): void {
     return rest;
   });
   if (get(selectedFeature)?.module === moduleId) selectedFeature.set(null);
+  moduleFields.update((f) => {
+    const prefix = `${moduleId}/`;
+    const next: Record<string, ModuleFieldEntry> = {};
+    for (const [k, v] of Object.entries(f)) if (!k.startsWith(prefix)) next[k] = v;
+    return next;
+  });
+  if (get(displayedField)?.module === moduleId) displayedField.set(null);
+}
+
+// ── Gridded fields (Show on PPI) ───────────────────────────────────────────
+
+export function fieldKey(moduleId: string, name: string): string {
+  return `${moduleId}/${name}`;
+}
+
+function fieldBlocksOf(res: ModuleResult | undefined): FieldBlock[] {
+  return ((res?.blocks ?? []) as ModuleBlock[]).filter(
+    (b): b is FieldBlock => b?.type === 'field' && typeof (b as FieldBlock).name === 'string',
+  );
+}
+
+export function findFieldBlock(moduleId: string, name: string): FieldBlock | null {
+  return fieldBlocksOf(get(moduleResults)[moduleId]).find((b) => b.name === name) ?? null;
+}
+
+/** Valid, value-sorted categories (or null if the block is not categorical). */
+export function cleanCategories(cats: FieldCategory[] | null | undefined): FieldCategory[] | null {
+  if (!Array.isArray(cats)) return null;
+  const out = cats
+    .filter((c) => c && Number.isFinite(Number(c.value)))
+    .map((c) => ({
+      value: Number(c.value),
+      label: String(c.label ?? c.value),
+      color: String(c.color ?? '#888888'),
+    }))
+    .sort((a, b) => a.value - b.value);
+  return out.length > 0 ? out : null;
+}
+
+/** Sensible default colormap from the field's units / name when the module gave none. */
+export function cmapFromUnits(units: string, name: string): string {
+  const u = (units ?? '').trim().toLowerCase();
+  let guess: string | null = null;
+  if (u === 'dbz') guess = 'NWSRef';
+  else if (u === 'm/s' || u === 'm s-1' || u === 'ms-1' || u === 'm s^-1') guess = 'NWSVel';
+  else if (u === 'db') guess = 'Spectral_r';
+  else if (u === 'deg/km' || u === '°/km' || u === 'degrees/km') guess = 'YlGnBu';
+  else if (u === 'deg' || u === '°' || u === 'degrees') guess = 'plasma';
+  if (!guess) guess = getDefaultCmap(name);
+  return COLORMAP_DATA[guess] ? guess : 'turbo';
+}
+
+/** Name of the colormap used for a continuous field block. */
+export function resolveFieldCmap(block: Pick<FieldBlock, 'cmap' | 'units' | 'name'>): string {
+  if (block.cmap && COLORMAP_DATA[block.cmap]) return block.cmap;
+  return cmapFromUnits(block.units, block.name);
+}
+
+/** CSS linear-gradient for a named colormap (legend bar). */
+export function cmapGradientCSS(name: string): string {
+  const rgb = COLORMAP_DATA[name];
+  if (!rgb) return 'linear-gradient(to right, #000, #fff)';
+  const stops: string[] = [];
+  const n = 16;
+  for (let i = 0; i < n; i++) {
+    const idx = Math.round((i / (n - 1)) * 255);
+    stops.push(`rgb(${rgb[idx * 3]},${rgb[idx * 3 + 1]},${rgb[idx * 3 + 2]}) ${((i / (n - 1)) * 100).toFixed(0)}%`);
+  }
+  return `linear-gradient(to right, ${stops.join(', ')})`;
+}
+
+let colorCtx: CanvasRenderingContext2D | null | undefined;
+
+/** Parse '#rgb' / '#rrggbb' / any CSS colour into [r,g,b]; mid-grey when unparseable. */
+export function parseColor(color: string): [number, number, number] {
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
+  if (hex) {
+    let h = hex[1];
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  }
+  try {
+    if (colorCtx === undefined) colorCtx = document.createElement('canvas').getContext('2d');
+    if (colorCtx) {
+      colorCtx.fillStyle = '#010203';
+      colorCtx.fillStyle = color;
+      const v = colorCtx.fillStyle;
+      const m = /^#([0-9a-f]{6})$/i.exec(v);
+      if (m) return parseColor(`#${m[1]}`);
+    }
+  } catch {
+    /* no DOM: fall through */
+  }
+  return [136, 136, 136];
+}
+
+/**
+ * Register (or refresh) a 256-entry discrete colormap for categorical values.
+ * The value axis is vmin = first-0.5 .. vmax = last+0.5, so each category is a solid band.
+ */
+export function registerCategoricalCmap(
+  lutName: string,
+  cats: FieldCategory[],
+): { vmin: number; vmax: number } {
+  const vmin = cats[0].value - 0.5;
+  const vmax = cats[cats.length - 1].value + 0.5;
+  const span = vmax - vmin;
+  const rgb = cats.map((c) => parseColor(c.color));
+  const lut = new Uint8Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const v = vmin + ((i + 0.5) / 256) * span;
+    let best = -1;
+    let bestD = Infinity;
+    for (let k = 0; k < cats.length; k++) {
+      const d = Math.abs(v - cats[k].value);
+      if (d < bestD) {
+        bestD = d;
+        best = k;
+      }
+    }
+    const c: [number, number, number] = bestD <= 0.5 + 1e-9 ? rgb[best] : [60, 60, 60];
+    lut[i * 3] = c[0];
+    lut[i * 3 + 1] = c[1];
+    lut[i * 3 + 2] = c[2];
+  }
+  COLORMAP_DATA[lutName] = lut; // new array each time => the renderer re-uploads it
+  return { vmin, vmax };
+}
+
+function buildDisplayedField(
+  moduleId: string,
+  name: string,
+  fieldEntry: ModuleFieldEntry,
+): DisplayedField | null {
+  const block = findFieldBlock(moduleId, name);
+  if (!block) return null;
+  const cats = cleanCategories(block.categories);
+  let spec: FieldRenderSpec;
+  if (cats) {
+    const lut = `__module_cat__${moduleId}/${name}`;
+    const r = registerCategoricalCmap(lut, cats);
+    spec = { cmap: lut, vmin: r.vmin, vmax: r.vmax, units: block.units ?? '', categories: cats };
+  } else {
+    let vmin = typeof block.vmin === 'number' ? block.vmin : fieldEntry.vmin;
+    let vmax = typeof block.vmax === 'number' ? block.vmax : fieldEntry.vmax;
+    if (!Number.isFinite(vmin)) vmin = 0;
+    if (!Number.isFinite(vmax) || vmax <= vmin) vmax = vmin + 1;
+    spec = {
+      cmap: resolveFieldCmap(block),
+      vmin,
+      vmax,
+      units: block.units || fieldEntry.units || '',
+      categories: null,
+    };
+  }
+  const entry: SweepDataEntry = {
+    variable: `module:${moduleId}/${name}`,
+    sweep: fieldEntry.sweep,
+    azimuth: fieldEntry.azimuth,
+    range: fieldEntry.range,
+    values: fieldEntry.values,
+    nAz: fieldEntry.nAz,
+    nRange: fieldEntry.nRange,
+    maxRange: fieldEntry.maxRange,
+    vmin: spec.vmin,
+    vmax: spec.vmax,
+    units: spec.units,
+  };
+  return {
+    module: moduleId,
+    moduleTitle: moduleTitle(moduleId),
+    name,
+    title: block.title || name,
+    sweep: fieldEntry.sweep,
+    entry,
+    spec,
+  };
+}
+
+/** Replace the PPI's variable with a module field (cleared again on variable/sweep/file change). */
+export function showFieldOnPpi(moduleId: string, name: string): boolean {
+  const fieldEntry = get(moduleFields)[fieldKey(moduleId, name)];
+  if (!fieldEntry) {
+    addToast('warning', 'The field data has not arrived yet');
+    return false;
+  }
+  if (fieldEntry.sweep !== get(selectedSweep)) {
+    addToast('warning', `Field was computed for sweep ${fieldEntry.sweep}; select that sweep to show it`);
+    return false;
+  }
+  const next = buildDisplayedField(moduleId, name, fieldEntry);
+  if (!next) {
+    addToast('error', 'Field description missing from the module result');
+    return false;
+  }
+  displayedField.set(next);
+  return true;
+}
+
+/** Go back to the normal variable (RadarViewer re-renders it). */
+export function hideField(): void {
+  displayedField.set(null);
+}
+
+// ── Export (CSV / GeoJSON) ─────────────────────────────────────────────────
+
+/** Radar site (degrees) from the open file's attributes, or null when unknown. */
+export const radarSite = derived(radarData, ($d) => siteFromAttributes($d.attributes));
+
+export function siteFromAttributes(attrs: Record<string, any> | undefined): { lat: number; lon: number } | null {
+  if (!attrs) return null;
+  const num = (v: any): number => (v === null || v === undefined || v === '' ? NaN : Number(v));
+  const lat = [attrs.latitude, attrs.origin_latitude, attrs.siteLat].map(num).find(Number.isFinite);
+  const lon = [attrs.longitude, attrs.origin_longitude, attrs.siteLon].map(num).find(Number.isFinite);
+  if (lat === undefined || lon === undefined) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  if (lat === 0 && lon === 0) return null; // the viewer treats 0/0 as "unknown" too
+  return { lat, lon };
+}
+
+const EARTH_RADIUS_M = 6371008.8;
+
+/** Spherical destination point: start (lat, lon) deg, bearing deg clockwise from north, distance m. */
+export function destinationPoint(
+  lat: number,
+  lon: number,
+  bearingDeg: number,
+  distanceM: number,
+): [number, number] {
+  const rad = Math.PI / 180;
+  const phi1 = lat * rad;
+  const lam1 = lon * rad;
+  const theta = bearingDeg * rad;
+  const delta = distanceM / EARTH_RADIUS_M;
+  const sinPhi2 = Math.sin(phi1) * Math.cos(delta) + Math.cos(phi1) * Math.sin(delta) * Math.cos(theta);
+  const phi2 = Math.asin(Math.max(-1, Math.min(1, sinPhi2)));
+  const lam2 =
+    lam1 +
+    Math.atan2(
+      Math.sin(theta) * Math.sin(delta) * Math.cos(phi1),
+      Math.cos(delta) - Math.sin(phi1) * sinPhi2,
+    );
+  const lonOut = ((((lam2 / rad + 180) % 360) + 360) % 360) - 180;
+  return [lonOut, phi2 / rad];
+}
+
+/** Overlay feature coordinate -> GeoJSON [lon, lat]. */
+export function featureCoordToLonLat(
+  frame: 'polar' | 'xy',
+  a: number,
+  b: number,
+  site: { lat: number; lon: number },
+): [number, number] {
+  if (frame === 'xy') {
+    const dist = Math.hypot(a, b);
+    const bearing = (Math.atan2(a, b) * 180) / Math.PI; // x east, y north
+    return destinationPoint(site.lat, site.lon, bearing, dist);
+  }
+  return destinationPoint(site.lat, site.lon, a, b); // [azimuth_deg, range_m]
+}
+
+function csvCell(v: any): string {
+  if (v === null || v === undefined) return '';
+  let t: string;
+  if (typeof v === 'number') t = Number.isFinite(v) ? String(v) : '';
+  else if (typeof v === 'object') t = JSON.stringify(v);
+  else t = String(v);
+  return /[",\r\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
+}
+
+/** RFC 4180 CSV (CRLF line endings, quoted when needed) of a table block. */
+export function tableToCsv(columns: TableColumn[], rows: Record<string, any>[]): string {
+  const lines = [columns.map((c) => csvCell(c.key)).join(',')];
+  for (const row of rows) lines.push(columns.map((c) => csvCell(row[c.key])).join(','));
+  return lines.join('\r\n') + '\r\n';
+}
+
+type GeoJsonGeometry =
+  | { type: 'Point'; coordinates: [number, number] }
+  | { type: 'LineString'; coordinates: [number, number][] }
+  | { type: 'Polygon'; coordinates: [number, number][][] };
+
+/** GeoJSON FeatureCollection (WGS84 lon/lat) from a result's overlay features. */
+export function overlayToGeoJson(
+  res: ModuleResult,
+  site: { lat: number; lon: number },
+): { type: 'FeatureCollection'; features: any[] } {
+  // id -> merged row fields from every table block whose id_key matches
+  const rowsById = new Map<string, Record<string, any>>();
+  for (const b of res.blocks) {
+    if (b?.type !== 'table') continue;
+    const idKey = (b as any).id_key as string | undefined;
+    if (!idKey) continue;
+    for (const row of ((b as any).rows ?? []) as Record<string, any>[]) {
+      const v = row?.[idKey];
+      if (v === null || v === undefined) continue;
+      const id = String(v);
+      rowsById.set(id, { ...(rowsById.get(id) ?? {}), ...row });
+    }
+  }
+
+  const features: any[] = [];
+  for (const f of res.features) {
+    const pts = f.coords.map(([a, b]) => featureCoordToLonLat(f.frame, a, b, site));
+    let geometry: GeoJsonGeometry;
+    if (f.kind === 'point' || pts.length === 1) {
+      geometry = { type: 'Point', coordinates: pts[0] };
+    } else if (f.kind === 'polygon' && pts.length >= 3) {
+      const ring = [...pts];
+      const [fx, fy] = ring[0];
+      const [lx, ly] = ring[ring.length - 1];
+      if (fx !== lx || fy !== ly) ring.push([fx, fy]);
+      geometry = { type: 'Polygon', coordinates: [ring] };
+    } else {
+      geometry = { type: 'LineString', coordinates: pts };
+    }
+    const properties: Record<string, any> = { ...(rowsById.get(f.id) ?? {}) };
+    properties.id = f.id;
+    if (f.label !== null || properties.label === undefined) properties.label = f.label;
+    properties.module = res.module;
+    properties.sweep = res.sweep;
+    features.push({ type: 'Feature', id: f.id, properties, geometry });
+  }
+  return { type: 'FeatureCollection', features };
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^_+|_+$/g, '') || 'export';
+}
+
+function inTauri(): boolean {
+  return typeof window !== 'undefined' && !!(window as any).__TAURI_INTERNALS__;
+}
+
+/** Ask the sidecar to write a text file; resolves with the saved path. */
+function saveViaSidecar(path: string, content: string, overwrite: boolean): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (!wsManager.isConnected) {
+      reject(new Error('Sidecar not connected'));
+      return;
+    }
+    const cleanup = () => {
+      clearTimeout(timer);
+      offSaved();
+      offErr();
+    };
+    const offSaved = wsManager.onMessage('file_saved', (m) => {
+      cleanup();
+      resolve(String(m.path ?? path));
+    });
+    const offErr = wsManager.onMessage('error', (m) => {
+      cleanup();
+      reject(new Error(String(m.message ?? 'save failed')));
+    });
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error('No response from the sidecar'));
+    }, 20_000);
+    void wsManager.send({ type: 'save_text_file', path, content, overwrite });
+  });
+}
+
+function downloadBlob(filename: string, content: string, mime: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type: `${mime};charset=utf-8` }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * Save text via the Tauri save dialog + sidecar (atomic write), or a Blob download in a
+ * plain browser. Toasts the outcome; returns true on success, false on cancel/failure.
+ */
+export async function saveTextExport(
+  defaultName: string,
+  content: string,
+  kind: { label: string; ext: string; mime: string },
+): Promise<boolean> {
+  const filename = `${sanitizeFilename(defaultName)}.${kind.ext}`;
+  try {
+    if (inTauri()) {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const path = await save({
+        title: `Export ${kind.label}`,
+        defaultPath: filename,
+        filters: [{ name: kind.label, extensions: [kind.ext] }],
+      });
+      if (!path) return false; // cancelled
+      // The OS dialog already asked the user to confirm replacing an existing file.
+      const saved = await saveViaSidecar(path, content, true);
+      addToast('success', `Saved ${saved}`, 5000);
+      return true;
+    }
+    downloadBlob(filename, content, kind.mime);
+    addToast('success', `Downloaded ${filename}`, 4000);
+    return true;
+  } catch (err) {
+    addToast('error', `Export failed: ${err instanceof Error ? err.message : String(err)}`, 8000);
+    return false;
+  }
+}
+
+export function exportTableCsv(
+  moduleId: string,
+  res: ModuleResult,
+  block: { title?: string; columns: TableColumn[]; rows: Record<string, any>[] },
+): Promise<boolean> {
+  const csv = tableToCsv(block.columns ?? [], block.rows ?? []);
+  const name = `${moduleId}_sweep${res.sweep}_${block.title ?? 'table'}`;
+  return saveTextExport(name, csv, { label: 'CSV', ext: 'csv', mime: 'text/csv' });
+}
+
+export function exportOverlayGeoJson(moduleId: string, res: ModuleResult): Promise<boolean> {
+  const site = siteFromAttributes(get(radarData).attributes);
+  if (!site) {
+    addToast('error', 'Radar site location unknown: cannot georeference the overlay');
+    return Promise.resolve(false);
+  }
+  const fc = overlayToGeoJson(res, site);
+  const name = `${moduleId}_sweep${res.sweep}_overlay`;
+  return saveTextExport(name, JSON.stringify(fc), {
+    label: 'GeoJSON',
+    ext: 'geojson',
+    mime: 'application/geo+json',
+  });
 }
 
 // ── Running state ──────────────────────────────────────────────────────────
@@ -380,6 +865,10 @@ export function requestModules(reload = false): void {
 export function runModule(moduleId: string): void {
   const spec = get(modulesState).modules.find((m) => m.id === moduleId);
   if (!spec || get(runningModules)[moduleId]) return;
+  if (!spec.available) {
+    addToast('warning', `${spec.title}: ${spec.unavailable_reason ?? 'module unavailable'}`, 6000);
+    return;
+  }
 
   const values = get(moduleParams)[moduleId] ?? {};
   const params: Record<string, any> = {};
@@ -440,6 +929,9 @@ function handleModulesList(msg: any): void {
     params: Array.isArray(m.params) ? m.params : [],
     source: m.source,
     version: m.version,
+    needs: Array.isArray(m.needs) ? m.needs.map(String) : [],
+    available: m.available !== false,
+    unavailable_reason: typeof m.unavailable_reason === 'string' ? m.unavailable_reason : null,
   }));
 
   // Merge parameter values: declared defaults < saved < current session.
@@ -497,6 +989,14 @@ function handleModuleResult(msg: any): void {
     features: normaliseFeatures(blocks),
   };
   moduleResults.update((r) => ({ ...r, [id]: result }));
+  // Fields of the previous run are superseded; the new ones follow as binary payloads.
+  // (A field already on screen keeps its own entry until its replacement arrives.)
+  moduleFields.update((f) => {
+    const prefix = `${id}/`;
+    const next: Record<string, ModuleFieldEntry> = {};
+    for (const [k, v] of Object.entries(f)) if (!k.startsWith(prefix)) next[k] = v;
+    return next;
+  });
 
   // Previous selection may refer to a feature that no longer exists.
   const sel = get(selectedFeature);
@@ -505,6 +1005,17 @@ function handleModuleResult(msg: any): void {
   }
 
   addToast('success', `${moduleTitle(id)}: done in ${formatElapsed(result.elapsed_ms)}`, 3000);
+}
+
+function handleModuleField(entry: ModuleFieldEntry): void {
+  moduleFields.update((f) => ({ ...f, [fieldKey(entry.module, entry.name)]: entry }));
+  // A field already on screen is refreshed in place when its module is re-run.
+  const shown = get(displayedField);
+  if (shown && shown.module === entry.module && shown.name === entry.name) {
+    const next = buildDisplayedField(entry.module, entry.name, entry);
+    if (next && entry.sweep === get(selectedSweep)) displayedField.set(next);
+    else displayedField.set(null);
+  }
 }
 
 function handleModuleError(msg: any): void {
@@ -533,6 +1044,7 @@ export function initModules(): void {
   wsManager.onMessage('modules_list', handleModulesList);
   wsManager.onMessage('module_result', handleModuleResult);
   wsManager.onMessage('module_error', handleModuleError);
+  wsManager.onMessage('module_field_ready', handleModuleField);
   // A generic server error while a module is running would otherwise leave the
   // spinner up until the safety timeout (the toast is shown by wsManager).
   wsManager.onMessage('error', () => clearAllRunning());
@@ -554,6 +1066,8 @@ export function initModules(): void {
       return;
     }
     moduleResults.set({});
+    moduleFields.set({});
+    displayedField.set(null);
     selectedFeature.set(null);
     clearAllRunning();
   });
@@ -564,6 +1078,8 @@ export function initModules(): void {
     const has = d.variables.length > 0;
     if (hadVariables && !has) {
       moduleResults.set({});
+      moduleFields.set({});
+      displayedField.set(null);
       selectedFeature.set(null);
     }
     hadVariables = has;
