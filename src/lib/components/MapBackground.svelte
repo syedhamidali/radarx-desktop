@@ -2,12 +2,14 @@
   /**
    * MapBackground — renders slippy-map tiles on a canvas behind the radar PPI.
    *
-   * Uses CartoDB basemap tiles (dark/light) with no API key required.
-   * Tiles are fetched, cached, and painted in sync with the PPI view transform.
+   * Uses a keyless basemap provider (OpenStreetMap by default, see utils/basemaps.ts). Tiles are
+   * fetched through a small bounded loader (concurrency cap, LRU cache, exponential backoff and an
+   * offline circuit breaker) and painted in sync with the PPI view transform. The dark theme is a
+   * CSS filter on the tile canvas only.
    *
-   * It also draws the radar mosaic (a Web-Mercator PNG placed by its four corners) with
-   * the radar sites and range rings, between the base tiles and a labels-only tile layer,
-   * and shows a hover tooltip (value + per-radar contributions) while the mosaic view is on.
+   * The radar mosaic (a Web-Mercator PNG placed by its four corners) with the radar sites and
+   * range rings is drawn on a second, unfiltered canvas above the tiles, and a hover tooltip
+   * (value + per-radar contributions) is shown while the mosaic view is on.
    */
   import { onMount, onDestroy } from 'svelte';
   import { settings } from '../stores/settings';
@@ -19,6 +21,7 @@
     pixelToLatLon,
     radarToLatLon,
   } from '../utils/geoProjection';
+  import { resolveBasemap, basemapTileUrl } from '../utils/basemaps';
   import { mosaicLayer, mosaicProbe, probeMosaic, clearMosaicProbe, type MosaicLayer } from '../stores/mosaic';
 
   export let radarLat: number;
@@ -33,198 +36,366 @@
   /** Draw the basemap tiles (false when only the mosaic is wanted). */
   export let showTiles: boolean = true;
 
-  let canvasEl: HTMLCanvasElement;
+  let canvasEl: HTMLCanvasElement; // basemap tiles (CSS-filtered for the dark theme)
+  let mosaicCanvasEl: HTMLCanvasElement; // mosaic, sites, range rings: never filtered
   let ctx: CanvasRenderingContext2D | null = null;
-  let themeMode: 'dark' | 'light' | 'auto' = 'dark';
+  let mctx: CanvasRenderingContext2D | null = null;
   let rafId: number = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let rootEl: HTMLDivElement;
   let layer: MosaicLayer | null = null;
   $: layer = $mosaicLayer;
   $: mosaicShown = !!layer && layer.visible;
   $: probing = mosaicShown && !!layer?.view;
 
-  // Tile image cache: "kind/z/x/y" -> HTMLImageElement
+  $: basemap = resolveBasemap($settings.mapStyle, $settings.theme.mode);
+  $: provider = basemap.provider;
+  $: hasTiles = showTiles && !!provider.url;
+  const BASE_FILL = '#e9e8ee'; // shown under/instead of tiles; goes through the theme filter
+
+  // ── Tile cache, loader and failure handling ────────────────────────────────
+  // LRU cache of decoded tiles ("provider/z/x/y" -> image); a decoded 256x256 tile is ~256 KB.
   const tileCache = new Map<string, HTMLImageElement>();
-  const loadingTiles = new Set<string>();
+  const inflight = new Map<string, HTMLImageElement>();
+  const failures = new Map<string, { n: number; until: number }>();
   const TILE_SIZE = 256;
-  const MAX_CACHE = 512;
+  const MAX_CACHE = 192;
+  const MAX_INFLIGHT = 6;
+  const MAX_ATTEMPTS = 4;
+  const BACKOFF_MS = 2000; // doubles per attempt: 2 s, 4 s, 8 s
+  const OFFLINE_PAUSE_MS = 30000;
+  let wanted: { key: string; z: number; x: number; y: number }[] = [];
+  let consecutiveFails = 0;
+  let pausedUntil = 0;
+  let gen = 0; // bumped when the provider changes so stale loads are ignored
 
-  $: themeMode = $settings.theme.mode;
-
-  // Determine tile URL template based on theme
-  $: tileUrlBase =
-    themeMode === 'light'
-      ? 'https://a.basemaps.cartocdn.com/light_all'
-      : 'https://a.basemaps.cartocdn.com/dark_all';
+  $: if (provider) resetTiles(provider.id);
+  let lastProviderId = '';
+  function resetTiles(id: string) {
+    if (id === lastProviderId) return;
+    lastProviderId = id;
+    gen++;
+    for (const img of inflight.values()) img.src = '';
+    inflight.clear();
+    tileCache.clear();
+    failures.clear();
+    consecutiveFails = 0;
+    pausedUntil = 0;
+    scheduleRender();
+  }
 
   // Re-render whenever view params change
-  $: if (ctx && radarLat != null && radarLon != null) {
-    // Trigger reactive update on all view params
-    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, tileUrlBase, showTiles, layer);
+  $: if (ctx && mctx && radarLat != null && radarLon != null) {
+    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer);
     scheduleRender();
   }
 
   onMount(() => {
     ctx = canvasEl.getContext('2d');
+    mctx = mosaicCanvasEl.getContext('2d');
     scheduleRender();
   });
 
   onDestroy(() => {
     if (rafId) cancelAnimationFrame(rafId);
+    if (retryTimer) clearTimeout(retryTimer);
+    mosaicBuf = null;
+    gen++;
+    for (const img of inflight.values()) img.src = '';
+    inflight.clear();
+    tileCache.clear();
     detachProbe();
     clearMosaicProbe();
   });
 
   function scheduleRender() {
-    if (rafId) cancelAnimationFrame(rafId);
+    if (rafId) return;
     rafId = requestAnimationFrame(renderTiles);
   }
 
-  type TileKind = 'base' | 'labels';
-
-  function tileUrl(kind: TileKind, z: number, x: number, y: number): string {
-    const base = kind === 'base' ? tileUrlBase : tileUrlBase.replace(/(dark|light)_all$/, '$1_only_labels');
-    return `${base}/${z}/${x}/${y}.png`;
+  function tileKey(z: number, x: number, y: number): string {
+    return `${provider.id}/${z}/${x}/${y}`;
   }
 
-  function tileKey(kind: TileKind, z: number, x: number, y: number): string {
-    return `${kind}/${themeMode === 'light' ? 'l' : 'd'}/${z}/${x}/${y}`;
+  function cached(key: string): HTMLImageElement | null {
+    const img = tileCache.get(key);
+    if (!img) return null;
+    tileCache.delete(key); // LRU touch
+    tileCache.set(key, img);
+    return img;
   }
 
-  function loadTile(kind: TileKind, z: number, x: number, y: number): HTMLImageElement | null {
-    const key = tileKey(kind, z, x, y);
-    if (tileCache.has(key)) return tileCache.get(key)!;
-    if (loadingTiles.has(key)) return null;
+  /** Start queued loads for the tiles the last render wanted, nearest-to-centre first. */
+  function pump() {
+    const now = Date.now();
+    if (now < pausedUntil) {
+      armRetry(pausedUntil - now);
+      return;
+    }
+    let nextRetry = Infinity;
+    for (const t of wanted) {
+      if (inflight.size >= MAX_INFLIGHT) break;
+      if (tileCache.has(t.key) || inflight.has(t.key)) continue;
+      const f = failures.get(t.key);
+      if (f) {
+        if (f.n >= MAX_ATTEMPTS) continue;
+        if (f.until > now) {
+          nextRetry = Math.min(nextRetry, f.until - now);
+          continue;
+        }
+      }
+      startLoad(t.key, t.z, t.x, t.y);
+    }
+    if (nextRetry < Infinity) armRetry(nextRetry);
+  }
 
-    loadingTiles.add(key);
+  function armRetry(ms: number) {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      scheduleRender();
+    }, Math.max(50, ms));
+  }
+
+  function startLoad(key: string, z: number, x: number, y: number) {
+    const myGen = gen;
     const img = new Image();
-    img.crossOrigin = 'anonymous';
+    img.decoding = 'async';
+    inflight.set(key, img);
     img.onload = () => {
-      loadingTiles.delete(key);
-      // Evict oldest if cache too large
-      if (tileCache.size >= MAX_CACHE) {
+      if (myGen !== gen) return;
+      inflight.delete(key);
+      failures.delete(key);
+      consecutiveFails = 0;
+      while (tileCache.size >= MAX_CACHE) {
         const first = tileCache.keys().next().value;
-        if (first !== undefined) tileCache.delete(first);
+        if (first === undefined) break;
+        tileCache.delete(first);
       }
       tileCache.set(key, img);
       scheduleRender();
     };
     img.onerror = () => {
-      loadingTiles.delete(key);
+      if (myGen !== gen) return;
+      inflight.delete(key);
+      const n = (failures.get(key)?.n ?? 0) + 1;
+      failures.set(key, { n, until: Date.now() + BACKOFF_MS * 2 ** (n - 1) });
+      if (++consecutiveFails >= MAX_INFLIGHT) {
+        // Looks like we are offline or blocked: stop hitting the server for a while.
+        pausedUntil = Date.now() + OFFLINE_PAUSE_MS;
+        consecutiveFails = 0;
+        for (const f of failures.values()) f.n = Math.min(f.n, MAX_ATTEMPTS - 1);
+      }
+      scheduleRender();
     };
-    img.src = tileUrl(kind, z, x, y);
-    return null;
+    img.src = basemapTileUrl(provider, z, x, y);
   }
 
   function renderTiles() {
     rafId = 0;
-    if (!ctx || !canvasEl || radarLat == null || radarLon == null) return;
+    if (!ctx || !mctx || !canvasEl || radarLat == null || radarLon == null) return;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cw = containerWidth;
     const ch = containerHeight;
-    canvasEl.width = Math.round(cw * dpr);
-    canvasEl.height = Math.round(ch * dpr);
+    const pw = Math.round(cw * dpr);
+    const phh = Math.round(ch * dpr);
+    // Only resize when needed: assigning width/height reallocates and clears the canvas.
+    if (canvasEl.width !== pw || canvasEl.height !== phh) {
+      canvasEl.width = pw;
+      canvasEl.height = phh;
+    }
+    if (mosaicCanvasEl.width !== pw || mosaicCanvasEl.height !== phh) {
+      mosaicCanvasEl.width = pw;
+      mosaicCanvasEl.height = phh;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
-    ctx.globalAlpha = opacity;
+    mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    mctx.clearRect(0, 0, cw, ch);
 
-    const zoom = computeTileZoom(maxRange, scale, cw);
-
-    // Find the lat/lon bounds of the visible area by sampling screen corners
-    const corners: [number, number][] = [];
-    for (const px of [0, cw]) {
-      for (const py of [0, ch]) {
-        // Reverse-project screen pixel to data-space, then to lat/lon
-        const ndcX = (px / cw) * 2 - 1;
-        const ndcY = 1 - (py / ch) * 2;
-        const aspect = cw / ch;
-        const sx = (aspect >= 1 ? scale / aspect : scale) / maxRange;
-        const sy = (aspect >= 1 ? scale : scale * aspect) / maxRange;
-        const dataX = ndcX / sx - translateX;
-        const dataY = ndcY / sy - translateY;
-        // data-space to lat/lon (azimuthal equidistant)
-        const cosRadarLat = Math.cos(radarLat * (Math.PI / 180));
-        const lat = radarLat + (dataY / 6371000) * (180 / Math.PI);
-        const lon = radarLon + (dataX / (6371000 * cosRadarLat)) * (180 / Math.PI);
-        corners.push([lat, lon]);
-      }
-    }
-
-    // Get tile bounds
-    const lats = corners.map((c) => c[0]);
-    const lons = corners.map((c) => c[1]);
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons);
-    const maxLon = Math.max(...lons);
-
-    const topLeft = latLonToTile(maxLat, minLon, zoom);
-    const bottomRight = latLonToTile(minLat, maxLon, zoom);
-
-    const tileXMin = Math.max(0, Math.floor(topLeft.tx) - 1);
-    const tileXMax = Math.min(Math.pow(2, zoom) - 1, Math.ceil(bottomRight.tx) + 1);
-    const tileYMin = Math.max(0, Math.floor(topLeft.ty) - 1);
-    const tileYMax = Math.min(Math.pow(2, zoom) - 1, Math.ceil(bottomRight.ty) + 1);
-
-    const c = ctx;
     const project = (lat: number, lon: number): [number, number] =>
       latLonToPixel(lat, lon, radarLat, radarLon, maxRange, scale, translateX, translateY, cw, ch);
 
-    const drawTiles = (kind: TileKind) => {
-      for (let tx = tileXMin; tx <= tileXMax; tx++) {
-        for (let ty = tileYMin; ty <= tileYMax; ty++) {
-          const img = loadTile(kind, zoom, tx, ty);
-          if (!img) continue;
-
-          // Get the four corners of this tile in lat/lon
-          const [tlLat, tlLon] = tileToLatLon(tx, ty, zoom);
-          const [brLat, brLon] = tileToLatLon(tx + 1, ty + 1, zoom);
-
-          // Project tile corners to screen pixels
-          const [tlPx, tlPy] = project(tlLat, tlLon);
-          const [brPx, brPy] = project(brLat, brLon);
-
-          const drawW = brPx - tlPx;
-          const drawH = brPy - tlPy;
-
-          if (drawW > 0.5 && drawH > 0.5) {
-            c.drawImage(img, tlPx, tlPy, drawW, drawH);
-          }
-        }
-      }
-    };
-
-    if (showTiles) drawTiles('base');
+    if (hasTiles) drawBasemap(ctx, cw, ch, dpr, project);
 
     const lyr = layer;
     if (lyr && lyr.visible) {
-      c.globalAlpha = 1;
-      drawMosaic(c, lyr, dpr, project);
-      // Labels on top of the mosaic so place names stay readable
-      if (showTiles) {
-        c.globalAlpha = opacity;
-        drawTiles('labels');
-      }
-      c.globalAlpha = 1;
-      drawSites(c, lyr, project);
+      drawMosaic(mctx, lyr, dpr, project);
+      drawSites(mctx, lyr, project);
     }
+  }
 
-    ctx.globalAlpha = 1;
+  function drawBasemap(
+    c: CanvasRenderingContext2D,
+    cw: number,
+    ch: number,
+    dpr: number,
+    project: (lat: number, lon: number) => [number, number],
+  ) {
+    const zoom = Math.max(provider.minZoom, Math.min(provider.maxZoom, computeTileZoom(maxRange, scale, cw)));
+
+    // Lat/lon bounds of the visible area. Parallels curve and meridians converge on the screen, so
+    // sample a grid (not just the corners).
+    const lats: number[] = [];
+    const lons: number[] = [];
+    for (let i = 0; i <= 6; i++) {
+      for (let j = 0; j <= 6; j++) {
+        const [lat, lon] = pixelToLatLon(
+          (cw * i) / 6, (ch * j) / 6, radarLat, radarLon, maxRange, scale, translateX, translateY, cw, ch,
+        );
+        lats.push(lat);
+        lons.push(lon);
+      }
+    }
+    const maxLat = Math.min(85.05, Math.max(...lats));
+    const minLat = Math.max(-85.05, Math.min(...lats));
+    const minLon = Math.max(-180, Math.min(...lons));
+    const maxLon = Math.min(180, Math.max(...lons));
+    if (!(maxLat > minLat) || !(maxLon > minLon)) return;
+
+    const topLeft = latLonToTile(maxLat, minLon, zoom);
+    const bottomRight = latLonToTile(minLat, maxLon, zoom);
+    const n = Math.pow(2, zoom);
+    const tileXMin = Math.max(0, Math.floor(topLeft.tx));
+    const tileXMax = Math.min(n - 1, Math.floor(bottomRight.tx));
+    const tileYMin = Math.max(0, Math.floor(topLeft.ty));
+    const tileYMax = Math.min(n - 1, Math.floor(bottomRight.ty));
+    if (tileXMax - tileXMin > 24 || tileYMax - tileYMin > 24) return; // absurd extent: do not request
+
+    c.fillStyle = BASE_FILL;
+    c.fillRect(0, 0, cw, ch);
+
+    // Draw nearest-to-centre first so they also load first
+    const cx = (tileXMin + tileXMax) / 2;
+    const cy = (tileYMin + tileYMax) / 2;
+    const list: { key: string; z: number; x: number; y: number; d: number }[] = [];
+    for (let tx = tileXMin; tx <= tileXMax; tx++) {
+      for (let ty = tileYMin; ty <= tileYMax; ty++) {
+        list.push({ key: tileKey(zoom, tx, ty), z: zoom, x: tx, y: ty, d: (tx - cx) ** 2 + (ty - cy) ** 2 });
+      }
+    }
+    list.sort((a, b) => a.d - b.d);
+    wanted = list;
+
+    for (const t of list) {
+      // Prefer the exact tile; while it loads (or has failed), stretch a cached ancestor.
+      let img = cached(t.key);
+      let sx = 0;
+      let sy = 0;
+      let sw = TILE_SIZE;
+      if (!img) {
+        for (let k = 1; k <= 3 && t.z - k >= provider.minZoom; k++) {
+          const p = cached(tileKey(t.z - k, t.x >> k, t.y >> k));
+          if (p) {
+            img = p;
+            sw = TILE_SIZE / (1 << k);
+            sx = (t.x & ((1 << k) - 1)) * sw;
+            sy = (t.y & ((1 << k) - 1)) * sw;
+            break;
+          }
+        }
+      }
+      if (!img) continue;
+
+      // Tiles are Web Mercator while the screen is azimuthal equidistant about the radar, so a
+      // tile is drawn as a small mesh of affine cells (meridians converge, parallels curve).
+      const [, tlLon] = tileToLatLon(t.x, t.y, zoom);
+      const [, brLon] = tileToLatLon(t.x + 1, t.y + 1, zoom);
+      const [tlLat] = tileToLatLon(t.x, t.y, zoom);
+      const [brLat] = tileToLatLon(t.x, t.y + 1, zoom);
+      const [ax, ay] = project(tlLat, tlLon);
+      const [bx, by] = project(brLat, brLon);
+      if (Math.max(ax, bx) < -TILE_SIZE * 2 || Math.min(ax, bx) > cw + TILE_SIZE * 2) continue;
+      if (Math.max(ay, by) < -TILE_SIZE * 2 || Math.min(ay, by) > ch + TILE_SIZE * 2) continue;
+      const cells = Math.max(1, Math.min(8, Math.ceil(Math.max(Math.abs(bx - ax), Math.abs(by - ay)) / 64)));
+      drawMesh(
+        c, img, sx, sy, sw, sw, cells, cells,
+        (u) => tlLon + u * (brLon - tlLon),
+        (v) => tileToLatLon(t.x, t.y + v, zoom)[0],
+        project, dpr, cw, ch,
+      );
+    }
+    pump();
   }
 
   // ── Mosaic drawing ─────────────────────────────────────────────────────────
   const DEG = Math.PI / 180;
   const mercY = (lat: number) => Math.log(Math.tan(Math.PI / 4 + (lat * DEG) / 2));
   const invMercY = (y: number) => Math.atan(Math.sinh(y)) / DEG;
-  const MOSAIC_STRIPS = 64;
+  const MOSAIC_CELLS = 40;
 
   /**
-   * The PNG is uniform in Web Mercator (x linear in lon, y linear in mercator-y) and the
-   * screen mapping from (lon, lat) is affine and axis-aligned (local azimuthal-equidistant
-   * approximation), so every horizontal strip of the image maps to a screen rectangle. Strips
-   * share device-pixel-snapped edges: no hairline seams and no double blending of
-   * semi-transparent pixels. 64 strips keep the mercator non-linearity far below a pixel.
+   * Draw `img` (source rect sx,sy,sw,sh) warped onto the screen as an nx*ny mesh of affine cells.
+   * u,v in [0,1] across the source rect map to (lon, lat) through lonAt/latAt and then to the
+   * screen through `project`; each cell is the parallelogram through its top-left, top-right and
+   * bottom-left corners, which is exact to well under a pixel at ~64 px cells. Cells overlap by
+   * ~0.6 px on their right/bottom edges so no hairline seams show.
+   */
+  function drawMesh(
+    c: CanvasRenderingContext2D,
+    img: CanvasImageSource,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    nx: number,
+    ny: number,
+    lonAt: (u: number) => number,
+    latAt: (v: number) => number,
+    project: (lat: number, lon: number) => [number, number],
+    dpr: number,
+    cw: number,
+    ch: number,
+  ) {
+    const lons: number[] = [];
+    const lats: number[] = [];
+    for (let i = 0; i <= nx; i++) lons.push(lonAt(i / nx));
+    for (let j = 0; j <= ny; j++) lats.push(latAt(j / ny));
+    const pts: [number, number][][] = [];
+    for (let i = 0; i <= nx; i++) {
+      const col: [number, number][] = [];
+      for (let j = 0; j <= ny; j++) col.push(project(lats[j], lons[i]));
+      pts.push(col);
+    }
+    const cellW = sw / nx;
+    const cellH = sh / ny;
+    for (let i = 0; i < nx; i++) {
+      for (let j = 0; j < ny; j++) {
+        const p00 = pts[i][j];
+        const p10 = pts[i + 1][j];
+        const p01 = pts[i][j + 1];
+        const p11 = pts[i + 1][j + 1];
+        const minX = Math.min(p00[0], p10[0], p01[0], p11[0]);
+        const maxX = Math.max(p00[0], p10[0], p01[0], p11[0]);
+        const minY = Math.min(p00[1], p10[1], p01[1], p11[1]);
+        const maxY = Math.max(p00[1], p10[1], p01[1], p11[1]);
+        if (maxX < 0 || minX > cw || maxY < 0 || minY > ch) continue;
+        const ex = [p10[0] - p00[0], p10[1] - p00[1]];
+        const ey = [p01[0] - p00[0], p01[1] - p00[1]];
+        const pxPerSrcX = Math.hypot(ex[0], ex[1]) / cellW;
+        const pxPerSrcY = Math.hypot(ey[0], ey[1]) / cellH;
+        if (!(pxPerSrcX > 0) || !(pxPerSrcY > 0)) continue;
+        const padX = i < nx - 1 ? Math.min(0.6 / pxPerSrcX, cellW * 0.5) : 0;
+        const padY = j < ny - 1 ? Math.min(0.6 / pxPerSrcY, cellH * 0.5) : 0;
+        c.setTransform(
+          (dpr * ex[0]) / cellW, (dpr * ex[1]) / cellW,
+          (dpr * ey[0]) / cellH, (dpr * ey[1]) / cellH,
+          dpr * p00[0], dpr * p00[1],
+        );
+        c.drawImage(img, sx + i * cellW, sy + j * cellH, cellW + padX, cellH + padY, 0, 0, cellW + padX, cellH + padY);
+      }
+    }
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  let mosaicBuf: HTMLCanvasElement | null = null;
+
+  /**
+   * The PNG is uniform in Web Mercator (x linear in lon, y linear in mercator-y); it is drawn
+   * as a warped mesh so it lands on the same azimuthal-equidistant screen mapping as the tiles,
+   * sites and PPI. The mesh is composited at full alpha into a scratch canvas first so that
+   * the layer opacity is applied once (no double blending where cells overlap).
    */
   function drawMosaic(
     c: CanvasRenderingContext2D,
@@ -241,30 +412,34 @@
     const east = se[0];
     const yN = mercY(nw[1]);
     const yS = mercY(se[1]);
-    const snap = (v: number) => Math.round(v * dpr) / dpr;
+    const [x0, y0] = project(nw[1], west);
+    const [x1, y1] = project(se[1], east);
+    if (Math.max(x0, x1) < 0 || Math.min(x0, x1) > containerWidth) return;
+    if (Math.max(y0, y1) < 0 || Math.min(y0, y1) > containerHeight) return;
+    const ext = Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0));
+    const n = Math.max(4, Math.min(MOSAIC_CELLS, Math.ceil(ext / 48)));
 
-    const [x0raw] = project(nw[1], west);
-    const [x1raw] = project(nw[1], east);
-    const dx0 = snap(x0raw);
-    const dx1 = snap(x1raw);
-    if (!(dx1 - dx0 > 0)) return;
-
-    c.save();
-    c.globalAlpha = lyr.opacity;
-    c.imageSmoothingEnabled = true;
-    let prevY = snap(project(invMercY(yN), west)[1]);
-    for (let k = 0; k < MOSAIC_STRIPS; k++) {
-      const v1 = (k + 1) / MOSAIC_STRIPS;
-      const y1 = snap(project(invMercY(yN + v1 * (yS - yN)), west)[1]);
-      const top = Math.min(prevY, y1);
-      const h = Math.abs(y1 - prevY);
-      const sy0 = (k / MOSAIC_STRIPS) * H;
-      const sh = H / MOSAIC_STRIPS;
-      prevY = y1;
-      if (h <= 0) continue;
-      if (top > containerHeight || top + h < 0 || dx1 < 0 || dx0 > containerWidth) continue;
-      c.drawImage(img, 0, sy0, W, sh, dx0, top, dx1 - dx0, h);
+    if (!mosaicBuf) mosaicBuf = document.createElement('canvas');
+    if (mosaicBuf.width !== c.canvas.width || mosaicBuf.height !== c.canvas.height) {
+      mosaicBuf.width = c.canvas.width;
+      mosaicBuf.height = c.canvas.height;
     }
+    const b = mosaicBuf.getContext('2d');
+    if (!b) return;
+    b.setTransform(1, 0, 0, 1, 0, 0);
+    b.clearRect(0, 0, mosaicBuf.width, mosaicBuf.height);
+    b.setTransform(dpr, 0, 0, dpr, 0, 0);
+    b.imageSmoothingEnabled = true;
+    drawMesh(
+      b, img, 0, 0, W, H, n, n,
+      (u) => west + u * (east - west),
+      (v) => invMercY(yN + v * (yS - yN)),
+      project, dpr, containerWidth, containerHeight,
+    );
+    c.save();
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.globalAlpha = lyr.opacity;
+    c.drawImage(mosaicBuf, 0, 0);
     c.restore();
   }
 
@@ -402,10 +577,15 @@
 <canvas
   bind:this={canvasEl}
   class="map-background-canvas"
+  style="filter: {basemap.filter}; opacity: {opacity}"
   aria-hidden="true"
 ></canvas>
+<canvas bind:this={mosaicCanvasEl} class="map-background-canvas mosaic-canvas" aria-hidden="true"></canvas>
 
 <div class="mosaic-root" bind:this={rootEl}>
+  {#if hasTiles && provider.attribution}
+    <div class="map-attribution" title={provider.attributionUrl ?? ''}>{provider.attribution}</div>
+  {/if}
   {#if probing && layer}
     <div class="mosaic-legend" aria-label="Mosaic legend">
       <span class="legend-title">{layer.variable}</span>
@@ -442,6 +622,20 @@
     height: 100%;
     z-index: 0;
     pointer-events: none;
+  }
+
+  .map-attribution {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    padding: 1px 6px;
+    font-size: 10px;
+    line-height: 1.4;
+    color: #333;
+    background: rgba(255, 255, 255, 0.75);
+    border-top-left-radius: 3px;
+    pointer-events: none;
+    user-select: none;
   }
 
   .mosaic-root {

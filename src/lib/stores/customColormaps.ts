@@ -4,6 +4,14 @@
 import { writable, get } from 'svelte/store';
 import { registerColormap, unregisterColormap, COLORMAP_DATA } from '../utils/colormaps';
 
+/** Names of the built-in colormaps (snapshot taken before any custom map is registered). */
+const BUILTIN_NAMES = new Set(Object.keys(COLORMAP_DATA));
+
+/** True if `name` belongs to a built-in colormap that a custom map must not replace. */
+export function isBuiltinColormapName(name: string): boolean {
+  return BUILTIN_NAMES.has(name);
+}
+
 // ─── Types ─────────────────────────────────────────────────────────────
 
 export interface ColorStop {
@@ -76,10 +84,42 @@ export function interpolateColormap(
 
 const STORAGE_KEY = 'xradar-custom-colormaps';
 
+/** Validate/normalise untrusted colormap JSON (import or localStorage); null if unusable. */
+function sanitizeColormap(parsed: any): CustomColormap | null {
+  if (!parsed || typeof parsed.name !== 'string' || !parsed.name.trim()) return null;
+  if (!Array.isArray(parsed.stops) || parsed.stops.length < 2) return null;
+  const stops: ColorStop[] = [];
+  for (const s of parsed.stops) {
+    const pos = Number(s?.position);
+    const col = Array.isArray(s?.color) ? s.color.slice(0, 3).map(Number) : [];
+    if (!Number.isFinite(pos) || col.length !== 3 || col.some((v: number) => !Number.isFinite(v))) return null;
+    stops.push({
+      position: Math.max(0, Math.min(1, pos)),
+      color: col.map((v: number) => Math.max(0, Math.min(255, Math.round(v)))) as [number, number, number],
+    });
+  }
+  const steps = Math.round(Number(parsed.discreteSteps));
+  return {
+    name: parsed.name.trim().slice(0, 48),
+    stops,
+    isReversed: !!parsed.isReversed,
+    isDiscrete: !!parsed.isDiscrete,
+    discreteSteps: Number.isFinite(steps) ? Math.max(2, Math.min(256, steps)) : 16,
+  };
+}
+
 function loadFromStorage(): CustomColormap[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        // Drop corrupt entries and any that shadow a built-in colormap.
+        return parsed
+          .map(sanitizeColormap)
+          .filter((c): c is CustomColormap => !!c && !BUILTIN_NAMES.has(c.name));
+      }
+    }
   } catch { /* ignore */ }
   return [];
 }
@@ -101,8 +141,12 @@ initial.forEach((cm) => {
   registerColormap(cm.name, rgb);
 });
 
-/** Add or update a custom colormap. */
-export function saveCustomColormap(cm: CustomColormap): void {
+/**
+ * Add or update a custom colormap. Returns false (and changes nothing) if the name is empty or
+ * belongs to a built-in colormap, which would otherwise be overwritten (and lost on delete).
+ */
+export function saveCustomColormap(cm: CustomColormap): boolean {
+  if (!cm.name.trim() || BUILTIN_NAMES.has(cm.name)) return false;
   const rgb = interpolateColormap(cm.stops, 256, cm.isReversed, cm.isDiscrete, cm.discreteSteps);
   registerColormap(cm.name, rgb);
 
@@ -117,10 +161,12 @@ export function saveCustomColormap(cm: CustomColormap): void {
     saveToStorage(next);
     return next;
   });
+  return true;
 }
 
 /** Delete a custom colormap by name. */
 export function deleteCustomColormap(name: string): void {
+  if (BUILTIN_NAMES.has(name)) return;
   unregisterColormap(name);
   customColormaps.update((list) => {
     const next = list.filter((c) => c.name !== name);
@@ -142,28 +188,8 @@ export function exportColormapJSON(cm: CustomColormap): string {
 /** Import a colormap from a JSON string, returns null on error. */
 export function importColormapJSON(json: string): CustomColormap | null {
   try {
-    const parsed = JSON.parse(json);
-    if (
-      typeof parsed.name === 'string' &&
-      Array.isArray(parsed.stops) &&
-      parsed.stops.length >= 2
-    ) {
-      const cm: CustomColormap = {
-        name: parsed.name,
-        stops: parsed.stops.map((s: any) => ({
-          position: Math.max(0, Math.min(1, Number(s.position))),
-          color: [
-            Math.max(0, Math.min(255, Math.round(Number(s.color[0])))),
-            Math.max(0, Math.min(255, Math.round(Number(s.color[1])))),
-            Math.max(0, Math.min(255, Math.round(Number(s.color[2])))),
-          ] as [number, number, number],
-        })),
-        isReversed: !!parsed.isReversed,
-        isDiscrete: !!parsed.isDiscrete,
-        discreteSteps: parsed.discreteSteps ?? 16,
-      };
-      return cm;
-    }
-  } catch { /* ignore */ }
-  return null;
+    return sanitizeColormap(JSON.parse(json));
+  } catch {
+    return null;
+  }
 }

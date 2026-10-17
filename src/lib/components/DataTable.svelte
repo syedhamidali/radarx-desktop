@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { wsManager } from '../utils/websocket';
+  import { portal } from '../utils/portal';
   import { selectedVariable, selectedSweep, radarData } from '../stores/radarData';
 
   let { visible = $bindable(false) }: { visible?: boolean } = $props();
@@ -56,11 +57,63 @@
   const sweep = $derived($selectedSweep);
   const data = $derived($radarData);
 
+  // NEXRAD stores "no echo" reflectivity as -33 dBZ (a real number, not NaN) and some writers use
+  // -9999: both are no-data, not measurements. Treating them as values flattened the colour scale
+  // and made "Hide NaN" do nothing.
+  const NODATA_FLOOR_DBZ = -33;
+  const reflectivityLike = $derived(/^(dbz|reflectivity|corrected_reflectivity|total_power)/i.test(variable ?? ''));
+  function isNoData(v: number | null | undefined): boolean {
+    if (v === null || v === undefined || isNaN(v) || v === -9999) return true;
+    return reflectivityLike && v <= NODATA_FLOOR_DBZ;
+  }
+
+  // The sidecar returns one window of the sweep at a time (rays x gates).
+  const AZ_PAGE = 100;
+  const RNG_PAGE = 100;
+  let lastKey = '';
+
   $effect(() => {
     if (visible && variable && data.variables.length > 0) {
+      const key = `${data.filePath}|${variable}|${sweep}`;
+      untrack(() => {
+        if (key !== lastKey) {
+          // New file / variable / sweep: start from the first window, drop selection from the old one
+          lastKey = key;
+          windowAzStart = 0;
+          windowAzEnd = AZ_PAGE;
+          windowRangeStart = 0;
+          windowRangeEnd = RNG_PAGE;
+          clearSelection();
+        }
+      });
       requestDataWindow();
     }
   });
+
+  function clearSelection() {
+    selectedCell = null;
+    dragStart = null;
+    dragEnd = null;
+    searchResults = [];
+    searchResultIdx = -1;
+    sortCol = null;
+  }
+
+  function moveWindow(axis: 'az' | 'rng', start: number) {
+    const total = axis === 'az' ? totalAz : totalRange;
+    const page = axis === 'az' ? AZ_PAGE : RNG_PAGE;
+    const s = Math.max(0, Math.min(Math.max(0, total - page), Math.round(start) || 0));
+    if (axis === 'az') {
+      if (s === windowAzStart) return;
+      windowAzStart = s;
+      windowAzEnd = s + page;
+    } else {
+      if (s === windowRangeStart) return;
+      windowRangeStart = s;
+      windowRangeEnd = s + page;
+    }
+    clearSelection();
+  }
 
   // Computed display data (with filters and sort applied)
   const displayRows = $derived(computeDisplayRows(values, azimuths, ranges, hideNanRows, hideNanCols, sortCol, sortAsc));
@@ -88,14 +141,17 @@
       values: vals[i] || [],
     }));
     if (hideNan) {
-      rows = rows.filter(r => r.values.some(v => v !== null && !isNaN(v) && v !== -9999));
+      rows = rows.filter(r => r.values.some(v => !isNoData(v)));
     }
     if (sCol !== null && sCol >= 0 && sCol < (rng.length || 0)) {
       const colIdx = sCol;
+      // No-data cells always sort last, whichever the direction
       rows.sort((a, b) => {
-        const va = a.values[colIdx] ?? -Infinity;
-        const vb = b.values[colIdx] ?? -Infinity;
-        return sAsc ? va - vb : vb - va;
+        const na = isNoData(a.values[colIdx]);
+        const nb = isNoData(b.values[colIdx]);
+        if (na || nb) return na === nb ? 0 : na ? 1 : -1;
+        const d = a.values[colIdx] - b.values[colIdx];
+        return sAsc ? d : -d;
       });
     }
     return rows;
@@ -105,10 +161,7 @@
     if (!rng.length) return [];
     let indices = rng.map((_, i) => i);
     if (hideNanC && vals.length > 0) {
-      indices = indices.filter(ci => vals.some(row => {
-        const v = row[ci];
-        return v !== null && !isNaN(v) && v !== -9999;
-      }));
+      indices = indices.filter(ci => vals.some(row => !isNoData(row[ci])));
     }
     return indices;
   }
@@ -156,11 +209,12 @@
       values = msg.values || [];
       totalAz = msg.total_az || azimuths.length;
       totalRange = msg.total_range || ranges.length;
-      statusText = `${azimuths.length} azimuths x ${ranges.length} range gates`;
+      statusText = `Rays ${windowAzStart + 1}-${windowAzStart + azimuths.length} of ${totalAz} | Gates ${windowRangeStart + 1}-${windowRangeStart + ranges.length} of ${totalRange}`;
     });
   });
 
   onDestroy(() => {
+    window.removeEventListener('mouseup', onCellMouseUp);
     if (unsubDataTable) unsubDataTable();
   });
 
@@ -174,7 +228,7 @@
     const ci = displayCols[colIdx];
     if (ci === undefined) return '';
     const v = row.values[ci];
-    if (v === null || v === undefined || isNaN(v) || v === -9999) return 'NaN';
+    if (isNoData(v)) return v !== null && v !== undefined && !isNaN(v) && v !== -9999 ? 'no echo' : 'NaN';
     return v.toFixed(2);
   }
 
@@ -190,7 +244,7 @@
     outer:
     for (const row of vals) {
       for (const x of row) {
-        if (x === null || x === undefined || isNaN(x) || x === -9999) continue;
+        if (isNoData(x)) continue;
         if (x < min) min = x;
         if (x > max) max = x;
         if (++n >= 1000) break outer;
@@ -203,7 +257,7 @@
     const ci = displayCols[colIdx];
     if (ci === undefined) return 'transparent';
     const v = row.values[ci];
-    if (v === null || v === undefined || isNaN(v) || v === -9999) return 'transparent';
+    if (isNoData(v)) return 'transparent';
     // Simple blue-to-red colormap based on position in data range
     const { min, max, hasData } = colorRange;
     if (!hasData) return 'transparent';
@@ -224,11 +278,15 @@
     const v = row.values[ci];
     const az = row.azimuth;
     const rng = ranges[ci];
-    statusText = `Az: ${az?.toFixed(2)}deg | Range: ${(rng / 1000)?.toFixed(2)} km | Value: ${v === -9999 || isNaN(v) ? 'NaN' : v?.toFixed(4)}`;
+    statusText = `Az: ${az?.toFixed(2)}deg | Range: ${(rng / 1000)?.toFixed(2)} km | Value: ${isNoData(v) ? (v === -9999 || v === null || isNaN(v) ? 'NaN' : `${v} (no echo)`) : v?.toFixed(4)}`;
   }
 
   function onCellMouseDown(rowIdx: number, colIdx: number, e: MouseEvent) {
     if (e.button !== 0) return;
+    // No text selection / native drag while rubber-banding cells, and finish the selection even if
+    // the button is released outside the grid (otherwise the drag stays "stuck" on).
+    e.preventDefault();
+    window.addEventListener('mouseup', onCellMouseUp, { once: true });
     isDragging = true;
     dragStart = { row: rowIdx, col: colIdx };
     dragEnd = { row: rowIdx, col: colIdx };
@@ -268,13 +326,13 @@
       for (let c = c1; c <= c2; c++) {
         const ci = displayCols[c];
         const v = row.values[ci];
-        if (v !== null && v !== undefined && !isNaN(v) && v !== -9999) {
+        if (!isNoData(v)) {
           vals.push(v);
         }
       }
     }
     if (vals.length === 0) {
-      statusText = `Selection: ${r2 - r1 + 1} x ${c2 - c1 + 1} — all NaN`;
+      statusText = `Selection: ${r2 - r1 + 1} x ${c2 - c1 + 1} | no valid values`;
       return;
     }
     const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
@@ -319,7 +377,7 @@
       for (let c = 0; c < displayCols.length; c++) {
         const ci = displayCols[c];
         const v = row.values[ci];
-        if (v !== null && !isNaN(v) && v !== -9999 && v >= minV && v <= maxV) {
+        if (!isNoData(v) && v >= minV && v <= maxV) {
           searchResults.push({ row: r, col: c });
         }
       }
@@ -351,14 +409,79 @@
     containerEl.scrollLeft = cell.col * COL_WIDTH;
   }
 
+  /** Selected cell range as [r1, r2, c1, c2] in display indices, or null. */
+  function selectionBounds(): [number, number, number, number] | null {
+    if (dragStart && dragEnd) {
+      return [
+        Math.min(dragStart.row, dragEnd.row), Math.max(dragStart.row, dragEnd.row),
+        Math.min(dragStart.col, dragEnd.col), Math.max(dragStart.col, dragEnd.col),
+      ];
+    }
+    if (selectedCell) return [selectedCell.row, selectedCell.row, selectedCell.col, selectedCell.col];
+    return null;
+  }
+
+  /** Tab-separated copy of the selection (azimuth column + range header in km), NaN as empty. */
+  function selectionTSV(): string {
+    const b = selectionBounds();
+    if (!b) return '';
+    const [r1, r2, c1, c2] = b;
+    const head = ['azimuth_deg \\ range_km'];
+    for (let c = c1; c <= c2; c++) head.push((ranges[displayCols[c]] / 1000).toFixed(3));
+    const lines = [head.join('\t')];
+    for (let r = r1; r <= r2; r++) {
+      const row = displayRows[r];
+      if (!row) continue;
+      const cells = [row.azimuth.toFixed(2)];
+      for (let c = c1; c <= c2; c++) {
+        const v = row.values[displayCols[c]];
+        cells.push(v === null || v === undefined || isNaN(v) || v === -9999 ? '' : String(v)); // raw values, no-echo kept
+      }
+      lines.push(cells.join('\t'));
+    }
+    return lines.join('\n');
+  }
+
+  async function copySelection() {
+    const text = selectionTSV();
+    if (!text) {
+      statusText = 'Select cells first (click or drag), then copy';
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      const b = selectionBounds()!;
+      statusText = `Copied ${b[1] - b[0] + 1} x ${b[3] - b[2] + 1} cells to the clipboard`;
+    } catch {
+      statusText = 'Copy failed: clipboard access was denied';
+    }
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    if (!visible) return;
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      close();
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c') {
+      // Leave copying alone while a text input (search box) has the caret
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+      e.preventDefault();
+      copySelection();
+    }
+  }
+
   function close() {
     visible = false;
   }
 </script>
 
+<svelte:window on:keydown={onKeydown} />
+
 {#if visible}
-<div class="data-table-overlay" on:click|self={close}>
-  <div class="data-table-panel">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="data-table-overlay" use:portal on:click|self={close}>
+  <div class="data-table-panel" role="dialog" aria-modal="true" aria-label="Data table">
     <div class="dt-header">
       <div class="dt-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -388,6 +511,22 @@
         <input type="checkbox" bind:checked={hideNanCols} />
         <span>Hide NaN cols</span>
       </label>
+      <div class="dt-separator"></div>
+      <div class="dt-pager" title="The table shows one {AZ_PAGE} x {RNG_PAGE} window of the sweep at a time">
+        <span class="dt-search-dash">Ray</span>
+        <button class="dt-btn-sm" on:click={() => moveWindow('az', windowAzStart - AZ_PAGE)} disabled={windowAzStart <= 0} title="Previous {AZ_PAGE} rays" aria-label="Previous rays">&lsaquo;</button>
+        <input class="dt-search-input" type="number" min="0" max={Math.max(0, totalAz - 1)}
+               value={windowAzStart} aria-label="First ray index"
+               on:change={(e) => moveWindow('az', Number(e.currentTarget.value))} />
+        <button class="dt-btn-sm" on:click={() => moveWindow('az', windowAzStart + AZ_PAGE)} disabled={windowAzStart + AZ_PAGE >= totalAz} title="Next {AZ_PAGE} rays" aria-label="Next rays">&rsaquo;</button>
+        <span class="dt-search-dash">Gate</span>
+        <button class="dt-btn-sm" on:click={() => moveWindow('rng', windowRangeStart - RNG_PAGE)} disabled={windowRangeStart <= 0} title="Previous {RNG_PAGE} gates" aria-label="Previous gates">&lsaquo;</button>
+        <input class="dt-search-input" type="number" min="0" max={Math.max(0, totalRange - 1)}
+               value={windowRangeStart} aria-label="First gate index"
+               on:change={(e) => moveWindow('rng', Number(e.currentTarget.value))} />
+        <button class="dt-btn-sm" on:click={() => moveWindow('rng', windowRangeStart + RNG_PAGE)} disabled={windowRangeStart + RNG_PAGE >= totalRange} title="Next {RNG_PAGE} gates" aria-label="Next gates">&rsaquo;</button>
+      </div>
+      <button class="dt-btn-sm" on:click={copySelection} title="Copy selected cells as tab-separated text (Ctrl/Cmd+C)">Copy</button>
       <div class="dt-separator"></div>
       <div class="dt-search">
         <input type="text" placeholder="Min" bind:value={searchMin} class="dt-search-input" />
@@ -454,7 +593,6 @@
           class="dt-scroll-area"
           bind:this={containerEl}
           on:scroll={onScroll}
-          on:mouseup={onCellMouseUp}
           style="top: {HEADER_HEIGHT}px; left: {ROW_HEADER_WIDTH}px;"
         >
           <div class="dt-scroll-content" style="width: {totalContentWidth}px; height: {totalContentHeight}px;">
@@ -468,6 +606,7 @@
                     class="dt-cell"
                     class:selected={isCellSelected(rowIdx, colIdx)}
                     class:search-hit={isCellSearchResult(rowIdx, colIdx)}
+                    class:nodata={isNoData(row.values[displayCols[colIdx]])}
                     style="
                       left: {colIdx * COL_WIDTH}px;
                       top: {rowIdx * ROW_HEIGHT}px;
@@ -552,6 +691,7 @@
     justify-content: center;
     width: 28px;
     height: 28px;
+    padding: 0; /* the global button padding would squeeze the icon to 2px */
     background: transparent;
     border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
     border-radius: var(--radius-sm, 4px);
@@ -597,6 +737,18 @@
     background: var(--glass-border, rgba(255, 255, 255, 0.08));
   }
 
+  .dt-pager {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+  }
+
+  .dt-btn-sm:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
   .dt-search {
     display: flex;
     align-items: center;
@@ -631,6 +783,7 @@
   }
 
   .dt-btn-sm {
+    height: auto;
     padding: 2px 8px;
     font-size: 10px;
     background: rgba(91, 108, 247, 0.1);
@@ -776,6 +929,11 @@
 
   .dt-scroll-content {
     position: relative;
+  }
+
+  .dt-cell.nodata {
+    color: var(--text-muted, #8b949e);
+    opacity: 0.7;
   }
 
   .dt-cell {

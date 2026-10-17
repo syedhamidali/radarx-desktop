@@ -15,6 +15,7 @@
   let actualPosition = position;
 
   function enter() {
+    if (timeoutId) clearTimeout(timeoutId); // focus after hover must not leave a stray timer
     timeoutId = setTimeout(() => {
       show = true;
       requestAnimationFrame(reposition);
@@ -82,8 +83,10 @@
   bind:this={wrapper}
   on:mouseenter={enter}
   on:mouseleave={leave}
-  on:focus={enter}
-  on:blur={leave}
+  on:focusin={enter}
+  on:focusout={leave}
+  on:mousedown={leave}
+  on:keydown={(e) => { if (e.key === 'Escape') leave(); }}
 >
   <slot />
 </div>
@@ -91,6 +94,7 @@
 {#if show && (text || shortcut)}
   <div
     class="tooltip-popup tooltip-{actualPosition}"
+    role="tooltip"
     style={tooltipStyle}
     bind:this={tooltipEl}
     transition:fade={{ duration: 120 }}

@@ -62,6 +62,13 @@
     currY = Math.max(0, Math.min(canvasHeight, e.clientY - rect.top));
   }
 
+  function onkeydown(e: KeyboardEvent) {
+    if (dragging && e.key === 'Escape') {
+      e.stopPropagation();
+      dragging = false; // cancel without emitting a region
+    }
+  }
+
   function onmouseup() {
     if (!dragging) return;
     dragging = false;
@@ -73,6 +80,8 @@
     onboxselected?.({ xMin, xMax, yMin, yMax });
   }
 </script>
+
+<svelte:window onkeydown={onkeydown} />
 
 {#if active}
   <!-- svelte-ignore a11y_no_static_element_interactions -->

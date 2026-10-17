@@ -36,7 +36,12 @@
 </script>
 
 {#if visible}
-  <div class="measure-toolbar" class:has-result={!!activeResult}>
+  <!-- The toolbar sits inside the viewer canvas: keep its clicks from also adding measurement
+       points, starting a pan or resetting the zoom on double-click. -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="measure-toolbar" class:has-result={!!activeResult}
+       on:click|stopPropagation on:dblclick|stopPropagation
+       on:mousedown|stopPropagation on:contextmenu|stopPropagation>
     <!-- Measurement tools -->
     <div class="toolbar-section">
       <span class="section-label">Measure</span>
@@ -156,7 +161,7 @@
     align-items: center;
     gap: 6px;
     padding: 5px 8px;
-    background: rgba(13, 16, 32, 0.88);
+    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     backdrop-filter: blur(16px);
@@ -243,10 +248,19 @@
     color: var(--accent-primary);
   }
 
+  /* Below the bar rather than inline: inline it made the bar ~220 px wider and covered the
+     range/azimuth readout at the viewer's top-left on narrow windows. */
   .toolbar-hint {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 50%;
+    transform: translateX(-50%);
+    padding: 2px 8px;
     font-size: 10px;
-    color: var(--text-muted);
-    margin-left: 4px;
+    color: var(--text-secondary);
+    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
+    border-radius: var(--radius-sm);
     font-style: italic;
+    pointer-events: none;
   }
 </style>

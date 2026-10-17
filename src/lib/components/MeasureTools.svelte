@@ -1,6 +1,7 @@
 <script lang="ts">
   import {
     annotationsStore,
+    visibleMeasurements,
     type DataPoint,
     type Measurement,
     distanceKm,
@@ -15,7 +16,7 @@
   export let containerWidth: number;
   export let containerHeight: number;
 
-  $: measurements = $annotationsStore.measurements;
+  $: measurements = $visibleMeasurements;
   $: pendingPoints = $annotationsStore.pendingPoints;
   $: measureMode = $annotationsStore.measureMode;
 
@@ -118,6 +119,18 @@
     overflow: visible;
   }
 
+  .measure-overlay {
+    --halo: rgba(8, 10, 20, 0.8);
+  }
+  :global(.theme-light) .measure-overlay {
+    --halo: rgba(255, 255, 255, 0.88);
+  }
+  @media (prefers-color-scheme: light) {
+    :global(.theme-auto) .measure-overlay {
+      --halo: rgba(255, 255, 255, 0.88);
+    }
+  }
+
   .measure-line {
     fill: none;
     stroke: var(--accent-primary, #5b6cf7);
@@ -157,7 +170,7 @@
     font-size: 11px;
     text-anchor: middle;
     paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.85);
+    stroke: var(--halo);
     stroke-width: 3px;
     stroke-linejoin: round;
   }

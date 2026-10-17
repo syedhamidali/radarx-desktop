@@ -105,6 +105,9 @@
   // Cardinal directions — placed at 95% of maxRange from radar center
   const cardinals = $derived((() => {
     const dist = maxRange * 0.95;
+    // Keep each label on screen: zoomed in, the 95%-range spot is far outside the viewport.
+    const clampX = (v: number) => Math.min(Math.max(v, 16), Math.max(16, containerWidth - 16));
+    const clampY = (v: number) => Math.min(Math.max(v, 16), Math.max(16, containerHeight - 16));
     return [
       { label: 'N', az: 0 },
       { label: 'E', az: 90 },
@@ -123,7 +126,7 @@
       const ndcY = (dataY + translateY) * sy;
       const px = ((ndcX + 1) / 2) * containerWidth;
       const py = ((1 - ndcY) / 2) * containerHeight;
-      return { ...d, px, py };
+      return { ...d, px: clampX(px), py: clampY(py) };
     });
   })());
 
@@ -235,6 +238,18 @@
     overflow: hidden;
   }
 
+  .geo-overlay {
+    --halo: rgba(8, 10, 20, 0.8);
+  }
+  :global(.theme-light) .geo-overlay {
+    --halo: rgba(255, 255, 255, 0.88);
+  }
+  @media (prefers-color-scheme: light) {
+    :global(.theme-auto) .geo-overlay {
+      --halo: rgba(255, 255, 255, 0.88);
+    }
+  }
+
   .geo-svg {
     position: absolute;
     inset: 0;
@@ -261,9 +276,8 @@
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     font-weight: 700;
-    text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
-    paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.7);
+        paint-order: stroke;
+    stroke: var(--halo);
     stroke-width: 3px;
   }
 
@@ -275,7 +289,7 @@
     font-weight: 700;
     letter-spacing: 0.05em;
     paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.8);
+    stroke: var(--halo);
     stroke-width: 3px;
   }
 
@@ -287,7 +301,7 @@
     font-weight: 500;
     opacity: 0.7;
     paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.7);
+    stroke: var(--halo);
     stroke-width: 2px;
   }
 
@@ -306,7 +320,7 @@
     font-weight: 500;
     opacity: 0.85;
     paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.7);
+    stroke: var(--halo);
     stroke-width: 2.5px;
   }
 </style>

@@ -112,8 +112,11 @@ export function pixelToLatLon(
 }
 
 /**
- * Geographic to radar data-space (x = east meters, y = north meters).
- * Uses azimuthal equidistant approximation.
+ * Geographic to radar data-space (x = east meters, y = north meters): the spherical azimuthal
+ * equidistant projection centred on the radar. This is the projection the PPI itself is drawn
+ * in (x = r sin az, y = r cos az), so overlays, tiles and measurements registered through it
+ * line up with the echoes at any range. (A flat dLat/dLon approximation drifts by ~1 km at
+ * 100 km and ~9 km at 300 km off-axis.)
  */
 export function latLonToDataSpace(
   lat: number,
@@ -121,18 +124,24 @@ export function latLonToDataSpace(
   radarLat: number,
   radarLon: number,
 ): [number, number] {
-  const dLat = (lat - radarLat) * DEG2RAD;
+  const phi = lat * DEG2RAD;
+  const phi0 = radarLat * DEG2RAD;
   const dLon = (lon - radarLon) * DEG2RAD;
-  const cosRadarLat = Math.cos(radarLat * DEG2RAD);
-
-  // East-North in meters (small-angle approximation, fine for <300 km)
-  const x = dLon * cosRadarLat * EARTH_RADIUS_M; // east = +x (sin(az) in data space)
-  const y = dLat * EARTH_RADIUS_M;                // north = +y (cos(az) in data space)
-  return [x, y];
+  const sinPhi = Math.sin(phi);
+  const cosPhi = Math.cos(phi);
+  const sinPhi0 = Math.sin(phi0);
+  const cosPhi0 = Math.cos(phi0);
+  const cosC = Math.min(1, Math.max(-1, sinPhi0 * sinPhi + cosPhi0 * cosPhi * Math.cos(dLon)));
+  const c = Math.acos(cosC);
+  const k = c < 1e-9 ? 1 : c / Math.sin(c);
+  return [
+    EARTH_RADIUS_M * k * cosPhi * Math.sin(dLon),
+    EARTH_RADIUS_M * k * (cosPhi0 * sinPhi - sinPhi0 * cosPhi * Math.cos(dLon)),
+  ];
 }
 
 /**
- * Radar data-space (meters) back to geographic.
+ * Radar data-space (meters) back to geographic (inverse of latLonToDataSpace).
  */
 export function dataSpaceToLatLon(
   dataX: number,
@@ -140,10 +149,19 @@ export function dataSpaceToLatLon(
   radarLat: number,
   radarLon: number,
 ): [number, number] {
-  const cosRadarLat = Math.cos(radarLat * DEG2RAD);
-  const lat = radarLat + (dataY / EARTH_RADIUS_M) * RAD2DEG;
-  const lon = radarLon + (dataX / (EARTH_RADIUS_M * cosRadarLat)) * RAD2DEG;
-  return [lat, lon];
+  const rho = Math.hypot(dataX, dataY);
+  if (rho < 1e-6) return [radarLat, radarLon];
+  const phi0 = radarLat * DEG2RAD;
+  const c = rho / EARTH_RADIUS_M;
+  const sinC = Math.sin(c);
+  const cosC = Math.cos(c);
+  const sinPhi0 = Math.sin(phi0);
+  const cosPhi0 = Math.cos(phi0);
+  const lat = Math.asin(Math.min(1, Math.max(-1, cosC * sinPhi0 + (dataY * sinC * cosPhi0) / rho)));
+  const lon =
+    radarLon * DEG2RAD +
+    Math.atan2(dataX * sinC, rho * cosPhi0 * cosC - dataY * sinPhi0 * sinC);
+  return [lat * RAD2DEG, ((lon * RAD2DEG + 540) % 360) - 180];
 }
 
 /**
