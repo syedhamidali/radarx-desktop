@@ -19,6 +19,9 @@ dependencies = [
     "s3fs>=2024.1,<2027.0",
     "zarr>=2.18,<4.0",
     "pillow>=10.0,<14.0",
+    "matplotlib>=3.8,<4.0",
+    "colorcet>=3.0,<4.0",
+    "cmweather>=0.3,<1.0",
 ]
 
 [project.optional-dependencies]
