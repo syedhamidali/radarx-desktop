@@ -14,7 +14,7 @@ starts `python/.venv` + `server.py` as before. `XRADAR_PYTHON=/path/to/python` f
 
 ```bash
 cd python
-pip install -e ".[radarx,bundle]"          # radarx needs Python >= 3.12
+pip install -e ".[radarx,bundle,dev]"          # radarx needs Python >= 3.12
 python packaging/build_engine.py           # -> python/dist/xradar-engine/, then smoke-tests it
 
 cd ..
@@ -48,7 +48,7 @@ that fails.
 | first working build | 771 MB | 299 MB |
 | now | ~395 MB | ~156 MB |
 
-How: datashader (and with it numba/llvmlite, ~130 MB) is not used by the renderer and is left out; unused
+How: the renderer rasterises with numpy, so datashader (and with it numba/llvmlite, ~130 MB) is no longer a dependency; unused
 pyarrow components, other-service AWS models, test suites and headers are dropped (see the spec); and on
 macOS the engine is added through `bundle.macOS.files`, which keeps symlinks (Tauri's `resources` copies
 each symlink as a full file, ~140 MB of duplicates).

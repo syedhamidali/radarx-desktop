@@ -8,7 +8,6 @@
 # ``hiddenimports`` / collected below.
 import importlib.util
 import os
-import sys
 
 from PyInstaller.utils.hooks import (
     collect_data_files,
@@ -57,8 +56,8 @@ for pkg in (
 hiddenimports += ["scipy.spatial", "scipy.ndimage", "scipy.sparse.csgraph", "PIL.Image", "cairo"]
 
 excludes = [
-    # Never imported by the engine, and large. (datashader is a declared dependency but the renderer
-    # rasterises with numpy; excluding it also drops numba + llvmlite, ~130 MB.)
+    # Never imported by the engine, and large. (The renderer rasterises with numpy; keeping
+    # datashader out also keeps numba + llvmlite, ~130 MB, out.)
     "datashader",
     "numba",
     "llvmlite",
@@ -133,12 +132,10 @@ exe = EXE(
     exclude_binaries=True,
     name="xradar-engine",
     debug=False,
-    strip=sys.platform != "win32",
+    strip=False,
     upx=False,
     # A console program: the app reads READY:<port> from its stdout. The Tauri shell starts it
     # without a visible window on Windows.
     console=True,
 )
-coll = COLLECT(
-    exe, a.binaries, a.datas, strip=sys.platform != "win32", upx=False, name="xradar-engine"
-)
+coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="xradar-engine")
