@@ -30,11 +30,18 @@ _FORMAT_TABLE: list[tuple[str, str, set[str]]] = [
     ("iris", "open_iris_datatree", {".RAW", ".raw"}),
     ("furuno", "open_furuno_datatree", {".scn", ".scnx"}),
     ("rainbow", "open_rainbow_datatree", {".vol", ".azi"}),
+    ("cfradial2", "open_cfradial2_datatree", set()),
+    ("uf", "open_uf_datatree", {".uf"}),
+    ("imd", "open_imd_datatree", set()),
     ("datamet", "open_datamet_datatree", set()),
     ("hpl", "open_hpl_datatree", set()),
     ("metek", "open_metek_datatree", set()),
 ]
 _OPENER_NAMES: dict[str, str] = {label: fname for label, fname, _ in _FORMAT_TABLE}
+# Format labels whose xradar *engine* name differs from the label.  Everything else
+# uses the label itself as the engine name (cfradial1, odim, gamic, iris, ...).
+_ENGINE_BY_FORMAT: dict[str, str] = {"nexrad_level2": "nexradlevel2"}
+_FORMAT_BY_ENGINE: dict[str, str] = {v: k for k, v in _ENGINE_BY_FORMAT.items()}
 
 # Temp files that could not be unlinked right away (Windows keeps open files locked).
 _LEFTOVER_TMP_FILES: set[str] = set()
@@ -90,19 +97,79 @@ def sorted_sweep_names(dtree: xr.DataTree) -> list[str]:
 # ----------------------------------------------------------------------
 
 
+def _xradar_engines() -> set[str] | None:
+    """Engine names ``xd.open_datatree`` accepts (empty if it cannot enumerate them),
+    or ``None`` if the API is absent.
+
+    xradar >= 0.13 provides ``xd.open_datatree(path, engine=...)``; older releases
+    only have the per-format ``xd.io.open_*_datatree`` functions.
+    """
+    import xradar as xd
+
+    if not hasattr(xd, "open_datatree"):
+        return None
+    lister = getattr(xd.io, "list_xradar_engines", None)
+    if lister is None:
+        return set()
+    try:
+        return {str(e) for e in lister()}
+    except Exception as exc:
+        logger.debug("list_xradar_engines failed: %s", exc)
+        return set()
+
+
 @cache
 def _get_opener(format_name: str):
-    """Dynamically import the xradar opener for the given format."""
+    """Return ``opener(path) -> DataTree`` for *format_name* (raises if unavailable).
+
+    Prefers ``xd.open_datatree(path, engine=...)`` when the installed xradar has it
+    (the per-format ``open_*_datatree`` functions are deprecated there); otherwise
+    falls back to the dedicated ``xd.io.open_*_datatree`` function.  Both routes go
+    straight to the one backend, so the fast path costs the same.
+    """
     import xradar as xd
 
     func_name = _OPENER_NAMES.get(format_name)
     if func_name is None:
+        # An engine xradar knows about that is not in our table (future formats).
+        engines = _xradar_engines()
+        if engines and format_name in engines:
+            return _engine_opener(xd, format_name)
         raise ValueError(f"Unknown format: {format_name}")
-    # xradar exposes openers at xradar.io.<name>
+
+    engine = _ENGINE_BY_FORMAT.get(format_name, format_name)
+    engines = _xradar_engines()
+    if engines and engine in engines:
+        return _engine_opener(xd, engine)
+    # xradar.io exposes the dedicated openers as xradar.io.<name>
     opener = getattr(xd.io, func_name, None)
     if opener is None:
         raise ImportError(f"xradar.io.{func_name} not available in installed xradar version")
     return opener
+
+
+def _engine_opener(xd: Any, engine: str):
+    def opener(path: str) -> xr.DataTree:
+        return xd.open_datatree(path, engine=engine)
+
+    opener.__name__ = f"open_{engine}"
+    return opener
+
+
+def _discover_format(path: str) -> str | None:
+    """Ask xradar (>= 0.13: ``discover_engine`` via every backend's ``guess_can_open``)
+    which format *path* is.  Returns a format label, or ``None`` if unsupported/unknown."""
+    try:
+        import xradar as xd
+
+        discover = getattr(xd.io, "discover_engine", None)
+        if discover is None:
+            return None
+        engine = str(discover(path))
+    except Exception as exc:  # no backend claims the file, or discovery itself failed
+        logger.debug("Engine discovery failed for %s: %s", path, exc)
+        return None
+    return _FORMAT_BY_ENGINE.get(engine, engine)
 
 
 def _decompress_if_needed(path: str) -> tuple[str, bool]:
@@ -182,6 +249,12 @@ def _sniff_magic(path: str) -> str | None:
 
 def _guess_formats_by_extension(path: str) -> list[str]:
     """Return a priority-ordered list of format names to try (each at most once)."""
+    return _guess_formats(path)[0]
+
+
+def _guess_formats(path: str) -> tuple[list[str], bool]:
+    """Like :func:`_guess_formats_by_extension`, plus whether magic bytes or the
+    extension actually pointed at a format (False: the order is just table order)."""
     p = Path(path)
     suffixes = {s.lower() for s in p.suffixes}
     name_upper = p.name.upper()
@@ -214,11 +287,16 @@ def _guess_formats_by_extension(path: str) -> list[str]:
     if suffixes & {".vol", ".azi"}:
         add("rainbow")
 
+    if suffixes & {".uf"}:
+        add("uf")
+
+    hinted = bool(ordered)
+
     # 3. Remaining formats as fallbacks (deduped)
     for fmt, _, _ in _FORMAT_TABLE:
         add(fmt)
 
-    return ordered
+    return ordered, hinted
 
 
 def _open_generic_netcdf(path: str) -> xr.DataTree:
@@ -356,26 +434,60 @@ class RadarReader:
         open_path, is_tmp = _decompress_if_needed(path)
 
         errors: list[tuple[str, Exception]] = []
+        tried: set[str] = set()
+
+        def attempt(fmt: str) -> dict[str, Any] | None:
+            """Open *path* as *fmt*; commit and return the schema, or None on failure."""
+            tried.add(fmt)
+            try:
+                opener = _get_opener(fmt)
+                logger.info("Trying format '%s' for %s", fmt, open_path)
+                dtree = opener(open_path)
+                schema = self._build_schema(dtree, fmt)
+                if not schema["sweeps"]:
+                    # Lenient backends (e.g. cfradial2) "open" any netCDF as an empty tree.
+                    raise ValueError(f"no radar sweeps found (as {fmt})")
+            except ImportError as exc:  # xradar too old for this format: not worth reporting
+                logger.debug("Format '%s' unavailable: %s", fmt, exc)
+                return None
+            except Exception as exc:  # any backend may raise anything on a wrong format
+                logger.debug("Format '%s' failed for %s: %s", fmt, open_path, exc)
+                errors.append((fmt, exc))
+                return None
+            self._commit(dtree, path, fmt)
+            logger.info("Opened %s as %s", path, fmt)
+            return schema
+
         try:
-            for fmt in _guess_formats_by_extension(open_path):
-                try:
-                    opener = _get_opener(fmt)
-                    logger.info("Trying format '%s' for %s", fmt, open_path)
-                    dtree = opener(open_path)
-                    schema = self._build_schema(dtree)
-                except Exception as exc:  # any backend may raise anything on a wrong format
-                    logger.debug("Format '%s' failed for %s: %s", fmt, open_path, exc)
-                    errors.append((fmt, exc))
+            # Fast path: magic bytes / extension pick the dedicated backend directly.
+            candidates, hinted = _guess_formats(open_path)
+            discovered: str | None = None
+            if not hinted:
+                # Nothing recognisable: let xradar (>= 0.13) tell us which backend claims
+                # the file instead of trying every format and eating each failure.
+                discovered = _discover_format(open_path)
+                if discovered:
+                    candidates = [discovered] + [f for f in candidates if f != discovered]
+            for fmt in candidates:
+                if fmt in tried:
                     continue
-                self._commit(dtree, path, fmt)
-                logger.info("Opened %s as %s", path, fmt)
-                return schema
+                schema = attempt(fmt)
+                if schema is not None:
+                    return schema
+
+            # A backend xradar knows about that this table does not (newer xradar).
+            if hinted:
+                discovered = _discover_format(open_path)
+            if discovered and discovered not in tried:
+                schema = attempt(discovered)
+                if schema is not None:
+                    return schema
 
             # Last resort: try generic NetCDF (IMD/IRIS-origin single-sweep files, etc.)
             try:
                 logger.info("Trying generic NetCDF fallback for %s", open_path)
                 dtree = _open_generic_netcdf(open_path)
-                schema = self._build_schema(dtree)
+                schema = self._build_schema(dtree, "generic_netcdf")
             except Exception as exc:
                 logger.debug("Generic NetCDF fallback failed: %s", exc)
                 errors.append(("generic_netcdf", exc))
@@ -541,7 +653,7 @@ class RadarReader:
             sweep_dict[sweep_name] = xr.Dataset(attrs=attrs)
 
         dtree = xr.DataTree.from_dict(sweep_dict)
-        result = self._build_schema(dtree)
+        result = self._build_schema(dtree, "nexrad_arco")
         attributes = result["attributes"]
         for key in ("latitude", "longitude", "altitude"):
             if key in site:
@@ -587,10 +699,11 @@ class RadarReader:
             dimensions - dict mapping dim name to size
             attributes - dict of global attributes
             sweeps     - list of dicts with sweep index and elevation
+            format     - format label the file was opened with (e.g. ``"cfradial1"``)
         """
         self._ensure_open()
         assert self._dtree is not None
-        return self._build_schema(self._dtree)
+        return self._build_schema(self._dtree, self._format)
 
     def get_sweep_dataset(self, sweep: int) -> xr.Dataset:
         """Return the full ``xr.Dataset`` of one sweep (all variables and coords).
@@ -717,8 +830,12 @@ class RadarReader:
         self._nodes_cache = (tree, n_children, nodes)
         return nodes
 
-    def _build_schema(self, dtree: xr.DataTree) -> dict[str, Any]:
-        """Build the schema dict for *dtree* without touching reader state."""
+    def _build_schema(self, dtree: xr.DataTree, fmt: str | None = None) -> dict[str, Any]:
+        """Build the schema dict for *dtree* without touching reader state.
+
+        *fmt* is the format label the file was opened with (``nexrad_level2``,
+        ``cfradial1``, ``odim``, ...), reported as ``format``.
+        """
         children = dtree.children
         sweep_nodes = [children[name] for name in sorted_sweep_names(dtree)]
 
@@ -780,6 +897,7 @@ class RadarReader:
             "dimensions": dimensions,
             "attributes": root_attrs,
             "sweeps": sweeps,
+            "format": fmt,
         }
 
     @staticmethod

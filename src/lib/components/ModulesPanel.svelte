@@ -7,7 +7,7 @@
    * blocks (scalars / table / overlay / text).
    */
   import { onMount } from 'svelte';
-  import { connectionStatus, radarData, selectedSweep } from '../stores/radarData';
+  import { connectionStatus, radarData, selectedSweep, selectedVariable } from '../stores/radarData';
   import {
     modulesState,
     moduleParams,
@@ -16,6 +16,17 @@
     overlayVisibility,
     selectedFeature,
     moduleColors,
+    moduleFields,
+    displayedField,
+    radarSite,
+    fieldKey,
+    cleanCategories,
+    resolveFieldCmap,
+    cmapGradientCSS,
+    showFieldOnPpi,
+    hideField,
+    exportTableCsv,
+    exportOverlayGeoJson,
     initModules,
     requestModules,
     runModule,
@@ -32,6 +43,7 @@
     type ModuleParam,
     type ModuleResult,
     type ModuleBlock,
+    type FieldBlock,
     type TableColumn,
   } from '../stores/modules';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
@@ -83,6 +95,7 @@
 
   /** Why the module cannot run right now, or null if it can. */
   function blockedReason(m: ModuleSpec): string | null {
+    if (!m.available) return m.unavailable_reason ?? 'Module unavailable (missing Python package)';
     if (!isConnected) return 'Sidecar not connected';
     if (!hasData) return 'Open a radar file first';
     const missing = missingRequirements(m, available);
@@ -188,6 +201,33 @@
     }
   }
 
+  /** Why a field cannot be shown right now, or null if it can. */
+  function fieldWhy(
+    fields: Record<string, { sweep: number }>,
+    moduleId: string,
+    name: string,
+    sweepNow: number,
+  ): string | null {
+    const f = fields[fieldKey(moduleId, name)];
+    if (!f) return 'Loading field...';
+    if (f.sweep !== sweepNow) return `Computed for sweep ${f.sweep}; viewing sweep ${sweepNow}`;
+    return null;
+  }
+
+  function pct(frac: number | undefined): string {
+    return typeof frac === 'number' && Number.isFinite(frac) ? `${(frac * 100).toFixed(1)}%` : '–';
+  }
+
+  function fmtLegend(n: number | null | undefined): string {
+    return typeof n === 'number' && Number.isFinite(n) ? fmtNumber(n) : '–';
+  }
+
+  function pipHint(m: ModuleSpec): string | null {
+    if (m.available || m.needs.length === 0) return null;
+    if ((m.unavailable_reason ?? '').includes('pip install')) return null;
+    return `pip install ${m.needs.join(' ')}`;
+  }
+
   function onClear(m: ModuleSpec) {
     clearResult(m.id);
   }
@@ -275,7 +315,32 @@
 
 {#snippet blockView(m: ModuleSpec, res: ModuleResult, block: ModuleBlock, bi: number)}
   <div class="block">
-    {#if block.title}<div class="block-title">{block.title}</div>{/if}
+    {#if block.title || block.type === 'table' || block.type === 'overlay'}
+      <div class="block-head">
+        <div class="block-title">{block.title ?? ''}</div>
+        {#if block.type === 'table'}
+          <button
+            type="button"
+            class="mini-btn"
+            onclick={() => exportTableCsv(m.id, res, block as any)}
+            title="Save this table as CSV"
+          >
+            CSV
+          </button>
+        {:else if block.type === 'overlay'}
+          <span title={$radarSite ? 'Save the overlay as GeoJSON (WGS84)' : 'Radar site location is unknown in this file'}>
+            <button
+              type="button"
+              class="mini-btn"
+              disabled={!$radarSite}
+              onclick={() => exportOverlayGeoJson(m.id, res)}
+            >
+              GeoJSON
+            </button>
+          </span>
+        {/if}
+      </div>
+    {/if}
 
     {#if block.type === 'scalars'}
       <dl class="scalars">
@@ -347,6 +412,51 @@
       <p class="help">
         {(block.features ?? []).length} overlay feature{(block.features ?? []).length === 1 ? '' : 's'} drawn on the PPI.
       </p>
+    {:else if block.type === 'field'}
+      {@const fb = block as FieldBlock}
+      {@const cats = cleanCategories(fb.categories)}
+      {@const why = fieldWhy($moduleFields, m.id, fb.name, $selectedSweep)}
+      {@const shown = $displayedField?.module === m.id && $displayedField?.name === fb.name}
+      <div class="field-block">
+        {#if cats}
+          <ul class="cat-list" aria-label="{fb.title ?? fb.name} categories">
+            {#each cats as c (c.value)}
+              <li><span class="cat-sw" style="background: {c.color}"></span>{c.label}</li>
+            {/each}
+          </ul>
+        {:else}
+          <div class="grad-legend">
+            <div class="grad-bar" style="background: {cmapGradientCSS(resolveFieldCmap(fb))}"></div>
+            <div class="grad-labels mono">
+              <span>{fmtLegend(fb.vmin)}</span>
+              {#if fb.units}<span class="unit">{fb.units}</span>{/if}
+              <span>{fmtLegend(fb.vmax)}</span>
+            </div>
+          </div>
+        {/if}
+        <div class="field-actions">
+          <span class="help">
+            {fb.shape?.[0] ?? '?'} × {fb.shape?.[1] ?? '?'} gates, {pct(fb.valid_fraction)} valid
+          </span>
+          <span title={shown ? 'Show the normal variable again' : (why ?? 'Replace the PPI variable with this product')}>
+            {#if shown}
+              <button type="button" class="mini-btn active" onclick={() => hideField()}>
+                Back to {$selectedVariable ?? 'variable'}
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="mini-btn"
+                disabled={!!why}
+                onclick={() => showFieldOnPpi(m.id, fb.name)}
+              >
+                Show on PPI
+              </button>
+            {/if}
+          </span>
+        </div>
+        {#if why && !shown}<p class="help">{why}</p>{/if}
+      </div>
     {:else if block.type === 'text'}
       <pre class="text-block">{block.body ?? ''}</pre>
     {:else}
@@ -407,7 +517,7 @@
           {@const running = !!$runningModules[m.id]}
           {@const res = $moduleResults[m.id]}
           {@const open = isOpen(m.id)}
-          <div class="card" style="--mod-color: {$moduleColors[m.id]}">
+          <div class="card" class:unavailable={!m.available} style="--mod-color: {$moduleColors[m.id]}">
             <div class="card-head">
               <button
                 type="button"
@@ -441,6 +551,9 @@
             {#if reason}
               <p class="reason" id="reason-{m.id}">{reason}</p>
             {/if}
+            {#if pipHint(m)}
+              <p class="reason"><code class="pip">{pipHint(m)}</code></p>
+            {/if}
 
             {#if open}
               <div class="card-body" id="card-body-{m.id}">
@@ -457,12 +570,14 @@
 
                 {#if m.params.length > 0}
                   <form class="params" onsubmit={(e) => e.preventDefault()}>
-                    {#each m.params as p (p.name)}
-                      {@render paramControl(m, p)}
-                    {/each}
-                    <button type="button" class="link-btn" onclick={() => resetParams(m.id)}>
-                      Reset {paramsSummaryCount(m)} to defaults
-                    </button>
+                    <fieldset class="params-set" disabled={!m.available}>
+                      {#each m.params as p (p.name)}
+                        {@render paramControl(m, p)}
+                      {/each}
+                      <button type="button" class="link-btn" onclick={() => resetParams(m.id)}>
+                        Reset {paramsSummaryCount(m)} to defaults
+                      </button>
+                    </fieldset>
                   </form>
                 {/if}
               </div>
@@ -748,6 +863,85 @@
     margin-top: var(--spacing-xs, 4px);
   }
 
+  .params-set {
+    display: flex;
+    flex-direction: column;
+    gap: var(--spacing-sm, 8px);
+    margin: 0;
+    padding: 0;
+    border: none;
+    min-width: 0;
+  }
+
+  .card.unavailable {
+    opacity: 0.7;
+    border-left-style: dashed;
+  }
+
+  .pip {
+    font-family: var(--font-mono, monospace);
+    color: var(--text-primary, #e4e6f4);
+    background: var(--bg-primary, #080a14);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  .field-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .cat-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 11px;
+    color: var(--text-secondary, #9da2c2);
+  }
+
+  .cat-list li {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .cat-sw {
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+  }
+
+  .grad-bar {
+    height: 10px;
+    border-radius: 2px;
+    border: 1px solid var(--border-color, #2a2a3a);
+  }
+
+  .grad-labels {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 2px;
+    font-size: 10px;
+    color: var(--text-muted, #5c6088);
+  }
+
+  .field-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm, 8px);
+  }
+
+  .mini-btn.active {
+    color: var(--accent-primary, #5b6cf7);
+    border-color: var(--accent-primary, #5b6cf7);
+  }
+
   .field {
     display: flex;
     flex-direction: column;
@@ -872,6 +1066,13 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
+  }
+
+  .block-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-sm, 8px);
   }
 
   .block-title {

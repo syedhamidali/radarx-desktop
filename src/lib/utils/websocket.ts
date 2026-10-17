@@ -15,6 +15,23 @@ import { perfStats } from '../stores/perfStats';
 
 type MessageHandler = (data: any) => void;
 
+/** A gridded module product assembled from a `module_field` binary payload. */
+export interface ModuleFieldEntry {
+  module: string;
+  name: string;
+  sweep: number;
+  fileId?: string;
+  azimuth: Float32Array;
+  range: Float32Array;
+  values: Float32Array;
+  nAz: number;
+  nRange: number;
+  maxRange: number;
+  vmin: number;
+  vmax: number;
+  units: string;
+}
+
 /** State of one binary payload being reassembled (JSON header + N binary frames). */
 interface InflightBinary {
   header: any;
@@ -231,6 +248,7 @@ class WebSocketManager {
   /** Types whose JSON header is followed by binary frames. */
   private static readonly BINARY_TYPES = new Set([
     'sweep_data',
+    'module_field',
     'qc_result',
     'difference_result',
     'retrieval_data',
@@ -362,6 +380,8 @@ class WebSocketManager {
     if (type === 'volume_data' || type === 'cross_section_3d_data' || type === 'retrieval_data') {
       // Raw float32 grids, not azimuth+range+values
       this.handleRawBinaryData(header, buffer);
+    } else if (type === 'module_field') {
+      this.handleModuleField(header, buffer);
     } else {
       this.handleBinarySweepData(header, buffer);
     }
@@ -471,6 +491,7 @@ class WebSocketManager {
       }
 
       case 'sweep_data':
+      case 'module_field':
       case 'qc_result':
       case 'difference_result':
       case 'retrieval_data':
@@ -636,6 +657,44 @@ class WebSocketManager {
     };
 
     this.finalizeSweepEntry(entry, isQc, msgType);
+  }
+
+  /**
+   * Handle a gridded module product (`module_field`): same [azimuth][range][values] layout
+   * as sweep data, but it is NOT cached or broadcast as `sweep_data_ready` — it must never
+   * replace the displayed variable. Listeners get `module_field_ready` with the entry.
+   */
+  private handleModuleField(header: any, buffer: ArrayBuffer): void {
+    const azBytes = header.azimuth_bytes as number;
+    const rngBytes = header.range_bytes as number;
+    const nValues = Math.floor((buffer.byteLength - azBytes - rngBytes) / 4);
+    if (
+      !Number.isInteger(azBytes) || !Number.isInteger(rngBytes) ||
+      azBytes < 0 || rngBytes < 0 || azBytes % 4 !== 0 || rngBytes % 4 !== 0 ||
+      nValues < 0 || nValues < header.n_az * header.n_range
+    ) {
+      console.error(
+        `[WS] Malformed 'module_field' payload for ${header.module}/${header.name}: ` +
+        `${buffer.byteLength} bytes, az=${azBytes}, range=${rngBytes}, grid=${header.n_az}x${header.n_range}`,
+      );
+      return;
+    }
+    const entry: ModuleFieldEntry = {
+      module: header.module,
+      name: header.name,
+      sweep: header.sweep,
+      fileId: header.file_id,
+      azimuth: new Float32Array(buffer, 0, azBytes / 4),
+      range: new Float32Array(buffer, azBytes, rngBytes / 4),
+      values: new Float32Array(buffer, azBytes + rngBytes, nValues),
+      nAz: header.n_az,
+      nRange: header.n_range,
+      maxRange: header.max_range,
+      vmin: header.vmin,
+      vmax: header.vmax,
+      units: header.units ?? '',
+    };
+    this._dispatchHandlers('module_field_ready', entry);
   }
 
   /**

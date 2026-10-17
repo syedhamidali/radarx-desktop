@@ -449,3 +449,55 @@ def test_plugin_exception_becomes_module_error(registry, tmp_path, monkeypatch, 
         run("crashy", tree)
     with pytest.raises(ModuleError, match="must return a Result"):
         run("wrong_return", tree)
+
+
+# ---------------------------------------------------------------------------
+# field blocks and optional-package availability
+# ---------------------------------------------------------------------------
+
+
+def test_result_field_block_and_array_are_separate():
+    import numpy as np
+
+    from engine.plugins import Result
+
+    arr = np.arange(12, dtype=float).reshape(3, 4)
+    arr[0, 0] = np.nan
+    res = Result().field("demo", arr, units="dBZ")
+    block = res.to_dict()["blocks"][0]
+    assert block["type"] == "field" and block["shape"] == [3, 4]
+    assert block["vmin"] < block["vmax"]
+    json.dumps(res.to_dict(), allow_nan=False)  # no arrays / NaN in the JSON part
+    assert res.fields["demo"].dtype == np.float32 and res.fields["demo"].shape == (3, 4)
+
+
+def test_result_field_rejects_non_2d():
+    import numpy as np
+    import pytest
+
+    from engine.plugins import Result
+
+    with pytest.raises(ValueError):
+        Result().field("bad", np.zeros(5))
+
+
+def test_module_needs_missing_package_is_listed_but_refuses_to_run(tmp_path, monkeypatch):
+    from engine import plugins
+
+    (tmp_path / "needy.py").write_text(
+        "from engine.plugins import module, Result\n"
+        "@module(id='needy', title='Needy', needs=['definitely_not_installed_pkg'])\n"
+        "def run(ctx):\n    return Result()\n"
+    )
+    monkeypatch.setenv("XRADAR_MODULES_DIR", str(tmp_path))
+    plugins.discover_modules()
+    try:
+        info = next(m for m in plugins.list_modules()["modules"] if m["id"] == "needy")
+        assert info["available"] is False
+        assert "definitely_not_installed_pkg" in info["unavailable_reason"]
+        assert plugins.LOAD_ERRORS == []
+        with pytest.raises(plugins.ModuleError, match="definitely_not_installed_pkg"):
+            plugins.run_module("needy", None, 0, {}, get_sweep_dataset=lambda i: None)
+    finally:
+        monkeypatch.delenv("XRADAR_MODULES_DIR")
+        plugins.discover_modules()
