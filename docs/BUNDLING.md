@@ -22,7 +22,7 @@ npm ci
 # macOS
 CI=true npm run tauri build -- --config src-tauri/tauri.bundle.macos.conf.json --bundles app,dmg
 # Linux / Windows
-npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --bundles deb,appimage   # Linux
+npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --bundles deb,rpm   # Linux
 npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --bundles nsis,msi       # Windows
 ```
 
@@ -63,4 +63,5 @@ pandas 17 MB. Smaller still would mean dropping a feature (icechunk cloud archiv
   the usual `APPLE_*` / `TAURI_SIGNING_*` secrets).
 - **First launch is slow** (seconds to a minute on macOS): the OS scans the newly installed libraries.
   Later launches take about a second. The app waits up to 3 minutes for the engine.
+- Linux ships `.deb` and `.rpm`. There is no AppImage: linuxdeploy fails on the bundled Python libraries.
 - Linux installers are built on Ubuntu 22.04 and need glibc >= 2.35 (Ubuntu 22.04+, Debian 12+, Fedora 36+).
