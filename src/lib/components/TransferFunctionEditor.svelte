@@ -5,15 +5,34 @@
    * Displays a gradient preview bar, an opacity curve editor with draggable
    * control points, and preset buttons for common radar variable mappings.
    */
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { withPresetAlpha, curvePointsFromAlpha, type VolumeVarKind, type TfPreset } from '../utils/volumeTf';
 
   let {
     transferFunction = $bindable(new Uint8Array(256 * 4)),
     onchange,
+    kind = undefined,
+    vmin = -20,
+    vmax = 75,
+    keepColors = false,
+    syncKey = 0,
+    shift = 0,
   }: {
     transferFunction?: Uint8Array;
     onchange?: (detail: { transferFunction: Uint8Array }) => void;
+    /** Variable kind. With `keepColors` the presets only change the opacity curve (never the colours). */
+    kind?: VolumeVarKind;
+    /** Value range the 256 entries span (so presets can think in dBZ / m/s). */
+    vmin?: number;
+    vmax?: number;
+    keepColors?: boolean;
+    /** Bump to make the editor re-read the opacity curve from `transferFunction` (parent rebuilt it). */
+    syncKey?: number;
+    /** dB the default reflectivity opacity curve is slid by (weak scenes). */
+    shift?: number;
   } = $props();
+
+  const categorical = $derived(kind === 'categorical');
 
   const SVG_WIDTH = 300;
   const SVG_HEIGHT = 80;
@@ -35,6 +54,21 @@
   let dragIndex = $state<number>(-1);
   let gradientCanvas = $state<HTMLCanvasElement>(undefined as any);
   let curveSvg = $state<SVGSVGElement>(undefined as any);
+
+  /** Control points that reproduce the opacity curve currently in `transferFunction`. */
+  function pointsFromTf(tf: Uint8Array) {
+    const a = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) a[i] = tf[i * 4 + 3];
+    return curvePointsFromAlpha(a);
+  }
+
+  // The parent rebuilt the default curve (variable changed): redraw the control points to match.
+  $effect(() => {
+    void syncKey;
+    untrack(() => {
+      if (syncKey > 0) controlPoints = pointsFromTf(transferFunction);
+    });
+  });
 
   /**
    * Pointer position in the SVG's own 300x80 units. The SVG is CSS-sized (100% wide), so it is
@@ -253,7 +287,24 @@
     return Math.round(a + (b - a) * t);
   }
 
+  /** Alpha-only preset: keep the colormap colours, replace the opacity curve. */
+  function applyAlphaPreset(preset: TfPreset, as: VolumeVarKind) {
+    const tf = withPresetAlpha(transferFunction, as, vmin, vmax, preset, preset === 'default' ? shift : 0);
+    transferFunction = tf;
+    controlPoints = pointsFromTf(tf);
+    onchange?.({ transferFunction: tf });
+  }
+
+  function applyPresetCores() {
+    applyAlphaPreset('cores', kind && kind !== 'categorical' ? kind : 'reflectivity');
+  }
+
+  function applyPresetDefault() {
+    applyAlphaPreset('default', kind ?? 'reflectivity');
+  }
+
   function applyPresetReflectivity() {
+    if (keepColors) { applyAlphaPreset('default', 'reflectivity'); return; }
     const tf = new Uint8Array(256 * 4);
     for (let i = 0; i < 256; i++) {
       const t = i / 255;
@@ -288,6 +339,7 @@
   }
 
   function applyPresetVelocity() {
+    if (keepColors) { applyAlphaPreset('default', 'velocity'); return; }
     const tf = new Uint8Array(256 * 4);
     for (let i = 0; i < 256; i++) {
       const t = i / 255;
@@ -426,10 +478,18 @@
   <div class="tfe-presets">
     <span class="tfe-presets-label">Presets</span>
     <div class="tfe-preset-btns">
-      <button class="tfe-preset" onclick={applyPresetReflectivity}>Reflectivity</button>
-      <button class="tfe-preset" onclick={applyPresetVelocity}>Velocity</button>
+      {#if keepColors}
+        <button class="tfe-preset" onclick={applyPresetDefault} title="Opacity curve chosen for this variable">Default</button>
+      {/if}
+      {#if !categorical}
+        <button class="tfe-preset" onclick={applyPresetReflectivity}>Reflectivity</button>
+        <button class="tfe-preset" onclick={applyPresetVelocity}>Velocity</button>
+        <button class="tfe-preset" onclick={applyPresetCores} title="Only the strongest values: convective cores">Cores</button>
+      {/if}
       <button class="tfe-preset" onclick={applyPresetFullOpacity}>Full Opacity</button>
-      <button class="tfe-preset" onclick={applyPresetTransparentCore}>Transparent Core</button>
+      {#if !categorical}
+        <button class="tfe-preset" onclick={applyPresetTransparentCore}>Transparent Core</button>
+      {/if}
     </div>
   </div>
 </div>

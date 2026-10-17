@@ -38,14 +38,19 @@ interface LevelSpec {
   stepMul: number;
   /** Hard cap on ray-march iterations per pixel (step length grows to honour it). */
   maxSteps: number;
-  /** 0 = nearest sample, 1 = azimuth interpolation, 2 = azimuth + elevation interpolation. */
+  /**
+   * 0 = nearest sample, 1 = azimuth interpolation, 2 = azimuth + elevation interpolation.
+   * Elevation interpolation (blending the two sweeps around a sample) is what removes the
+   * concentric rings where tilted scan cones meet, so it is on from 'medium' upwards: only the
+   * two lowest levels, which are an emergency fallback, show nearest-sweep banding.
+   */
   interp: 0 | 1 | 2;
 }
 
 const LEVELS: LevelSpec[] = [
   { name: 'minimal', renderScale: 0.35, stepMul: 5.0, maxSteps: 110, interp: 0 },
   { name: 'low', renderScale: 0.5, stepMul: 3.5, maxSteps: 200, interp: 0 },
-  { name: 'medium', renderScale: 0.65, stepMul: 2.2, maxSteps: 320, interp: 1 },
+  { name: 'medium', renderScale: 0.65, stepMul: 2.2, maxSteps: 320, interp: 2 },
   { name: 'high', renderScale: 0.85, stepMul: 1.4, maxSteps: 640, interp: 2 },
   { name: 'ultra', renderScale: 1.0, stepMul: 1.0, maxSteps: 2400, interp: 2 },
 ];
@@ -62,7 +67,7 @@ const MIN_SCALE = 0.3;
 
 /** Frame-time targets (ms). */
 const TARGET_INTERACTIVE_MS = 28;
-const TARGET_IDLE_MS = 150;
+const TARGET_IDLE_MS = 100;
 /** A single GPU submission (or main-thread draw call) slower than this triggers the safety net. */
 export const EMERGENCY_MS = 250;
 
