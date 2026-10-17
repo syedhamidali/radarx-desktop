@@ -1,4 +1,4 @@
-"""Per-ray platform position (mobile radars) must not break NetCDF export."""
+"""A per-ray site position (with fill values) must not break NetCDF export."""
 
 import numpy as np
 import xarray as xr
@@ -12,7 +12,7 @@ def _tree(lat):
         {
             "latitude": ("time", lat, {"units": "degrees_north"}),
             "longitude": ("time", np.full(n, -88.0)),
-            "altitude": ("time", np.full(n, 58.0)),
+            "altitude": ("time", np.array([58.0, -9999.0, 58.0, 58.0][:n])),
             "altitude_agl": ("time", np.full(n, np.nan)),
         },
         coords={"time": np.arange(n)},
@@ -27,6 +27,7 @@ def test_per_ray_position_collapses_to_scalar():
     assert float(ds["latitude"]) == 32.8
     assert ds["latitude"].attrs["units"] == "degrees_north"
     assert float(ds["longitude"]) == -88.0
+    assert float(ds["altitude"]) == 58.0  # the -9999 fill value is ignored
     assert "altitude_agl" not in ds  # no valid value at all -> dropped
 
 

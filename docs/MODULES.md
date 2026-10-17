@@ -151,8 +151,8 @@ NetCDF / CfRadial2 / Zarr**. When the file has derived fields, two checkboxes ap
 
 PNG/SVG/PDF/CSV exports and batch/animation exports accept derived names as ordinary variables.
 The export protocol takes `include_derived` and `include_original` on `export`.
-Files from mobile platforms (per-ray latitude/longitude/altitude) are exported with the median
-position as the site location, since CfRadial1 stores one position per volume.
+Some files store the site latitude/longitude/altitude per ray, with fill values (NaN, `-9999`) on
+some rays. They are exported as the single valid value, since a radar site has one position.
 
 ## Protocol (for tooling)
 
