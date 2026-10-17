@@ -744,8 +744,12 @@ class QCPipeline:
     # Execution
     # ------------------------------------------------------------------
 
-    def run(self, data: xr.DataArray) -> xr.DataArray:
-        """Apply all pipeline steps in order and return the cleaned DataArray."""
+    def run(self, data: xr.DataArray, *, rhohv: xr.DataArray | None = None) -> xr.DataArray:
+        """Apply all pipeline steps in order and return the cleaned DataArray.
+
+        *rhohv* (the co-polar correlation coefficient of the same sweep, when it has one) is
+        handed to ``remove_clutter`` so its RhoHV threshold takes effect.
+        """
         result = data
         for i, step in enumerate(self._steps):
             name = step["name"]
@@ -757,8 +761,11 @@ class QCPipeline:
 
             fn = entry["function"]
             logger.info("QC step %d/%d: %s %s", i + 1, len(self._steps), name, params)
+            kwargs = dict(params)
+            if name == "remove_clutter" and rhohv is not None and "rhohv" not in kwargs:
+                kwargs["rhohv"] = rhohv
             try:
-                result = fn(result, **params)
+                result = fn(result, **kwargs)
             except Exception:
                 logger.error("QC step '%s' failed", name, exc_info=True)
                 raise

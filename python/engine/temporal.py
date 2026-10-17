@@ -74,6 +74,18 @@ def compute_time_series(
     }
 
 
+# NEXRAD (and some other decoders) fill "no echo" with a real number (-33 dBZ) instead of NaN.
+_NO_ECHO_DBZ = -32.0
+_REFLECTIVITY_HINTS = ("dbz", "refl", "power")
+
+
+def _mask_no_echo(values: np.ndarray, variable: str) -> np.ndarray:
+    """NaN-out the no-echo fill of reflectivity-like variables so it is not treated as data."""
+    if not any(h in variable.lower() for h in _REFLECTIVITY_HINTS):
+        return values
+    return np.where(values <= _NO_ECHO_DBZ, np.float32(np.nan), values)
+
+
 def compute_difference(
     reader1: Any,
     reader2: Any,
@@ -100,8 +112,8 @@ def compute_difference(
     da1 = reader1.get_sweep_data(sweep, variable)
     da2 = reader2.get_sweep_data(sweep, variable)
 
-    v1 = np.asarray(da1.values, dtype=np.float32)
-    v2 = np.asarray(da2.values, dtype=np.float32)
+    v1 = _mask_no_echo(np.asarray(da1.values, dtype=np.float32), variable)
+    v2 = _mask_no_echo(np.asarray(da2.values, dtype=np.float32), variable)
 
     # Handle shape mismatch by trimming to smallest common shape
     min_az = min(v1.shape[0], v2.shape[0])

@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine.reader import sorted_sweep_names
+from engine.reader import mask_below_threshold, sorted_sweep_names
 from engine.volume import slant_range_and_height_from_ground
 
 logger = logging.getLogger(__name__)
@@ -198,7 +198,7 @@ def _get_sweep_data(
     if sweep_loader is not None:
         ds = sweep_loader(sweep_idx)
     else:
-        ds = datatree[sweep_names[sweep_idx]].to_dataset()
+        ds = mask_below_threshold(datatree[sweep_names[sweep_idx]].to_dataset())
     if variable not in ds.data_vars:
         return empty
 

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import xarray as xr
 
 import server
 from engine import plugins
@@ -440,7 +441,7 @@ class TestRenderCacheToken:
                 json.dumps({"type": "render", "variable": "DBZH", "file_id": file_id})
             )
             assert renderer.render_sweep.call_args.kwargs["cache_token"] == (file_id, 1)
-        assert handler._sent[-1]["type"] == "render_result"
+        assert [m for m in handler._sent if m["type"] == "render_result"]
 
     @pytest.mark.asyncio
     async def test_process_bumps_generation(self) -> None:
@@ -1124,3 +1125,108 @@ class TestMosaic:
         )
         assert handler._sent[-1]["type"] == "mosaic_error"
         assert "folder does not exist" in handler._sent[-1]["message"]
+
+
+class TestAnalysisReplies:
+    """Replies of the analysis handlers carry what the UI needs to match them to a request."""
+
+    @pytest.mark.asyncio
+    async def test_scatter_histogram_region_stats_echo_the_sweep(self) -> None:
+        file_id = server._register_reader(
+            _reader_with_tree(make_synthetic_datatree(n_azimuth=20, n_range=30))
+        )
+        for msg, reply in (
+            ({"type": "get_scatter_data", "var1": "DBZH", "var2": "VRADH"}, "scatter_data_result"),
+            ({"type": "get_histogram", "variable": "DBZH"}, "histogram_result"),
+            ({"type": "get_region_stats", "variable": "DBZH"}, "region_stats_result"),
+        ):
+            handler, _ = _make_handler()
+            await handler.handle_message(json.dumps({**msg, "sweep": 1, "file_id": file_id}))
+            out = handler._sent[-1]
+            assert out["type"] == reply
+            assert out["sweep"] == 1
+
+    @pytest.mark.asyncio
+    async def test_vertical_profile_echoes_the_probe_location(self) -> None:
+        file_id = server._register_reader(
+            _reader_with_tree(make_synthetic_datatree(n_azimuth=20, n_range=30))
+        )
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps(
+                {
+                    "type": "get_vertical_profile",
+                    "lat": 10.5,
+                    "lon": 20.25,
+                    "variable": "DBZH",
+                    "file_id": file_id,
+                }
+            )
+        )
+        out = next(m for m in handler._sent if m["type"] == "vertical_profile_result")
+        assert out["lat"] == 10.5 and out["lon"] == 20.25
+
+    @pytest.mark.asyncio
+    async def test_run_qc_clutter_uses_rhohv_when_the_sweep_has_it(self) -> None:
+        tree = make_synthetic_datatree(n_azimuth=20, n_range=30)
+        sweep0 = tree["sweep_0"].to_dataset()
+        rhv = np.full(sweep0["DBZH"].shape, 0.95, dtype=np.float32)
+        rhv[:, :5] = 0.2  # non-meteorological gates
+        sweep0["RHOHV"] = (("azimuth", "range"), rhv)
+        tree["sweep_0"] = xr.DataTree(sweep0)
+        file_id = server._register_reader(_reader_with_tree(tree))
+
+        async def _run(sweep: int) -> np.ndarray:
+            handler, _ = _make_handler()
+            await handler.handle_message(
+                json.dumps(
+                    {
+                        "type": "run_qc",
+                        "variable": "DBZH",
+                        "sweep": sweep,
+                        "file_id": file_id,
+                        "steps": [
+                            {
+                                "name": "remove_clutter",
+                                "params": {"texture_threshold": 1.0, "rhohv_threshold": 0.7},
+                            }
+                        ],
+                    }
+                )
+            )
+            header = next(m for m in handler._sent if m.get("type") == "qc_result")
+            buf = _binary(handler)
+            offset = header["azimuth_bytes"] + header["range_bytes"]
+            return np.frombuffer(buf, dtype=np.float32, offset=offset)
+
+        with_rhv = (await _run(0)).reshape(20, 30)
+        without = (await _run(1)).reshape(20, 30)  # sweep 1 has no RHOHV: texture only
+        assert (with_rhv[:, :5] == np.float32(-9999.0)).all()
+        assert (without > -9998).all()
+
+
+class TestProgressAlwaysCloses:
+    """Handlers that announce '10 %' and never finish used to leave the status bar stuck."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            {"type": "get_vertical_profile", "lat": 45.0, "lon": -100.0, "variable": "DBZH"},
+            {"type": "get_vertical_profile", "lat": 45.0, "lon": -100.0, "variable": "NOPE"},
+        ],
+    )
+    async def test_progress_is_closed_after_any_handler(self, payload) -> None:
+        server._register_reader(_reader_with_tree())
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps(payload))
+        progress = [m for m in handler._sent if m["type"] == "progress"]
+        assert progress, handler._sent
+        assert progress[0]["percent"] < 100  # the handler did announce an unfinished run...
+        assert progress[-1]["percent"] == 100  # ...and it is closed (success or error)
+
+    @pytest.mark.asyncio
+    async def test_no_extra_progress_when_handler_already_finished_it(self) -> None:
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps({"type": "ping"}))
+        assert not [m for m in handler._sent if m["type"] == "progress"]

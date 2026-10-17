@@ -163,3 +163,30 @@ class TestDifference:
         diff = np.frombuffer(out["diff_values"], dtype=np.float32).reshape(100, 20)
         assert diff[0, 0] == -9999.0
         assert diff[1, 1] == 3.0
+
+
+class TestDifferenceNoEcho:
+    """NEXRAD fills 'no echo' with -33 dBZ (a real number); it must not be subtracted as data."""
+
+    def test_no_echo_fill_is_masked_not_subtracted(self) -> None:
+        a, b = _const(-33.0), _const(20.0)
+        a[5, 5] = b[5, 5] = 10.0  # one real pair of echoes
+        b[6, 6] = -33.0  # echo in 1, none in 2
+        a[6, 6] = 25.0
+        out = compute_difference(_reader(a), _reader(b), "DBZH", 0)
+        diff = np.frombuffer(out["diff_values"], dtype=np.float32).reshape(AZ.size, RNG.size)
+        assert diff[5, 5] == 0.0  # both echoes: a real difference
+        assert diff[0, 0] == -9999.0  # no echo vs 20 dBZ: masked (was +53 dB)
+        assert diff[6, 6] == -9999.0  # echo vs no echo: masked
+        assert out["vmax"] < 1.0  # the colour range is not blown up by the fill
+
+    def test_other_variables_keep_all_values(self) -> None:
+        r1 = _reader(_const(-33.0))
+        r2 = _reader(_const(2.0))
+        for r in (r1, r2):  # a velocity-like variable has no no-echo sentinel
+            r._dtree["sweep_0"] = xr.DataTree(
+                r._dtree["sweep_0"].to_dataset().rename({"DBZH": "VRADH"})
+            )
+        out = compute_difference(r1, r2, "VRADH", 0)
+        diff = np.frombuffer(out["diff_values"], dtype=np.float32)
+        assert np.all(diff == 35.0)
