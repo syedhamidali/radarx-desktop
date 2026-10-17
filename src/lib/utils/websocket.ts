@@ -254,6 +254,7 @@ class WebSocketManager {
     'retrieval_data',
     'volume_data',
     'cross_section_3d_data',
+    'mosaic_result',
   ]);
 
   /** Start tracking a binary payload announced by `header`. */
@@ -278,6 +279,9 @@ class WebSocketManager {
       if (valBytes >= 0) expectedBytes = header.azimuth_bytes + header.range_bytes + valBytes;
     } else if (typeof header.byte_length === 'number') {
       expectedBytes = header.byte_length;
+    } else if (typeof header.png_bytes === 'number') {
+      // mosaic_result: one PNG image split over `chunks` frames
+      expectedBytes = header.png_bytes;
     }
 
     // Frame count: trust the header; `difference_result` omits it, so fall back to bytes.
@@ -382,6 +386,9 @@ class WebSocketManager {
       this.handleRawBinaryData(header, buffer);
     } else if (type === 'module_field') {
       this.handleModuleField(header, buffer);
+    } else if (type === 'mosaic_result') {
+      // PNG bytes + the JSON header; the mosaic store builds the object URL.
+      this._dispatchHandlers('mosaic_result_ready', { header, png: new Uint8Array(buffer) });
     } else {
       this.handleBinarySweepData(header, buffer);
     }
@@ -497,6 +504,7 @@ class WebSocketManager {
       case 'retrieval_data':
       case 'volume_data':
       case 'cross_section_3d_data':
+      case 'mosaic_result':
         // JSON header for incoming binary data — wait for the chunk frames
         this.beginBinary(msg);
         break;
@@ -538,6 +546,11 @@ class WebSocketManager {
 
       case 'animation_export_complete':
         this.showExportNotification(msg.path ?? 'Animation export complete');
+        break;
+
+      case 'mosaic_error':
+      case 'mosaic_probe_result':
+        // Handled by custom handlers registered in the mosaic store
         break;
 
       case 'cross_section_result':
