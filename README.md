@@ -9,9 +9,13 @@ run algorithms on it (hydrometeor classification, storm detection, ...), and exp
 [xradar](https://github.com/openradar/xradar), [xarray](https://xarray.dev/) and
 [radarx](https://github.com/syedhamidali/radarx). **Nothing else to install**: the installers include everything.
 
-![xradar-desktop showing the 20 May 2013 Oklahoma squall line (KTLX, reflectivity) on a map](docs/images/app-2d.png)
+<p align="center">
+  <img src="docs/images/reflectivity.png" width="760" alt="Reflectivity from the KTLX radar, Oklahoma, 20 May 2013: a line of supercells">
+</p>
 
-<sub>NEXRAD Level II from KTLX (Oklahoma City), 20 May 2013, lowest sweep, reflectivity.</sub>
+<sub>Reflectivity from KTLX (Oklahoma City), 20 May 2013, 0.5° sweep. NEXRAD Level II, exported from the app.</sub>
+
+![xradar-desktop showing the same scan on a map](docs/images/app-2d.png)
 
 ## Download
 
