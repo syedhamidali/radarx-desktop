@@ -1,150 +1,163 @@
 # xradar-desktop
 
-A lightweight, cross-platform desktop application for radar data visualization and analysis, built on [xradar](https://github.com/openradar/xradar), [xarray](https://xarray.dev/), and [Dask](https://www.dask.org/).
+[![CI](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/syedhamidali/xradar-desktop)](https://github.com/syedhamidali/xradar-desktop/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-| 2D PPI View | 3D Volume Renderer |
-|:-----------:|:------------------:|
-| ![2D PPI view showing NEXRAD reflectivity with map overlay](docs/screenshot_2d.png) | ![3D volume renderer with box-clip selection](docs/screenshot_3d.png) |
+A desktop app for looking at weather radar data and working with it: open a file, see it in 2D and 3D, clean it,
+run algorithms on it (hydrometeor classification, storm detection, ...), and export the result. Built on
+[xradar](https://github.com/openradar/xradar), [xarray](https://xarray.dev/) and
+[radarx](https://github.com/syedhamidali/radarx). **Nothing else to install**: the installers include everything.
 
-## Features
+<p align="center">
+  <img src="docs/images/reflectivity.png" width="760" alt="Reflectivity from the KTLX radar, Oklahoma, 20 May 2013: a line of supercells">
+</p>
 
-- **Multi-format support** — NEXRAD Level II, ODIM H5, CfRadial, IRIS/Sigmet, Rainbow, Furuno, IMD (gzip-wrapped files handled automatically)
-- **2D PPI viewer** — GPU-accelerated pan/zoom with map background, geo overlays, range rings, and colorbar
-- **3D volume renderer** — WebGL2 polar ray-marching shader; orbit, zoom, and pan around the full radar volume; transfer function editor for opacity/color mapping
-- **2D→3D box-clip** — Draw a selection box in the 2D view to isolate a region; the 3D view clips to that column and re-centers the camera automatically
-- **Lazy, out-of-core processing** — Dask-backed xarray; large datasets load without memory limits
-- **Publication-quality export** — High-DPI raster (Datashader) + vector overlays (Cairo) to PNG/SVG/PDF
-- **Dual-pol products** — ZDR, KDP, HID, and custom dual-polarization dashboards
-- **Cross-sections & profiles** — RHI slices, vertical profiles, and time-series analysis
-- **QC pipelines** — Despeckle, velocity dealiasing, and custom filtering
-- **Cloud access** — Open NEXRAD Level II directly from `s3://noaa-nexrad-level2` or ARCO data via boto3/icechunk
-- **Small footprint** — ~15 MB installer (Tauri 2, not Electron)
+<sub>Reflectivity from KTLX (Oklahoma City), 20 May 2013, 0.5° sweep. NEXRAD Level II, exported from the app.</sub>
 
-## Tech Stack
+![xradar-desktop showing the same scan on a map](docs/images/app-2d.png)
 
-| Layer | Technology |
+## Download
+
+Get the installer for your system from the [latest release](https://github.com/syedhamidali/xradar-desktop/releases/latest). You only need one file.
+
+| System | File |
 |---|---|
-| Desktop shell | Tauri 2.0 (Rust) |
-| Frontend | Svelte 5 |
-| 2D radar view | WebGL2 (custom PPI renderer) |
-| 3D volume view | WebGL2 polar ray-marching shader |
-| Map overlays | Mapbox GL / deck.gl |
-| Data transfer | WebSocket + Apache Arrow IPC |
-| Data engine | xradar + xarray + Dask |
-| Rendering | Datashader + Cairo + Pillow |
-| Cloud data | boto3 + icechunk + s3fs + fsspec |
+| Mac with Apple silicon (M1 and later) | `...aarch64.dmg` |
+| Mac with an Intel chip | `...x64.dmg` |
+| Windows 10 / 11 | `...x64-setup.exe` |
+| Ubuntu / Debian | `...amd64.deb` |
+| Fedora / Red Hat | `...x86_64.rpm` |
 
-## Prerequisites
+The builds are not code-signed, so the first launch shows a warning:
 
-| Tool | Version | Install |
-|---|---|---|
-| Node.js | >= 20 | [nodejs.org](https://nodejs.org/) |
-| Rust (stable) | latest | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
-| Tauri CLI | ^2 | `cargo install tauri-cli@^2` |
-| Python | >= 3.10 | [python.org](https://www.python.org/) |
+- **macOS:** drag the app to Applications. If macOS says it "cannot be opened" or is "damaged", open
+  **System Settings → Privacy & Security** and click **Open Anyway**, or run
+  `xattr -cr /Applications/xradar-desktop.app` once in Terminal.
+- **Windows:** click **More info → Run anyway**.
+- **Linux:** `sudo apt install ./xradar-desktop_*.deb` (or `sudo dnf install ./*.rpm`).
 
-### System libraries
+The first launch can take up to a minute while the OS scans the app; after that it starts in about a second.
 
-**macOS**
-```bash
-xcode-select --install
-brew install cairo pkg-config
+## What it does
+
+### See it in 2D and 3D
+
+Pan and zoom a GPU-rendered PPI on a map, then switch to the 3D volume: every sweep is ray-marched on the GPU, with
+a transfer-function editor, a map ground plane and adjustable vertical exaggeration.
+
+![3D volume of the Oklahoma squall line over a map](docs/images/app-3d.png)
+
+### Run algorithms and see the result right away
+
+Algorithms are plug-in **modules** (a Python file with a decorator). A result is not just a table: it can be a new
+field that you view in 2D, in 3D, or export. Included: hydrometeor classification, KDP, QPE, hail (SHI/MESH),
+rotation couplets, shear, ZDR arcs, ZDR columns, storm detection, cell size sorting, and more. Write your own in
+about ten lines, see [docs/MODULES.md](docs/MODULES.md).
+
+![Hydrometeor classification run on every sweep, shown on the map, with the Modules panel open](docs/images/modules-hid.png)
+
+### Clean the data
+
+Quality control built on radarx: SNR gate, fuzzy-logic echo classification, speckle removal, noise correction, and
+optional gap filling and smoothing. Every step is a switch you can turn off, and the mask is applied to all the
+polar fields, not just reflectivity.
+
+![Reflectivity and ZDR before and after quality control](docs/images/qc-before-after.png)
+
+### Export it
+
+PNG, SVG and PDF figures with colorbar, rings and title; NetCDF (CfRadial1), CfRadial2, Zarr and CSV data; batch
+and animation export. Cleaned and derived fields are written into the file next to the original moments.
+
+## More features
+
+- **Formats:** NEXRAD Level II, ODIM H5, CfRadial 1/2, IRIS/Sigmet, Rainbow, Furuno, IMD, UF and more through xradar
+  (gzip-wrapped files work as they are)
+- **Cloud data:** open NEXRAD Level II straight from AWS S3, browse the archive, or open ARCO / icechunk data
+- **Mosaics:** grid and merge several radars with radarx
+- **Dual-pol:** ZDR, KDP, RhoHV, HID dashboards, scatter plots and histograms
+- **Cross-sections, profiles and time series**, difference between two sweeps or files
+- **Stays responsive:** requests are scheduled and cancellable, and the 3D view lowers its quality on its own if it
+  gets slow (see [docs/RESPONSIVENESS.md](docs/RESPONSIVENESS.md))
+
+## How it works
+
+```
+ Tauri app (Rust)  ──starts──▶  Python engine  (xradar · xarray · radarx · Pillow · matplotlib)
+ Svelte + WebGL2   ◀─WebSocket─  reads files, runs modules, exports
 ```
 
-**Ubuntu / Debian**
+The window is a Svelte app in a small Tauri shell. The data work happens in a Python engine that the app starts and
+talks to over a local WebSocket, sending arrays as Apache Arrow. The installers bundle that engine
+(see [docs/BUNDLING.md](docs/BUNDLING.md)).
+
+## Build from source
+
+You need Node.js 20+, Rust (stable), Python 3.10+ (3.12+ for radarx), and on Linux the WebKit/GTK and Cairo
+development packages.
+
+```bash
+git clone https://github.com/syedhamidali/xradar-desktop.git
+cd xradar-desktop
+
+npm install
+
+cd python
+python3 -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -e ".[dev,radarx]"
+cd ..
+
+npm run tauri dev          # run it
+npm run tauri build        # build an installer for this OS (see docs/BUNDLING.md for the packaged engine)
+```
+
+<details>
+<summary>System libraries</summary>
+
+**macOS:** `xcode-select --install` and `brew install cairo pkg-config`
+
+**Ubuntu / Debian:**
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
                  patchelf libgtk-3-dev libcairo2-dev pkg-config
 ```
 
-**Windows**
-WebView2 is pre-installed on Windows 10+. No extra steps required.
+**Windows:** WebView2 is already part of Windows 10/11.
+</details>
 
-## Installation
-
-```bash
-# 1. Clone
-git clone https://github.com/syedhamidali/xradar-desktop.git
-cd xradar-desktop
-
-# 2. Frontend dependencies
-npm install
-
-# 3. Python sidecar — create a virtual environment and install
-cd python
-python3 -m venv .venv
-source .venv/bin/activate        # macOS / Linux
-# .venv\Scripts\activate         # Windows
-
-pip install -e ".[dev]"
-cd ..
-
-# 4. Launch in development mode
-npm run tauri dev
-```
-
-> **Note:** A virtual environment is required on Ubuntu 23.04+, Debian 12+, and Fedora 38+
-> due to [PEP 668](https://peps.python.org/pep-0668/).
-> The app auto-detects and uses `python/.venv` when present.
-
-## Build
-
-```bash
-# Production installer (creates platform-native .dmg / .deb / .msi)
-npm run tauri build
-```
-
-Installers are written to `src-tauri/target/release/bundle/`.
-
-## Project Structure
-
-```
-xradar-desktop/
-├── src/                        # Svelte frontend
-│   ├── App.svelte
-│   └── lib/
-│       ├── components/         # RadarViewer (2D), RadarViewer3D, DataInspector, ...
-│       ├── stores/             # Reactive state (radarData, volumeSelect, ...)
-│       ├── utils/              # WebSocket client, Arrow IPC, PPI renderer, colormaps
-│       └── workers/            # Web workers for binary processing
-├── src-tauri/                  # Rust / Tauri shell
-│   └── src/main.rs
-├── python/                     # Python sidecar (WebSocket engine)
-│   ├── server.py               # WebSocket entry point
-│   ├── engine/                 # reader, renderer, cloud, arrow_bridge
-│   └── tests/
-├── package.json
-└── vite.config.ts
-```
+In development the app uses `python/.venv` automatically. Set `XRADAR_PYTHON=/path/to/python` to use another
+interpreter. Exports go to `~/Downloads/xradar-exports` unless you choose a folder.
 
 ## Development
 
 ```bash
-# Activate the Python venv first
-source python/.venv/bin/activate   # macOS / Linux
-
-# Lint & format Python
-ruff check --config ruff.toml python/
-ruff format --config ruff.toml python/
-
-# Type-check frontend
-npx svelte-check --tsconfig ./tsconfig.json
-npx tsc --noEmit
-
-# Run Python tests
-cd python && python -m pytest tests/ -v
-
-# Build frontend only (no Tauri)
-npm run build
+ruff check --config ruff.toml python/ && ruff format --config ruff.toml python/
+(cd python && python -m pytest tests/)      # Python tests
+npx svelte-check --tsconfig ./tsconfig.json && npx tsc --noEmit    # frontend checks
 ```
 
-## Using the 3D View
+```
+xradar-desktop/
+├── src/             Svelte frontend (2D and 3D viewers, panels, stores)
+├── src-tauri/       Rust shell (starts and watches the engine)
+├── python/
+│   ├── server.py    WebSocket entry point
+│   ├── engine/      reader, renderer, exporter, derived variables, mosaic, plugin SDK
+│   ├── modules/     plug-in algorithms (drop a file here to add one)
+│   ├── packaging/   builds the self-contained engine for the installers
+│   └── tests/
+└── docs/            MODULES, BUNDLING, MOSAIC, RESPONSIVENESS
+```
 
-1. Open a radar file and select a variable — sweeps start loading automatically.
-2. Switch to the **3D** tab; the volume renders as each sweep arrives (lowest elevation first).
-3. **Orbit**: drag. **Zoom**: scroll or `+`/`-`. **Pan**: Shift+drag. **Reset**: `R`.
-4. Adjust **Step** (ray-march resolution) and **Opacity** from the toolbar, or open the **TF** editor to tune the transfer function.
-5. To focus on a storm cell, switch back to 2D, click the **box-select** button (dashed rectangle icon), draw a box around the region, then switch to 3D — the view clips and re-centers on that column.
+## Using the 3D view
+
+1. Open a file. Sweeps load automatically.
+2. Switch to **3D**. The volume appears as sweeps arrive, lowest elevation first.
+3. **Orbit:** drag. **Zoom:** scroll. **Pan:** Shift+drag. **Reset:** `R`.
+4. Tune **Step**, **Opacity**, **Hide below**, **Vertical** exaggeration and **Range** in the toolbar, or open **TF**
+   to shape the transfer function.
+5. To focus on one storm, go back to 2D, use the box-select button, draw a box, then switch to 3D.
 
 ## License
 
