@@ -23,7 +23,7 @@
   import BoxSelectTool from './BoxSelectTool.svelte';
   import { boxSelectActive, selectedBox } from '../stores/volumeSelect';
   import { mosaicLayer, mosaicDisplay, registerViewBoundsProvider, type GeoBounds } from '../stores/mosaic';
-  import { latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
+  import { dataSpaceToLatLon, latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
   import type { SweepInfo } from '../stores/radarData';
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -425,6 +425,8 @@
     if (!hasRendered || e.button !== 0) return;
     // When a measurement or annotation tool is active, clicks add points instead of dragging
     if (measureActive) return;
+    // Box select owns the drag: panning here would move the view under the box being drawn
+    if ($boxSelectActive) return;
     isDragging = true;
     dragStartX = e.clientX;
     dragStartY = e.clientY;
@@ -560,9 +562,8 @@
   function handleVPProbeClick(e: MouseEvent) {
     if (!csProbeToolActive || !hasRendered) return;
     const [xm, ym] = screenToData(e.clientX, e.clientY);
-    // Convert data coords to lat/lon
-    const lat = radarLat + ym / 110540.0;
-    const lon = radarLon + xm / (111320.0 * Math.cos(radarLat * Math.PI / 180));
+    // Data space is azimuthal equidistant about the radar: invert it exactly (same math as the map).
+    const [lat, lon] = dataSpaceToLatLon(xm, ym, radarLat, radarLon);
     // Dispatch VP request for the selected variable
     const variable = $selectedVariable;
     if (!variable) return;
@@ -950,6 +951,8 @@
 
   .viewer-controls {
     display: flex;
+    flex-wrap: wrap; /* narrow panes (both sidebars open on a small window) wrap instead of clipping controls */
+    row-gap: var(--spacing-xs, 4px);
     align-items: center;
     gap: var(--spacing-lg);
     padding: var(--spacing-sm) var(--spacing-md);
@@ -973,7 +976,7 @@
     font-weight: 600;
   }
 
-  .control-group select { min-width: 160px; }
+  .control-group select { min-width: 110px; max-width: 200px; }
 
   .control-info {
     display: flex;

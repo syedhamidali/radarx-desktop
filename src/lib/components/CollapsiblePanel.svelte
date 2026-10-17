@@ -1,4 +1,10 @@
 <script lang="ts">
+  import { getContext } from 'svelte';
+
+  // PanelManager already renders a header (title, collapse, drag handle) around each panel; inside it
+  // this component only provides the body (plus the badge, if any) so titles are not shown twice.
+  const embedded: boolean = getContext<boolean>('embedded-panel') === true;
+
   export let title: string;
   export let badge: string | number | null = null;
   export let collapsed: boolean = false;
@@ -9,7 +15,12 @@
   }
 </script>
 
-<div class="collapsible-panel" class:collapsed>
+<div class="collapsible-panel" class:collapsed={collapsed && !embedded} class:embedded>
+  {#if embedded}
+    {#if badge !== null}
+      <div class="embedded-badge"><span class="panel-badge" title={title}>{badge}</span></div>
+    {/if}
+  {:else}
   <button class="panel-header" on:click={toggle} title="{collapsed ? 'Expand' : 'Collapse'} {title}">
     <div class="panel-header-left">
       {#if icon}
@@ -28,7 +39,8 @@
       </span>
     </div>
   </button>
-  <div class="panel-content" class:visible={!collapsed}>
+  {/if}
+  <div class="panel-content" class:visible={embedded || !collapsed}>
     <div class="panel-body">
       <slot />
     </div>
@@ -36,6 +48,16 @@
 </div>
 
 <style>
+  .embedded-badge {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px var(--spacing-md) 0;
+  }
+
+  .collapsible-panel.embedded {
+    border-bottom: none;
+  }
+
   .collapsible-panel {
     border-bottom: 1px solid var(--glass-border, var(--border-color));
   }
@@ -51,7 +73,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--text-secondary);
-    background: rgba(17, 22, 40, 0.5);
+    background: var(--panel-header-bg);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     border: none;
@@ -131,5 +153,13 @@
 
   .panel-body {
     padding: var(--spacing-md);
+  }
+
+  /* Inside PanelManager the outer panel owns collapsing and height. */
+  .embedded .panel-content,
+  .embedded .panel-content.visible {
+    max-height: none;
+    overflow: visible;
+    transition: none;
   }
 </style>

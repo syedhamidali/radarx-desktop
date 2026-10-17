@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, setContext } from 'svelte';
   import { workspaceStore, currentWorkspace } from '../stores/workspace';
   import ProcessingPanel from './ProcessingPanel.svelte';
   import ExportPanel from './ExportPanel.svelte';
@@ -11,6 +11,8 @@
   import CloudDataPanel from './CloudDataPanel.svelte';
   import ModulesPanel from './ModulesPanel.svelte';
   import MosaicPanel from './MosaicPanel.svelte';
+
+  setContext('embedded-panel', true); // panels below draw only their body; this component owns the header
 
   const PANEL_MAP: Record<string, { component: any; label: string; icon: string }> = {
     cloud: { component: CloudDataPanel, label: 'Cloud Data', icon: '☁' },
@@ -39,8 +41,21 @@
     workspaceStore.updateCurrentConfig({ rightPanelCollapsed: panelCollapsed });
   }
 
+  /** Expand one panel and bring it into view (e.g. the command palette's "Export Current View"). */
+  function showPanel(e: Event) {
+    const id = (e as CustomEvent<{ id?: string }>).detail?.id;
+    if (!id || !PANEL_MAP[id]) return;
+    if (panelCollapsed[id]) {
+      panelCollapsed = { ...panelCollapsed, [id]: false };
+      workspaceStore.updateCurrentConfig({ rightPanelCollapsed: panelCollapsed });
+    }
+    // Wait for the panel body to render before scrolling it into view.
+    setTimeout(() => document.querySelector(`[data-panel-id="${id}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }), 50);
+  }
+
   onMount(() => {
     window.addEventListener('xradar:mosaic-request', expandMosaic);
+    window.addEventListener('xradar:show-panel', showPanel);
     unsubWorkspace = currentWorkspace.subscribe((ws) => {
       const known = Object.keys(PANEL_MAP);
       const saved = (ws.rightPanelOrder ?? []).filter((id: string) => PANEL_MAP[id]);
@@ -53,6 +68,7 @@
 
   onDestroy(() => {
     window.removeEventListener('xradar:mosaic-request', expandMosaic);
+    window.removeEventListener('xradar:show-panel', showPanel);
     unsubWorkspace?.();
   });
 
@@ -115,6 +131,7 @@
         class:collapsed={panelCollapsed[id]}
         class:drag-over={dragOverTarget === id}
         class:dragging={dragTarget === id}
+        data-panel-id={id}
         on:dragover={(e) => handleDragOver(e, id)}
         on:dragleave={handleDragLeave}
         on:drop={(e) => handleDrop(e, id)}
@@ -134,7 +151,7 @@
               <circle cx="2" cy="10" r="1.2" /><circle cx="6" cy="10" r="1.2" />
             </svg>
           </div>
-          <button class="managed-panel-toggle" on:click={() => toggleCollapse(id)}>
+          <button class="managed-panel-toggle" on:click={() => toggleCollapse(id)} aria-expanded={!panelCollapsed[id]} title="{panelCollapsed[id] ? 'Expand' : 'Collapse'} {panel.label}">
             <span class="managed-panel-icon">{panel.icon}</span>
             <span class="managed-panel-label">{panel.label}</span>
             <span class="managed-panel-chevron" class:open={!panelCollapsed[id]}>
@@ -176,7 +193,7 @@
   .managed-panel-header {
     display: flex;
     align-items: center;
-    background: rgba(17, 22, 40, 0.5);
+    background: var(--panel-header-bg);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--glass-border);
