@@ -65,6 +65,7 @@ nearest azimuth and ground range."""
     category="Hazards",
     requires=["DBZH"],
     needs=A.NEEDS,
+    scope="volume",
     params=[
         param("product", "select", "MESH", "Show", options=list(PRODUCTS)),
         param(

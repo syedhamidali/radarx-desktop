@@ -72,6 +72,7 @@ module is a simpler shape-only alternative that needs no radarx."""
     requires=["DBZH", "ZDR"],
     optional=["RHOHV", "PHIDP", "KDP"],
     needs=A.NEEDS,
+    scope="volume",
     params=[
         param(
             "ffd_direction",

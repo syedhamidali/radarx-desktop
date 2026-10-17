@@ -5,6 +5,7 @@
   import { wsManager } from '../utils/websocket';
   import { getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import { COLORMAP_DATA } from '../utils/colormaps';
+  import { styleFor, variableStylesRevision } from '../utils/variableStyles';
   import {
     QualityGovernor,
     ProgressiveRenderer,
@@ -30,6 +31,13 @@
   const sweeps    = $derived($radarData.sweeps);
   const connected = $derived($connectionStatus === 'connected');
   const hasData   = $derived($radarData.filePath !== null || $radarData.variables.length > 0);
+  /** Presentation of a derived variable (label, class table); undefined for ordinary file variables. */
+  const varStyle = $derived.by(() => {
+    void $variableStylesRevision;
+    return styleFor(variable);
+  });
+  const variableLabel = $derived(varStyle?.label ?? variable ?? '');
+  const categories = $derived(varStyle?.categories ?? null);
 
   /** Sweeps that actually carry the selected variable, lowest elevation first. */
   const applicable = $derived.by(() => {
@@ -50,7 +58,7 @@
   let showTfe      = $state(false);
   let tfData       = $state(buildTfData('turbo'));
 
-  function buildTfData(cmapName: string): Uint8Array {
+  function buildTfData(cmapName: string, flatAlpha = false): Uint8Array {
     const rgb = COLORMAP_DATA[cmapName] ?? COLORMAP_DATA['turbo'];
     const tf = new Uint8Array(256 * 4);
     for (let i = 0; i < 256; i++) {
@@ -58,7 +66,8 @@
       tf[i*4]   = rgb[i*3];
       tf[i*4+1] = rgb[i*3+1];
       tf[i*4+2] = rgb[i*3+2];
-      tf[i*4+3] = Math.round(Math.pow(t, 0.5) * 0.85 * 255);
+      // Categorical classes are equally important: no value-dependent fade-in
+      tf[i*4+3] = flatAlpha ? Math.round(0.85 * 255) : Math.round(Math.pow(t, 0.5) * 0.85 * 255);
     }
     return tf;
   }
@@ -1033,7 +1042,8 @@
       g.uniform1f(u('u_stepSize'),     stepKm * params.stepMul);
       g.uniform1f(u('u_stepUser'),     stepKm);
       g.uniform1i(u('u_maxSteps'),     params.maxSteps);
-      g.uniform1i(u('u_interp'),       params.interp);
+      // Class codes must never be blended between neighbours: categorical variables sample nearest.
+      g.uniform1i(u('u_interp'),       categories ? 0 : params.interp);
       g.uniform1i(u('u_nSweeps'),      volNSweeps);
       g.uniform1f(u('u_volTotalAz'),   volTotalAz);
       g.uniform1f(u('u_volMaxNRange'), volMaxNRange);
@@ -1105,7 +1115,7 @@
         cmap = getDefaultCmap(v);
         const range = getDefaultRange(v);
         if (range) { vmin = range[0]; vmax = range[1]; }
-        tfData = buildTfData(cmap);
+        tfData = buildTfData(cmap, !!styleFor(v)?.categories);
         uploadTransferFn();
       }
       packVmin = vmin;
@@ -1357,7 +1367,7 @@
   {#if hasData}
     <div class="controls-3d">
       <span class="label-3d">3D Volume</span>
-      {#if variable}<span class="var-badge">{variable}</span>{/if}
+      {#if variable}<span class="var-badge" title={variable}>{variableLabel}</span>{/if}
 
       <div class="ctrl-group">
         <label for="step-ctrl">Step</label>
@@ -1426,12 +1436,23 @@
 
       {#if hasRendered}
         <!-- Colorbar -->
-        <div class="colorbar-wrap">
-          <span class="cb-label">{vmax.toFixed(1)}</span>
-          <div class="cb-bar" style="background: {cmapGradient}"></div>
-          <span class="cb-label">{vmin.toFixed(1)}</span>
-          <span class="cb-var">{variable}</span>
-        </div>
+        {#if categories}
+          <div class="colorbar-wrap cat" role="list" aria-label="{variableLabel} categories">
+            <span class="cat-title">{variableLabel}</span>
+            {#each [...categories].reverse() as c (c.value)}
+              <span class="cat-item" role="listitem">
+                <span class="cat-swatch" style="background: {c.color}"></span>{c.label}
+              </span>
+            {/each}
+          </div>
+        {:else}
+          <div class="colorbar-wrap">
+            <span class="cb-label">{vmax.toFixed(1)}</span>
+            <div class="cb-bar" style="background: {cmapGradient}"></div>
+            <span class="cb-label">{vmin.toFixed(1)}</span>
+            <span class="cb-var">{variableLabel}</span>
+          </div>
+        {/if}
 
         <!-- Compass -->
         <div class="compass-wrap">
@@ -1620,6 +1641,36 @@
     gap: 3px;
     pointer-events: none;
     z-index: 3;
+  }
+  .colorbar-wrap.cat {
+    align-items: flex-start;
+    gap: 3px;
+    padding: 6px 8px;
+    background: rgba(15, 15, 26, 0.78);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 4px;
+    max-width: 190px;
+  }
+  .cat-title {
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.9);
+    margin-bottom: 2px;
+  }
+  .cat-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10px;
+    color: rgba(255,255,255,0.85);
+    white-space: nowrap;
+  }
+  .cat-swatch {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    border-radius: 2px;
+    border: 1px solid rgba(255,255,255,0.25);
   }
   .cb-bar {
     width: 13px;

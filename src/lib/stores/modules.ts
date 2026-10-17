@@ -18,9 +18,28 @@ import { wsManager, type ModuleFieldEntry } from '../utils/websocket';
 import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { COLORMAP_DATA } from '../utils/colormaps';
 import { getDefaultCmap, type SweepDataEntry } from '../utils/ppiRenderer';
-import { connectionStatus, radarData, selectedSweep, processingProgress } from './radarData';
+import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './radarData';
 import { activeFileId, getActiveFile } from './fileManager';
 import { addToast } from './toasts';
+import {
+  cleanCategories,
+  parseColor,
+  registerCategoricalCmap,
+  type FieldCategory,
+} from '../utils/variableStyles';
+import {
+  derivedByFile,
+  activeDerived,
+  clearDerived,
+  dropDerivedCaches,
+  normaliseDerived,
+  refreshIfSelected,
+  setDerivedForFile,
+  type DerivedVariable,
+} from './derived';
+
+// Shared with the derived-variable registry (it builds the same discrete colour tables).
+export { cleanCategories, parseColor, registerCategoricalCmap };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -53,6 +72,10 @@ export interface ModuleSpec {
   /** False when a needed package is missing: listed, but cannot run. */
   available: boolean;
   unavailable_reason: string | null;
+  /** 'volume' modules analyse the whole volume in one run; 'sweep' modules work on one sweep. */
+  scope: 'sweep' | 'volume';
+  /** True when the module can be run on every sweep and its fields registered as derived variables. */
+  per_sweep: boolean;
 }
 
 export interface ModuleLoadError {
@@ -67,11 +90,7 @@ export interface TableColumn {
   digits?: number;
 }
 
-export interface FieldCategory {
-  value: number;
-  label: string;
-  color: string;
-}
+export type { FieldCategory };
 
 /** A gridded product on the sweep's polar grid; the values arrive as a separate binary payload. */
 export interface FieldBlock {
@@ -126,6 +145,21 @@ export interface ModuleResult {
   features: OverlayFeature[];
 }
 
+/** Outcome of a run on all sweeps (`module_volume_result`). */
+export interface VolumeRunResult {
+  module: string;
+  fileId: string | null;
+  params: Record<string, any>;
+  elapsed_ms: number;
+  /** The derived variables this run created. */
+  derived: (DerivedVariable & { skipped: { sweep: number; reason: string }[] })[];
+  /** Per-sweep scalar summaries the module reported. */
+  summaries: { sweep: number; scalars: Record<string, any> }[];
+  /** Older derived variables the server dropped to make room. */
+  evicted: string[];
+  at: number;
+}
+
 export interface ModulesState {
   modules: ModuleSpec[];
   errors: ModuleLoadError[];
@@ -149,6 +183,8 @@ export interface OverlayLayer {
 
 const PARAMS_STORAGE_KEY = 'xradar.modules.params.v1';
 const RUN_TIMEOUT_MS = 120_000;
+/** A run on every sweep takes many times a single run. */
+const VOLUME_RUN_TIMEOUT_MS = 600_000;
 
 /** Small categorical palette used for per-module default overlay colours. */
 export const MODULE_PALETTE = [
@@ -180,6 +216,12 @@ export const moduleResults = writable<Record<string, ModuleResult>>({});
 
 /** Module ids currently running. */
 export const runningModules = writable<Record<string, boolean>>({});
+
+/** Module ids whose current run covers all sweeps (a subset of runningModules). */
+export const runningVolume = writable<Record<string, boolean>>({});
+
+/** Last all-sweeps run per module id. */
+export const moduleVolumeResults = writable<Record<string, VolumeRunResult>>({});
 
 /** Overlay visibility per module id (missing = visible). */
 export const overlayVisibility = writable<Record<string, boolean>>({});
@@ -426,20 +468,6 @@ export function findFieldBlock(moduleId: string, name: string): FieldBlock | nul
   return fieldBlocksOf(get(moduleResults)[moduleId]).find((b) => b.name === name) ?? null;
 }
 
-/** Valid, value-sorted categories (or null if the block is not categorical). */
-export function cleanCategories(cats: FieldCategory[] | null | undefined): FieldCategory[] | null {
-  if (!Array.isArray(cats)) return null;
-  const out = cats
-    .filter((c) => c && Number.isFinite(Number(c.value)))
-    .map((c) => ({
-      value: Number(c.value),
-      label: String(c.label ?? c.value),
-      color: String(c.color ?? '#888888'),
-    }))
-    .sort((a, b) => a.value - b.value);
-  return out.length > 0 ? out : null;
-}
-
 /** Sensible default colormap from the field's units / name when the module gave none. */
 export function cmapFromUnits(units: string, name: string): string {
   const u = (units ?? '').trim().toLowerCase();
@@ -470,64 +498,6 @@ export function cmapGradientCSS(name: string): string {
     stops.push(`rgb(${rgb[idx * 3]},${rgb[idx * 3 + 1]},${rgb[idx * 3 + 2]}) ${((i / (n - 1)) * 100).toFixed(0)}%`);
   }
   return `linear-gradient(to right, ${stops.join(', ')})`;
-}
-
-let colorCtx: CanvasRenderingContext2D | null | undefined;
-
-/** Parse '#rgb' / '#rrggbb' / any CSS colour into [r,g,b]; mid-grey when unparseable. */
-export function parseColor(color: string): [number, number, number] {
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color.trim());
-  if (hex) {
-    let h = hex[1];
-    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  }
-  try {
-    if (colorCtx === undefined) colorCtx = document.createElement('canvas').getContext('2d');
-    if (colorCtx) {
-      colorCtx.fillStyle = '#010203';
-      colorCtx.fillStyle = color;
-      const v = colorCtx.fillStyle;
-      const m = /^#([0-9a-f]{6})$/i.exec(v);
-      if (m) return parseColor(`#${m[1]}`);
-    }
-  } catch {
-    /* no DOM: fall through */
-  }
-  return [136, 136, 136];
-}
-
-/**
- * Register (or refresh) a 256-entry discrete colormap for categorical values.
- * The value axis is vmin = first-0.5 .. vmax = last+0.5, so each category is a solid band.
- */
-export function registerCategoricalCmap(
-  lutName: string,
-  cats: FieldCategory[],
-): { vmin: number; vmax: number } {
-  const vmin = cats[0].value - 0.5;
-  const vmax = cats[cats.length - 1].value + 0.5;
-  const span = vmax - vmin;
-  const rgb = cats.map((c) => parseColor(c.color));
-  const lut = new Uint8Array(256 * 3);
-  for (let i = 0; i < 256; i++) {
-    const v = vmin + ((i + 0.5) / 256) * span;
-    let best = -1;
-    let bestD = Infinity;
-    for (let k = 0; k < cats.length; k++) {
-      const d = Math.abs(v - cats[k].value);
-      if (d < bestD) {
-        bestD = d;
-        best = k;
-      }
-    }
-    const c: [number, number, number] = bestD <= 0.5 + 1e-9 ? rgb[best] : [60, 60, 60];
-    lut[i * 3] = c[0];
-    lut[i * 3 + 1] = c[1];
-    lut[i * 3 + 2] = c[2];
-  }
-  COLORMAP_DATA[lutName] = lut; // new array each time => the renderer re-uploads it
-  return { vmin, vmax };
 }
 
 function buildDisplayedField(
@@ -840,7 +810,20 @@ const runOps = new Map<string, OpHandle>();
 /** Results to drop because the user cancelled (or the file changed) while the run was in flight. */
 const ignoreResults = new Map<string, number>();
 
-function setRunning(moduleId: string, running: boolean): void {
+function setRunning(
+  moduleId: string,
+  running: boolean,
+  opts: { volume?: boolean } = {},
+): void {
+  const timeoutMs = opts.volume ? VOLUME_RUN_TIMEOUT_MS : RUN_TIMEOUT_MS;
+  runningVolume.update((r) => {
+    const want = running && !!opts.volume;
+    if (!!r[moduleId] === want) return r;
+    const next = { ...r };
+    if (want) next[moduleId] = true;
+    else delete next[moduleId];
+    return next;
+  });
   const timer = runTimers.get(moduleId);
   if (timer) {
     clearTimeout(timer);
@@ -860,9 +843,9 @@ function setRunning(moduleId: string, running: boolean): void {
         runTimers.delete(moduleId);
         const title = moduleTitle(moduleId);
         setRunning(moduleId, false);
-        endRunOp(moduleId, 'fail', `No response after ${RUN_TIMEOUT_MS / 1000} s`);
-        addToast('warning', `${title}: no response after ${RUN_TIMEOUT_MS / 1000} s`);
-      }, RUN_TIMEOUT_MS),
+        endRunOp(moduleId, 'fail', `No response after ${timeoutMs / 1000} s`);
+        addToast('warning', `${title}: no response after ${timeoutMs / 1000} s`);
+      }, timeoutMs),
     );
   }
 }
@@ -896,6 +879,7 @@ function clearAllRunning(failMessage?: string): void {
   }
   runTimers.clear();
   runningModules.set({});
+  runningVolume.set({});
   for (const [id, op] of [...runOps]) {
     runOps.delete(id);
     if (failMessage) op.fail(failMessage);
@@ -919,6 +903,17 @@ export function requestModules(reload = false): void {
   void wsManager.send(reload ? { type: 'list_modules', reload: true } : { type: 'list_modules' });
 }
 
+/** Parameter values to send for a module, clamped / defaulted; the form is synced to them. */
+function collectParams(spec: ModuleSpec): Record<string, any> {
+  const values = get(moduleParams)[spec.id] ?? {};
+  const params: Record<string, any> = {};
+  for (const p of spec.params ?? []) params[p.name] = coerceParam(p, values[p.name]);
+  // Keep the form in sync with what was actually sent (clamped / defaulted).
+  moduleParams.update((all) => ({ ...all, [spec.id]: { ...values, ...params } }));
+  saveParams();
+  return params;
+}
+
 /** Run a module on the currently displayed sweep with its current parameters. */
 export function runModule(moduleId: string): void {
   const spec = get(modulesState).modules.find((m) => m.id === moduleId);
@@ -928,13 +923,7 @@ export function runModule(moduleId: string): void {
     return;
   }
 
-  const values = get(moduleParams)[moduleId] ?? {};
-  const params: Record<string, any> = {};
-  for (const p of spec.params ?? []) params[p.name] = coerceParam(p, values[p.name]);
-
-  // Keep the form in sync with what was actually sent (clamped / defaulted).
-  moduleParams.update((all) => ({ ...all, [moduleId]: { ...values, ...params } }));
-  saveParams();
+  const params = collectParams(spec);
 
   const msg: Record<string, any> = {
     type: 'run_module',
@@ -962,6 +951,54 @@ export function runModule(moduleId: string): void {
         setRunning(moduleId, false);
       },
       onRetry: () => runModule(moduleId),
+    }),
+  );
+  void wsManager.send(msg);
+}
+
+/**
+ * Run a per-sweep module on EVERY sweep of the active file and register each output field as a
+ * derived variable (viewable in 2D and 3D). The result arrives as `module_volume_result`.
+ */
+export function runModuleAllSweeps(moduleId: string): void {
+  const spec = get(modulesState).modules.find((m) => m.id === moduleId);
+  if (!spec || get(runningModules)[moduleId]) return;
+  if (!spec.available) {
+    addToast('warning', `${spec.title}: ${spec.unavailable_reason ?? 'module unavailable'}`, 6000);
+    return;
+  }
+  if (!spec.per_sweep) {
+    addToast('warning', `${spec.title} analyses the whole volume in one run; it cannot be run per sweep`, 6000);
+    return;
+  }
+
+  const params = collectParams(spec);
+
+  const msg: Record<string, any> = {
+    type: 'run_module',
+    module: moduleId,
+    sweep: get(selectedSweep),
+    params,
+    all_sweeps: true,
+  };
+  const file = getActiveFile();
+  if (file) msg.file_id = file.id;
+
+  setRunning(moduleId, true, { volume: true });
+  const title = spec.title;
+  runOps.set(
+    moduleId,
+    beginOp({
+      kind: 'module',
+      label: `Running ${title} on all sweeps`,
+      slowMs: 30_000,
+      timeoutMs: 0, // VOLUME_RUN_TIMEOUT_MS (setRunning) ends it
+      onCancel: () => {
+        runOps.delete(moduleId);
+        ignoreResults.set(moduleId, (ignoreResults.get(moduleId) ?? 0) + 1);
+        setRunning(moduleId, false);
+      },
+      onRetry: () => runModuleAllSweeps(moduleId),
     }),
   );
   void wsManager.send(msg);
@@ -1014,6 +1051,8 @@ function handleModulesList(msg: any): void {
     needs: Array.isArray(m.needs) ? m.needs.map(String) : [],
     available: m.available !== false,
     unavailable_reason: typeof m.unavailable_reason === 'string' ? m.unavailable_reason : null,
+    scope: m.scope === 'volume' ? 'volume' : 'sweep',
+    per_sweep: m.per_sweep === true,
   }));
 
   // Merge parameter values: declared defaults < saved < current session.
@@ -1109,6 +1148,72 @@ function handleModuleResult(msg: any): void {
   );
 }
 
+function handleModuleVolumeResult(msg: any): void {
+  const id = String(msg.module);
+  if (consumeIgnored(id)) return; // run was cancelled in the tray
+  setRunning(id, false);
+  endRunOp(id, 'done');
+
+  const fileId: string | null =
+    typeof msg.file_id === 'string' && msg.file_id ? msg.file_id : (getActiveFile()?.id ?? null);
+  const made: VolumeRunResult['derived'] = (Array.isArray(msg.derived) ? msg.derived : [])
+    .map((raw: any) => {
+      const d = normaliseDerived(raw, id);
+      if (!d) return null;
+      const skipped = (Array.isArray(raw.skipped) ? raw.skipped : [])
+        .filter((x: any) => x && Number.isInteger(Number(x.sweep)))
+        .map((x: any) => ({ sweep: Number(x.sweep), reason: String(x.reason ?? '') }));
+      return { ...d, skipped };
+    })
+    .filter((d: any) => d !== null);
+  const evicted: string[] = (Array.isArray(msg.evicted) ? msg.evicted : []).map(String);
+
+  const result: VolumeRunResult = {
+    module: id,
+    fileId,
+    params: msg.params ?? {},
+    elapsed_ms: Number(msg.elapsed_ms) || 0,
+    derived: made,
+    // The sidecar sends {sweep, blocks_scalars:{label:value}}; accept {scalars} as well.
+    summaries: (Array.isArray(msg.summaries) ? msg.summaries : [])
+      .map((x: any) => ({ sweep: Number(x?.sweep), scalars: x?.blocks_scalars ?? x?.scalars }))
+      .filter((x: any) => Number.isInteger(x.sweep) && x.scalars && typeof x.scalars === 'object'),
+    evicted,
+    at: Date.now(),
+  };
+  moduleVolumeResults.update((r) => ({ ...r, [id]: result }));
+
+  // Register right away (the server's own `derived_variables` follows and confirms the list).
+  const names = made.map((d) => d.name);
+  if (fileId) {
+    const prev = get(derivedByFile)[fileId] ?? [];
+    const drop = new Set([...names, ...evicted]);
+    dropDerivedCaches(names); // recomputed under the same name: cached sweeps are stale
+    setDerivedForFile(fileId, [...prev.filter((p) => !drop.has(p.name)), ...made]);
+    if (fileId === getActiveFile()?.id) refreshIfSelected(names);
+  }
+
+  const total = get(radarData).sweeps.length;
+  const toastMs = 9000;
+  if (made.length === 0) {
+    addToast('warning', `${moduleTitle(id)}: finished, but no sweep produced a field`, 8000);
+    return;
+  }
+  const first = made[0];
+  const skippedN = first.skipped.length;
+  const sweepsTxt = `${first.sweeps.length} of ${total || first.sweeps.length + skippedN} sweeps`;
+  const what =
+    made.length === 1
+      ? `"${first.label}" for ${sweepsTxt}`
+      : `${made.length} variables (${made.map((d) => `"${d.label}"`).join(', ')}) for up to ${sweepsTxt}`;
+  addToast(
+    skippedN > 0 ? 'warning' : 'success',
+    `Added ${what} — switch to 3D to see it${skippedN > 0 ? ` (${skippedN} sweep${skippedN === 1 ? '' : 's'} skipped)` : ''}` +
+      (evicted.length > 0 ? `; ${evicted.length} older derived variable${evicted.length === 1 ? '' : 's'} removed` : ''),
+    toastMs,
+  );
+}
+
 function handleModuleField(entry: ModuleFieldEntry): void {
   moduleFields.update((f) => ({ ...f, [fieldKey(entry.module, entry.name)]: entry }));
   if (pendingAutoShow.get(entry.module) === entry.name) {
@@ -1160,6 +1265,7 @@ export function initModules(): void {
 
   wsManager.onMessage('modules_list', handleModulesList);
   wsManager.onMessage('module_result', handleModuleResult);
+  wsManager.onMessage('module_volume_result', handleModuleVolumeResult);
   wsManager.onMessage('module_error', handleModuleError);
   wsManager.onMessage('module_field_ready', handleModuleField);
   // A generic server error while a module is running would otherwise leave the
@@ -1190,6 +1296,7 @@ export function initModules(): void {
       return;
     }
     moduleResults.set({});
+    moduleVolumeResults.set({});
     moduleFields.set({});
     displayedField.set(null);
     selectedFeature.set(null);
@@ -1202,6 +1309,7 @@ export function initModules(): void {
     const has = d.variables.length > 0;
     if (hadVariables && !has) {
       moduleResults.set({});
+      moduleVolumeResults.set({});
       moduleFields.set({});
       displayedField.set(null);
       selectedFeature.set(null);
@@ -1209,3 +1317,28 @@ export function initModules(): void {
     hadVariables = has;
   });
 }
+
+// ── Derived variables: viewing and removing ─────────────────────────────────
+
+/** Ask the app shell to switch the main view ('2d' | '3d'). */
+export function requestViewMode(mode: '2d' | '3d'): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('xradar:set-view-mode', { detail: { mode } }));
+}
+
+/** Select a derived variable (and a sweep that carries it), optionally switching the main view. */
+export function showDerivedVariable(d: DerivedVariable, mode: '2d' | '3d'): void {
+  requestViewMode(mode);
+  // A sweep first: selecting the variable on a sweep that lacks it would bounce straight back.
+  const cur = get(selectedSweep);
+  if (d.sweeps.length > 0 && !d.sweeps.includes(cur)) selectedSweep.set(d.sweeps[0]);
+  hideField();
+  selectedVariable.set(d.name);
+}
+
+/** Remove one derived variable from the sidecar. */
+export function removeDerived(d: DerivedVariable): void {
+  clearDerived(d.name);
+}
+
+export { activeDerived };

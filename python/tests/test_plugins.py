@@ -501,3 +501,54 @@ def test_module_needs_missing_package_is_listed_but_refuses_to_run(tmp_path, mon
     finally:
         monkeypatch.delenv("XRADAR_MODULES_DIR")
         plugins.discover_modules()
+
+
+# ---------------------------------------------------------------------------
+# Module scope (per-sweep vs whole-volume)
+# ---------------------------------------------------------------------------
+
+
+def test_scope_defaults_to_sweep_and_is_described():
+    before = dict(plugins.MODULES)
+    try:
+
+        @plugins.module(id="scope_default", title="Default")
+        def _a(ctx):
+            return plugins.Result()
+
+        @plugins.module(id="scope_volume", title="Volume", scope="volume")
+        def _b(ctx):
+            return plugins.Result()
+
+        info = {m["id"]: m for m in plugins.list_modules()["modules"]}
+        assert (info["scope_default"]["scope"], info["scope_default"]["per_sweep"]) == (
+            "sweep",
+            True,
+        )
+        assert (info["scope_volume"]["scope"], info["scope_volume"]["per_sweep"]) == (
+            "volume",
+            False,
+        )
+        json.dumps(info["scope_volume"], allow_nan=False)
+    finally:
+        plugins.MODULES.clear()
+        plugins.MODULES.update(before)
+
+
+def test_invalid_scope_is_rejected():
+    with pytest.raises(ValueError, match="scope"):
+
+        @plugins.module(id="scope_bad", title="Bad", scope="galaxy")
+        def _c(ctx):  # pragma: no cover - the decorator raises
+            return plugins.Result()
+
+    assert "scope_bad" not in plugins.MODULES
+
+
+def test_builtin_volume_modules_are_marked_volume(registry):
+    volume = {"radarx_vil", "radarx_hail", "radarx_zdr_column", "radarx_zdr_arc"}
+    for mid, spec in registry.MODULES.items():
+        if mid in volume:
+            assert spec.scope == "volume" and not spec.per_sweep, mid
+        else:
+            assert spec.scope == "sweep" and spec.per_sweep, mid

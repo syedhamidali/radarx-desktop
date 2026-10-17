@@ -125,6 +125,25 @@ Notes: freezing level and the -20 C level are parameters (a file does not carry 
 Nyquist velocity is estimated when a file lacks it; on NEXRAD split cuts, sweep 0 holds dual-pol
 and sweep 1 holds velocity, so velocity and dual-pol modules run on different sweeps.
 
+## Seeing a module in 3D (derived variables)
+
+A module normally runs on **one sweep** and shows as a flat 2D picture. For a per-sweep module that
+returns a gridded product, **All sweeps -> 3D** (next to Run) runs it on every sweep that has the
+inputs and registers each output field as a **derived variable** of the open file, e.g.
+`radarx_hid:hydrometeor_class`. It then works like any variable: the 2D variable list (under
+*Derived*), the 3D volume, sweep stepping, the probe and the legend (swatches for categorical
+products). The result card has **View in 2D / View in 3D / Remove** buttons.
+
+* Sweeps that lack a required field are skipped with a reason (NEXRAD split cuts: dual-pol is on
+  some sweeps, velocity on others); the run only fails if every sweep fails.
+* Whole-volume modules (`@module(..., scope="volume")`: VIL, hail, ZDR column, ZDR arc) cannot run
+  per sweep; the default is `scope="sweep"`.
+* Derived data is kept in memory per file (budget 1 GB, `XRADAR_DERIVED_MAX_MB`; least recently used
+  variables are evicted whole). It is dropped when the file is closed, re-opened or processed.
+* Only `get_sweep_data` serves derived names (so 2D, 3D and the probe work; the cross-section,
+  statistics and export tools use real variables).
+* Object results (storm cells, couplets, arcs) are not gridded fields and are not shown in 3D.
+
 ## Protocol (for tooling)
 
 ```
@@ -137,6 +156,14 @@ and sweep 1 holds velocity, so velocity and dual-pol modules run on different sw
                                              vmin, vmax, units, max_range, chunks, file_id}
                                              followed by `chunks` binary frames [azimuth f32][range f32][values f32]
 → {type:"save_text_file", path, content, overwrite?}   ← {type:"file_saved", path} | {type:"error"}
+→ {type:"run_module", module, sweep, params, file_id?, all_sweeps:true}
+                                           ← progress ("<module>: sweep 4/16"), then
+                                           ← {type:"module_volume_result", module, file_id, params, elapsed_ms,
+                                             derived:[{name, label, field, units, vmin, vmax, cmap, categories,
+                                             sweeps:[...], skipped:[{sweep, reason}]}], summaries:[{sweep, blocks_scalars}],
+                                             evicted:[...]}  then  {type:"derived_variables", file_id, variables:[...]}
+→ {type:"list_derived", file_id?} / {type:"clear_derived", file_id?, name?}  ← {type:"derived_variables", ...}
+→ get_sweep_data with a derived name: same wire format, header adds derived:true, label, categories, cmap
 ```
 
 ## Notes

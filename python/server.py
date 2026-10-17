@@ -13,6 +13,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 import traceback
 import uuid
@@ -29,7 +30,7 @@ if str(_server_dir) not in sys.path:
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import mosaic, plugins
+from engine import derived, mosaic, plugins
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -40,7 +41,7 @@ from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.exporter import RadarExporter
 from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
 from engine.qc import QC_REGISTRY, QCPipeline
-from engine.reader import RadarReader, _serializable
+from engine.reader import RadarReader, _serializable, sorted_sweep_names
 from engine.renderer import RadarRenderer, _resolve_range
 from engine.retrievals import RETRIEVAL_REGISTRY, run_retrieval
 from engine.statistics import get_statistics
@@ -483,6 +484,8 @@ class ConnectionHandler:
             "get_cross_section_3d": self._handle_get_cross_section_3d,
             "list_modules": self._handle_list_modules,
             "run_module": self._handle_run_module,
+            "list_derived": self._handle_list_derived,
+            "clear_derived": self._handle_clear_derived,
             "save_text_file": self._handle_save_text_file,
             "create_mosaic": self._handle_create_mosaic,
             "mosaic_probe": self._handle_mosaic_probe,
@@ -926,6 +929,9 @@ class ConnectionHandler:
         else:
             # Entries are token-keyed so they could never be served again; free the memory.
             _shared_renderer.invalidate_cache()
+            store = derived.store_for(removed, create=False)
+            if store is not None:
+                store.drop()
 
         # If we closed the active file, fall back to the most recently opened remaining one.
         if _last_file_id == file_id:
@@ -1031,6 +1037,9 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
 
         def _load_and_pack() -> tuple[dict[str, Any], list[np.ndarray]]:
+            served = _derived_sweep_data(reader, sweep, variable)
+            if served is not None:
+                return served
             return _pack_field(reader.get_sweep_data(sweep, variable), variable)
 
         fields, arrays = await loop.run_in_executor(None, _load_and_pack)
@@ -1068,9 +1077,14 @@ class ConnectionHandler:
         reader._dtree = result_tree
         if resolved_id is not None and resolved_id in _generations:
             _generations[resolved_id] += 1
+        # Derived variables were computed from the old tree: never serve them again.
+        stale = derived.store_for(reader, create=False)
+        dropped = stale.drop() if stale is not None else []
         if not _RENDER_ACCEPTS_TOKEN:
             _shared_renderer.invalidate_cache()
 
+        if dropped:
+            await self._send_derived_list(resolved_id, reader, dropped=dropped)
         await self.send_progress(100, "Processing complete")
 
     async def _handle_export(self, msg: dict[str, Any]) -> None:
@@ -2143,9 +2157,15 @@ class ConnectionHandler:
             raise plugins.ModuleError("run_module: 'params' must be an object")
         if module_id not in plugins.MODULES:
             raise plugins.ModuleError(f"Unknown module '{module_id}'")
+        all_sweeps = msg.get("all_sweeps", False)
+        if all_sweeps is not None and not isinstance(all_sweeps, bool):
+            raise plugins.ModuleError("run_module: 'all_sweeps' must be a boolean")
 
         resolved_id, reader = _resolve_reader(msg.get("file_id"))
         datatree = reader.datatree
+        if all_sweeps:
+            await self._run_module_all_sweeps(msg, module_id, params, resolved_id, reader)
+            return
         if datatree is None:
             raise plugins.ModuleError("No file is open")
 
@@ -2185,6 +2205,125 @@ class ConnectionHandler:
                     **_field_range(block, arrays[2]),
                 },
             )
+
+    async def _run_module_all_sweeps(
+        self,
+        msg: dict[str, Any],
+        module_id: str,
+        params: dict[str, Any],
+        resolved_id: str | None,
+        reader: RadarReader,
+    ) -> None:
+        """Run a per-sweep module on every sweep and register its fields as derived variables.
+
+        Success: ``module_volume_result`` (see :func:`_volume_result_message`) followed by
+        ``derived_variables``. Failure: ``ModuleError`` -> ``module_error`` as for one sweep.
+        """
+        spec = plugins.MODULES[module_id]
+        if not spec.per_sweep:
+            raise plugins.ModuleError(
+                "This module computes a whole-volume product and cannot be run per sweep"
+            )
+        missing = spec.missing_packages()
+        if missing:
+            raise plugins.ModuleError(
+                f"{spec.title} needs the Python package {', '.join(missing)} "
+                f"(pip install {' '.join(missing)})"
+            )
+        plugins._coerce_params(spec.params, params)  # bad parameters fail the run, not each sweep
+        datatree = reader.datatree
+        if datatree is None:
+            raise plugins.ModuleError("No file is open")
+        n_sweeps = len(sorted_sweep_names(datatree))
+        out_file_id = resolved_id or msg.get("file_id")
+
+        await self.send_progress(2, f"{spec.title}: starting on {n_sweeps} sweeps")
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        cancel = threading.Event()  # set when the connection (this task) goes away
+
+        def _grid(i: int) -> tuple[int, int]:
+            ds = reader.get_sweep_dataset(i, mask=False)
+            return int(ds["azimuth"].size), int(ds["range"].size)
+
+        def _sweep_moments(i: int) -> set[str]:
+            data_vars = reader.get_sweep_dataset(i, mask=False).data_vars
+            return {str(k) for k, v in data_vars.items() if v.ndim >= 2}
+
+        def _run() -> tuple[derived.VolumeRun, list[tuple[str, dict[int, np.ndarray], dict]]]:
+            run = derived.run_all_sweeps(
+                module_id,
+                datatree,
+                n_sweeps,
+                params,
+                get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
+                get_sweep_variables=_sweep_moments,
+                get_sweep_grid=_grid,
+                progress=progress_sync,
+                is_cancelled=cancel.is_set,
+            )
+            return run, derived.build_variables(run)
+
+        try:
+            run, built = await loop.run_in_executor(None, _run)
+        except BaseException:
+            cancel.set()  # the worker stops after the sweep it is on
+            raise
+
+        # The file may have been closed or replaced (process, re-open) while we computed.
+        still_open = resolved_id is None or _file_readers.get(resolved_id) is reader
+        if not still_open or reader.datatree is not datatree:
+            raise plugins.ModuleError(
+                "The file was closed or changed while the module was running; result discarded"
+            )
+        store = derived.store_for(reader)
+        assert store is not None
+        evicted: list[str] = []
+        try:
+            for name, arrays, meta in built:
+                evicted.extend(store.put_variable(name, arrays, meta))
+        except derived.DerivedError as exc:
+            raise plugins.ModuleError(str(exc)) from exc
+        names = {name for name, _, _ in built}
+        evicted = [n for n in dict.fromkeys(evicted) if n not in names or not store.has(n)]
+        await self.send(_volume_result_message(run, built, store, evicted, out_file_id))
+        await self._send_derived_list(out_file_id, reader, evicted=evicted)
+
+    async def _send_derived_list(
+        self,
+        file_id: str | None,
+        reader: RadarReader,
+        *,
+        evicted: list[str] | None = None,
+        dropped: list[str] | None = None,
+    ) -> None:
+        store = derived.store_for(reader, create=False)
+        msg: dict[str, Any] = {
+            "type": "derived_variables",
+            "file_id": file_id,
+            "variables": store.variables() if store is not None else [],
+        }
+        if evicted:
+            msg["evicted"] = evicted
+        if dropped:
+            msg["dropped"] = dropped
+        await self.send(msg)
+
+    async def _handle_list_derived(self, msg: dict[str, Any]) -> None:
+        """``{type: "list_derived", file_id?}`` -> ``{type: "derived_variables", ...}``."""
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        await self._send_derived_list(resolved_id or msg.get("file_id"), reader)
+
+    async def _handle_clear_derived(self, msg: dict[str, Any]) -> None:
+        """``{type: "clear_derived", file_id?, name?}``: drop one (or all) derived variables."""
+        name = msg.get("name")
+        if name is not None and not isinstance(name, str):
+            await self.send_error("clear_derived: 'name' must be a string")
+            return
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        store = derived.store_for(reader, create=False)
+        dropped = store.drop(name) if store is not None else []
+        await self._send_derived_list(resolved_id or msg.get("file_id"), reader, dropped=dropped)
 
     # ------------------------------------------------------------------
     # Text export (CSV / GeoJSON written by the UI)
@@ -2483,6 +2622,91 @@ def _field_range(block: dict[str, Any], values: np.ndarray) -> dict[str, float]:
     if vmax <= vmin:
         vmax = vmin + 1.0
     return {"vmin": float(vmin), "vmax": float(vmax)}
+
+
+def _derived_sweep_data(
+    reader: RadarReader, sweep: int, variable: str
+) -> tuple[dict[str, Any], list[np.ndarray]] | None:
+    """Wire-format payload of a derived variable on *sweep*; ``None`` if *variable* is not one.
+
+    Same frames as a normal variable; the header additionally carries ``derived: true`` and the
+    variable's label, categories, colormap, units and the one colour range shared by all sweeps.
+    """
+    store = derived.store_for(reader, create=False)
+    if store is None or not store.has(variable):
+        return None
+    ds = reader.get_sweep_dataset(sweep, mask=False)
+    got = store.get(sweep, variable)
+    if got is None:
+        available = sorted({str(v) for v in ds.data_vars} | set(store.names_on_sweep(sweep)))
+        raise KeyError(f"Variable '{variable}' not in sweep {sweep}. Available: {available}")
+    values, meta = got
+    azimuth, range_m = ds["azimuth"].values, ds["range"].values
+    if values.shape != (azimuth.size, range_m.size):
+        raise ValueError(f"Derived variable '{variable}' no longer matches sweep {sweep}'s grid")
+    import xarray as xr
+
+    da = xr.DataArray(
+        values,
+        dims=("azimuth", "range"),
+        coords={"azimuth": azimuth, "range": range_m},
+        attrs={"units": meta.get("units", "")},
+    )
+    fields, arrays = _pack_field(da, variable)
+    fields.update(
+        derived=True,
+        label=meta.get("label", variable),
+        categories=meta.get("categories"),
+        cmap=meta.get("cmap"),
+        units=meta.get("units", ""),
+    )
+    if meta.get("vmin") is not None and meta.get("vmax") is not None:
+        fields.update(vmin=float(meta["vmin"]), vmax=float(meta["vmax"]))
+    return fields, arrays
+
+
+def _volume_result_message(
+    run: derived.VolumeRun,
+    built: list[tuple[str, dict[int, np.ndarray], dict[str, Any]]],
+    store: derived.DerivedStore,
+    evicted: list[str],
+    file_id: str | None,
+) -> dict[str, Any]:
+    """The ``module_volume_result`` message for a finished all-sweeps run."""
+    listing = {v["name"]: v for v in store.variables()}
+    entries = []
+    for name, arrays, meta in built:
+        if name not in listing:  # evicted again by a later variable of the same run
+            continue
+        made = set(arrays)
+        skipped = list(run.skipped) + [
+            {"sweep": s, "reason": f"module returned no '{meta['field']}' field on this sweep"}
+            for s in sorted(set(run.per_sweep_ms) - made)
+        ]
+        entries.append(
+            {
+                "name": name,
+                "label": meta["label"],
+                "field": meta["field"],
+                "units": meta["units"],
+                "vmin": meta["vmin"],
+                "vmax": meta["vmax"],
+                "cmap": meta["cmap"],
+                "categories": meta["categories"],
+                "sweeps": sorted(made),
+                "skipped": sorted(skipped, key=lambda r: r["sweep"]),
+            }
+        )
+    return {
+        "type": "module_volume_result",
+        "module": run.module,
+        "file_id": file_id,
+        "params": run.params,
+        "elapsed_ms": run.elapsed_ms,
+        "derived": entries,
+        "summaries": run.summaries,
+        "evicted": evicted,
+    }
 
 
 def _sweep_dataset(reader: RadarReader, index: int):

@@ -64,6 +64,7 @@ Gaussian smoothing of the depth is not applied. KDP columns are not included."""
     requires=["ZDR"],
     optional=["DBZH", "RHOHV"],
     needs=A.NEEDS,
+    scope="volume",
     params=[
         param(
             "freezing_level_m",
