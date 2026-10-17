@@ -9,6 +9,7 @@
     processingProgress,
   } from '../stores/radarData';
   import { wsManager } from '../utils/websocket';
+  import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
@@ -51,6 +52,46 @@
   let unsubRadar: (() => void) | null = null;
   let unsubProgress: (() => void) | null = null;
   let unsubNotification: (() => void) | null = null;
+  let unsubError: (() => void) | null = null;
+  let unsubConn: (() => void) | null = null;
+
+  // Operations-tray entry for the export in flight. Big batch / animation exports can legitimately
+  // take minutes, so the safety timeout is generous; the panel's own state is released with it.
+  let exportOp: OpHandle | null = null;
+  const EXPORT_TIMEOUT_MS = 5 * 60 * 1000;
+
+  function beginExport(label: string, retry: () => void) {
+    if (exportOp) { const prev = exportOp; exportOp = null; cancelOp(prev.id); }
+    isExporting = true;
+    progressPercent = 0;
+    progressMessage = '';
+    const op: OpHandle = beginOp({
+      kind: 'export',
+      label,
+      slowMs: 20_000,
+      timeoutMs: EXPORT_TIMEOUT_MS,
+      onCancel: () => {
+        // The server cannot abort an export; stop waiting and let the panel be used again.
+        if (exportOp === op) exportOp = null;
+        isExporting = false;
+      },
+      onRetry: retry,
+    });
+    exportOp = op;
+    // Timeout (state 'failed' set by the scheduler) aborts the signal: release the panel too.
+    op.signal.addEventListener('abort', () => {
+      if (exportOp === op) { exportOp = null; isExporting = false; }
+    });
+  }
+
+  function endExport(error?: string) {
+    const op = exportOp;
+    exportOp = null;
+    isExporting = false;
+    if (!op) return;
+    if (error) op.fail(error);
+    else op.done();
+  }
 
   onMount(() => {
     unsubRadar = radarData.subscribe((rd) => {
@@ -63,8 +104,10 @@
       if (p) {
         progressPercent = p.percent;
         progressMessage = p.message;
+        if (exportOp) exportOp.update(`${p.message || 'Exporting...'} (${Math.round(p.percent)}%)`);
         if (p.percent >= 100) {
-          setTimeout(() => { isExporting = false; }, 1000);
+          const op = exportOp;
+          setTimeout(() => { if (exportOp === op) endExport(); }, 1000);
         }
       }
     });
@@ -73,8 +116,16 @@
       if (n) {
         addToast('success', `${n}`);
         exportNotification.set(null);
-        isExporting = false;
+        endExport();
       }
+    });
+
+    // A server error or a lost connection would otherwise leave the panel stuck on "Exporting...".
+    unsubError = wsManager.onMessage('error', (m) => {
+      if (exportOp) endExport(String(m?.message ?? 'Export failed'));
+    });
+    unsubConn = connectionStatus.subscribe((st) => {
+      if (st !== 'connected' && exportOp) endExport('Connection to the sidecar was lost');
     });
   });
 
@@ -82,6 +133,9 @@
     unsubRadar?.();
     unsubProgress?.();
     unsubNotification?.();
+    unsubError?.();
+    unsubConn?.();
+    if (exportOp) { const op = exportOp; exportOp = null; cancelOp(op.id); }
   });
 
   // Batch variable/sweep selection helpers
@@ -138,7 +192,7 @@
 
   function doQuickExport(fmt: string) {
     if (!canExport) return;
-    isExporting = true;
+    beginExport(`Exporting ${fmt.toUpperCase()}`, () => doQuickExport(fmt));
     wsManager.send({
       type: 'export',
       format: fmt,
@@ -161,7 +215,7 @@
       addToast('error', 'Select at least one sweep for batch export');
       return;
     }
-    isExporting = true;
+    beginExport(`Batch export (${vars.length * sweeps.length} images)`, () => doBatchExport());
     wsManager.send({
       type: 'batch_export',
       variables: vars,
@@ -175,7 +229,7 @@
 
   function doDataExport(fmt: string) {
     if (!canExport) return;
-    isExporting = true;
+    beginExport(`Exporting ${fmt.toUpperCase()} data`, () => doDataExport(fmt));
     wsManager.send({
       type: 'export',
       format: fmt,
@@ -196,7 +250,7 @@
       addToast('error', 'Animation requires at least 2 sweeps');
       return;
     }
-    isExporting = true;
+    beginExport(`Exporting animation (${sweeps.length} frames)`, () => doAnimationExport());
     wsManager.send({
       type: 'export_animation',
       variable: $selectedVariable,

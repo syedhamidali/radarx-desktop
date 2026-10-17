@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import RadarViewer from './lib/components/RadarViewer.svelte';
   import RadarViewer3D from './lib/components/RadarViewer3D.svelte';
   import DualPolDashboard from './lib/components/DualPolDashboard.svelte';
@@ -16,6 +16,7 @@
   import ShortcutsSheet from './lib/components/ShortcutsSheet.svelte';
   import AboutDialog from './lib/components/AboutDialog.svelte';
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
+  import OperationsTray from './lib/components/OperationsTray.svelte';
   import TimeSeriesChart from './lib/components/TimeSeriesChart.svelte';
   import Timeline from './lib/components/Timeline.svelte';
   import DiffViewer from './lib/components/DiffViewer.svelte';
@@ -24,6 +25,8 @@
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
   import { sidecarPort } from './lib/stores/settings';
   import { wsManager } from './lib/utils/websocket';
+  import { beginOp, cancelOp, dismissOp, type OpHandle } from './lib/utils/requestScheduler';
+  import { startUiHealth, stopUiHealth } from './lib/utils/uiHealth';
   import { addToast } from './lib/stores/toasts';
   import { workspaceStore, type WorkspaceConfig } from './lib/stores/workspace';
 
@@ -63,6 +66,13 @@
   let unlistenDragDrop: (() => void) | null = null;
   let destroyed = false;
   let unsubFileOpened: (() => void) | null = null;
+  let unsubOpenError: (() => void) | null = null;
+  let unsubConn: (() => void) | null = null;
+  let openOp: OpHandle | null = null;
+  let progressOp: OpHandle | null = null;
+  const OPEN_TIMEOUT_MS = 90_000;
+  const PROGRESS_SLOW_MS = 30_000;
+  const PROGRESS_STALE_MS = 60_000;
   let animTimer: ReturnType<typeof setInterval> | null = null;
   let isResizingLeft = false;
   let isResizingRight = false;
@@ -97,7 +107,16 @@
     applyWorkspace(wsConfig);
 
     // Stop animation whenever any file (including cloud) finishes opening
-    unsubFileOpened = wsManager.onMessage('file_opened', () => stopAnimation());
+    unsubFileOpened = wsManager.onMessage('file_opened', () => {
+      stopAnimation();
+      finishOpenOp();
+    });
+    // A rejected open (or a dropped connection) must not leave "Opening..." hanging.
+    unsubOpenError = wsManager.onMessage('error', (m) => finishOpenOp(String(m?.message ?? 'Open failed')));
+    unsubConn = connectionStatus.subscribe((st) => {
+      if (st !== 'connected') finishOpenOp('Connection to the sidecar was lost');
+    });
+    startUiHealth();
 
     window.addEventListener('keydown', handleKeyDown);
     // Check for first-launch onboarding
@@ -140,6 +159,9 @@
     stopAnimation();
     if (unlistenDragDrop) unlistenDragDrop();
     unsubFileOpened?.();
+    unsubOpenError?.();
+    unsubConn?.();
+    stopUiHealth();
   });
 
   /** True when keystrokes are meant for a form control / editable element. */
@@ -229,10 +251,83 @@
     }
   }
 
+  /** End the operations-tray entry of the local file open (success, or failure with a reason). */
+  function finishOpenOp(error?: string) {
+    const op = openOp;
+    if (!op) return;
+    if (error) {
+      openOp = null;
+      op.fail(error);
+    } else {
+      // Keep a timed-out op reachable so a late file_opened still resolves it; clear otherwise.
+      openOp = null;
+      op.done();
+    }
+  }
+
+  function beginOpenOp(path: string) {
+    if (openOp) { const prev = openOp; openOp = null; cancelOp(prev.id); }
+    const name = path.split('/').pop() ?? path;
+    const op: OpHandle = beginOp({
+      kind: 'open',
+      label: `Opening ${name}`,
+      slowMs: 8_000,
+      timeoutMs: OPEN_TIMEOUT_MS,
+      // The server cannot abort an open; stop waiting (a late file_opened still opens the file).
+      onCancel: () => { if (openOp === op) openOp = null; },
+      onRetry: () => { stopAnimation(); sendOpenFile(path); },
+    });
+    openOp = op;
+  }
+
+  /** Track global progress messages as an operation so a stalled "xx%" can never hang forever. */
+  function trackProgress(p: { percent: number; message: string } | null) {
+    if (!p || p.percent >= 100) {
+      if (progressOp) { const op = progressOp; progressOp = null; op.done(); }
+      return;
+    }
+    const text = `${p.message || 'Processing'} (${Math.round(p.percent)}%)`;
+    if (progressOp) {
+      progressOp.start(); // a fresh message restarts the slow / stale clocks
+      progressOp.update(text);
+      return;
+    }
+    let userCancelled = false;
+    const op: OpHandle = beginOp({
+      kind: 'progress',
+      label: p.message || 'Processing',
+      slowMs: PROGRESS_SLOW_MS,
+      timeoutMs: PROGRESS_STALE_MS,
+      onCancel: () => {
+        userCancelled = true;
+        if (progressOp === op) progressOp = null;
+        processingProgress.set(null);
+      },
+    });
+    op.signal.addEventListener('abort', () => {
+      // cancelOp aborts before onCancel runs: decide after the current call stack settles.
+      queueMicrotask(() => {
+        if (userCancelled || progressOp !== op) return;
+        progressOp = null;
+        processingProgress.set(null);
+        dismissOp(op.id);
+        addToast('warning', 'Progress message timed out');
+      });
+    });
+    progressOp = op;
+    op.update(text);
+  }
+
+  $effect(() => {
+    const p = $processingProgress;
+    untrack(() => trackProgress(p));
+  });
+
   function sendOpenFile(path: string) {
     selectedVariable.set(null); // Clear before open so stale variable doesn't trigger a render on the old reader
     radarData.update((d) => ({ ...d, filePath: path }));
     selectedSweep.set(0);
+    beginOpenOp(path);
     wsManager.openFile(path);
     addToast('info', `Opening ${path.split('/').pop() ?? path}...`);
   }
@@ -497,6 +592,7 @@
         <span class="text-muted">No file loaded -- drag and drop or Ctrl+O</span>
       {/if}
     </div>
+    <OperationsTray />
     <div class="statusbar-right">
       <span class="text-muted">{typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+K commands</span>
       <span class="statusbar-divider">|</span>
@@ -627,7 +723,8 @@
   .progress-text { color: var(--accent-hover); font-size: 10px; animation: subtle-breathe 2s ease-in-out infinite; }
   .statusbar-left, .statusbar-center, .statusbar-right { display: flex; align-items: center; gap: 6px; }
   .statusbar-left { min-width: 120px; }
-  .statusbar-center { flex: 1; justify-content: center; }
+  .statusbar-center { flex: 1; justify-content: center; min-width: 0; overflow: hidden; }
+  @media (max-width: 900px) { .statusbar-right { display: none; } }
   .statusbar-right { min-width: 100px; justify-content: flex-end; }
   .statusbar-divider { color: var(--glass-border); margin: 0 4px; }
   .status-dot-sm { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; transition: background var(--transition-normal); }

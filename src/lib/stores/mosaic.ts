@@ -14,6 +14,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { wsManager } from '../utils/websocket';
+import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { openFiles, type FileEntry } from './fileManager';
 import { connectionStatus } from './radarData';
 import { addToast } from './toasts';
@@ -480,12 +481,22 @@ function newRequestId(): string {
   return `mosaic-${Date.now().toString(36)}-${requestCounter}`;
 }
 
+/** Operations-tray entry of the in-flight run (null when none / already finished). */
+let mosaicOp: OpHandle | null = null;
+
 function finishRun(patch: Partial<MosaicRunState>): void {
   if (runSafetyTimer) {
     clearTimeout(runSafetyTimer);
     runSafetyTimer = null;
   }
+  const op = mosaicOp;
+  mosaicOp = null;
   mosaicRun.update((r) => ({ ...r, running: false, ...patch }));
+  if (op) {
+    if (patch.error) op.fail(patch.error);
+    else if (patch.percent === 100) op.done();
+    else cancelOp(op.id); // cancelMosaicRun(): onCancel finds mosaicOp already cleared
+  }
 }
 
 export interface RunOptions {
@@ -552,6 +563,26 @@ export function runMosaic(opts: RunOptions = {}): string | null {
   if (s.vmax !== null) msg.vmax = s.vmax;
 
   pendingRingKm.set(requestId, s.maxRangeKm);
+  if (mosaicOp) {
+    // A new run supersedes the previous one (its result will be dropped as stale).
+    const prev = mosaicOp;
+    mosaicOp = null;
+    cancelOp(prev.id);
+  }
+  // The 10 min safety timer below ends the tray entry, so no second timeout here.
+  mosaicOp = beginOp({
+    kind: 'mosaic',
+    label: `Building mosaic (${ids.length} radar${ids.length === 1 ? '' : 's'})`,
+    slowMs: 20_000,
+    timeoutMs: 0,
+    onCancel: () => {
+      mosaicOp = null;
+      cancelMosaicRun();
+    },
+    onRetry: () => {
+      runMosaic(opts);
+    },
+  });
   mosaicRun.set({ running: true, requestId, percent: 0, message: 'Starting…', error: null });
   if (runSafetyTimer) clearTimeout(runSafetyTimer);
   runSafetyTimer = setTimeout(() => {
@@ -561,6 +592,11 @@ export function runMosaic(opts: RunOptions = {}): string | null {
         ? { ...r, running: false, error: 'No response from the sidecar (timed out)' }
         : r,
     );
+    if (get(mosaicRun).requestId === requestId && mosaicOp) {
+      const op = mosaicOp;
+      mosaicOp = null;
+      op.fail('No response from the sidecar (timed out)');
+    }
   }, RUN_TIMEOUT_MS);
   void wsManager.send(msg);
   return requestId;
@@ -619,6 +655,8 @@ function handleProgress(msg: any): void {
     percent: typeof msg.percent === 'number' ? Math.max(0, Math.min(100, msg.percent)) : r.percent,
     message: typeof msg.message === 'string' && msg.message ? msg.message : r.message,
   }));
+  const after = get(mosaicRun);
+  mosaicOp?.update(after.message ? `${after.message} (${Math.round(after.percent)}%)` : `${Math.round(after.percent)}%`);
 }
 
 let probeInflight = 0;
