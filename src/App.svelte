@@ -111,6 +111,15 @@
     viewMode = config.viewMode;
   }
 
+  /** Panels (e.g. a module's "View in 3D") ask for a view through a window event. */
+  function handleSetViewMode(e: Event) {
+    const mode = (e as CustomEvent<{ mode?: string }>).detail?.mode;
+    if (mode === '2d' || mode === '3d' || mode === 'dualpol') {
+      viewMode = mode;
+      syncWorkspace();
+    }
+  }
+
   function syncWorkspace() {
     workspaceStore.updateCurrentConfig({
       leftSidebarOpen,
@@ -146,6 +155,7 @@
     startUiHealth();
 
     window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('xradar:set-view-mode', handleSetViewMode);
     // Check for first-launch onboarding
     if (!localStorage.getItem('xradar-onboarding-done')) {
       onboardingVisible = true;
@@ -192,6 +202,7 @@
   onDestroy(() => {
     destroyed = true;
     window.removeEventListener('keydown', handleKeyDown);
+    window.removeEventListener('xradar:set-view-mode', handleSetViewMode);
     // Sidebar drag may still be in progress (listeners are attached lazily).
     window.removeEventListener('mousemove', onResizeMove);
     window.removeEventListener('mouseup', onResizeEnd);

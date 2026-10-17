@@ -63,6 +63,7 @@ melting layer is enhanced, so VIL over a bright band is overestimated."""
     category="Storm",
     requires=["DBZH"],
     needs=A.NEEDS,
+    scope="volume",
     params=[
         param("product", "select", "vil", "Product", options=list(PRODUCTS)),
         param(

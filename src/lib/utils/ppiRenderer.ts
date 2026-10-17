@@ -24,6 +24,7 @@ import { renderCache, type CachedMesh } from './renderCache';
 import { perfStats } from '../stores/perfStats';
 import { buildSharpMesh, buildSmoothMesh, type SmoothMesh } from './meshBuilder';
 import type { MeshWorkerOutput } from '../workers/meshWorker';
+import { styleFor } from './variableStyles';
 
 // ─── Sweep data cache ────────────────────────────────────────────────────
 export interface SweepDataEntry {
@@ -38,6 +39,14 @@ export interface SweepDataEntry {
   vmin: number;
   vmax: number;
   units: string;
+  /** Set for variables produced by a plugin module (not stored in the file). */
+  derived?: boolean;
+  /** Human label of a derived variable. */
+  label?: string;
+  /** Class table of a categorical derived variable. */
+  categories?: { value: number; label: string; color: string }[] | null;
+  /** Colormap name the producer asked for (derived variables). */
+  cmap?: string | null;
 }
 
 // Insertion-ordered Map doubles as an LRU list (oldest first).
@@ -92,6 +101,18 @@ export function getCachedSweep(variable: string, sweep: number): SweepDataEntry 
   return entry;
 }
 
+/** Drop every cached sweep (and mesh) of one variable, e.g. a derived variable that was recomputed. */
+export function evictCachedVariable(variable: string): void {
+  const prefix = `${variable}:`;
+  for (const [k, e] of [...sweepCache]) {
+    if (k.startsWith(prefix) && e.variable === variable) {
+      sweepCacheBytes -= entryBytes(e);
+      sweepCache.delete(k);
+    }
+  }
+  renderCache.clear(); // meshes are keyed by variable:sweep with no per-variable eviction; rebuilt on demand
+}
+
 export function clearSweepCache(): void {
   sweepCache.clear();
   sweepCacheBytes = 0;
@@ -102,6 +123,8 @@ export function clearSweepCache(): void {
 
 /** Get the default colormap name for a radar variable. */
 export function getDefaultCmap(variable: string): string {
+  const styled = styleFor(variable);
+  if (styled) return styled.cmap;
   if (VARIABLE_CMAP_DEFAULTS[variable]) return VARIABLE_CMAP_DEFAULTS[variable];
   const vl = variable.toLowerCase();
   if (vl.includes('dbz') || vl.includes('reflectivity') || vl.includes('power')) return 'NWSRef';
@@ -116,6 +139,8 @@ export function getDefaultCmap(variable: string): string {
 
 /** Get default vmin/vmax for a variable. */
 export function getDefaultRange(variable: string): [number, number] | null {
+  const styled = styleFor(variable);
+  if (styled) return [styled.vmin, styled.vmax];
   return VARIABLE_RANGE_DEFAULTS[variable] ?? null;
 }
 

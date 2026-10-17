@@ -10,6 +10,8 @@
   import StormOverlay from './StormOverlay.svelte';
   import ModuleOverlay from './ModuleOverlay.svelte';
   import { displayedField, hideField, type DisplayedField } from '../stores/modules';
+  import { activeDerived } from '../stores/derived';
+  import { styleFor, variableStylesRevision } from '../utils/variableStyles';
   import MapBackground from './MapBackground.svelte';
   import GeoOverlay from './GeoOverlay.svelte';
   import MeasureTools from './MeasureTools.svelte';
@@ -99,6 +101,20 @@
 
   // ── Derived state ─────────────────────────────────────────────────────────
   const variables = $derived($radarData.variables);
+  /** Derived variables (module outputs) of the open file, offered under their own group in the select. */
+  const derivedVars = $derived($activeDerived);
+  /** Registered presentation of the selected variable (derived variables only). */
+  const varStyle = $derived.by(() => {
+    void $variableStylesRevision;
+    return styleFor($selectedVariable);
+  });
+  const variableLabel = $derived(varStyle?.label ?? $selectedVariable ?? '');
+  /** Class swatches for the legend: a shown module field, else a categorical derived variable. */
+  const legendCategories = $derived.by(() => {
+    const f = fieldShown as DisplayedField | null;
+    return f ? f.spec.categories : (varStyle?.categories ?? null);
+  });
+  const legendTitle = $derived(((fieldShown as DisplayedField | null)?.title) ?? variableLabel);
   const sweeps = $derived($radarData.sweeps);
   const variable = $derived($selectedVariable);
   const sweep = $derived($selectedSweep);
@@ -345,6 +361,14 @@
       currentVmin = field.spec.vmin;
       currentVmax = field.spec.vmax;
       currentUnits = field.spec.units;
+    } else if (entry.derived && styleFor(entry.variable)) {
+      // Derived variable: its registered style (it may have arrived after the request was issued)
+      currentCmap = getDefaultCmap(entry.variable);
+      const r = getDefaultRange(entry.variable);
+      if (r) {
+        currentVmin = r[0];
+        currentVmax = r[1];
+      }
     } else if (!getDefaultRange(entry.variable)) {
       // Use server-reported range as fallback if no defaults exist
       currentVmin = entry.vmin;
@@ -532,7 +556,7 @@
 
     const val = entry.values[bestAi * entry.nRange + bestRi];
     probeValue = val <= -9998 ? null : val;
-    const cat = probeValue !== null ? fieldShown?.spec.categories?.find((c) => c.value === Math.round(probeValue!)) : undefined;
+    const cat = probeValue !== null ? legendCategories?.find((c) => c.value === Math.round(probeValue!)) : undefined;
     probeLabel = cat ? cat.label : null;
 
     // Update the temporal probe point for time series analysis
@@ -632,6 +656,13 @@
           {#each variables as v}
             <option value={v}>{v}</option>
           {/each}
+          {#if derivedVars.length > 0}
+            <optgroup label="Derived">
+              {#each derivedVars as d (d.name)}
+                <option value={d.name} title="{d.label} ({d.sweeps.length} sweeps)">{d.label}</option>
+              {/each}
+            </optgroup>
+          {/if}
         </select>
       </div>
 
@@ -650,7 +681,7 @@
 
       {#if variable}
         <div class="control-info">
-          <span class="active-var">{variable}</span>
+          <span class="active-var" title={variable}>{variableLabel}</span>
           {#if sweeps[sweep]}
             <span class="active-sweep">{sweeps[sweep]?.elevation?.toFixed(1) ?? '?'}°</span>
           {/if}
@@ -900,15 +931,17 @@
 
       {#if hasRendered && !mosaicViewOn}
         <div class="colorbar-wrapper">
-          {#if fieldShown?.spec.categories}
-            <div class="cat-legend" role="list" aria-label="{fieldShown.title} categories">
-              {#each fieldShown.spec.categories as c (c.value)}
+          {#if legendCategories}
+            <div class="cat-legend" role="list" aria-label="{legendTitle} categories">
+              {#if legendTitle}<span class="cat-title">{legendTitle}</span>{/if}
+              {#each legendCategories as c (c.value)}
                 <span class="cat-item" role="listitem">
                   <span class="cat-swatch" style="background: {c.color}"></span>{c.label}
                 </span>
               {/each}
             </div>
           {:else}
+            {#if varStyle && !fieldShown}<div class="legend-title">{variableLabel}</div>{/if}
             <ColorBar
               cmapName={currentCmap}
               vmin={currentVmin}
@@ -1207,6 +1240,17 @@
     font-size: 11px;
     color: var(--text-secondary);
     backdrop-filter: blur(4px);
+  }
+
+  .cat-title { font-weight: 600; color: var(--text-primary); }
+
+  .legend-title {
+    text-align: center;
+    margin-bottom: 2px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-primary);
+    text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
   }
 
   .cat-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }

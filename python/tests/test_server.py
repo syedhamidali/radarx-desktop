@@ -1230,3 +1230,484 @@ class TestProgressAlwaysCloses:
         handler, _ = _make_handler()
         await handler.handle_message(json.dumps({"type": "ping"}))
         assert not [m for m in handler._sent if m["type"] == "progress"]
+
+
+# ---------------------------------------------------------------------------
+# Derived variables (run a module on all sweeps)
+# ---------------------------------------------------------------------------
+
+ELEV4 = [0.5, 1.5, 2.5, 3.5]
+CATS = [
+    {"value": 1, "label": "Low", "color": "#3b82f6"},
+    {"value": 2, "label": "High", "color": "#ef4444"},
+]
+
+
+@pytest.fixture()
+def derived_modules():
+    from engine.plugins import ModuleError, Result, module, param
+
+    before = dict(plugins.MODULES)
+    calls: list[int] = []
+
+    @module(
+        id="srv_derived_scale",
+        title="Scale (test)",
+        category="Test",
+        requires=["DBZH"],
+        params=[param("factor", "number", 1.0, "Factor", min=0, max=100)],
+    )
+    def scale(ctx, factor):
+        calls.append(ctx.sweep)
+        ctx.progress(50, "half")
+        z = ctx.field("DBZH").values.astype(np.float32).copy()
+        z[0, 0] = np.nan
+        res = Result().scalars({"sweep": ctx.sweep})
+        res.table("t", ["a"], [{"a": 1}])
+        res.field("Scaled (radarx)", z * factor, units="dBZ", vmin=-10, vmax=60, cmap="turbo")
+        res.field("Class", np.where(z > 10, 2.0, 1.0), categories=CATS)
+        return res
+
+    @module(id="srv_derived_other", title="Other (test)", category="Test", requires=["DBZH"])
+    def other(ctx):
+        return Result().field("Other", ctx.field("DBZH").values * 0.0 + ctx.sweep, units="x")
+
+    @module(id="srv_derived_picky", title="Picky (test)", category="Test", requires=["DBZH"])
+    def picky(ctx):
+        if ctx.sweep == 2:
+            raise ModuleError("sweep two is cursed")
+        return Result().field("P", ctx.field("DBZH").values, units="dBZ")
+
+    @module(id="srv_derived_vol", title="Volume (test)", category="Test", scope="volume")
+    def vol(ctx):
+        return Result()
+
+    @module(id="srv_derived_badfield", title="Bad (test)", category="Test", requires=["DBZH"])
+    def bad(ctx):
+        return Result().field("oops", np.zeros((3, 4), dtype=np.float32))
+
+    yield calls
+    plugins.MODULES.clear()
+    plugins.MODULES.update(before)
+
+
+def _open_synthetic(elevations=None, n_az: int = 20, n_range: int = 30):
+    tree = make_synthetic_datatree(n_azimuth=n_az, n_range=n_range, elevations=elevations or ELEV4)
+    reader = _reader_with_tree(tree)
+    return server._register_reader(reader), reader
+
+
+async def _run_all(handler, file_id, module="srv_derived_scale", **extra):
+    await handler.handle_message(
+        json.dumps(
+            {
+                "type": "run_module",
+                "module": module,
+                "all_sweeps": True,
+                "file_id": file_id,
+                **extra,
+            }
+        )
+    )
+
+
+def _types(handler, *, skip_progress: bool = True) -> list[str]:
+    return [m["type"] for m in handler._sent if not (skip_progress and m["type"] == "progress")]
+
+
+async def _fetch_sweep(handler, file_id, variable, sweep):
+    """get_sweep_data -> (header, azimuth, range, values) or (error_message,)."""
+    start = len(handler._frames)
+    await handler.handle_message(
+        json.dumps(
+            {"type": "get_sweep_data", "variable": variable, "sweep": sweep, "file_id": file_id}
+        )
+    )
+    new = handler._frames[start:]
+    errors = [f for k, f in new if k == "json" and f["type"] == "error"]
+    if errors:
+        return (errors[0]["message"],)
+    hdr = next(f for k, f in new if k == "json" and f["type"] == "sweep_data")
+    blob = b"".join(f for k, f in new if k == "bin")
+    assert len(blob) == hdr["azimuth_bytes"] + hdr["range_bytes"] + hdr["values_bytes"]
+    az = np.frombuffer(blob[: hdr["azimuth_bytes"]], np.float32)
+    rng = np.frombuffer(
+        blob[hdr["azimuth_bytes"] : hdr["azimuth_bytes"] + hdr["range_bytes"]], np.float32
+    )
+    vals = np.frombuffer(blob[hdr["azimuth_bytes"] + hdr["range_bytes"] :], np.float32)
+    return hdr, az, rng, vals.reshape(hdr["n_az"], hdr["n_range"])
+
+
+class TestDerivedVariables:
+    @pytest.mark.asyncio
+    async def test_all_sweeps_run_registers_and_lists_derived_variables(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, params={"factor": 2})
+        assert _types(handler) == ["module_volume_result", "derived_variables"]
+        assert derived_modules == [0, 1, 2, 3]  # one sweep at a time, in order
+
+        res = handler._sent[[m["type"] for m in handler._sent].index("module_volume_result")]
+        assert res["module"] == "srv_derived_scale" and res["file_id"] == file_id
+        assert res["params"] == {"factor": 2.0} and res["evicted"] == []
+        assert res["elapsed_ms"] >= 0
+        by_name = {d["name"]: d for d in res["derived"]}
+        assert set(by_name) == {"srv_derived_scale:scaled", "srv_derived_scale:class"}
+        scaled = by_name["srv_derived_scale:scaled"]
+        assert scaled["label"] == "Scaled (radarx)" and scaled["field"] == "Scaled (radarx)"
+        assert (scaled["units"], scaled["vmin"], scaled["vmax"], scaled["cmap"]) == (
+            "dBZ",
+            -10,
+            60,
+            "turbo",
+        )
+        assert scaled["sweeps"] == [0, 1, 2, 3] and scaled["skipped"] == []
+        assert scaled["categories"] is None
+        cls = by_name["srv_derived_scale:class"]
+        assert cls["categories"] == CATS and (cls["vmin"], cls["vmax"]) == (1.0, 2.0)
+        # summaries are only the scalar blocks, per sweep
+        assert [s["sweep"] for s in res["summaries"]] == [0, 1, 2, 3]
+        assert res["summaries"][2]["blocks_scalars"] == {"sweep": 2}
+
+        listing = next(m for m in handler._sent if m["type"] == "derived_variables")
+        assert listing["file_id"] == file_id
+        assert {v["name"] for v in listing["variables"]} == set(by_name)
+        v = next(v for v in listing["variables"] if v["name"] == "srv_derived_scale:scaled")
+        assert v["sweeps"] == [0, 1, 2, 3] and v["module"] == "srv_derived_scale"
+        assert reader.derived.nbytes == 2 * 4 * 20 * 30 * 4
+
+        # list_derived gives the same listing on request
+        handler._sent.clear()
+        await handler.handle_message(json.dumps({"type": "list_derived", "file_id": file_id}))
+        assert handler._sent == [listing]
+
+    @pytest.mark.asyncio
+    async def test_progress_is_per_sweep_and_closes_at_100(self, derived_modules):
+        file_id, _ = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id)
+        progress = [m for m in handler._sent if m["type"] == "progress"]
+        assert progress[-1]["percent"] == 100 and handler._sent[-1] is progress[-1]
+        assert all(p["percent"] < 100 for p in progress[:-1])
+        pcts = [p["percent"] for p in progress]
+        assert pcts == sorted(pcts)
+        msgs = {p["message"] for p in progress}
+        assert {f"Scale: sweep {i}/4" for i in (1, 2, 3, 4)} <= msgs
+
+    @pytest.mark.asyncio
+    async def test_get_sweep_data_serves_derived_with_extra_header_keys(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, params={"factor": 2})
+        name = "srv_derived_scale:scaled"
+        hdr, az, rng, vals = await _fetch_sweep(handler, file_id, name, 2)
+        assert hdr["type"] == "sweep_data" and hdr["variable"] == name and hdr["sweep"] == 2
+        assert hdr["derived"] is True and hdr["label"] == "Scaled (radarx)"
+        assert (hdr["units"], hdr["vmin"], hdr["vmax"], hdr["cmap"], hdr["categories"]) == (
+            "dBZ",
+            -10.0,
+            60.0,
+            "turbo",
+            None,
+        )
+        assert (hdr["n_az"], hdr["n_range"]) == (20, 30) and hdr["max_range"] > 0
+        ds = reader.get_sweep_dataset(2, mask=False)
+        np.testing.assert_allclose(az, ds["azimuth"].values.astype(np.float32))
+        np.testing.assert_allclose(rng, ds["range"].values.astype(np.float32))
+        expected = ds["DBZH"].values.astype(np.float32) * 2
+        assert vals[0, 0] == -9999.0  # NaN -> sentinel
+        np.testing.assert_allclose(vals.ravel()[1:], expected.ravel()[1:], rtol=1e-6)
+
+        hdr, *_ = await _fetch_sweep(handler, file_id, "srv_derived_scale:class", 0)
+        assert hdr["categories"] == CATS and hdr["cmap"] is None and hdr["derived"] is True
+        assert (hdr["vmin"], hdr["vmax"]) == (1.0, 2.0)
+
+        # a normal variable keeps its normal header
+        hdr, *_ = await _fetch_sweep(handler, file_id, "DBZH", 0)
+        assert "derived" not in hdr and "label" not in hdr
+
+    @pytest.mark.asyncio
+    async def test_derived_name_missing_on_sweep_and_unknown_names(self, derived_modules):
+        file_id, _ = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, module="srv_derived_picky")
+        res = next(m for m in handler._sent if m["type"] == "module_volume_result")
+        (entry,) = res["derived"]
+        assert entry["name"] == "srv_derived_picky:p" and entry["sweeps"] == [0, 1, 3]
+        assert [s["sweep"] for s in entry["skipped"]] == [2]
+        assert "cursed" in entry["skipped"][0]["reason"]
+
+        (msg,) = await _fetch_sweep(handler, file_id, "srv_derived_picky:p", 2)
+        assert "Variable 'srv_derived_picky:p' not in sweep 2" in msg and "Available:" in msg
+        # derived names that DO exist on that sweep are offered
+        await _run_all(handler, file_id, module="srv_derived_other")
+        (msg,) = await _fetch_sweep(handler, file_id, "srv_derived_picky:p", 2)
+        assert "srv_derived_other:other" in msg and "DBZH" in msg
+        # unknown names behave as before
+        (msg,) = await _fetch_sweep(handler, file_id, "nope:nope", 0)
+        assert "Variable 'nope:nope' not in sweep 0" in msg
+        assert "srv_derived_other" not in msg  # exactly the message an unknown name always had
+        (msg,) = await _fetch_sweep(handler, file_id, "NOPE", 0)
+        assert "Variable 'NOPE' not in sweep 0" in msg
+
+    @pytest.mark.asyncio
+    async def test_split_cut_sweeps_are_skipped_with_a_reason(self, derived_modules):
+        tree = make_synthetic_datatree(n_azimuth=20, n_range=30, elevations=ELEV4)
+        # NEXRAD split cuts: odd sweeps are Doppler-only.
+        for i in (1, 3):
+            tree[f"sweep_{i}"] = tree[f"sweep_{i}"].to_dataset().drop_vars("DBZH")
+        file_id = server._register_reader(_reader_with_tree(tree))
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id)
+        res = next(m for m in handler._sent if m["type"] == "module_volume_result")
+        for entry in res["derived"]:
+            assert entry["sweeps"] == [0, 2]
+            assert [s["sweep"] for s in entry["skipped"]] == [1, 3]
+            for s in entry["skipped"]:
+                assert "DBZH" in s["reason"] and "VRADH" in s["reason"]
+        assert [s["sweep"] for s in res["summaries"]] == [0, 2]
+        (msg,) = await _fetch_sweep(handler, file_id, "srv_derived_scale:scaled", 1)
+        assert "not in sweep 1" in msg
+
+    @pytest.mark.asyncio
+    async def test_every_sweep_failing_is_a_module_error(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, module="srv_derived_badfield")
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1 and errors[0]["module"] == "srv_derived_badfield"
+        assert "any sweep" in errors[0]["message"] and "oops" in errors[0]["message"]
+        assert "module_volume_result" not in _types(handler)
+        assert _types(handler)[-1:] == ["module_error"]
+        assert handler._sent[-1]["type"] == "progress" and handler._sent[-1]["percent"] == 100
+        assert getattr(reader, "derived", None) is None or reader.derived.variables() == []
+
+    @pytest.mark.asyncio
+    async def test_volume_scope_module_is_rejected(self, derived_modules):
+        file_id, _ = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, module="srv_derived_vol")
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert [e["message"] for e in errors] == [
+            "This module computes a whole-volume product and cannot be run per sweep"
+        ]
+        assert errors[0]["module"] == "srv_derived_vol"
+        assert "module_volume_result" not in _types(handler)
+        assert handler._sent[-1] == {
+            "type": "progress",
+            "percent": 100,
+            "message": "Module finished",
+        }
+        # ...but it still runs normally on one sweep
+        handler._sent.clear()
+        await handler.handle_message(
+            json.dumps({"type": "run_module", "module": "srv_derived_vol", "file_id": file_id})
+        )
+        assert "module_result" in _types(handler)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "needle"),
+        [
+            ({"all_sweeps": "yes"}, "all_sweeps"),
+            ({"all_sweeps": True, "params": {"factor": "abc"}}, "factor"),
+            ({"all_sweeps": True, "module": "does_not_exist"}, "Unknown module"),
+            ({"all_sweeps": True, "file_id": "gone"}, "gone"),
+        ],
+    )
+    async def test_all_sweeps_validation_errors(self, derived_modules, extra, needle):
+        file_id, _ = _open_synthetic()
+        handler, _ = _make_handler()
+        payload = {"type": "run_module", "module": "srv_derived_scale", "file_id": file_id, **extra}
+        await handler.handle_message(json.dumps(payload))
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1 and needle in errors[0]["message"]
+        assert handler._sent[-1]["percent"] == 100
+
+    @pytest.mark.asyncio
+    async def test_all_sweeps_with_no_file_open(self, derived_modules):
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps({"type": "run_module", "module": "srv_derived_scale", "all_sweeps": True})
+        )
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1 and "No file is open" in errors[0]["message"]
+
+    @pytest.mark.asyncio
+    async def test_rerun_replaces_variable_for_all_sweeps(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, module="srv_derived_picky")
+        assert reader.derived.variables()[0]["sweeps"] == [0, 1, 3]
+        # Same variable name; this time sweep 2 is also computed by a re-registered module.
+        plugins.MODULES["srv_derived_picky"].func = lambda ctx: plugins.Result().field(
+            "P", ctx.field("DBZH").values * 0 + 7, units="dBZ"
+        )
+        await _run_all(handler, file_id, module="srv_derived_picky")
+        (var,) = reader.derived.variables()
+        assert var["sweeps"] == [0, 1, 2, 3]
+        _, _, _, vals = await _fetch_sweep(handler, file_id, "srv_derived_picky:p", 1)
+        assert (vals == 7).all()
+        listing = [m for m in handler._sent if m["type"] == "derived_variables"][-1]
+        assert listing["variables"][0]["sweeps"] == [0, 1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_clear_derived_one_or_all(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id)  # two variables
+        handler._sent.clear()
+        await handler.handle_message(
+            json.dumps(
+                {"type": "clear_derived", "file_id": file_id, "name": "srv_derived_scale:class"}
+            )
+        )
+        (msg,) = handler._sent
+        assert msg["type"] == "derived_variables" and msg["file_id"] == file_id
+        assert [v["name"] for v in msg["variables"]] == ["srv_derived_scale:scaled"]
+        (err,) = await _fetch_sweep(handler, file_id, "srv_derived_scale:class", 0)
+        assert "not in sweep 0" in err
+        handler._sent.clear()
+        await handler.handle_message(json.dumps({"type": "clear_derived", "file_id": file_id}))
+        assert handler._sent[0]["variables"] == [] and reader.derived.nbytes == 0
+        handler._sent.clear()
+        await handler.handle_message(
+            json.dumps({"type": "clear_derived", "file_id": file_id, "name": 5})
+        )
+        assert handler._sent[0]["type"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_derived_dropped_on_close_file(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        other_id, other = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id)
+        await _run_all(handler, other_id)
+        store = reader.derived
+        assert store.nbytes > 0
+        await handler.handle_message(json.dumps({"type": "close_file", "file_id": file_id}))
+        assert store.nbytes == 0 and store.variables() == []
+        assert other.derived.nbytes > 0  # another file is untouched
+        handler._sent.clear()
+        await handler.handle_message(json.dumps({"type": "list_derived", "file_id": file_id}))
+        assert handler._sent[0]["type"] == "error"
+        (err,) = await _fetch_sweep(handler, file_id, "srv_derived_scale:scaled", 0)
+        assert "file_id" in err
+
+    @pytest.mark.asyncio
+    async def test_derived_not_served_after_the_tree_is_replaced(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id)
+        # what `process` / a re-open does: swap in a different tree
+        reader._dtree = make_synthetic_datatree(n_azimuth=20, n_range=30, elevations=ELEV4)
+        (err,) = await _fetch_sweep(handler, file_id, "srv_derived_scale:scaled", 0)
+        assert "not in sweep 0" in err
+        handler._sent.clear()
+        await handler.handle_message(json.dumps({"type": "list_derived", "file_id": file_id}))
+        assert handler._sent[0]["variables"] == []
+
+    @pytest.mark.asyncio
+    async def test_process_drops_derived_and_notifies(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id)
+        handler._sent.clear()
+        with patch.object(server._shared_processor, "process", lambda tree, pipeline, cb: tree):
+            await handler.handle_message(
+                json.dumps({"type": "process", "pipeline": {}, "file_id": file_id})
+            )
+        notice = next(m for m in handler._sent if m["type"] == "derived_variables")
+        assert notice["variables"] == [] and notice["file_id"] == file_id
+        assert sorted(notice["dropped"]) == ["srv_derived_scale:class", "srv_derived_scale:scaled"]
+        assert reader.derived.nbytes == 0
+
+    @pytest.mark.asyncio
+    async def test_eviction_is_reported_and_whole_variables_only(
+        self, derived_modules, monkeypatch
+    ):
+        one_variable = 4 * 20 * 30 * 4
+        # room for exactly one variable (a bit more than one, less than two)
+        monkeypatch.setenv("XRADAR_DERIVED_MAX_MB", str(one_variable * 1.5 / (1024 * 1024)))
+        file_id, _ = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, module="srv_derived_other")
+        handler._sent.clear()
+        await _run_all(handler, file_id, module="srv_derived_picky")
+        res = next(m for m in handler._sent if m["type"] == "module_volume_result")
+        assert res["evicted"] == ["srv_derived_other:other"]
+        listing = next(m for m in handler._sent if m["type"] == "derived_variables")
+        assert [v["name"] for v in listing["variables"]] == ["srv_derived_picky:p"]
+        assert listing["evicted"] == ["srv_derived_other:other"]
+        (err,) = await _fetch_sweep(handler, file_id, "srv_derived_other:other", 0)
+        assert "not in sweep 0" in err
+
+    @pytest.mark.asyncio
+    async def test_variable_larger_than_budget_is_a_module_error(
+        self, derived_modules, monkeypatch
+    ):
+        monkeypatch.setenv("XRADAR_DERIVED_MAX_MB", "0.001")
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        await _run_all(handler, file_id, module="srv_derived_other")
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1 and "budget" in errors[0]["message"]
+        assert "module_volume_result" not in _types(handler)
+        assert reader.derived.variables() == []
+
+    @pytest.mark.asyncio
+    async def test_result_discarded_if_file_closed_during_the_run(self, derived_modules):
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+
+        def closing(ctx):
+            server._file_readers.pop(file_id, None)  # closed from another connection
+            return plugins.Result().field("Z", ctx.field("DBZH").values, units="dBZ")
+
+        plugins.MODULES["srv_derived_other"].func = closing
+        await _run_all(handler, file_id, module="srv_derived_other")
+        errors = [m for m in handler._sent if m["type"] == "module_error"]
+        assert len(errors) == 1 and "closed or changed" in errors[0]["message"]
+        assert getattr(reader, "derived", None) is None or reader.derived.variables() == []
+
+    @pytest.mark.asyncio
+    async def test_cancelled_run_stops_after_the_current_sweep(self, derived_modules):
+        import threading
+
+        file_id, reader = _open_synthetic()
+        handler, _ = _make_handler()
+        started, release = threading.Event(), threading.Event()
+        seen: list[int] = []
+
+        def slow(ctx):
+            seen.append(ctx.sweep)
+            started.set()
+            release.wait(10)
+            return plugins.Result().field("Z", ctx.field("DBZH").values, units="dBZ")
+
+        plugins.MODULES["srv_derived_other"].func = slow
+        loop = asyncio.get_running_loop()
+        task = asyncio.ensure_future(
+            handler.handle_message(
+                json.dumps(
+                    {
+                        "type": "run_module",
+                        "module": "srv_derived_other",
+                        "all_sweeps": True,
+                        "file_id": file_id,
+                    }
+                )
+            )
+        )
+        await loop.run_in_executor(None, started.wait, 10)
+        task.cancel()  # the connection went away
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        for _ in range(100):  # let the worker thread notice
+            await asyncio.sleep(0.02)
+            if seen == [0]:
+                break
+        await asyncio.sleep(0.1)
+        assert seen == [0]  # sweeps 1..3 never ran
+        assert getattr(reader, "derived", None) is None or reader.derived.variables() == []

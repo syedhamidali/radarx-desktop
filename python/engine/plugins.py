@@ -48,6 +48,10 @@ import xarray as xr
 logger = logging.getLogger(__name__)
 
 PARAM_TYPES = ("number", "int", "bool", "select", "string")
+# "sweep": computed from one sweep, so it can also run on every sweep and become a derived
+# variable. "volume": integrates/grids the whole volume and returns one product on a single
+# sweep's grid, so running it per sweep makes no sense.
+MODULE_SCOPES = ("sweep", "volume")
 
 # Canonical variable aliases — a module asking for "ZDR" also matches
 # "differential_reflectivity" etc. (same table the dual-pol tools use).
@@ -396,6 +400,12 @@ class ModuleSpec:
     version: str = "1.0"
     optional: list[str] = field(default_factory=list)
     needs: list[str] = field(default_factory=list)
+    scope: str = "sweep"
+
+    @property
+    def per_sweep(self) -> bool:
+        """True if the module can be run independently on each sweep (``scope == "sweep"``)."""
+        return self.scope == "sweep"
 
     def missing_packages(self) -> list[str]:
         """Names from ``needs`` that cannot be imported right now."""
@@ -414,6 +424,8 @@ class ModuleSpec:
             "source": self.source,
             "version": self.version,
             "needs": self.needs,
+            "scope": self.scope,
+            "per_sweep": self.per_sweep,
             "available": not missing,
             "unavailable_reason": (
                 f"Requires the Python package{'s' if len(missing) > 1 else ''} "
@@ -440,17 +452,24 @@ def module(
     params: list[dict[str, Any]] | None = None,
     version: str = "1.0",
     needs: list[str] | None = None,
+    scope: str = "sweep",
 ) -> Callable[[Callable[..., Result]], Callable[..., Result]]:
     """Register ``func(ctx, **params) -> Result`` as a module.
 
     ``needs`` lists optional Python packages (import names, e.g. ``["radarx"]``). The module
     is always listed, but is marked unavailable (and refuses to run) when one is missing, so
     import those packages *inside* the function, not at module top level.
+
+    ``scope`` is ``"sweep"`` (default: the module works on the selected sweep alone, so it can
+    also be run on all sweeps to build a derived variable) or ``"volume"`` (it uses the whole
+    volume and returns one product on a single sweep's grid).
     """
 
     def decorator(func: Callable[..., Result]) -> Callable[..., Result]:
         if not id or not id.replace("_", "").replace("-", "").isalnum():
             raise ValueError(f"module id {id!r} must be alphanumeric/underscore/dash")
+        if scope not in MODULE_SCOPES:
+            raise ValueError(f"module '{id}': scope must be one of {MODULE_SCOPES}, got {scope!r}")
         names = [p["name"] for p in (params or [])]
         if len(names) != len(set(names)):
             raise ValueError(f"module '{id}' declares duplicate param names")
@@ -468,6 +487,7 @@ def module(
             source=_current_source,
             version=version,
             needs=list(needs or []),
+            scope=scope,
         )
         return func
 

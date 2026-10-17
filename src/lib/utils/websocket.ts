@@ -14,6 +14,7 @@ import { addToast } from '../stores/toasts';
 import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './ppiRenderer';
 import { addFile, getActiveFile, saveActiveSelection, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
+import { registerVariableStyle, styleFor } from './variableStyles';
 
 type MessageHandler = (data: any) => void;
 
@@ -618,6 +619,11 @@ class WebSocketManager {
         // Handled by custom handlers registered in CrossSectionPanel
         break;
 
+      case 'module_volume_result':
+      case 'derived_variables':
+        // Handled by custom handlers registered in the modules / derived stores
+        break;
+
       case 'data_table_result':
       case 'metadata_tree_result':
         // Handled by custom handlers registered in DataTable / MetadataViewer
@@ -740,6 +746,25 @@ class WebSocketManager {
       vmax: header.vmax,
       units: header.units,
     };
+    if (header.derived === true) {
+      // A derived variable (plugin module output) carries its own presentation. The registry normally
+      // knows it already (derived_variables); register from the header when it does not, so the sweep
+      // still renders with the right colours and legend.
+      entry.derived = true;
+      if (typeof header.label === 'string') entry.label = header.label;
+      entry.categories = Array.isArray(header.categories) && header.categories.length > 0 ? header.categories : null;
+      entry.cmap = typeof header.cmap === 'string' ? header.cmap : null;
+      if (!styleFor(entry.variable)) {
+        registerVariableStyle(entry.variable, {
+          label: entry.label,
+          units: entry.units,
+          vmin: entry.vmin,
+          vmax: entry.vmax,
+          cmap: entry.cmap,
+          categories: entry.categories,
+        });
+      }
+    }
 
     this.finalizeSweepEntry(entry, isQc, msgType);
   }
@@ -954,6 +979,14 @@ class WebSocketManager {
   isUnavailable(variable: string, sweep: number, fileId?: string): boolean {
     const fid = fileId ?? this.viewCtx?.fileId ?? getActiveFile()?.id ?? '';
     return this.unavailableSweeps.has(`${fid}|${variable}:${sweep}`);
+  }
+
+  /** Forget "not in this sweep" answers for a variable (a derived variable was recomputed). */
+  clearUnavailable(variable: string): void {
+    const needle = `|${variable}:`;
+    for (const k of [...this.unavailableSweeps]) {
+      if (k.includes(needle)) this.unavailableSweeps.delete(k);
+    }
   }
 
   /** Number of sweep requests queued / on the wire (diagnostics and tests). */

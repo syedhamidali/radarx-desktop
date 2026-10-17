@@ -32,6 +32,11 @@
     initModules,
     requestModules,
     runModule,
+    runModuleAllSweeps,
+    runningVolume,
+    moduleVolumeResults,
+    showDerivedVariable,
+    removeDerived,
     cancelModuleRun,
     clearResult,
     setParam,
@@ -48,7 +53,9 @@
     type ModuleBlock,
     type FieldBlock,
     type TableColumn,
+    type VolumeRunResult,
   } from '../stores/modules';
+  import { activeDerived, type DerivedVariable } from '../stores/derived';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
   const SEARCH_THRESHOLD = 6;
@@ -118,6 +125,49 @@
       return `Missing required variable${missing.length > 1 ? 's' : ''} in sweep ${$selectedSweep}: ${missing.join(', ')}`;
     }
     return null;
+  }
+
+  /**
+   * Why the module cannot be run on all sweeps right now, or null if it can. Unlike a single run
+   * this does not depend on the sweep on screen: one sweep carrying the inputs is enough.
+   */
+  function volumeBlockedReason(m: ModuleSpec): string | null {
+    if (!m.available) return m.unavailable_reason ?? 'Module unavailable (missing Python package)';
+    if (!isConnected) return 'Sidecar not connected';
+    if (!hasData) return 'Open a radar file first';
+    const sweeps = $radarData.sweeps;
+    if (sweeps.length > 0) {
+      const ok = sweeps.some(
+        (sw) => missingRequirements(m, availableVariables($radarData.variables, sweeps, sw.index)).length === 0,
+      );
+      if (!ok) return `No sweep in this file carries: ${(m.requires ?? []).join(', ')}`;
+    }
+    return null;
+  }
+
+  const ALL_SWEEPS_TIP = 'Run on every sweep and add the result as a variable you can view in 3D';
+  const VOLUME_SCOPE_TIP = 'This module analyses the whole volume in one run, so it cannot be run per sweep';
+
+  /** Derived variables of the open file made by one module. */
+  function derivedOf(list: DerivedVariable[], moduleId: string): DerivedVariable[] {
+    return list.filter((d) => d.module === moduleId);
+  }
+
+  function sweepsTitle(d: DerivedVariable): string {
+    return `Sweeps: ${d.sweeps.join(', ') || 'none'}`;
+  }
+
+  function evictedLabels(vol: VolumeRunResult): string {
+    return vol.evicted.join(', ');
+  }
+
+  /** Scalar columns shown in the per-sweep summary (first few keys that occur). */
+  function summaryCols(vol: VolumeRunResult): string[] {
+    const cols: string[] = [];
+    for (const s of vol.summaries) {
+      for (const k of Object.keys(s.scalars)) if (!cols.includes(k)) cols.push(k);
+    }
+    return cols.slice(0, 5);
   }
 
   // ── Param helpers ────────────────────────────────────────────────────────
@@ -480,6 +530,75 @@
   </div>
 {/snippet}
 
+{#snippet derivedSection(m: ModuleSpec, list: DerivedVariable[], vol: VolumeRunResult | undefined)}
+  <div class="derived" data-testid="derived-{m.id}">
+    <div class="result-head">
+      <span class="result-meta">Derived variables{#if vol}{' \u00b7 '}{formatElapsed(vol.elapsed_ms)}{/if}</span>
+    </div>
+    {#if vol && vol.evicted.length > 0}
+      <p class="help evicted" role="status">
+        Removed {vol.evicted.length} older derived variable{vol.evicted.length === 1 ? '' : 's'} to make room: {evictedLabels(vol)}
+      </p>
+    {/if}
+    {#each list as d (d.name)}
+      {@const isCurrent = $selectedVariable === d.name}
+      {@const skipped = vol?.derived.find((x) => x.name === d.name)?.skipped ?? []}
+      <div class="derived-chip" class:current={isCurrent}>
+        <div class="chip-head">
+          <span class="chip-name" title={d.name}>{d.label}</span>
+          <span class="chip-meta mono" title={sweepsTitle(d)}>
+            {d.sweeps.length} sweep{d.sweeps.length === 1 ? '' : 's'}{#if d.units}{' \u00b7 '}{d.units}{/if}
+          </span>
+        </div>
+        {#if d.categories}
+          <ul class="cat-list" aria-label="{d.label} categories">
+            {#each d.categories as c (c.value)}
+              <li><span class="cat-sw" style="background: {c.color}"></span>{c.label}</li>
+            {/each}
+          </ul>
+        {/if}
+        {#if skipped.length > 0}
+          <p class="help" title={skipped.map((x) => `sweep ${x.sweep}: ${x.reason}`).join('\n')}>
+            Skipped {skipped.length} sweep{skipped.length === 1 ? '' : 's'}: {skipped.map((x) => x.sweep).join(', ')}
+          </p>
+        {/if}
+        <div class="chip-actions">
+          <button type="button" class="mini-btn" onclick={() => showDerivedVariable(d, '2d')}
+                  title="Select it in the 2D view (switches to a sweep that carries it)">View in 2D</button>
+          <button type="button" class="mini-btn" onclick={() => showDerivedVariable(d, '3d')}
+                  title="Select it and switch to the 3D volume view">View in 3D</button>
+          <button type="button" class="mini-btn danger" onclick={() => removeDerived(d)}
+                  title="Remove this derived variable from the file">Remove</button>
+        </div>
+      </div>
+    {/each}
+    {#if vol && vol.summaries.length > 0}
+      {@const cols = summaryCols(vol)}
+      <details class="sum-details">
+        <summary>Per-sweep summary ({vol.summaries.length} sweeps)</summary>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th scope="col">Sweep</th>
+                {#each cols as c (c)}<th scope="col">{c}</th>{/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each vol.summaries as row (row.sweep)}
+                <tr>
+                  <td class="mono">{row.sweep}</td>
+                  {#each cols as c (c)}<td class="mono">{fmtCell(row.scalars[c])}</td>{/each}
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </details>
+    {/if}
+  </div>
+{/snippet}
+
 <CollapsiblePanel title="Modules" badge={modules.length > 0 ? modules.length : null}>
   <div class="modules-root">
     <div class="toolbar">
@@ -534,6 +653,10 @@
         {#each list as m (m.id)}
           {@const reason = blockedReason(m)}
           {@const running = !!$runningModules[m.id]}
+          {@const volRunning = !!$runningVolume[m.id]}
+          {@const volReason = m.per_sweep ? volumeBlockedReason(m) : null}
+          {@const derivedMine = derivedOf($activeDerived, m.id)}
+          {@const vol = $moduleVolumeResults[m.id]}
           {@const res = $moduleResults[m.id]}
           {@const open = isOpen(m.id)}
           <div class="card" class:unavailable={!m.available} style="--mod-color: {$moduleColors[m.id]}">
@@ -554,16 +677,34 @@
                   </svg>
                 </span>
               </button>
-              <span class="run-wrap" title={reason ?? (running ? 'Running...' : `Run ${m.title}`)}>
-                <button
-                  type="button"
-                  class="run-btn"
-                  onclick={() => runModule(m.id)}
-                  disabled={!!reason || running}
-                  aria-describedby={reason ? `reason-${m.id}` : undefined}
-                >
-                  {#if running}<span class="spinner"></span>Running{:else}Run{/if}
-                </button>
+              <span class="run-wrap" class:two-row={m.per_sweep}>
+                <span title={reason ?? (running ? 'Running...' : `Run ${m.title} on the sweep on screen`)}>
+                  <button
+                    type="button"
+                    class="run-btn"
+                    onclick={() => runModule(m.id)}
+                    disabled={!!reason || running}
+                    aria-describedby={reason ? `reason-${m.id}` : undefined}
+                  >
+                    {#if running && !volRunning}<span class="spinner"></span>Running{:else}Run{/if}
+                  </button>
+                </span>
+                {#if m.per_sweep}
+                  <span title={volReason ?? (volRunning ? 'Running on all sweeps...' : ALL_SWEEPS_TIP)}>
+                    <button
+                      type="button"
+                      class="run-btn secondary all-btn"
+                      data-testid="run-all-{m.id}"
+                      onclick={() => runModuleAllSweeps(m.id)}
+                      disabled={!!volReason || running}
+                      aria-label="{m.title}: run on all sweeps and add the result as a 3D variable"
+                    >
+                      {#if volRunning}<span class="spinner"></span>All sweeps{:else}All sweeps &rarr; 3D{/if}
+                    </button>
+                  </span>
+                {:else if m.scope === 'volume'}
+                  <span class="scope-hint" title={VOLUME_SCOPE_TIP} aria-label={VOLUME_SCOPE_TIP}>volume</span>
+                {/if}
                 {#if running}
                   <button type="button" class="run-btn cancel-btn" onclick={() => cancelModuleRun(m.id)} title="Stop waiting for this run">Cancel</button>
                 {/if}
@@ -603,6 +744,10 @@
                   </form>
                 {/if}
               </div>
+            {/if}
+
+            {#if derivedMine.length > 0}
+              {@render derivedSection(m, derivedMine, vol)}
             {/if}
 
             {#if res}
@@ -768,6 +913,7 @@
 
   .card-head {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: var(--spacing-sm, 8px);
   }
@@ -777,6 +923,7 @@
     min-width: 0;
     display: flex;
     align-items: center;
+    justify-content: flex-start;
     gap: 6px;
     padding: 4px 0;
     font-size: 12px;
@@ -811,6 +958,7 @@
 
   .chev {
     flex: none;
+    margin-left: auto;
     display: inline-flex;
     color: var(--text-muted, #5c6088);
     transition: transform 200ms ease;
@@ -821,10 +969,102 @@
     transform: rotate(0deg);
   }
 
+  /* Two actions (Run + All sweeps): own row under the title so the title is not squeezed out. */
+  .run-wrap.two-row {
+    flex: 1 0 100%;
+    justify-content: flex-end;
+    margin-bottom: 2px;
+  }
+
   .run-wrap {
     flex: none;
     display: inline-flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 4px;
+  }
+
+  .run-btn.secondary {
+    color: var(--accent-primary, #5b6cf7);
+    background: transparent;
+  }
+
+  .run-btn.secondary:hover:not(:disabled) {
+    color: #fff;
+  }
+
+  .run-btn.secondary .spinner {
+    border-color: rgba(91, 108, 247, 0.35);
+    border-top-color: var(--accent-primary, #5b6cf7);
+  }
+
+  .scope-hint {
+    align-self: center;
+    font-size: 10px;
+    color: var(--text-muted, #5c6088);
+    cursor: help;
+    white-space: nowrap;
+  }
+
+  .derived {
+    margin-top: var(--spacing-xs, 4px);
+    padding-top: var(--spacing-xs, 4px);
+    border-top: 1px solid var(--border-light, #2a2a3a);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .derived-chip {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 5px 7px;
+    background: var(--bg-primary, #080a14);
+    border: 1px solid var(--border-light, #2a2a3a);
+    border-radius: var(--radius-sm, 4px);
+  }
+
+  .derived-chip.current {
+    border-color: var(--accent-primary, #5b6cf7);
+  }
+
+  .chip-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .chip-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary, #e4e6f4);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .chip-meta {
+    flex: none;
+    font-size: 10px;
+    color: var(--text-muted, #5c6088);
+  }
+
+  .chip-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .evicted {
+    color: var(--accent-warning, #fbbf24);
+  }
+
+  .sum-details summary {
+    font-size: 11px;
+    color: var(--text-secondary, #9da2c2);
+    cursor: pointer;
   }
 
   .cancel-btn {
