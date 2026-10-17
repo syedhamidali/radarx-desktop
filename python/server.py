@@ -27,6 +27,17 @@ _server_dir = Path(__file__).resolve().parent
 if str(_server_dir) not in sys.path:
     sys.path.insert(0, str(_server_dir))
 
+if getattr(sys, "frozen", False):
+    # The packaged engine: PyInstaller points matplotlib at a fresh temp dir on every launch, which
+    # re-builds the font cache (~10 s) each time. Keep it in a per-user folder instead. This runs
+    # before anything imports matplotlib.
+    _mpl_dir = Path.home() / ".xradar-desktop" / "matplotlib"
+    try:
+        _mpl_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = str(_mpl_dir)
+    except OSError:
+        pass
+
 import websockets
 from websockets.asyncio.server import ServerConnection
 
@@ -2816,4 +2827,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    import multiprocessing
+
+    multiprocessing.freeze_support()  # needed by frozen builds that spawn worker processes
     main()
