@@ -1,10 +1,18 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { radarData, selectedVariable, connectionStatus } from '../stores/radarData';
   import { selectedBox } from '../stores/volumeSelect';
   import { wsManager } from '../utils/websocket';
   import { getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import { COLORMAP_DATA } from '../utils/colormaps';
+  import {
+    QualityGovernor,
+    ProgressiveRenderer,
+    yieldToMain,
+    type ProgressiveJob,
+    type QualityMode,
+    type GovernorState,
+  } from '../utils/qualityGovernor';
   import TransferFunctionEditor from './TransferFunctionEditor.svelte';
 
   // ── Reactive state ────────────────────────────────────────────────────────
@@ -15,11 +23,23 @@
   let isLoading = $state(false);
   let hasRendered = $state(false);
   let errorMsg = $state('');
+  /** Set when drawing threw or the context cannot be recovered: the view stops instead of looping. */
+  let fatalMsg = $state('');
 
   const variable  = $derived($selectedVariable);
   const sweeps    = $derived($radarData.sweeps);
   const connected = $derived($connectionStatus === 'connected');
   const hasData   = $derived($radarData.filePath !== null || $radarData.variables.length > 0);
+
+  /** Sweeps that actually carry the selected variable, lowest elevation first. */
+  const applicable = $derived.by(() => {
+    if (!variable) return [];
+    // Split-cut volumes (NEXRAD) carry a variable on only some sweeps; waiting for the others
+    // would keep the viewer "loading" forever.
+    return [...sweeps]
+      .sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0))
+      .filter((s) => !s.variables || s.variables.length === 0 || s.variables.includes(variable));
+  });
 
   let vmin = $state(0);
   let vmax = $state(65);
@@ -53,9 +73,54 @@
     return `linear-gradient(to top, ${stops.join(', ')})`;
   });
 
-  let loadedSweeps   = $state(new Map<number, SweepDataEntry>());
-  let requestedSweeps = new Set<string>();
+  // ── Quality governor ──────────────────────────────────────────────────────
+  const governor = new QualityGovernor('radar3d');
+  let qState = $state<GovernorState>(governor.current());
+  let unsubGov: (() => void) | null = null;
+  let pr: ProgressiveRenderer | null = null;
+
+  const QUALITY_OPTIONS: { value: QualityMode; label: string }[] = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'high', label: 'High' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'low', label: 'Low' },
+  ];
+
+  function onQualityChange(e: Event) {
+    governor.setMode((e.target as HTMLSelectElement).value as QualityMode);
+    // The volume texture budget follows the quality class: repack only when it really changed.
+    if (layout && layout.texMB !== governor.textureBudgetMB()) relayoutAll();
+    pr?.request();
+  }
+
+  // ── Sweep loading ─────────────────────────────────────────────────────────
+  const SWEEP_TIMEOUT_MS = 30_000;
+
+  /** Raw sweeps received so far (shared with the sweep cache, not copied). */
+  let loadedSweeps = new Map<number, SweepDataEntry>();
+  /** sweep index -> time requested, for sweeps still in flight. */
+  let outstanding = new Map<number, number>();
+  let failed = new Set<number>();
+  let applicableSet = new Set<number>();
+  let loadKey = '';
+  let prevVariable = '';
   let unsubData: (() => void) | null = null;
+  let unsubFail: (() => void) | null = null;
+  let timeoutTimer: ReturnType<typeof setInterval> | null = null;
+
+  // UI counters (the maps above are not reactive)
+  let totalCount    = $state(0);
+  let receivedCount = $state(0);
+  let failedCount   = $state(0);
+  let packedCount   = $state(0);
+
+  function syncCounts() {
+    totalCount    = applicableSet.size;
+    receivedCount = loadedSweeps.size;
+    failedCount   = failed.size;
+    packedCount   = packedMeta.size;
+    isLoading     = outstanding.size > 0;
+  }
 
   // Camera (orbit in degrees / km)
   let camTheta = $state(-30);   // azimuthal angle (°)
@@ -63,26 +128,22 @@
   let camDist  = $state(800);   // km from target
   let camTgt: [number,number,number] = [0,0,0];
 
-  // Animation targets — renderFrame lerps toward these each frame
+  // Animation targets — the frame job lerps toward these each frame
   let camTgtTarget: [number,number,number] = [0, 0, 0];
   let camDistTarget = 800;
 
   let isDragging  = false;
   let isShiftDrag = false;
   let lastMouse   = [0, 0];
-  let dirty       = true;
-  let animId      = 0;
   let resizeObs: ResizeObserver | null = null;
-  let buildTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastBuildMs = 0;
   let destroyed   = false;
+  let cameraInitKey = '';
+  let lastAnimT = 0;
 
-  /** Request a redraw. Draws happen on demand: no rAF loop runs while the view is idle. */
-  function markDirty() {
-    dirty = true;
-    if (!animId && gl && !destroyed) animId = requestAnimationFrame(renderFrame);
-  }
-  let prevVariable = '';
+  /** Request a redraw. Draws are scheduled on demand: nothing runs while the view is idle. */
+  function markDirty() { pr?.request(); }
+  /** Camera / slider activity: render coarser while it lasts, one settled frame afterwards. */
+  function interact() { pr?.noteInteraction(); }
 
   // GL resources
   let quadVAO:     WebGLVertexArrayObject | null = null;
@@ -90,12 +151,12 @@
   let angleIdxTex: WebGLTexture | null = null;
   let sweepMetaTex:WebGLTexture | null = null;
   let tfTex:       WebGLTexture | null = null;
-  let floatLinear  = false;  // OES_texture_float_linear available
+  let maxTexSize = 4096;
 
   // Cached uniform locations (set after link)
   let uloc: Record<string, WebGLUniformLocation | null> = {};
 
-  // Volume parameters set after texture build
+  // Volume parameters set after publish
   let volMaxRange  = 460;   // km
   let volTotalAz   = 1;     // total rows in volume texture
   let volMaxNRange = 1;     // width of volume texture
@@ -111,8 +172,10 @@
   // Polar-space ray marching.
   // Coordinate system: radar at origin, X=East, Y=North, Z=up (km).
   // Each ray step is converted to spherical coords → elevation lookup → polar texture sample.
+  // The volume is an R8 texture: 0 = no data, 1..255 map linearly onto [vmin, vmax].
   const FRAG = `#version 300 es
     precision highp float;
+    precision highp int;
 
     // Camera
     uniform vec3  u_camPos;
@@ -124,17 +187,17 @@
     uniform vec2  u_resolution;
 
     // Textures
-    uniform highp sampler2D u_volume;    // polar data R32F
+    uniform highp sampler2D u_volume;    // polar data R8 (quantised)
     uniform highp sampler2D u_angleIdx;  // elevation→fractional sweep index R32F
     uniform highp sampler2D u_sweepMeta; // per-sweep metadata RGBA32F (2×nSweeps)
     uniform sampler2D       u_transferFn;// value→RGBA RGBA8
 
     // Volume params
     uniform float u_maxRange;      // km
-    uniform float u_stepSize;      // km per step
-    uniform float u_vmin;
-    uniform float u_vmax;
-    uniform float u_nodata;
+    uniform float u_stepSize;      // km per step (user step x quality multiplier)
+    uniform float u_stepUser;      // km per step the user asked for (opacity reference)
+    uniform int   u_maxSteps;      // hard cap on iterations; step grows to honour it
+    uniform int   u_interp;        // 0 nearest, 1 azimuth, 2 azimuth + elevation
     uniform int   u_nSweeps;
     uniform float u_volTotalAz;    // height of volume texture
     uniform float u_volMaxNRange;  // width of volume texture
@@ -166,7 +229,12 @@
       return vec2(-b - sq, -b + sq);
     }
 
-    // Sample one sweep with bilinear range + azimuth interpolation (wrap-around safe).
+    // Decode a stored byte (0..1 after normalisation) to 0..1 over [vmin, vmax]; -1 = no data.
+    float decode(float b) {
+      return b < 0.002 ? -1.0 : (b * 255.0 - 1.0) / 254.0;
+    }
+
+    // Sample one sweep; returns normalised value in [0,1] or -1 for no data.
     float sampleSweep(int si, float r, float azNorm) {
       vec4 m  = texelFetch(u_sweepMeta, ivec2(0, si), 0);
       vec4 m2 = texelFetch(u_sweepMeta, ivec2(1, si), 0);
@@ -176,27 +244,25 @@
       float nRange      = m2.x;
 
       float rangeBin = r / rangeStepKm;
-      if (rangeBin < 0.0 || rangeBin >= nRange) return u_nodata;
+      if (rangeBin < 0.0 || rangeBin >= nRange) return -1.0;
 
       float texX = (floor(rangeBin) + 0.5) / u_volMaxNRange;
 
-      // Manual azimuth interpolation with wrap-around
-      float azF    = azNorm * nAz;
-      float azI0   = floor(azF);
+      float azF  = azNorm * nAz;
+      float azI0 = floor(azF);
+      float texY0 = (azOffset + azI0 + 0.5) / u_volTotalAz;
+      float v0 = decode(texture(u_volume, vec2(texX, texY0)).r);
+      if (u_interp == 0) return v0;
+
+      // Azimuth interpolation with wrap-around
       float azI1   = mod(azI0 + 1.0, nAz);
       float azFrac = fract(azF);
+      float texY1  = (azOffset + azI1 + 0.5) / u_volTotalAz;
+      float v1 = decode(texture(u_volume, vec2(texX, texY1)).r);
 
-      float texY0 = (azOffset + azI0 + 0.5) / u_volTotalAz;
-      float texY1 = (azOffset + azI1 + 0.5) / u_volTotalAz;
-
-      float v0 = texture(u_volume, vec2(texX, texY0)).r;
-      float v1 = texture(u_volume, vec2(texX, texY1)).r;
-
-      bool nd0 = v0 <= u_nodata + 0.5;
-      bool nd1 = v1 <= u_nodata + 0.5;
-      if (nd0 && nd1) return u_nodata;
-      if (nd0) return v1;
-      if (nd1) return v0;
+      if (v0 < 0.0 && v1 < 0.0) return -1.0;
+      if (v0 < 0.0) return v1;
+      if (v1 < 0.0) return v0;
       return mix(v0, v1, azFrac);
     }
 
@@ -217,15 +283,24 @@
       float tStart = tOrig;
       float tEnd   = tHit.y;
 
+      // The iteration cap wins over the requested step: long rays take longer steps.
+      float stepEff = max(u_stepSize, (tEnd - tStart) / float(u_maxSteps));
+      // Per-step opacity is compensated for steps coarser than the user's own setting.
+      float comp = stepEff / u_stepUser;
+
       // Interleaved gradient noise — better spatial distribution than sin hash
       float jitter = fract(52.9829189 * fract(0.06711056 * gl_FragCoord.x + 0.00583715 * gl_FragCoord.y));
-      tStart += jitter * u_stepSize;
+      tStart += jitter * stepEff;
 
       vec4 color = vec4(0.0);
 
       float elevRange = u_elevMax - u_elevMin;
 
-      for (float t = tStart; t < tEnd && color.a < 0.99; t += u_stepSize) {
+      for (int i = 0; i < 4096; i++) {
+        if (i >= u_maxSteps) break;
+        float t = tStart + float(i) * stepEff;
+        if (t >= tEnd || color.a >= 0.99) break;
+
         vec3 pos = u_camPos + rayDir * t;
 
         float groundR = sqrt(pos.x * pos.x + pos.y * pos.y);
@@ -258,23 +333,27 @@
         float azNorm = az / PI2;
         if (azNorm < 0.0) azNorm += 1.0;
 
-        float val0 = sampleSweep(s0, r, azNorm);
-        float val1 = (s0 == s1) ? val0 : sampleSweep(s1, r, azNorm);
-
-        bool nd0 = val0 <= u_nodata + 0.5;
-        bool nd1 = val1 <= u_nodata + 0.5;
-        if (nd0 && nd1) continue;
-
-        float val = nd0 ? val1 : (nd1 ? val0 : mix(val0, val1, sw));
-        if (val < u_vmin) continue;
+        float val;
+        if (u_interp < 2) {
+          // Cheap path: nearest sweep only
+          val = sampleSweep(sw < 0.5 ? s0 : s1, r, azNorm);
+          if (val < 0.0) continue;
+        } else {
+          float val0 = sampleSweep(s0, r, azNorm);
+          float val1 = (s0 == s1) ? val0 : sampleSweep(s1, r, azNorm);
+          bool nd0 = val0 < 0.0;
+          bool nd1 = val1 < 0.0;
+          if (nd0 && nd1) continue;
+          val = nd0 ? val1 : (nd1 ? val0 : mix(val0, val1, sw));
+        }
 
         // Map value through transfer function
-        float tNorm = clamp((val - u_vmin) / (u_vmax - u_vmin), 0.0, 1.0);
-        vec4 tf = texture(u_transferFn, vec2(tNorm, 0.5));
-        tf.a *= u_opacityScale;
+        vec4 tf = texture(u_transferFn, vec2(val, 0.5));
+        float a0 = tf.a * u_opacityScale;
+        if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
 
         // Front-to-back compositing
-        float a = tf.a * (1.0 - color.a);
+        float a = a0 * (1.0 - color.a);
         color.rgb += tf.rgb * a;
         color.a   += a;
       }
@@ -351,79 +430,123 @@
     }
   `;
 
-  // ── GL helpers ────────────────────────────────────────────────────────────
+  // ── GL setup ──────────────────────────────────────────────────────────────
 
-  function compileShader(g: WebGL2RenderingContext, type: number, src: string): WebGLShader | null {
-    const s = g.createShader(type)!;
-    g.shaderSource(s, src);
-    g.compileShader(s);
-    if (!g.getShaderParameter(s, g.COMPILE_STATUS)) {
-      console.error('[3D] Shader error:', g.getShaderInfoLog(s));
-      return null;
-    }
-    return s;
+  let glInit: Promise<boolean> | null = null;
+  let glFailed = false;
+
+  function ensureGl(): Promise<boolean> {
+    if (gl && prog) return Promise.resolve(true);
+    if (glFailed) return Promise.resolve(false);
+    if (!glInit) glInit = initGL().then((ok) => { glInit = null; if (!ok) glFailed = true; return ok; });
+    return glInit;
   }
 
-  function initGL(): boolean {
-    if (!canvas) return false;
-    gl = canvas.getContext('webgl2', { antialias: false, alpha: true, premultipliedAlpha: false });
-    if (!gl) { errorMsg = 'WebGL2 not available'; return false; }
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-    floatLinear = !!gl.getExtension('OES_texture_float_linear');
+  async function initGL(): Promise<boolean> {
+    await tick();
+    if (!canvas || destroyed) return false;
+    const g = canvas.getContext('webgl2', { antialias: false, alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
+    if (!g) { fatalMsg = 'WebGL2 is not available on this system.'; return false; }
 
-    const vs = compileShader(gl, gl.VERTEX_SHADER, VERT);
-    const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAG);
-    if (!vs || !fs) { errorMsg = 'Shader compile failed'; return false; }
+    const vs = g.createShader(g.VERTEX_SHADER)!;
+    g.shaderSource(vs, VERT); g.compileShader(vs);
+    const fs = g.createShader(g.FRAGMENT_SHADER)!;
+    g.shaderSource(fs, FRAG); g.compileShader(fs);
+    const p = g.createProgram()!;
+    g.attachShader(p, vs);
+    g.attachShader(p, fs);
+    g.linkProgram(p);
 
-    prog = gl.createProgram()!;
-    gl.attachShader(prog, vs);
-    gl.attachShader(prog, fs);
-    gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      errorMsg = 'Shader link failed: ' + gl.getProgramInfoLog(prog);
-      console.error('[3D]', errorMsg);
+    // Shader compilation of the ray-marching loop can take seconds on software rasterisers; with
+    // KHR_parallel_shader_compile it happens off the main thread and we only poll for completion.
+    const par = g.getExtension('KHR_parallel_shader_compile');
+    if (par) {
+      const t0 = performance.now();
+      while (!g.getProgramParameter(p, par.COMPLETION_STATUS_KHR)) {
+        if (destroyed) return false;
+        if (performance.now() - t0 > 60_000) break;
+        await sleep(10);
+      }
+    }
+    if (!g.getProgramParameter(p, g.LINK_STATUS)) {
+      const log = g.getProgramInfoLog(p) || g.getShaderInfoLog(fs) || g.getShaderInfoLog(vs) || '';
+      console.error('[3D] Shader error:', log);
+      fatalMsg = 'The 3D shader failed to compile on this GPU.';
       return false;
     }
+    g.deleteShader(vs);
+    g.deleteShader(fs);
 
-    // Cache all uniform locations once
+    gl = g;
+    prog = p;
+    maxTexSize = Math.max(1024, Math.min(16384, g.getParameter(g.MAX_TEXTURE_SIZE) as number));
+
+    // Detect weak renderers (software GL, integrated GPUs) and pick start level + ceiling.
+    governor.configureGpu(g);
+
     const names = [
       'u_camPos','u_camRight','u_camUp','u_camFwd',
       'u_tanHalfFovX','u_tanHalfFovY','u_resolution',
-      'u_maxRange','u_stepSize','u_vmin','u_vmax','u_nodata',
-      'u_nSweeps','u_volTotalAz','u_volMaxNRange','u_opacityScale',
+      'u_maxRange','u_stepSize','u_stepUser','u_maxSteps','u_interp','u_nSweeps',
+      'u_volTotalAz','u_volMaxNRange','u_opacityScale',
       'u_elevMin','u_elevMax',
       'u_volume','u_angleIdx','u_sweepMeta','u_transferFn',
       'u_useClip','u_clipMinX','u_clipMinY','u_clipMaxX','u_clipMaxY',
     ];
-    for (const n of names) uloc[n] = gl.getUniformLocation(prog, n);
+    uloc = {};
+    for (const n of names) uloc[n] = g.getUniformLocation(p, n);
 
     // Full-screen quad (2 triangles)
-    quadVAO = gl.createVertexArray()!;
-    gl.bindVertexArray(quadVAO);
-    const qb = gl.createBuffer()!;
-    gl.bindBuffer(gl.ARRAY_BUFFER, qb);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    quadVAO = g.createVertexArray()!;
+    g.bindVertexArray(quadVAO);
+    const qb = g.createBuffer()!;
+    g.bindBuffer(g.ARRAY_BUFFER, qb);
+    g.bufferData(g.ARRAY_BUFFER, new Float32Array([
       -1,-1,  1,-1,  1, 1,
       -1,-1,  1, 1, -1, 1,
-    ]), gl.STATIC_DRAW);
-    const posLoc = gl.getAttribLocation(prog, 'a_pos');
-    gl.enableVertexAttribArray(posLoc);
-    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    gl.bindVertexArray(null);
+    ]), g.STATIC_DRAW);
+    const posLoc = g.getAttribLocation(p, 'a_pos');
+    g.enableVertexAttribArray(posLoc);
+    g.vertexAttribPointer(posLoc, 2, g.FLOAT, false, 0, 0);
+    g.bindVertexArray(null);
 
-    // Pre-allocate transfer function texture
-    tfTex = gl.createTexture()!;
-    gl.bindTexture(gl.TEXTURE_2D, tfTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    tfTex = g.createTexture()!;
+    g.bindTexture(g.TEXTURE_2D, tfTex);
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
+    g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
+    g.clearColor(0.05, 0.05, 0.1, 1.0);
+    uploadTransferFn();
 
-    gl.clearColor(0.05, 0.05, 0.1, 1.0);
+    if (!container) return false;
+    resizeCanvas();
+    resizeObs?.disconnect();
+    resizeObs = new ResizeObserver(resizeCanvas);
+    resizeObs.observe(container);
+    canvas.addEventListener('webglcontextlost', onContextLost);
+    canvas.addEventListener('webglcontextrestored', onContextRestored);
+
+    pr = new ProgressiveRenderer({
+      gl: g,
+      canvas,
+      governor,
+      job: frameJob,
+      onError: (e) => {
+        console.error('[3D] render failed:', e);
+        fatalMsg = `3D rendering stopped (${e instanceof Error ? e.message : String(e)}).`;
+      },
+    });
+    // Diagnostics hook for tests / the console: renderer counters, no behaviour.
+    (globalThis as any).__xr3d = {
+      stats: () => ({ ...pr?.stats, gov: governor.snapshot() }),
+      // Test-only handles (dev server): lose/restore the context, tamper with the scheduler.
+      ...(import.meta.env.DEV ? { gl: () => gl, pr: () => pr } : {}),
+    };
     return true;
   }
-
-  // ── Transfer function ─────────────────────────────────────────────────────
 
   function uploadTransferFn() {
     if (!gl || !tfTex) return;
@@ -431,98 +554,326 @@
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, tfData);
   }
 
-  // ── Volume texture packer ─────────────────────────────────────────────────
+  // ── Volume packing (time-sliced, incremental) ─────────────────────────────
+  //
+  // The volume texture is an R8 grid: width = range gates, height = one fixed-size slot of azimuth
+  // rows per sweep (slot = rank of the sweep's elevation among the sweeps carrying the variable).
+  // A sweep arriving later only packs and uploads its own slot, so loading N sweeps costs O(N), not
+  // O(N^2), and nothing is repacked while the user watches. The grid is sized to a memory budget:
+  // when the data is bigger the range gates and/or azimuth rows are max-pooled down.
 
-  interface SweepMeta {
-    elevDeg:    number;
-    azOffset:   number;   // starting row in volume texture
-    nAz:        number;
-    rangeStepKm:number;
-    nRange:     number;
+  const SLICE_MS = 6;            // max CPU time per packing task
+  const SLAB_BYTES = 1_500_000;  // max bytes per texSubImage2D call
+  const PUBLISH_MIN_MS = 250;    // coalesce metadata/texture publishes
+
+  interface Layout {
+    W: number;          // texture width: range bins
+    slotRows: number;   // azimuth rows per sweep slot
+    fr: number;         // source gates per texture bin
+    nSlots: number;
+    slotOf: Map<number, number>;
+    elevOf: Map<number, number>;
+    texMB: number;      // budget this layout was computed for
+  }
+  interface PackedMeta {
+    slot: number; elevDeg: number; nAzOut: number; rangeStepKm: number; nOut: number; maxRangeKm: number;
   }
 
-  function buildVolumeTexture() {
-    if (!gl || loadedSweeps.size === 0) return;
+  let layout: Layout | null = null;
+  let cpuVol: Uint8Array | null = null;
+  let texAllocated = false;
+  let packedMeta = new Map<number, PackedMeta>();
+  let pendingPack: number[] = [];
+  let packRunning = false;
+  let packGen = 0;
+  let packVmin = 0;
+  let packVmax = 1;
+  let publishTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastPublishAt = 0;
 
-    // Sort loaded sweeps by elevation (ascending)
-    const entries = Array.from(loadedSweeps.entries()).sort((a, b) => {
-      const ea = sweeps.find(s => s.index === a[0])?.elevation ?? 0;
-      const eb = sweeps.find(s => s.index === b[0])?.elevation ?? 0;
-      return ea - eb;
-    });
-    if (entries.length === 0) return;
-
-    // Compute texture dimensions
-    let maxNRange = 0;
-    let totalAz   = 0;
-    let maxRangeKm = 1;
-    for (const [, e] of entries) {
-      if (e.nRange > maxNRange) maxNRange = e.nRange;
-      totalAz += e.nAz;
-      const rKm = e.maxRange / 1000;
-      if (rKm > maxRangeKm) maxRangeKm = rKm;
+  function computeLayout(entries: SweepDataEntry[], texMB: number): Layout {
+    let R = 1, azMax = 1;
+    for (const e of entries) { R = Math.max(R, e.nRange); azMax = Math.max(azMax, e.nAz); }
+    const nSlots = applicable.length;
+    let sr = Math.min(Math.max(azMax, 90), 1440);
+    let fr = 1;
+    const budget = texMB * 1048576;
+    for (let i = 0; i < 32; i++) {
+      const W = Math.ceil(R / fr), H = nSlots * sr;
+      if (W * H <= budget && W <= maxTexSize && H <= maxTexSize) break;
+      if (i % 2 === 0 && fr < 8) fr++;
+      else if (sr > 90) sr = Math.max(90, Math.floor(sr * 0.75));
+      else if (fr < 8) fr++;
+      else break;
     }
+    const slotOf = new Map<number, number>();
+    const elevOf = new Map<number, number>();
+    applicable.forEach((s, i) => { slotOf.set(s.index, i); elevOf.set(s.index, s.elevation ?? 0); });
+    return { W: Math.ceil(R / fr), slotRows: sr, fr, nSlots, slotOf, elevOf, texMB };
+  }
 
-    volMaxNRange = maxNRange;
-    volTotalAz   = totalAz;
-    volNSweeps   = entries.length;
-    volMaxRange  = maxRangeKm;
+  function dropVolumeGpu() {
+    if (gl && volumeTex) gl.deleteTexture(volumeTex);
+    volumeTex = null;
+    texAllocated = false;
+  }
 
-    // Volume data: R32F, width=maxNRange, height=totalAz
-    const volData = new Float32Array(maxNRange * totalAz).fill(-9999);
+  /** Discard all packed data and start over from the raw sweeps already received. */
+  function relayoutAll() {
+    packGen++;
+    packRunning = false;
+    layout = null;
+    cpuVol = null;
+    packedMeta = new Map();
+    pendingPack = [...loadedSweeps.keys()];
+    dropVolumeGpu();
+    volNSweeps = 0;
+    syncCounts();
+    kickPack();
+  }
 
-    // Sweep metadata: RGBA32F, width=2, height=nSweeps
-    // col 0: (elevDeg, azOffset, nAz, rangeStepKm)
-    // col 1: (nRange, 0, 0, 0)
-    const metaData = new Float32Array(2 * 4 * entries.length).fill(0);
+  function resetVolume() {
+    packGen++;
+    packRunning = false;
+    layout = null;
+    cpuVol = null;
+    packedMeta = new Map();
+    pendingPack = [];
+    loadedSweeps = new Map();
+    outstanding = new Map();
+    failed = new Set();
+    dropVolumeGpu();
+    volNSweeps = 0;
+    hasRendered = false;
+    if (publishTimer) { clearTimeout(publishTimer); publishTimer = null; }
+  }
 
-    const sweepMetas: SweepMeta[] = [];
-    let azOffset = 0;
+  function ingest(entry: SweepDataEntry) {
+    if (!applicableSet.has(entry.sweep)) return;
+    loadedSweeps.set(entry.sweep, entry);
+    if (!pendingPack.includes(entry.sweep) && !packedMeta.has(entry.sweep)) pendingPack.push(entry.sweep);
+    else if (packedMeta.has(entry.sweep)) {
+      // Re-delivered (e.g. reprocessed): repack that slot
+      packedMeta.delete(entry.sweep);
+      if (!pendingPack.includes(entry.sweep)) pendingPack.push(entry.sweep);
+    }
+    syncCounts();
+    kickPack();
+  }
 
-    for (let si = 0; si < entries.length; si++) {
-      const [sweepIdx, entry] = entries[si];
-      const { azimuth, range, values, nAz, nRange } = entry;
+  function kickPack() {
+    if (packRunning || destroyed) return;
+    packRunning = true;
+    const g = packGen;
+    void packLoop(g);
+  }
 
-      const sweepInfo   = sweeps.find(s => s.index === sweepIdx);
-      const elevDeg     = sweepInfo?.elevation ?? 0;
-      const rangeStepKm = range.length > 1
-        ? (range[range.length - 1] - range[0]) / (range.length - 1) / 1000
-        : entry.maxRange / nRange / 1000;
+  async function packLoop(g: number) {
+    try {
+      if (!(await ensureGl())) { if (g === packGen) packRunning = false; return; }
+      while (pendingPack.length > 0 && g === packGen && !destroyed) {
+        // Never rebuild while the camera is being dragged: wait until the gesture ends.
+        if (isDragging) { await sleep(120); continue; }
+        const idx = pendingPack.shift()!;
+        const entry = loadedSweeps.get(idx);
+        if (!entry) continue;
 
-      // Remap rays into a uniform azimuth grid [0°, 360°) with nAz slots, writing each
-      // ray straight into its row of the packed volume (rows shorter than maxNRange
-      // keep the -9999 padding from the initial fill).
-      for (let ai = 0; ai < nAz; ai++) {
-        let gridIdx = Math.round((azimuth[ai] / 360) * nAz) % nAz;
-        if (gridIdx < 0) gridIdx += nAz;
-        const src = ai * nRange;
-        volData.set(values.subarray(src, src + nRange), (azOffset + gridIdx) * maxNRange);
+        const need = layoutFits(entry);
+        if (!need) {
+          // Layout missing or too small for this sweep: rebuild it (rare) and requeue everything.
+          layout = computeLayout([...loadedSweeps.values()], governor.textureBudgetMB());
+          cpuVol = new Uint8Array(layout.W * layout.nSlots * layout.slotRows);
+          packedMeta = new Map();
+          dropVolumeGpu();
+          pendingPack = [idx, ...[...loadedSweeps.keys()].filter((k) => k !== idx)];
+          governor.setVolumeMB(cpuVol.length / 1048576);
+          continue;
+        }
+        const ok = await packSweep(entry, layout!.slotOf.get(idx)!, g);
+        if (!ok || g !== packGen) break;
+        await uploadSlot(idx, g);
+        if (g !== packGen) break;
+        syncCounts();
+        schedulePublish();
+        await yieldToMain();
       }
+    } catch (e) {
+      console.error('[3D] volume build failed:', e);
+      fatalMsg = `Could not build the 3D volume (${e instanceof Error ? e.message : String(e)}).`;
+    } finally {
+      if (g === packGen) {
+        packRunning = false;
+        if (pendingPack.length > 0 && !destroyed) kickPack();
+        else schedulePublish();
+      }
+    }
+  }
 
-      // Pack metadata
-      const mi = si * 8;
-      metaData[mi + 0] = elevDeg;
-      metaData[mi + 1] = azOffset;
-      metaData[mi + 2] = nAz;
-      metaData[mi + 3] = rangeStepKm;
-      metaData[mi + 4] = nRange;
+  function layoutFits(entry: SweepDataEntry): boolean {
+    if (!layout || !cpuVol) return false;
+    if (!layout.slotOf.has(entry.sweep)) return false;
+    return Math.ceil(entry.nRange / layout.fr) <= layout.W;
+  }
 
-      sweepMetas.push({ elevDeg, azOffset, nAz, rangeStepKm, nRange });
-      azOffset += nAz;
+  /** Quantise one sweep into its slot of the CPU volume, yielding every few ms. */
+  async function packSweep(entry: SweepDataEntry, slot: number, g: number): Promise<boolean> {
+    const L = layout!;
+    const vol = cpuVol!;
+    const W = L.W, fr = L.fr;
+    const nAzOut = Math.min(entry.nAz, L.slotRows);
+    const nOut = Math.ceil(entry.nRange / fr);
+    const base = slot * L.slotRows;
+    vol.fill(0, base * W, (base + L.slotRows) * W);
+
+    const { azimuth, values, nAz, nRange } = entry;
+    const lo = packVmin;
+    const sc = 254 / (packVmax - packVmin || 1);
+    let t0 = performance.now();
+
+    for (let ai = 0; ai < nAz; ai++) {
+      let gi = Math.round((azimuth[ai] / 360) * nAzOut) % nAzOut;
+      if (gi < 0) gi += nAzOut;
+      const dst = (base + gi) * W;
+      const src = ai * nRange;
+      if (fr === 1) {
+        for (let r = 0; r < nRange; r++) {
+          const v = values[src + r];
+          if (v >= lo) {               // NaN and -9999 fail this test: stay "no data"
+            const t = (v - lo) * sc;
+            const b = t >= 254 ? 255 : (t + 1.5) | 0;
+            if (b > vol[dst + r]) vol[dst + r] = b;
+          }
+        }
+      } else {
+        for (let o = 0; o < nOut; o++) {
+          const s0 = src + o * fr;
+          const e = Math.min(fr, nRange - o * fr);
+          let m = vol[dst + o];
+          for (let k = 0; k < e; k++) {
+            const v = values[s0 + k];
+            if (v >= lo) {
+              const t = (v - lo) * sc;
+              const b = t >= 254 ? 255 : (t + 1.5) | 0;
+              if (b > m) m = b;
+            }
+          }
+          vol[dst + o] = m;
+        }
+      }
+      if ((ai & 7) === 7 && performance.now() - t0 > SLICE_MS) {
+        await yieldToMain();
+        if (g !== packGen || destroyed) return false;
+        t0 = performance.now();
+      }
     }
 
-    // LINEAR requires OES_texture_float_linear; fall back to NEAREST
-    const volFilter = floatLinear ? gl.LINEAR : gl.NEAREST;
+    packedMeta.set(entry.sweep, {
+      slot,
+      elevDeg: L.elevOf.get(entry.sweep) ?? 0,
+      nAzOut,
+      rangeStepKm: sweepRangeStepKm(entry) * fr,
+      nOut,
+      maxRangeKm: entry.maxRange / 1000,
+    });
+    return true;
+  }
+
+  function sweepRangeStepKm(e: SweepDataEntry): number {
+    return e.range.length > 1
+      ? (e.range[e.range.length - 1] - e.range[0]) / (e.range.length - 1) / 1000
+      : e.maxRange / e.nRange / 1000;
+  }
+
+  function ensureVolumeTexture(): boolean {
+    if (!gl || !layout) return false;
+    if (volumeTex && texAllocated) return true;
     if (volumeTex) gl.deleteTexture(volumeTex);
     volumeTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, volumeTex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, volFilter);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, volFilter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, maxNRange, totalAz, 0, gl.RED, gl.FLOAT, volData);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, layout.W, layout.nSlots * layout.slotRows, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    texAllocated = true;
+    return true;
+  }
 
-    // Upload sweep metadata texture (RGBA32F, 2 × nSweeps)
+  /** Upload one slot in bounded slabs, yielding between them. */
+  async function uploadSlot(idx: number, g: number) {
+    const m = packedMeta.get(idx);
+    if (!m || !layout || !cpuVol) return;
+    const W = layout.W;
+    const rowsPerSlab = Math.max(16, Math.floor(SLAB_BYTES / W));
+    const base = m.slot * layout.slotRows;
+    for (let r = 0; r < m.nAzOut; r += rowsPerSlab) {
+      if (!gl || g !== packGen || destroyed) return;   // context lost: reuploadAll() handles it
+      if (!ensureVolumeTexture()) return;
+      const n = Math.min(rowsPerSlab, m.nAzOut - r);
+      gl.bindTexture(gl.TEXTURE_2D, volumeTex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, base + r, W, n, gl.RED, gl.UNSIGNED_BYTE,
+        cpuVol.subarray((base + r) * W, (base + r + n) * W));
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      if (r + rowsPerSlab < m.nAzOut) await yieldToMain();
+    }
+  }
+
+  /** After a context restore every GPU object is gone: re-upload from the CPU copy. */
+  async function reuploadAll() {
+    const g = packGen;
+    texAllocated = false;
+    volumeTex = null;
+    for (const idx of [...packedMeta.keys()]) {
+      if (g !== packGen || destroyed) return;
+      await uploadSlot(idx, g);
+      await yieldToMain();
+    }
+    publish();
+  }
+
+  /** At most one publish per PUBLISH_MIN_MS, never mid-drag; immediately once everything landed. */
+  function schedulePublish() {
+    if (destroyed) return;
+    const allDone = pendingPack.length === 0 && outstanding.size === 0;
+    if (publishTimer) {
+      if (!allDone) return;
+      clearTimeout(publishTimer);
+      publishTimer = null;
+    }
+    const wait = allDone ? 0 : Math.max(0, PUBLISH_MIN_MS - (performance.now() - lastPublishAt));
+    publishTimer = setTimeout(runPublish, wait);
+  }
+  function runPublish() {
+    publishTimer = null;
+    if (isDragging) { publishTimer = setTimeout(runPublish, 150); return; }
+    publish();
+  }
+
+  /** Make newly packed sweeps visible: tiny metadata + elevation-lookup textures, then redraw. */
+  function publish() {
+    lastPublishAt = performance.now();
+    if (!gl || !layout || !volumeTex || packedMeta.size === 0) return;
+    const metas = [...packedMeta.values()].sort((a, b) => a.elevDeg - b.elevDeg);
+    const n = metas.length;
+    const metaData = new Float32Array(2 * 4 * n);
+    let maxKm = 1;
+    metas.forEach((m, i) => {
+      const o = i * 8;
+      metaData[o]     = m.elevDeg;
+      metaData[o + 1] = m.slot * layout!.slotRows;
+      metaData[o + 2] = m.nAzOut;
+      metaData[o + 3] = m.rangeStepKm;
+      metaData[o + 4] = m.nOut;
+      if (m.maxRangeKm > maxKm) maxKm = m.maxRangeKm;
+    });
+    volMaxNRange = layout.W;
+    volTotalAz   = layout.nSlots * layout.slotRows;
+    volNSweeps   = n;
+    volMaxRange  = maxKm;
+
     if (sweepMetaTex) gl.deleteTexture(sweepMetaTex);
     sweepMetaTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, sweepMetaTex);
@@ -530,11 +881,14 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 2, entries.length, 0, gl.RGBA, gl.FLOAT, metaData);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 2, n, 0, gl.RGBA, gl.FLOAT, metaData);
+    buildAngleIndex(metas);
 
-    // Build angle→sweep index lookup
-    buildAngleIndex(sweepMetas);
-
+    if (cameraInitKey !== loadKey) { cameraInitKey = loadKey; resetCamera(); }
+    hasRendered = true;
+    errorMsg = '';
+    governor.setVolumeMB(layout.W * layout.nSlots * layout.slotRows / 1048576);
+    syncCounts();
     markDirty();
   }
 
@@ -543,7 +897,7 @@
   // floor(value) = lower sweep, fract(value) = interpolation weight.
   // -1 = below radar floor.
 
-  function buildAngleIndex(metas: SweepMeta[]) {
+  function buildAngleIndex(metas: PackedMeta[]) {
     if (!gl || metas.length === 0) return;
 
     const N       = 2048;
@@ -580,7 +934,6 @@
     if (angleIdxTex) gl.deleteTexture(angleIdxTex);
     angleIdxTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, angleIdxTex);
-    // Use LINEAR so interpolation between elevation samples is smooth
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -622,215 +975,255 @@
     return [v[0]/l, v[1]/l, v[2]/l];
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────
+  // ── Render (driven by ProgressiveRenderer: one frame = several banded draws) ─
 
-  function renderFrame() {
-    animId = 0;
-    if (destroyed || !dirty || !gl || !prog || !quadVAO || !canvas) return;
-    // Textures not uploaded yet: buildVolumeTexture() calls markDirty() once they are.
-    if (!volumeTex || !angleIdxTex || !sweepMetaTex || !tfTex) return;
-    dirty = false;
+  const frameJob: ProgressiveJob = {
+    begin(params, w, h) {
+      if (!gl || !prog || !quadVAO || !volumeTex || !angleIdxTex || !sweepMetaTex || !tfTex || volNSweeps === 0) return false;
+      const g = gl;
 
-    const w = canvas.width, h = canvas.height;
-    if (w === 0 || h === 0) return;
+      // Smooth camera animation — ease toward the targets by elapsed time, not by frame count, so
+      // a slow GPU (a few frames per second) still converges in a couple of frames instead of
+      // animating for a minute.
+      const nowT = performance.now();
+      const gap = nowT - lastAnimT;
+      lastAnimT = nowT;
+      const dt = gap > 250 ? 16 : gap;   // first frame after idle: one ordinary step
+      const lf = 1 - Math.exp(-dt / 90);
+      const dTgt = Math.hypot(
+        camTgt[0] - camTgtTarget[0],
+        camTgt[1] - camTgtTarget[1],
+        camTgt[2] - camTgtTarget[2]
+      );
+      const dDist = Math.abs(camDist - camDistTarget);
+      if (dTgt > 0.05 || dDist > 0.5) {
+        camTgt = [
+          camTgt[0] + (camTgtTarget[0] - camTgt[0]) * lf,
+          camTgt[1] + (camTgtTarget[1] - camTgt[1]) * lf,
+          camTgt[2] + (camTgtTarget[2] - camTgt[2]) * lf,
+        ];
+        camDist += (camDistTarget - camDist) * lf;
+        pr?.noteInteraction(); // still moving: coarse frames now, one settled frame at the end
+      }
 
-    gl.viewport(0, 0, w, h);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+      const { eye, fwd, right, up } = getCamVectors();
 
-    gl.useProgram(prog);
-    gl.bindVertexArray(quadVAO);
+      // Compass: project world North (0,1,0) onto screen axes
+      const nx = dot3([0,1,0], right);
+      const ny = dot3([0,1,0], up);
+      const ang = Math.atan2(nx, ny) * 180 / Math.PI;
+      if (Math.abs(ang - compassAngle) > 0.25) compassAngle = ang;
 
-    // Smooth camera animation — lerp toward targets each frame
-    const lf = 0.12;
-    const dTgt = Math.hypot(
-      camTgt[0] - camTgtTarget[0],
-      camTgt[1] - camTgtTarget[1],
-      camTgt[2] - camTgtTarget[2]
-    );
-    const dDist = Math.abs(camDist - camDistTarget);
-    if (dTgt > 0.05 || dDist > 0.5) {
-      camTgt = [
-        camTgt[0] + (camTgtTarget[0] - camTgt[0]) * lf,
-        camTgt[1] + (camTgtTarget[1] - camTgt[1]) * lf,
-        camTgt[2] + (camTgtTarget[2] - camTgt[2]) * lf,
-      ];
-      camDist += (camDistTarget - camDist) * lf;
-      dirty = true; // keep animating: scheduled again at the end of this frame
-    }
+      const fov = Math.PI / 4;
+      const asp = w / h;
+      const tanY = Math.tan(fov / 2);
+      const tanX = tanY * asp;
+      const u = (n: string) => uloc[n];
 
-    const { eye, fwd, right, up } = getCamVectors();
+      g.useProgram(prog);
+      g.uniform3f(u('u_camPos'),        eye[0],   eye[1],   eye[2]);
+      g.uniform3f(u('u_camRight'),    right[0], right[1], right[2]);
+      g.uniform3f(u('u_camUp'),          up[0],    up[1],    up[2]);
+      g.uniform3f(u('u_camFwd'),        fwd[0],   fwd[1],   fwd[2]);
+      g.uniform1f(u('u_tanHalfFovX'), tanX);
+      g.uniform1f(u('u_tanHalfFovY'), tanY);
+      g.uniform2f(u('u_resolution'),  w, h);
 
-    // Compass: project world North (0,1,0) onto screen axes
-    const nx = dot3([0,1,0], right);
-    const ny = dot3([0,1,0], up);
-    compassAngle = Math.atan2(nx, ny) * 180 / Math.PI;
+      g.uniform1f(u('u_maxRange'),     volMaxRange);
+      g.uniform1f(u('u_stepSize'),     stepKm * params.stepMul);
+      g.uniform1f(u('u_stepUser'),     stepKm);
+      g.uniform1i(u('u_maxSteps'),     params.maxSteps);
+      g.uniform1i(u('u_interp'),       params.interp);
+      g.uniform1i(u('u_nSweeps'),      volNSweeps);
+      g.uniform1f(u('u_volTotalAz'),   volTotalAz);
+      g.uniform1f(u('u_volMaxNRange'), volMaxNRange);
+      g.uniform1f(u('u_opacityScale'), opacityScale);
+      g.uniform1f(u('u_elevMin'),      _elevMin);
+      g.uniform1f(u('u_elevMax'),      _elevMax);
 
-    const fov = Math.PI / 4;
-    const asp = w / h;
-    const tanY = Math.tan(fov / 2);
-    const tanX = tanY * asp;
-
-    const u = (n: string) => uloc[n];
-
-    gl.uniform3f(u('u_camPos'),        eye[0],   eye[1],   eye[2]);
-    gl.uniform3f(u('u_camRight'),    right[0], right[1], right[2]);
-    gl.uniform3f(u('u_camUp'),          up[0],    up[1],    up[2]);
-    gl.uniform3f(u('u_camFwd'),        fwd[0],   fwd[1],   fwd[2]);
-    gl.uniform1f(u('u_tanHalfFovX'), tanX);
-    gl.uniform1f(u('u_tanHalfFovY'), tanY);
-    gl.uniform2f(u('u_resolution'),  w, h);
-
-    gl.uniform1f(u('u_maxRange'),     volMaxRange);
-    gl.uniform1f(u('u_stepSize'),     stepKm);
-    gl.uniform1f(u('u_vmin'),         vmin);
-    gl.uniform1f(u('u_vmax'),         vmax);
-    gl.uniform1f(u('u_nodata'),       -9999);
-    gl.uniform1i(u('u_nSweeps'),      volNSweeps);
-    gl.uniform1f(u('u_volTotalAz'),   volTotalAz);
-    gl.uniform1f(u('u_volMaxNRange'), volMaxNRange);
-    gl.uniform1f(u('u_opacityScale'), opacityScale);
-    gl.uniform1f(u('u_elevMin'),      _elevMin);
-    gl.uniform1f(u('u_elevMax'),      _elevMax);
-
-    const clip = $selectedBox;
-    gl.uniform1i(u('u_useClip'), clip ? 1 : 0);
-    if (clip) {
-      gl.uniform1f(u('u_clipMinX'), clip.xMin / 1000);
-      gl.uniform1f(u('u_clipMinY'), clip.yMin / 1000);
-      gl.uniform1f(u('u_clipMaxX'), clip.xMax / 1000);
-      gl.uniform1f(u('u_clipMaxY'), clip.yMax / 1000);
-    }
-
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, volumeTex);    gl.uniform1i(u('u_volume'), 0);
-    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, angleIdxTex);  gl.uniform1i(u('u_angleIdx'), 1);
-    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, sweepMetaTex); gl.uniform1i(u('u_sweepMeta'), 2);
-    gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, tfTex);        gl.uniform1i(u('u_transferFn'), 3);
-
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    gl.bindVertexArray(null);
-
-    if (dirty && !animId) animId = requestAnimationFrame(renderFrame);
-  }
+      const clip = $selectedBox;
+      g.uniform1i(u('u_useClip'), clip ? 1 : 0);
+      if (clip) {
+        g.uniform1f(u('u_clipMinX'), clip.xMin / 1000);
+        g.uniform1f(u('u_clipMinY'), clip.yMin / 1000);
+        g.uniform1f(u('u_clipMaxX'), clip.xMax / 1000);
+        g.uniform1f(u('u_clipMaxY'), clip.yMax / 1000);
+      }
+      return true;
+    },
+    drawBand() {
+      const g = gl!;
+      g.clear(g.COLOR_BUFFER_BIT);
+      g.useProgram(prog);
+      g.bindVertexArray(quadVAO);
+      g.activeTexture(g.TEXTURE0); g.bindTexture(g.TEXTURE_2D, volumeTex);    g.uniform1i(uloc['u_volume'], 0);
+      g.activeTexture(g.TEXTURE1); g.bindTexture(g.TEXTURE_2D, angleIdxTex);  g.uniform1i(uloc['u_angleIdx'], 1);
+      g.activeTexture(g.TEXTURE2); g.bindTexture(g.TEXTURE_2D, sweepMetaTex); g.uniform1i(uloc['u_sweepMeta'], 2);
+      g.activeTexture(g.TEXTURE3); g.bindTexture(g.TEXTURE_2D, tfTex);        g.uniform1i(uloc['u_transferFn'], 3);
+      g.drawArrays(g.TRIANGLES, 0, 6);
+      g.bindVertexArray(null);
+    },
+  };
 
   // ── Resize ────────────────────────────────────────────────────────────────
 
   function resizeCanvas() {
     if (!canvas || !container) return;
     const rect = container.getBoundingClientRect();
-    const dpr  = Math.min(window.devicePixelRatio || 1, 2);
-    const w = Math.round(rect.width  * dpr);
-    const h = Math.round(rect.height * dpr);
+    const dpr  = Math.min(window.devicePixelRatio || 1, governor.dprCap);
+    const w = Math.max(1, Math.round(rect.width  * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
     // Assigning width/height clears the canvas even if unchanged: skip no-op resizes.
     if (w === canvas.width && h === canvas.height) return;
     canvas.width  = w;
     canvas.height = h;
     canvas.style.width  = rect.width  + 'px';
     canvas.style.height = rect.height + 'px';
-    gl?.viewport(0, 0, canvas.width, canvas.height);
-    dirty = true;
-    // ResizeObserver callbacks run after this frame's rAF phase; draw now so the
-    // cleared canvas is never presented blank.
-    if (animId) { cancelAnimationFrame(animId); animId = 0; }
-    renderFrame();
+    // The resize cleared the canvas: put the last image back right away, refine afterwards.
+    pr?.presentLast();
+    interact();
   }
 
   // ── Data loading ──────────────────────────────────────────────────────────
 
   $effect(() => {
-    if (variable && connected && sweeps.length > 0) {
-      if (variable !== prevVariable) {
-        prevVariable = variable;
-        cmap = getDefaultCmap(variable);
-        const range = getDefaultRange(variable);
-        if (range) { vmin = range[0]; vmax = range[1]; }
-        tfData = buildTfData(cmap);
-        loadedSweeps = new Map();
-        requestedSweeps.clear();
-        hasRendered = false;
-        if (volumeTex && gl) { gl.deleteTexture(volumeTex); volumeTex = null; }
-      }
-
-      // Load lowest-elevation sweeps first — they cover the most ground area
-      const sweepsByElev = [...sweeps].sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0));
-      let anyRequested = false;
-      // Split-cut volumes (NEXRAD) carry a variable on only some sweeps; waiting for the others
-      // would keep the viewer "loading" forever.
-      const applicable = sweepsByElev.filter(
-        (s) => !s.variables || s.variables.length === 0 || s.variables.includes(variable),
-      );
-      for (const s of applicable) {
-        const key = `${variable}:${s.index}`;
-        if (loadedSweeps.has(s.index) || requestedSweeps.has(key)) continue;
-        const cached = getCachedSweep(variable, s.index);
-        if (cached) {
-          loadedSweeps.set(s.index, cached);
-        } else {
-          requestedSweeps.add(key);
-          wsManager.requestSweepData(variable, s.index);
-          anyRequested = true;
-        }
-      }
-
-      if (loadedSweeps.size > 0) buildAndRender();
-      isLoading = anyRequested || loadedSweeps.size < applicable.length;
-    }
+    const v = variable;
+    const ok = connected;
+    const list = applicable;
+    const fp = $radarData.filePath ?? '';
+    if (!v || !ok || list.length === 0) return;
+    untrack(() => syncLoader(v, fp, list));
   });
 
-  /**
-   * Sweeps stream in one by one, and every rebuild repacks and re-uploads the whole
-   * volume (tens of MB). Coalesce arrivals: wait at least twice as long as the last
-   * rebuild took, and rebuild immediately once the last sweep is in.
-   */
-  function scheduleBuild() {
-    if (loadedSweeps.size >= sweeps.length) { buildAndRender(); return; }
-    if (buildTimer) return;
-    buildTimer = setTimeout(() => {
-      buildTimer = null;
-      buildAndRender();
-    }, Math.max(100, lastBuildMs * 2));
+  function syncLoader(v: string, fp: string, list: typeof applicable) {
+    const key = `${fp}|${v}`;
+    if (key !== loadKey) {
+      loadKey = key;
+      resetVolume();
+      if (v !== prevVariable) {
+        prevVariable = v;
+        cmap = getDefaultCmap(v);
+        const range = getDefaultRange(v);
+        if (range) { vmin = range[0]; vmax = range[1]; }
+        tfData = buildTfData(cmap);
+        uploadTransferFn();
+      }
+      packVmin = vmin;
+      packVmax = vmax;
+    } else if (applicableSet.size !== list.length) {
+      // The sweep list changed under us (more sweeps announced): slot layout must follow.
+      if (layout) {
+        applicableSet = new Set(list.map((s) => s.index));
+        relayoutAll();
+      }
+    }
+    applicableSet = new Set(list.map((s) => s.index));
+
+    // Lowest-elevation sweeps first — they cover the most ground area. Only the lowest is
+    // 'visible'; the rest queue at background priority behind anything the user is looking at.
+    let first = true;
+    for (const s of list) {
+      const isLowest = first;
+      first = false;
+      if (loadedSweeps.has(s.index) || outstanding.has(s.index) || failed.has(s.index)) continue;
+      const cached = getCachedSweep(v, s.index);
+      if (cached) { ingest(cached); continue; }
+      requestSweep(v, s.index, isLowest);
+    }
+    syncCounts();
+    if (outstanding.size === 0 && pendingPack.length === 0) schedulePublish();
   }
+
+  function requestSweep(v: string, index: number, visible: boolean) {
+    outstanding.set(index, performance.now());
+    wsManager.requestSweepData(v, index, undefined, { priority: visible ? 'visible' : 'background' });
+    startTimeoutWatch();
+  }
+
+  function startTimeoutWatch() {
+    if (timeoutTimer) return;
+    timeoutTimer = setInterval(() => {
+      const now = performance.now();
+      const v = variable;
+      for (const [idx, t] of [...outstanding]) {
+        // Request deduplicated against an earlier one whose reply we missed: adopt it from the cache.
+        const cached = v ? getCachedSweep(v, idx) : undefined;
+        if (cached) { outstanding.delete(idx); ingest(cached); continue; }
+        if (now - t > SWEEP_TIMEOUT_MS) { outstanding.delete(idx); failed.add(idx); }
+      }
+      syncCounts();
+      if (outstanding.size === 0) {
+        if (timeoutTimer) { clearInterval(timeoutTimer); timeoutTimer = null; }
+        schedulePublish();
+      }
+    }, 1000);
+  }
+
+  function retryMissing() {
+    const v = variable;
+    if (!v) return;
+    const missing = [...failed];
+    failed = new Set();
+    for (const idx of missing) {
+      const cached = getCachedSweep(v, idx);
+      if (cached) ingest(cached);
+      else requestSweep(v, idx, false);
+    }
+    syncCounts();
+  }
+
+  function onSweepFailed(m: any) {
+    try {
+      const v = m?.variable;
+      const idx = Number(m?.sweep ?? m?.sweep_index ?? m?.index);
+      if (v !== undefined && v !== variable) return;
+      if (!Number.isFinite(idx) || !applicableSet.has(idx)) return;
+      outstanding.delete(idx);
+      if (!loadedSweeps.has(idx)) failed.add(idx);
+      syncCounts();
+      if (outstanding.size === 0) schedulePublish();
+    } catch { /* malformed message: ignore */ }
+  }
+
+  // ── Context loss ──────────────────────────────────────────────────────────
+
+  let lostTimer: ReturnType<typeof setTimeout> | null = null;
 
   function onContextLost(e: Event) {
     e.preventDefault(); // lets 'webglcontextrestored' fire
-    if (animId) { cancelAnimationFrame(animId); animId = 0; }
+    pr?.setLost(true);
     gl = null;
     prog = null; quadVAO = null;
     volumeTex = angleIdxTex = sweepMetaTex = tfTex = null;
+    texAllocated = false;
+    errorMsg = 'Graphics context lost; trying to recover…';
+    if (lostTimer) clearTimeout(lostTimer);
+    lostTimer = setTimeout(() => {
+      if (!gl) fatalMsg = '3D is unavailable because the graphics context was lost.';
+    }, 5000);
   }
 
   function onContextRestored() {
     if (destroyed || !canvas) return;
-    if (!initGL()) return;
-    uploadTransferFn();
-    buildVolumeTexture();
-    markDirty();
+    if (lostTimer) { clearTimeout(lostTimer); lostTimer = null; }
+    // Rebuild all GL objects; the renderer is recreated with the new context.
+    pr?.dispose();
+    pr = null;
+    glInit = null;
+    glFailed = false;
+    void ensureGl().then((ok) => {
+      if (!ok) return;
+      errorMsg = '';
+      void reuploadAll();
+    });
   }
 
-  async function buildAndRender() {
-    if (loadedSweeps.size === 0 || !container) return;
-    await tick();
-
-    if (!gl) {
-      if (!canvas || !initGL()) return;
-      resizeCanvas();
-      resizeObs?.disconnect();
-      resizeObs = new ResizeObserver(resizeCanvas);
-      resizeObs.observe(container);
-      canvas.addEventListener('webglcontextlost', onContextLost);
-      canvas.addEventListener('webglcontextrestored', onContextRestored);
-      markDirty();
-    }
-
-    if (buildTimer) { clearTimeout(buildTimer); buildTimer = null; }
-    const firstBuild = volNSweeps === 0;
-    const t0 = performance.now();
-    uploadTransferFn();
-    buildVolumeTexture();
-    lastBuildMs = performance.now() - t0;
-    if (firstBuild && volNSweeps > 0) resetCamera();
-    hasRendered = true;
-    errorMsg    = '';
-    isLoading   = loadedSweeps.size < sweeps.length;
+  function retry3d() {
+    fatalMsg = '';
+    errorMsg = '';
+    glFailed = false;
+    if (!gl) { pr?.dispose(); pr = null; glInit = null; void ensureGl().then((ok) => ok && void reuploadAll()); }
+    else { pr?.resume(); }
   }
 
   // ── Mouse / touch controls ────────────────────────────────────────────────
@@ -860,15 +1253,20 @@
       camTheta += dx * 0.4;
       camPhi    = Math.max(-85, Math.min(89, camPhi - dy * 0.4));
     }
-    markDirty();
+    interact();
   }
-  function onMouseUp() { isDragging = false; isShiftDrag = false; }
+  function onMouseUp() {
+    const was = isDragging;
+    isDragging = false; isShiftDrag = false;
+    // Packing/publishing that waited for the drag can go now.
+    if (was && (pendingPack.length > 0 || publishTimer)) schedulePublish();
+  }
   function onWheel(e: WheelEvent) {
     e.preventDefault();
     e.stopPropagation();
     camDist = Math.max(10, Math.min(5000, camDist * (1 + e.deltaY * 0.001)));
     camDistTarget = camDist;  // don't fight manual zoom
-    markDirty();
+    interact();
   }
   function onKeyDown(e: KeyboardEvent) {
     const step = e.shiftKey ? 15 : 5;
@@ -883,21 +1281,21 @@
       default: return;
     }
     e.preventDefault();
-    markDirty();
+    interact();
   }
 
   function resetCamera() {
     camTheta      = -30; camPhi = 25;
     camDistTarget = volMaxRange * 1.8;
     camTgtTarget  = [0, 0, 0];
-    markDirty();
+    interact();
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   $effect(() => {
     const clip = $selectedBox;
-    markDirty();
+    untrack(() => markDirty());
     if (clip) {
       camTgtTarget = [
         (clip.xMin + clip.xMax) / 2 / 1000,
@@ -916,21 +1314,30 @@
   });
 
   onMount(() => {
+    unsubGov = governor.state.subscribe((s) => { qState = s; });
     unsubData = wsManager.onMessage('sweep_data_ready', (entry: SweepDataEntry) => {
       if (entry.variable !== variable) return;
-      requestedSweeps.delete(`${entry.variable}:${entry.sweep}`);
-      loadedSweeps.set(entry.sweep, entry);
-      loadedSweeps = loadedSweeps;
-      isLoading = loadedSweeps.size < sweeps.length;
-      scheduleBuild();
+      outstanding.delete(entry.sweep);
+      failed.delete(entry.sweep);
+      ingest(entry);
     });
+    // Emitted by the sweep scheduler when a request fails permanently; absent on older builds, in
+    // which case the 30 s per-sweep timeout above is what ends the wait.
+    try { unsubFail = wsManager.onMessage('sweep_request_failed', onSweepFailed); } catch { /* optional */ }
   });
 
   onDestroy(() => {
     destroyed = true;
+    packGen++;
     unsubData?.();
-    if (animId) { cancelAnimationFrame(animId); animId = 0; }
-    if (buildTimer) { clearTimeout(buildTimer); buildTimer = null; }
+    unsubFail?.();
+    unsubGov?.();
+    if (timeoutTimer) { clearInterval(timeoutTimer); timeoutTimer = null; }
+    if (publishTimer) { clearTimeout(publishTimer); publishTimer = null; }
+    if (lostTimer) { clearTimeout(lostTimer); lostTimer = null; }
+    pr?.dispose();
+    pr = null;
+    governor.release();
     resizeObs?.disconnect();
     resizeObs = null;
     canvas?.removeEventListener('webglcontextlost', onContextLost);
@@ -940,10 +1347,13 @@
       if (prog)    gl.deleteProgram(prog);
       if (quadVAO) gl.deleteVertexArray(quadVAO);
     }
+    cpuVol = null;
   });
 </script>
 
-<div class="viewer-3d">
+<div class="viewer-3d" data-quality={qState.level} data-idle-quality={qState.idleLevel}
+     data-quality-mode={qState.mode} data-sweeps-received={receivedCount}
+     data-sweeps-total={totalCount} data-sweeps-failed={failedCount}>
   {#if hasData}
     <div class="controls-3d">
       <span class="label-3d">3D Volume</span>
@@ -952,15 +1362,29 @@
       <div class="ctrl-group">
         <label for="step-ctrl">Step</label>
         <input id="step-ctrl" type="range" min="0.25" max="3" step="0.25"
-               bind:value={stepKm} oninput={() => { markDirty(); }} />
+               bind:value={stepKm} oninput={interact} />
         <span class="ctrl-val">{stepKm}km</span>
       </div>
 
       <div class="ctrl-group">
         <label for="opacity-ctrl">Opacity</label>
         <input id="opacity-ctrl" type="range" min="0.1" max="1" step="0.05"
-               bind:value={opacityScale} oninput={() => { markDirty(); }} />
+               bind:value={opacityScale} oninput={interact} />
         <span class="ctrl-val">{Math.round(opacityScale * 100)}%</span>
+      </div>
+
+      <div class="ctrl-group">
+        <label for="quality-ctrl">Quality</label>
+        <select id="quality-ctrl" class="quality-sel" value={qState.mode} onchange={onQualityChange}
+                title="Auto adapts to your GPU to keep the app responsive. High/Medium/Low set the preferred level.">
+          {#each QUALITY_OPTIONS as o (o.value)}
+            <option value={o.value}>{o.label}</option>
+          {/each}
+        </select>
+        <span class="q-chip" class:weak={qState.weakRenderer}
+              title={`GPU: ${qState.gpu || 'unknown'}\nFrame: ${qState.frameMsEma.toFixed(0)} ms (smoothed)\nRender scale: ${Math.round(qState.renderScale * 100)}%\nCeiling: ${qState.ceiling}`}>
+          {qState.idleLevel}{qState.weakRenderer ? ' · software GPU' : ''}
+        </span>
       </div>
 
       <button class="reset-btn" onclick={resetCamera} title="Reset camera (R)">Reset</button>
@@ -972,8 +1396,11 @@
         <span class="clip-badge" title="Active clip region">{bw}×{bh} km</span>
       {/if}
 
-      {#if loadedSweeps.size > 0}
-        <span class="sweep-count">{loadedSweeps.size}/{sweeps.length} sweeps</span>
+      {#if totalCount > 0}
+        <span class="sweep-count" class:partial={failedCount > 0}
+              title={packedCount < receivedCount ? 'Sweeps received / sweeps carrying this variable (volume still being built)' : 'Sweeps received / sweeps carrying this variable'}>
+          {receivedCount}/{totalCount} sweeps
+        </span>
       {/if}
     </div>
 
@@ -1022,13 +1449,49 @@
         </div>
       {/if}
 
-      {#if isLoading}
+      {#if isLoading && hasRendered}
+        <div class="loading-pill" role="status"><span class="spinner sm"></span>Loading {receivedCount}/{totalCount} sweeps…</div>
+      {/if}
+
+      {#if failedCount > 0 && !isLoading}
+        <div class="banner missing" role="status">
+          <span>
+            {#if receivedCount > 0}
+              {failedCount} of {totalCount} sweep{totalCount === 1 ? '' : 's'} did not load; showing the {receivedCount} that did.
+            {:else}
+              No sweeps could be loaded.
+            {/if}
+          </span>
+          <button class="banner-btn" onclick={retryMissing}>Retry missing</button>
+        </div>
+      {/if}
+
+      {#if qState.hint && !fatalMsg}
+        <div class="banner quality" role="status">
+          <span>Reduced 3D quality to keep the app responsive</span>
+          <button class="banner-btn" onclick={() => governor.keepMySetting()}>Keep my setting</button>
+          <button class="banner-x" aria-label="Dismiss" onclick={() => governor.dismissHint()}>×</button>
+        </div>
+      {/if}
+
+      {#if fatalMsg}
+        <div class="overlay error fatal">
+          <p>{fatalMsg}</p>
+          <p class="sub">Switch to the 2D view to keep working, or try again.</p>
+          <button class="banner-btn" onclick={retry3d}>Try again</button>
+        </div>
+      {:else if isLoading && !hasRendered}
         <div class="overlay">
           <div class="spinner"></div>
-          <p>Loading {loadedSweeps.size}/{sweeps.length} sweeps…</p>
+          <p>Loading {receivedCount}/{totalCount} sweeps…</p>
         </div>
       {:else if errorMsg}
         <div class="overlay error"><p>{errorMsg}</p></div>
+      {:else if !hasRendered && receivedCount > 0}
+        <div class="overlay">
+          <div class="spinner"></div>
+          <p>Building 3D volume…</p>
+        </div>
       {:else if !hasRendered}
         <div class="overlay"><p>Select a variable to render in 3D</p></div>
       {/if}
@@ -1221,4 +1684,72 @@
     animation: spin 800ms linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+
+  .quality-sel {
+    font-size: 10px;
+    padding: 1px 4px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+  .q-chip {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+    padding: 1px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+  .q-chip.weak { color: var(--accent-warning, #d9a441); border-color: rgba(217,164,65,0.4); }
+  .sweep-count.partial { color: var(--accent-warning, #d9a441); }
+
+  .banner {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    max-width: calc(100% - 24px);
+    padding: 5px 10px;
+    font-size: 11px;
+    color: var(--text-primary, #fff);
+    background: rgba(20, 22, 38, 0.92);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    z-index: 6;
+    pointer-events: auto;
+  }
+  .loading-pill {
+    position: absolute; top: 10px; left: 10px; z-index: 6;
+    display: flex; align-items: center; gap: 6px;
+    padding: 3px 8px; font-size: 10px;
+    color: var(--text-secondary);
+    background: rgba(20, 22, 38, 0.85);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+  }
+  .spinner.sm { width: 10px; height: 10px; border-width: 2px; }
+  .banner.missing { top: 10px; }
+  .banner.quality { bottom: 12px; }
+  .banner-btn {
+    font-size: 10px;
+    padding: 2px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .banner-btn:hover { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .banner-x {
+    border: none; background: none; color: var(--text-muted);
+    font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+  .overlay.fatal { pointer-events: auto; background: rgba(10, 10, 20, 0.7); text-align: center; }
+  .overlay .sub { font-size: 11px; color: var(--text-muted); margin: 0; }
 </style>

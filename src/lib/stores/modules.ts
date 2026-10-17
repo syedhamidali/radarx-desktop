@@ -15,9 +15,10 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { wsManager, type ModuleFieldEntry } from '../utils/websocket';
+import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { COLORMAP_DATA } from '../utils/colormaps';
 import { getDefaultCmap, type SweepDataEntry } from '../utils/ppiRenderer';
-import { connectionStatus, radarData, selectedSweep } from './radarData';
+import { connectionStatus, radarData, selectedSweep, processingProgress } from './radarData';
 import { activeFileId, getActiveFile } from './fileManager';
 import { addToast } from './toasts';
 
@@ -811,6 +812,10 @@ export function exportOverlayGeoJson(moduleId: string, res: ModuleResult): Promi
 // ── Running state ──────────────────────────────────────────────────────────
 
 const runTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Operations-tray handle of each in-flight run (module id -> op). */
+const runOps = new Map<string, OpHandle>();
+/** Results to drop because the user cancelled (or the file changed) while the run was in flight. */
+const ignoreResults = new Map<string, number>();
 
 function setRunning(moduleId: string, running: boolean): void {
   const timer = runTimers.get(moduleId);
@@ -832,18 +837,48 @@ function setRunning(moduleId: string, running: boolean): void {
         runTimers.delete(moduleId);
         const title = moduleTitle(moduleId);
         setRunning(moduleId, false);
+        endRunOp(moduleId, 'fail', `No response after ${RUN_TIMEOUT_MS / 1000} s`);
         addToast('warning', `${title}: no response after ${RUN_TIMEOUT_MS / 1000} s`);
       }, RUN_TIMEOUT_MS),
     );
   }
 }
 
-function clearAllRunning(): void {
+/** Finish the tray entry of a run (no-op when it was already cancelled / finished). */
+function endRunOp(moduleId: string, how: 'done' | 'fail', message?: string): void {
+  const op = runOps.get(moduleId);
+  if (!op) return;
+  runOps.delete(moduleId);
+  if (how === 'done') op.done();
+  else op.fail(message ?? 'Failed');
+}
+
+/** True when this result/error belongs to a run the user already cancelled. */
+function consumeIgnored(moduleId: string): boolean {
+  const n = ignoreResults.get(moduleId) ?? 0;
+  if (n <= 0) return false;
+  if (n === 1) ignoreResults.delete(moduleId);
+  else ignoreResults.set(moduleId, n - 1);
+  return true;
+}
+
+/**
+ * Stop tracking every run. With `failMessage` the tray entries turn into retryable failures
+ * (connection lost, server error); without it they are cancelled and any late result is ignored
+ * (the active file changed).
+ */
+function clearAllRunning(failMessage?: string): void {
   for (const id of [...runTimers.keys()]) {
     clearTimeout(runTimers.get(id));
   }
   runTimers.clear();
   runningModules.set({});
+  for (const [id, op] of [...runOps]) {
+    runOps.delete(id);
+    if (failMessage) op.fail(failMessage);
+    else cancelOp(op.id); // onCancel records the late result to ignore
+  }
+  if (failMessage) ignoreResults.clear();
 }
 
 function moduleTitle(moduleId: string): string {
@@ -888,7 +923,31 @@ export function runModule(moduleId: string): void {
   if (file) msg.file_id = file.id;
 
   setRunning(moduleId, true);
+  // Tray entry: the module's own safety timer (RUN_TIMEOUT_MS) ends it, so no second timeout here.
+  const title = spec.title;
+  runOps.set(
+    moduleId,
+    beginOp({
+      kind: 'module',
+      label: `Running ${title}`,
+      slowMs: 10_000,
+      timeoutMs: 0,
+      onCancel: () => {
+        // Stop waiting; the server cannot abort the run, so its late result is dropped.
+        runOps.delete(moduleId);
+        ignoreResults.set(moduleId, (ignoreResults.get(moduleId) ?? 0) + 1);
+        setRunning(moduleId, false);
+      },
+      onRetry: () => runModule(moduleId),
+    }),
+  );
   void wsManager.send(msg);
+}
+
+/** Stop waiting for a running module (its late result is ignored). */
+export function cancelModuleRun(moduleId: string): void {
+  const op = runOps.get(moduleId);
+  if (op) cancelOp(op.id);
 }
 
 function normaliseFeatures(blocks: ModuleBlock[]): OverlayFeature[] {
@@ -978,7 +1037,9 @@ function handleModulesList(msg: any): void {
 
 function handleModuleResult(msg: any): void {
   const id = String(msg.module);
+  if (consumeIgnored(id)) return; // run was cancelled in the tray
   setRunning(id, false);
+  endRunOp(id, 'done');
   const blocks: ModuleBlock[] = Array.isArray(msg.blocks) ? msg.blocks : [];
   const result: ModuleResult = {
     module: id,
@@ -1020,8 +1081,12 @@ function handleModuleField(entry: ModuleFieldEntry): void {
 
 function handleModuleError(msg: any): void {
   const id = msg.module ? String(msg.module) : null;
-  if (id) setRunning(id, false);
-  else clearAllRunning();
+  if (id && consumeIgnored(id)) return;
+  const reason = String(msg.message ?? 'failed');
+  if (id) {
+    setRunning(id, false);
+    endRunOp(id, 'fail', reason);
+  } else clearAllRunning(reason);
   addToast('error', `${id ? moduleTitle(id) : 'Module'}: ${msg.message ?? 'failed'}`, 8000);
 }
 
@@ -1047,14 +1112,21 @@ export function initModules(): void {
   wsManager.onMessage('module_field_ready', handleModuleField);
   // A generic server error while a module is running would otherwise leave the
   // spinner up until the safety timeout (the toast is shown by wsManager).
-  wsManager.onMessage('error', () => clearAllRunning());
+  wsManager.onMessage('error', (m) => clearAllRunning(String(m?.message ?? 'Server error')));
+
+  // Surface the server's progress text on the running module entries in the tray.
+  processingProgress.subscribe((p) => {
+    if (!p || runOps.size === 0) return;
+    const text = p.message ? `${p.message} (${Math.round(p.percent)}%)` : `${Math.round(p.percent)}%`;
+    for (const op of runOps.values()) op.update(text);
+  });
 
   connectionStatus.subscribe((status) => {
     if (status === 'connected') {
       requestModules(false);
     } else {
       modulesState.update((s) => (s.loading ? { ...s, loading: false } : s));
-      clearAllRunning();
+      clearAllRunning('Connection to the sidecar was lost');
     }
   });
 

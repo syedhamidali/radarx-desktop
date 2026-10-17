@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount, onDestroy, tick } from 'svelte';
+  import { get } from 'svelte/store';
   import { radarData, selectedVariable, selectedSweep, connectionStatus } from '../stores/radarData';
+  import { activeFileId } from '../stores/fileManager';
   import { wsManager } from '../utils/websocket';
+  import { retryOp, dismissOp, operations } from '../utils/requestScheduler';
   import { PPIRenderer, getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import ColorBar from './ColorBar.svelte';
   import StormOverlay from './StormOverlay.svelte';
@@ -26,6 +29,10 @@
   // ── State ──────────────────────────────────────────────────────────────────
   let isLoading = $state(false);
   let hasRendered = $state(false);
+  /** The request for the sweep on screen failed (timeout / error): offer a Retry. */
+  let loadError: { variable: string; sweep: number; message: string; opId: string } | null = $state.raw(null);
+  /** `variable:sweep` that turned out to be unavailable during the current fallback chain (loop guard). */
+  const unavailableTried = new Set<string>();
 
   // Container sizing
   let canvasEl: HTMLDivElement;
@@ -82,6 +89,8 @@
   let unsubSweepData: (() => void) | null = null;
   let unsubSweepStore: (() => void) | null = null;
   let unsubVarStore: (() => void) | null = null;
+  let unsubFileStore: (() => void) | null = null;
+  let unsubSweepFailed: (() => void) | null = null;
   let lastRequestKey = '';
   let unsubField: (() => void) | null = null;
 
@@ -127,9 +136,19 @@
     requestNewData(v, $selectedSweep);
   }
 
+  /** Tell the request scheduler what is on screen so queued work for anything else is dropped. */
+  function syncViewContext() {
+    wsManager.setViewContext({
+      fileId: get(activeFileId),
+      variable: get(selectedVariable),
+      sweep: get(selectedSweep),
+    });
+  }
+
   function requestNewData(v: string, s: number) {
     const key = `${v}:${s}`;
     if (!v || key === lastRequestKey) return;
+    loadError = null;
     // Changing variable/sweep/file leaves the displayed module field.
     dropFieldOverride();
     lastRequestKey = key;
@@ -141,11 +160,55 @@
     }
     const cached = getCachedSweep(v, s);
     if (cached) {
+      isLoading = false;
       renderSweepData(cached);
     } else {
       isLoading = true;
-      wsManager.requestSweepData(v, s);
+      wsManager.requestSweepData(v, s, undefined, { priority: 'visible' });
     }
+  }
+
+  /** The sweep on screen could not be loaded. */
+  function onSweepRequestFailed(e: { variable: string; sweep: number; reason: string; message: string; opId: string }) {
+    if (e.variable !== $selectedVariable || e.sweep !== $selectedSweep) return;
+    isLoading = false;
+    lastRequestKey = ''; // let the user (or the fallback) ask for it again
+    if (e.reason === 'unavailable') {
+      unavailableTried.add(`${e.variable}:${e.sweep}`);
+      const sweepInfo = $radarData.sweeps.find((sw) => sw.index === e.sweep);
+      const pool = (sweepInfo?.variables && sweepInfo.variables.length > 0 ? sweepInfo.variables : $radarData.variables)
+        .filter((n) => n !== e.variable && !unavailableTried.has(`${n}:${e.sweep}`));
+      const fallback = pool.includes('DBZH') ? 'DBZH' : pool[0];
+      if (fallback) {
+        selectedVariable.set(fallback); // → subscription → requestNewData
+        return;
+      }
+    }
+    loadError = {
+      variable: e.variable,
+      sweep: e.sweep,
+      message: e.reason === 'unavailable' ? `${e.variable} is not available in this sweep` : e.message,
+      opId: e.opId,
+    };
+  }
+
+  function retryLoad() {
+    const err = loadError;
+    if (!err) return;
+    loadError = null;
+    isLoading = true;
+    lastRequestKey = `${err.variable}:${err.sweep}`;
+    if (get(operations).some((o) => o.id === err.opId && o.state === 'failed')) {
+      retryOp(err.opId);
+    } else {
+      // The failed op is gone (dismissed / trimmed): ask again directly.
+      wsManager.requestSweepData(err.variable, err.sweep, undefined, { priority: 'visible' });
+    }
+  }
+
+  function dismissLoadError() {
+    if (loadError) dismissOp(loadError.opId);
+    loadError = null;
   }
 
   // ── Lifecycle ────────────���────────────────────────���────────────────────────
@@ -153,10 +216,14 @@
     unsubSweepData = wsManager.onMessage('sweep_data_ready', (entry: SweepDataEntry) => {
       // A slow response for a sweep/variable the user already left must not repaint over the current view
       if (entry.variable !== $selectedVariable || entry.sweep !== $selectedSweep) return;
+      loadError = null;
+      unavailableTried.clear();
       // Data for the selected variable (e.g. a QC result) replaces a displayed module field.
       dropFieldOverride();
       renderSweepData(entry);
     });
+
+    unsubSweepFailed = wsManager.onMessage('sweep_request_failed', onSweepRequestFailed);
 
     unsubField = displayedField.subscribe((f) => {
       if (f) {
@@ -173,7 +240,12 @@
     });
 
     // Subscribe to store changes for animation / external sweep updates
+    unsubFileStore = activeFileId.subscribe(() => {
+      unavailableTried.clear();
+      syncViewContext();
+    });
     unsubSweepStore = selectedSweep.subscribe((s) => {
+      syncViewContext();
       const v = $selectedVariable;
       if (!v) return;
       // If the sweep has a known variable list and the current variable isn't in it,
@@ -188,6 +260,7 @@
       requestNewData(v, s);
     });
     unsubVarStore = selectedVariable.subscribe((v) => {
+      syncViewContext();
       if (v) requestNewData(v, $selectedSweep);
     });
 
@@ -221,6 +294,8 @@
     unsubField?.();
     unsubSweepStore?.();
     unsubVarStore?.();
+    unsubFileStore?.();
+    unsubSweepFailed?.();
     ppi?.destroy();
   });
 
@@ -760,6 +835,14 @@
         {/if}
       {/if}
 
+      {#if loadError && !isLoading}
+        <div class="load-error" role="alert">
+          <span>Couldn't load {loadError.variable} sweep {loadError.sweep}: {loadError.message}</span>
+          <button class="load-error-btn" on:click={retryLoad}>Retry</button>
+          <button class="load-error-x" on:click={dismissLoadError} aria-label="Dismiss">&times;</button>
+        </div>
+      {/if}
+
       {#if isLoading}
         <div class="viewer-loading">
           <div class="loading-spinner"></div>
@@ -1174,6 +1257,46 @@
 
   @keyframes spin { to { transform: rotate(360deg); } }
   .viewer-loading p { font-size: 13px; }
+
+  .load-error {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 7;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    max-width: 80%;
+    padding: 6px 8px 6px 12px;
+    font-size: 12px;
+    color: var(--text-primary);
+    background: var(--glass-bg-heavy);
+    border: 1px solid var(--accent-danger);
+    border-radius: 6px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  }
+  .load-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .load-error-btn {
+    flex: none;
+    padding: 2px 10px;
+    font-size: 12px;
+    color: #fff;
+    background: var(--accent-primary);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .load-error-x {
+    flex: none;
+    padding: 0 4px;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
 
   .viewer-placeholder, .viewer-empty {
     display: flex;

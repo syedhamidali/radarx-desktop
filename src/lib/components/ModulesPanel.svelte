@@ -30,6 +30,7 @@
     initModules,
     requestModules,
     runModule,
+    cancelModuleRun,
     clearResult,
     setParam,
     resetParams,
@@ -545,6 +546,9 @@
                 >
                   {#if running}<span class="spinner"></span>Running{:else}Run{/if}
                 </button>
+                {#if running}
+                  <button type="button" class="run-btn cancel-btn" onclick={() => cancelModuleRun(m.id)} title="Stop waiting for this run">Cancel</button>
+                {/if}
               </span>
             </div>
 
@@ -788,6 +792,18 @@
   .run-wrap {
     flex: none;
     display: inline-flex;
+    gap: 4px;
+  }
+
+  .cancel-btn {
+    color: var(--text-secondary);
+    background: transparent;
+    border-color: var(--border-light, var(--border-color));
+  }
+
+  .cancel-btn:hover:not(:disabled) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .run-btn {
