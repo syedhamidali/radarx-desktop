@@ -10,6 +10,9 @@ export interface CrossSectionData {
 }
 
 export interface VerticalProfileData {
+  /** Where the profile was taken (echoed by the server), when known. */
+  lat?: number;
+  lon?: number;
   heights_km: number[];
   values: number[];
   elevations_deg: number[];
@@ -41,6 +44,8 @@ export interface CrossSectionState {
   verticalProfiles: VerticalProfileData[];
   /** Whether a request is in progress */
   isLoading: boolean;
+  /** Bumped by the PPI line overlay to ask the panel to request the cross-section for `line`. */
+  requestSeq: number;
   /** Active tab: 'cross-section' or 'vertical-profile' */
   activeTab: 'cross-section' | 'vertical-profile';
 }
@@ -52,5 +57,19 @@ export const crossSectionStore = writable<CrossSectionState>({
   crossSectionData: null,
   verticalProfiles: [],
   isLoading: false,
+  requestSeq: 0,
   activeTab: 'cross-section',
 });
+
+/** Forget the line, probe results and any running request (a different file was opened). */
+export function resetCrossSection(): void {
+  crossSectionStore.update((s) => ({
+    ...s,
+    lineToolActive: false,
+    probeToolActive: false,
+    line: null,
+    crossSectionData: null,
+    verticalProfiles: [],
+    isLoading: false,
+  }));
+}

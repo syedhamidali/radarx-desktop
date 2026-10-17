@@ -3,8 +3,13 @@
    * CrossSectionLine -- SVG overlay on the PPI viewer.
    * Click two points to define a cross-section line.
    * Draggable endpoints with A/B labels.
+   *
+   * The line is anchored to the ground (lat/lon), so it stays on the same place of the data while
+   * the PPI is panned or zoomed; pixel positions are derived from the current view.
    */
+  import { onDestroy } from 'svelte';
   import { crossSectionStore, type CrossSectionLinePoints } from '../stores/crossSection';
+  import { dataSpaceToLatLon, latLonToDataSpace } from '../utils/geoProjection';
   import { createEventDispatcher } from 'svelte';
 
   export let active: boolean = false;
@@ -21,129 +26,207 @@
 
   const dispatch = createEventDispatcher<{
     lineDrawn: CrossSectionLinePoints;
-    requestCrossSection: CrossSectionLinePoints;
   }>();
+
+  interface GeoPoint { lat: number; lon: number }
+  interface Px { x: number; y: number }
 
   // Drawing state
   let phase: 'idle' | 'first-placed' | 'complete' = 'idle';
-  let startPx = { x: 0, y: 0 };
-  let endPx = { x: 0, y: 0 };
+  let geoA: GeoPoint | null = null;
+  let geoB: GeoPoint | null = null;
   let draggingEndpoint: 'start' | 'end' | null = null;
+  let suppressClick = false;
   let mouseX = 0;
   let mouseY = 0;
+  let svgEl: SVGSVGElement | undefined;
 
-  // Sync from store
-  $: {
-    const line = $crossSectionStore.line;
+  // The store is the source of truth once a line is complete (the panel can clear it).
+  function syncFromStore(line: CrossSectionLinePoints | null) {
     if (line) {
-      startPx = { x: line.startX, y: line.startY };
-      endPx = { x: line.endX, y: line.endY };
+      if (draggingEndpoint) return;
+      geoA = { lat: line.startLat, lon: line.startLon };
+      geoB = { lat: line.endLat, lon: line.endLon };
       phase = 'complete';
+    } else if (phase === 'complete') {
+      phase = 'idle';
+      geoA = geoB = null;
     }
   }
+  $: syncFromStore($crossSectionStore.line);
 
   // Data coordinate conversion helpers
+  function viewFactors(w: number, h: number, sc: number, mr: number) {
+    const aspect = w / h;
+    return {
+      sx: (aspect >= 1 ? sc / aspect : sc) / mr,
+      sy: (aspect >= 1 ? sc : sc * aspect) / mr,
+    };
+  }
+
   function pxToData(px: number, py: number): [number, number] {
     // Convert pixel -> NDC -> data (metres from radar)
     const ndcX = (px / containerWidth) * 2 - 1;
     const ndcY = 1 - (py / containerHeight) * 2;
-    const aspect = containerWidth / containerHeight;
-    const sx = (aspect >= 1 ? scale / aspect : scale) / maxRange;
-    const sy = (aspect >= 1 ? scale : scale * aspect) / maxRange;
+    const { sx, sy } = viewFactors(containerWidth, containerHeight, scale, maxRange);
     const xm = (ndcX - translateX * sx) / sx;
     const ym = (ndcY - translateY * sy) / sy;
     return [xm, ym];
   }
 
-  function dataToLatLon(xm: number, ym: number): [number, number] {
-    const lat = radarLat + ym / 110540.0;
-    const lon = radarLon + xm / (111320.0 * Math.cos(radarLat * Math.PI / 180));
-    return [lat, lon];
+  // The exact projection the PPI and the map are drawn in (and the sidecar's geodesic extraction
+  // agrees with), not a flat dLat/dLon approximation.
+  function dataToLatLon(xm: number, ym: number): GeoPoint {
+    const [lat, lon] = dataSpaceToLatLon(xm, ym, radarLat, radarLon);
+    return { lat, lon };
+  }
+
+  function pxToGeo(px: number, py: number): GeoPoint {
+    const [xm, ym] = pxToData(px, py);
+    return dataToLatLon(xm, ym);
+  }
+
+  /** Ground point -> screen pixels for the given view (explicit arguments keep `$:` reactive). */
+  function geoToPx(
+    p: GeoPoint | null,
+    sc: number, tx: number, ty: number, mr: number, w: number, h: number, rLat: number, rLon: number,
+  ): Px | null {
+    if (!p) return null;
+    const [xm, ym] = latLonToDataSpace(p.lat, p.lon, rLat, rLon);
+    const { sx, sy } = viewFactors(w, h, sc, mr);
+    const ndcX = (xm + tx) * sx;
+    const ndcY = (ym + ty) * sy;
+    return { x: ((ndcX + 1) / 2) * w, y: ((1 - ndcY) / 2) * h };
+  }
+
+  $: startPx = geoToPx(geoA, scale, translateX, translateY, maxRange, containerWidth, containerHeight, radarLat, radarLon);
+  $: endPx = geoToPx(geoB, scale, translateX, translateY, maxRange, containerWidth, containerHeight, radarLat, radarLon);
+
+  function localXY(e: MouseEvent): Px {
+    const rect = (svgEl ?? (e.currentTarget as SVGElement)).getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
   function handleClick(e: MouseEvent) {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     if (!active || draggingEndpoint) return;
-    const rect = (e.currentTarget as SVGElement).getBoundingClientRect();
-    const px = e.clientX - rect.left;
-    const py = e.clientY - rect.top;
+    const { x, y } = localXY(e);
 
-    if (phase === 'idle') {
-      startPx = { x: px, y: py };
+    if (phase === 'idle' || phase === 'complete') {
+      // Start a (new) line; a previous one is dropped together with its result.
+      geoA = pxToGeo(x, y);
+      geoB = null;
+      mouseX = x;
+      mouseY = y;
       phase = 'first-placed';
+      crossSectionStore.update((s) => ({ ...s, line: null }));
     } else if (phase === 'first-placed') {
-      endPx = { x: px, y: py };
+      geoB = pxToGeo(x, y);
       phase = 'complete';
       emitLine();
     }
   }
 
   function handleMouseMove(e: MouseEvent) {
-    const rect = (e.currentTarget as SVGElement).getBoundingClientRect();
-    mouseX = e.clientX - rect.left;
-    mouseY = e.clientY - rect.top;
-
-    if (draggingEndpoint) {
-      if (draggingEndpoint === 'start') {
-        startPx = { x: mouseX, y: mouseY };
-      } else {
-        endPx = { x: mouseX, y: mouseY };
-      }
-    }
+    const { x, y } = localXY(e);
+    mouseX = x;
+    mouseY = y;
   }
 
-  function handleMouseUp() {
+  function startDragEndpoint(which: 'start' | 'end', e: MouseEvent) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    draggingEndpoint = which;
+    window.addEventListener('mousemove', onWindowMove);
+    window.addEventListener('mouseup', onWindowUp);
+  }
+
+  function onWindowMove(e: MouseEvent) {
+    if (!draggingEndpoint || !svgEl) return;
+    const rect = svgEl.getBoundingClientRect();
+    const g = pxToGeo(e.clientX - rect.left, e.clientY - rect.top);
+    if (draggingEndpoint === 'start') geoA = g;
+    else geoB = g;
+  }
+
+  function onWindowUp() {
+    window.removeEventListener('mousemove', onWindowMove);
+    window.removeEventListener('mouseup', onWindowUp);
     if (draggingEndpoint) {
       draggingEndpoint = null;
+      suppressClick = true; // the click that follows the drag must not start a new line
+      setTimeout(() => (suppressClick = false), 0);
       emitLine();
     }
   }
 
-  function startDragEndpoint(which: 'start' | 'end', e: MouseEvent) {
-    e.stopPropagation();
-    draggingEndpoint = which;
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && active && phase === 'first-placed') {
+      phase = 'idle';
+      geoA = null;
+      e.stopPropagation();
+    }
+  }
+
+  onDestroy(() => {
+    window.removeEventListener('mousemove', onWindowMove);
+    window.removeEventListener('mouseup', onWindowUp);
+  });
+
+  // Leaving the tool half-way (e.g. pressing Draw Line again) forgets the first point.
+  $: if (!active && phase === 'first-placed') {
+    phase = 'idle';
+    geoA = null;
   }
 
   function emitLine() {
-    const [sxm, sym] = pxToData(startPx.x, startPx.y);
-    const [exm, eym] = pxToData(endPx.x, endPx.y);
-    const [sLat, sLon] = dataToLatLon(sxm, sym);
-    const [eLat, eLon] = dataToLatLon(exm, eym);
-
+    if (!geoA || !geoB) return;
+    // Derived pixels update on the next flush, so project here.
+    const a = geoToPx(geoA, scale, translateX, translateY, maxRange, containerWidth, containerHeight, radarLat, radarLon);
+    const b = geoToPx(geoB, scale, translateX, translateY, maxRange, containerWidth, containerHeight, radarLat, radarLon);
+    if (!a || !b) return;
     const line: CrossSectionLinePoints = {
-      startX: startPx.x,
-      startY: startPx.y,
-      endX: endPx.x,
-      endY: endPx.y,
-      startLat: sLat,
-      startLon: sLon,
-      endLat: eLat,
-      endLon: eLon,
+      startX: a.x,
+      startY: a.y,
+      endX: b.x,
+      endY: b.y,
+      startLat: geoA.lat,
+      startLon: geoA.lon,
+      endLat: geoB.lat,
+      endLon: geoB.lon,
     };
 
-    crossSectionStore.update((s) => ({ ...s, line }));
+    // Drawing a line ends the tool so the PPI can be panned again; the endpoints stay draggable.
+    crossSectionStore.update((s) => ({ ...s, line, lineToolActive: false }));
     dispatch('lineDrawn', line);
   }
 
   function requestCrossSection() {
-    const line = $crossSectionStore.line;
-    if (line) dispatch('requestCrossSection', line);
+    if ($crossSectionStore.line) crossSectionStore.update((s) => ({ ...s, requestSeq: s.requestSeq + 1 }));
   }
 
   function clearLine() {
     phase = 'idle';
+    geoA = geoB = null;
     crossSectionStore.update((s) => ({ ...s, line: null }));
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
+<svelte:window on:keydown={onKeydown} />
+
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <svg
+  bind:this={svgEl}
   class="cs-line-overlay"
   class:active
   on:click={handleClick}
   on:mousemove={handleMouseMove}
-  on:mouseup={handleMouseUp}
 >
-  {#if phase === 'first-placed'}
+  {#if phase === 'first-placed' && startPx}
     <!-- Rubber-band line from start to cursor -->
     <line
       x1={startPx.x} y1={startPx.y}
@@ -154,7 +237,7 @@
     <text x={startPx.x - 12} y={startPx.y - 10} class="cs-label">A</text>
   {/if}
 
-  {#if phase === 'complete'}
+  {#if phase === 'complete' && startPx && endPx}
     <!-- Drawn line -->
     <line
       x1={startPx.x} y1={startPx.y}
@@ -182,12 +265,12 @@
   {/if}
 </svg>
 
-{#if active && phase === 'complete'}
+{#if phase === 'complete'}
   <div class="cs-line-actions">
     <button class="cs-action-btn primary" on:click={requestCrossSection} title="Request cross-section along this line">
       Request Cross-Section
     </button>
-    <button class="cs-action-btn" on:click={clearLine} title="Clear line and redraw">
+    <button class="cs-action-btn" on:click={clearLine} title="Remove the line">
       Clear
     </button>
   </div>
@@ -263,7 +346,8 @@
     border-radius: var(--radius-sm, 4px);
     border: 1px solid var(--glass-border, rgba(255,255,255,0.1));
     background: rgba(15, 15, 26, 0.85);
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    /* a fixed dark pill over the map: its text must not follow the app theme */
+    color: rgba(255, 255, 255, 0.78);
     cursor: pointer;
     backdrop-filter: blur(8px);
     transition: all 150ms ease;
@@ -272,13 +356,13 @@
   .cs-action-btn:hover {
     background: rgba(91, 108, 247, 0.15);
     border-color: rgba(91, 108, 247, 0.3);
-    color: var(--text-primary, #fff);
+    color: #fff;
   }
 
   .cs-action-btn.primary {
     background: rgba(91, 108, 247, 0.2);
     border-color: rgba(91, 108, 247, 0.4);
-    color: var(--accent-hover, #7b8aff);
+    color: #aab4ff;
   }
 
   .cs-action-btn.primary:hover {

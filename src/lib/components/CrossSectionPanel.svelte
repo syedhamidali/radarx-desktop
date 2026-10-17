@@ -3,15 +3,16 @@
    * CrossSectionPanel -- Tabbed panel with Cross-section and Vertical Profile tabs.
    * Controls the line tool, probe mode, variable/colormap selectors, and results.
    */
-  import { onMount, onDestroy } from 'svelte';
-  import { connectionStatus, radarData, selectedVariable } from '../stores/radarData';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { connectionStatus, radarData, selectedVariable, processingProgress } from '../stores/radarData';
   import {
     crossSectionStore,
+    resetCrossSection,
     type CrossSectionData,
     type VerticalProfileData,
-    type CrossSectionLinePoints,
   } from '../stores/crossSection';
   import { wsManager } from '../utils/websocket';
+  import { beginOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
   import { getDefaultCmap, getDefaultRange } from '../utils/ppiRenderer';
   import { COLORMAP_NAMES } from '../utils/colormaps';
@@ -23,7 +24,7 @@
   const isConnected = $derived($connectionStatus === 'connected');
   const hasData = $derived($radarData.variables.length > 0);
   const variables = $derived($radarData.variables);
-  const variable = $derived($selectedVariable);
+  const filePath = $derived($radarData.filePath);
   const activeTab = $derived($crossSectionStore.activeTab);
   const lineToolActive = $derived($crossSectionStore.lineToolActive);
   const probeToolActive = $derived($crossSectionStore.probeToolActive);
@@ -36,11 +37,20 @@
   let csCmap = $state('turbo');
   let csVmin = $state(0);
   let csVmax = $state(60);
+  // An emptied number box reads as null; the viewer always gets a usable range.
+  const rangeMin = $derived(Number.isFinite(csVmin) ? csVmin : 0);
+  const rangeMax = $derived(Number.isFinite(csVmax) && csVmax !== rangeMin ? csVmax : rangeMin + 1);
 
   // Vertical profile state
   let vpVariables = $state<string[]>([]);
+  /** Where the profile currently shown was taken (to tell one probe from the next). */
+  let probeKey = '';
+  /** Results of the current probe still to come (extra variables requested by this panel). */
+  let vpPending = 0;
 
-  let unsubVar: (() => void) | null = null;
+  function setLoading(v: boolean) {
+    crossSectionStore.update((s) => (s.isLoading === v ? s : { ...s, isLoading: v }));
+  }
 
   function updateCsDefaults(v: string) {
     csCmap = getDefaultCmap(v);
@@ -48,22 +58,98 @@
     if (range) { csVmin = range[0]; csVmax = range[1]; }
   }
 
+  // A different file: forget the line, results and selections that belonged to the old one.
+  let lastFile: string | null | undefined = undefined;
+  $effect(() => {
+    const f = filePath;
+    untrack(() => {
+      if (lastFile !== undefined && f !== lastFile) {
+        resetCrossSection();
+        probeKey = '';
+        vpPending = 0;
+        csVariable = '';
+        vpVariables = [];
+      }
+      lastFile = f;
+    });
+  });
+
+  // Keep the selections valid for the open file.
+  $effect(() => {
+    const vars = variables;
+    const sel = $selectedVariable;
+    untrack(() => {
+      if (vars.length === 0) return;
+      if (!csVariable || !vars.includes(csVariable)) {
+        csVariable = sel && vars.includes(sel) ? sel : vars[0];
+        updateCsDefaults(csVariable);
+      }
+      const kept = vpVariables.filter((v) => vars.includes(v));
+      if (kept.length === 0) vpVariables = [sel && vars.includes(sel) ? sel : vars[0]];
+      else if (kept.length !== vpVariables.length) vpVariables = kept;
+    });
+  });
+
+  // --- Loading state as an operation (shown in the tray, with Cancel and a timeout) ---
+  let loadOp: OpHandle | null = null;
+
+  function endLoadOp(failure?: string) {
+    const op = loadOp;
+    loadOp = null;
+    if (!op) return;
+    if (failure) op.fail(failure);
+    else op.done();
+  }
+
+  $effect(() => {
+    const loading = isLoading;
+    untrack(() => {
+      if (loading && !loadOp) {
+        const probing = $crossSectionStore.probeToolActive || $crossSectionStore.activeTab === 'vertical-profile';
+        const op: OpHandle = beginOp({
+          kind: 'profile',
+          label: probing ? 'Extracting vertical profile' : 'Extracting cross-section',
+          timeoutMs: 45000,
+          onCancel: () => {
+            loadOp = null;
+            vpPending = 0;
+            setLoading(false);
+          },
+          onTimeout: () => {
+            loadOp = null;
+            vpPending = 0;
+            setLoading(false);
+          },
+        });
+        loadOp = op;
+      } else if (!loading && loadOp) {
+        endLoadOp();
+      }
+    });
+  });
+
+  // The PPI line overlay's "Request Cross-Section" button asks for the same request as ours.
+  let lastRequestSeq = $crossSectionStore.requestSeq;
+  $effect(() => {
+    const seq = $crossSectionStore.requestSeq;
+    untrack(() => {
+      if (seq !== lastRequestSeq) {
+        lastRequestSeq = seq;
+        requestCrossSection();
+      }
+    });
+  });
+
   // WebSocket message handlers
   let unsubCS: (() => void) | null = null;
   let unsubVP: (() => void) | null = null;
+  let unsubErr: (() => void) | null = null;
+
+  function clearProgress() {
+    processingProgress.update((p) => (p && p.percent < 100 ? null : p));
+  }
 
   onMount(() => {
-    // Initialize CS variable from current selection
-    unsubVar = selectedVariable.subscribe((v) => {
-      if (v && !csVariable) {
-        csVariable = v;
-        updateCsDefaults(v);
-      }
-      if (v && vpVariables.length === 0) {
-        vpVariables = [v];
-      }
-    });
-
     unsubCS = wsManager.onMessage('cross_section_result', (msg: any) => {
       const data: CrossSectionData = {
         distance_km: msg.distance_km ?? [],
@@ -75,37 +161,79 @@
       };
       crossSectionStore.update((s) => ({
         ...s,
-        crossSectionData: data,
+        crossSectionData: data.n_sweeps > 0 ? data : null,
         isLoading: false,
       }));
-      addToast('success', `Cross-section: ${data.n_sweeps} sweeps, ${data.distance_km.length} points`);
+      clearProgress();
+      if (data.n_sweeps > 0) {
+        addToast('success', `Cross-section: ${data.n_sweeps} sweeps, ${data.distance_km.length} points`);
+      } else {
+        addToast('info', `${data.variable || 'This variable'} is not in any sweep of this file`);
+      }
     });
 
     unsubVP = wsManager.onMessage('vertical_profile_result', (msg: any) => {
       const profile: VerticalProfileData = {
+        lat: typeof msg.lat === 'number' ? msg.lat : undefined,
+        lon: typeof msg.lon === 'number' ? msg.lon : undefined,
         heights_km: msg.heights_km ?? [],
         values: msg.values ?? [],
         elevations_deg: msg.elevations_deg ?? [],
         variable: msg.variable ?? '',
         units: msg.units ?? '',
       };
+      const key = profile.lat !== undefined && profile.lon !== undefined
+        ? `${profile.lat.toFixed(5)},${profile.lon.toFixed(5)}`
+        : '';
+      const newProbe = key !== probeKey;
+      if (newProbe) {
+        probeKey = key;
+        vpPending = 0;
+        // A click on the PPI asks for the viewed variable only; fetch the other chosen ones here.
+        if (key) {
+          for (const v of vpVariables) {
+            if (v === profile.variable) continue;
+            vpPending++;
+            wsManager.send({ type: 'get_vertical_profile', lat: profile.lat, lon: profile.lon, variable: v });
+          }
+        }
+      } else if (vpPending > 0) {
+        vpPending--;
+      }
       crossSectionStore.update((s) => {
-        // Replace existing profile for same variable, or add new
-        const existing = s.verticalProfiles.filter((p) => p.variable !== profile.variable);
+        // Same variable replaces its previous profile; a new location replaces all of them.
+        const base = newProbe ? [] : s.verticalProfiles.filter((p) => p.variable !== profile.variable);
         return {
           ...s,
-          verticalProfiles: [...existing, profile],
-          isLoading: false,
+          verticalProfiles: [...base, profile],
+          isLoading: vpPending > 0,
         };
       });
-      addToast('success', `Vertical profile: ${profile.heights_km.length} levels`);
+      clearProgress();
+      if (newProbe || vpPending === 0) {
+        const n = profile.values.filter((v) => Number.isFinite(v)).length;
+        if (n === 0) addToast('info', `${profile.variable} has no data at this point`);
+        else if (vpPending === 0) addToast('success', `Vertical profile: ${profile.heights_km.length} levels`);
+      }
+    });
+
+    unsubErr = wsManager.onMessage('error', (msg: any) => {
+      if (!loadOp) return;
+      const text = typeof msg?.message === 'string' ? msg.message : '';
+      const named = /\b((?:get|run|identify|track|list)_[a-z0-9_]+)/.exec(text)?.[1];
+      if (named && named !== 'get_cross_section' && named !== 'get_vertical_profile') return;
+      vpPending = 0;
+      const failure = text || 'Request failed';
+      endLoadOp(failure);
+      setLoading(false);
     });
   });
 
   onDestroy(() => {
     unsubCS?.();
     unsubVP?.();
-    unsubVar?.();
+    unsubErr?.();
+    endLoadOp();
   });
 
   function setTab(tab: 'cross-section' | 'vertical-profile') {
@@ -140,6 +268,8 @@
       addToast('info', 'Select a variable');
       return;
     }
+    if ($crossSectionStore.isLoading) return;
+    if ($connectionStatus !== 'connected') return;
 
     crossSectionStore.update((s) => ({ ...s, isLoading: true }));
     wsManager.send({
@@ -149,24 +279,6 @@
       variable: csVariable,
       n_points: 200,
     });
-  }
-
-  function requestVerticalProfile(lat: number, lon: number) {
-    if (vpVariables.length === 0) {
-      addToast('info', 'Select at least one variable');
-      return;
-    }
-
-    crossSectionStore.update((s) => ({ ...s, isLoading: true, verticalProfiles: [] }));
-
-    for (const v of vpVariables) {
-      wsManager.send({
-        type: 'get_vertical_profile',
-        lat,
-        lon,
-        variable: v,
-      });
-    }
   }
 
   function clearCrossSection() {
@@ -179,6 +291,7 @@
   }
 
   function clearProfiles() {
+    probeKey = '';
     crossSectionStore.update((s) => ({
       ...s,
       verticalProfiles: [],
@@ -193,8 +306,9 @@
     }
   }
 
-  // Expose requestVerticalProfile so RadarViewer can call it on PPI click
-  export { requestVerticalProfile };
+  function fmtLatLon(lat: number, lon: number): string {
+    return `${Math.abs(lat).toFixed(2)}\u00B0${lat >= 0 ? 'N' : 'S'} ${Math.abs(lon).toFixed(2)}\u00B0${lon >= 0 ? 'E' : 'W'}`;
+  }
 </script>
 
 <CollapsiblePanel title="Cross-Section / Profile" icon="///">
@@ -222,8 +336,8 @@
       <div class="csp-section">
         <div class="csp-controls">
           <div class="csp-row">
-            <label class="csp-label">Variable</label>
-            <select class="csp-select" bind:value={csVariable} disabled={!hasData} on:change={() => updateCsDefaults(csVariable)}>
+            <label class="csp-label" for="csp-var">Variable</label>
+            <select id="csp-var" class="csp-select" bind:value={csVariable} disabled={!hasData} on:change={() => updateCsDefaults(csVariable)}>
               {#each variables as v}
                 <option value={v}>{v}</option>
               {/each}
@@ -231,8 +345,8 @@
           </div>
 
           <div class="csp-row">
-            <label class="csp-label">Colormap</label>
-            <select class="csp-select" bind:value={csCmap}>
+            <label class="csp-label" for="csp-cmap">Colormap</label>
+            <select id="csp-cmap" class="csp-select" bind:value={csCmap}>
               {#each COLORMAP_NAMES as c}
                 <option value={c}>{c}</option>
               {/each}
@@ -240,11 +354,11 @@
           </div>
 
           <div class="csp-row">
-            <label class="csp-label">Range</label>
+            <label class="csp-label" for="csp-vmin">Range</label>
             <div class="csp-range-inputs">
-              <input type="number" class="csp-input" bind:value={csVmin} step="1" />
+              <input id="csp-vmin" type="number" class="csp-input" bind:value={csVmin} step="1" aria-label="Colour range minimum" />
               <span class="csp-range-sep">-</span>
-              <input type="number" class="csp-input" bind:value={csVmax} step="1" />
+              <input id="csp-vmax" type="number" class="csp-input" bind:value={csVmax} step="1" aria-label="Colour range maximum" />
             </div>
           </div>
         </div>
@@ -273,13 +387,19 @@
           {/if}
         </div>
 
+        {#if csData}
+          <div class="csp-caption">
+            {csData.variable}: {csData.n_sweeps} sweeps, {csData.distance_km[csData.distance_km.length - 1]?.toFixed(1) ?? '0'} km long
+          </div>
+        {/if}
+
         <!-- Viewer -->
         <div class="csp-viewer">
           <CrossSectionViewer
             data={csData}
             cmapName={csCmap}
-            vmin={csVmin}
-            vmax={csVmax}
+            vmin={rangeMin}
+            vmax={rangeMax}
           />
         </div>
       </div>
@@ -290,12 +410,13 @@
       <div class="csp-section">
         <div class="csp-controls">
           <div class="csp-row">
-            <label class="csp-label">Variables</label>
-            <div class="csp-var-chips">
+            <span class="csp-label" id="csp-vars-label">Variables</span>
+            <div class="csp-var-chips" role="group" aria-labelledby="csp-vars-label">
               {#each variables as v}
                 <button
                   class="csp-chip"
                   class:selected={vpVariables.includes(v)}
+                  aria-pressed={vpVariables.includes(v)}
                   on:click={() => toggleVpVariable(v)}
                 >
                   {v}
@@ -320,6 +441,10 @@
             <button class="csp-btn muted" on:click={clearProfiles}>Clear</button>
           {/if}
         </div>
+
+        {#if vpProfiles[0]?.lat !== undefined && vpProfiles[0]?.lon !== undefined}
+          <div class="csp-caption">Profile at {fmtLatLon(vpProfiles[0].lat, vpProfiles[0].lon)}</div>
+        {/if}
 
         <!-- Viewer -->
         <div class="csp-viewer">
@@ -442,8 +567,8 @@
     font-size: 11px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--glass-border, rgba(255,255,255,0.1));
-    background: rgba(15, 15, 26, 0.6);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: var(--bg-surface, rgba(15, 15, 26, 0.6));
     color: var(--text-secondary, rgba(255,255,255,0.7));
     cursor: pointer;
     transition: all 150ms ease;
@@ -475,7 +600,6 @@
 
   .csp-btn.muted {
     color: var(--text-muted, rgba(255,255,255,0.35));
-    border-color: rgba(255,255,255,0.06);
   }
 
   .csp-btn:disabled {
@@ -515,6 +639,12 @@
     background: rgba(91, 108, 247, 0.15);
     border-color: rgba(91, 108, 247, 0.4);
     color: var(--accent-hover, #7b8aff);
+  }
+
+  .csp-caption {
+    font-size: 10px;
+    font-family: var(--font-mono, monospace);
+    color: var(--text-muted, rgba(255,255,255,0.4));
   }
 
   .csp-viewer {

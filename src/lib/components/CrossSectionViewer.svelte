@@ -40,7 +40,7 @@
   let hoverValue = $state<number | null>(null);
 
   // Margins for axis labels
-  const margin = { top: 20, right: 20, bottom: 45, left: 60 };
+  const margin = { top: 20, right: 52, bottom: 45, left: 60 };
 
   // Derived data bounds
   let distMin = $state(0);
@@ -50,21 +50,29 @@
 
   $effect(() => {
     if (data) {
-      distMin = 0;
-      distMax = data.distance_km[data.distance_km.length - 1] || 1;
-      let allH: number[] = [];
+      // Compute into locals: reading the bounds back out of the state this effect writes would make
+      // it depend on itself (and grow them without end).
+      const lastDist = data.distance_km[data.distance_km.length - 1];
+      let lo = Infinity;
+      let hi = -Infinity;
       for (const row of data.height_km) {
         for (const h of row) {
-          if (isFinite(h)) allH.push(h);
+          if (typeof h === 'number' && Number.isFinite(h)) {
+            if (h < lo) lo = h;
+            if (h > hi) hi = h;
+          }
         }
       }
-      hMin = allH.length > 0 ? Math.min(...allH) : 0;
-      hMax = allH.length > 0 ? Math.max(...allH) : 1;
-      if (hMin === hMax) hMax = hMin + 1;
+      if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = 1; }
+      if (lo === hi) hi = lo + 1;
       // Add 10% padding to height
-      const hPad = (hMax - hMin) * 0.1;
-      hMin = Math.max(0, hMin - hPad);
-      hMax = hMax + hPad;
+      const hPad = (hi - lo) * 0.1;
+      distMin = 0;
+      distMax = lastDist || 1;
+      hMin = Math.max(0, lo - hPad);
+      // Cap at 20 km: beyond the horizon the upper sweeps' heights run to 100 km and would squash
+      // the troposphere, where the data are, into a sliver.
+      hMax = lo < 20 ? Math.min(hi + hPad, 20) : hi + hPad;
       // Reset view when new data arrives
       scale = 1;
       panX = 0;
@@ -78,9 +86,11 @@
     }
   });
 
-  // Reactively redraw on any change
+  // Redraw when any display setting changes. Each one is read explicitly: a short-circuiting
+  // `a || b || c` only subscribes to the first truthy operand, so editing the range did nothing.
   $effect(() => {
-    if (canvasEl && (cmapName || vmin !== undefined || vmax !== undefined || scale || panX || panY)) {
+    const deps = [cmapName, vmin, vmax, scale, panX, panY, width, height];
+    if (canvasEl && deps.length) {
       requestAnimationFrame(() => draw());
     }
   });
@@ -151,11 +161,13 @@
 
       for (let pi = 0; pi < nPoints - 1; pi++) {
         const val = sweepV[pi];
-        if (val === null || val === undefined || !isFinite(val)) continue;
+        if (val === null || val === undefined || !Number.isFinite(val)) continue;
+        if (val < vmin) continue; // like the PPI: gates below the colour range are not drawn
 
         const d0 = data.distance_km[pi];
         const d1 = data.distance_km[pi + 1];
         const h0 = sweepH[pi];
+        if (h0 == null) continue; // beyond the radar horizon
 
         // Determine cell height: use neighboring sweep or a default
         let cellHalfH: number;
@@ -177,7 +189,7 @@
         if (y1 < margin.top || y0 > margin.top + plotH) continue;
 
         // Colormap lookup
-        const t = Math.max(0, Math.min(1, (val - vmin) / (vmax - vmin)));
+        const t = Math.max(0, Math.min(1, (val - vmin) / (vmax - vmin || 1)));
         const ci = Math.round(t * 255);
         const r = cmapRgb[ci * 3];
         const g = cmapRgb[ci * 3 + 1];
@@ -360,7 +372,7 @@
     for (let si = 0; si < data.n_sweeps; si++) {
       const sh = data.height_km[si]?.[bestDi];
       const sv = data.values[si]?.[bestDi];
-      if (sh === undefined || sv === undefined || !isFinite(sv)) continue;
+      if (sh == null || sv == null || !Number.isFinite(sv)) continue;
       const hd = Math.abs(sh - h);
       if (hd < bestHDist) { bestHDist = hd; bestVal = sv; }
     }
@@ -371,16 +383,20 @@
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
     const newScale = Math.min(Math.max(scale * factor, 0.5), 20);
+    if (newScale === scale) return;
 
-    // Zoom toward cursor
+    // Zoom toward the cursor: the data point under it stays under it.
+    const rect = containerEl.getBoundingClientRect();
+    const plotW = width - margin.left - margin.right;
+    const plotH = height - margin.top - margin.bottom;
+    const fx = Math.min(1, Math.max(0, (e.clientX - rect.left - margin.left) / plotW));
+    const fy = Math.min(1, Math.max(0, 1 - (e.clientY - rect.top - margin.top) / plotH));
     const [d, h] = screenToData(e.clientX, e.clientY);
-    const dFrac = (d - distMin) / (distMax - distMin);
-    const hFrac = (h - hMin) / (hMax - hMin);
-
-    panX = panX * (newScale / scale);
-    panY = panY * (newScale / scale);
+    const newViewDistMin = d - fx * ((distMax - distMin) / newScale);
+    const newViewHMin = h - fy * ((hMax - hMin) / newScale);
+    panX = (distMin - newViewDistMin) * newScale;
+    panY = (hMin - newViewHMin) * newScale;
     scale = newScale;
-    draw();
   }
 
   function onMouseDown(e: MouseEvent) {
@@ -457,7 +473,11 @@
   {/if}
 
   {#if hoverActive}
-    <div class="cs-tooltip" style="left: {hoverScreenX - (containerEl?.getBoundingClientRect().left ?? 0) + 14}px; top: {hoverScreenY - (containerEl?.getBoundingClientRect().top ?? 0) - 30}px">
+    {@const relX = hoverScreenX - (containerEl?.getBoundingClientRect().left ?? 0)}
+    <div
+      class="cs-tooltip"
+      style="left: {relX}px; top: {hoverScreenY - (containerEl?.getBoundingClientRect().top ?? 0) - 30}px; transform: translateX({relX > width * 0.5 ? 'calc(-100% - 14px)' : '14px'})"
+    >
       <span class="tt-label">D:</span> {hoverDist.toFixed(1)} km
       <span class="tt-sep">|</span>
       <span class="tt-label">H:</span> {hoverHeight.toFixed(2)} km
