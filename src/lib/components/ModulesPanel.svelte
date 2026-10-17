@@ -6,7 +6,7 @@
    * `params`, availability from `requires`, and results from the typed output
    * blocks (scalars / table / overlay / text).
    */
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { connectionStatus, radarData, selectedSweep, selectedVariable } from '../stores/radarData';
   import {
     modulesState,
@@ -25,6 +25,8 @@
     cmapGradientCSS,
     showFieldOnPpi,
     hideField,
+    autoShowResults,
+    lastFinishedModule,
     exportTableCsv,
     exportOverlayGeoJson,
     initModules,
@@ -51,6 +53,18 @@
 
   const SEARCH_THRESHOLD = 6;
   const ROW_CAP = 500;
+
+  // After a run finishes, bring that module's card (numbers, tables, legend) into view.
+  $effect(() => {
+    const done = $lastFinishedModule;
+    if (!done) return;
+    void tick().then(() => {
+      document
+        .getElementById(`card-body-${done.id}`)
+        ?.closest('.card')
+        ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+  });
 
   onMount(() => {
     initModules();
@@ -482,6 +496,10 @@
           {#if $modulesState.loading}Loading...{:else}{modules.length} module{modules.length === 1 ? '' : 's'}{/if}
         </span>
       {/if}
+      <label class="auto-show" title="When a run finishes, draw its result (gridded product or outlines) on the map right away">
+        <input type="checkbox" bind:checked={$autoShowResults} />
+        Show on map
+      </label>
       <button
         type="button"
         class="mini-btn"
@@ -674,6 +692,20 @@
     border: 1px solid var(--border-color, #2a2a3a);
     border-radius: var(--radius-sm, 4px);
     color: var(--text-primary, #e4e6f4);
+  }
+
+  .auto-show {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .auto-show input {
+    margin: 0;
   }
 
   .mini-btn {

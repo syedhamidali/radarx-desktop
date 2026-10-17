@@ -1,6 +1,8 @@
 <script lang="ts">
   import {
     annotationsStore,
+    visibleAnnotations,
+    visibleMeasurements,
     updateAnnotationText,
     updateAnnotationPosition,
     deleteAnnotation,
@@ -27,8 +29,8 @@
     containerHeight: number;
   }>();
 
-  const annotations = $derived($annotationsStore.annotations);
-  const measurements = $derived($annotationsStore.measurements);
+  const annotations = $derived($visibleAnnotations);
+  const measurements = $derived($visibleMeasurements);
   const pendingPoints = $derived($annotationsStore.pendingPoints);
   const annotationMode = $derived($annotationsStore.annotationMode);
 
@@ -36,6 +38,39 @@
   let editText = $state('');
   let draggingId: string | null = $state(null);
   let showListPanel = $state(false);
+  let svgEl: SVGSVGElement | undefined = $state();
+  let grab = { dx: 0, dy: 0 };
+  const toolActive = $derived($annotationsStore.measureMode !== 'none' || annotationMode !== 'none');
+
+  function startDrag(e: PointerEvent, ann: { id: string; position: DataPoint }) {
+    if (e.button !== 0 || toolActive || editingId === ann.id) return;
+    const p = dataToScreen(ann.position);
+    const r = svgEl!.getBoundingClientRect();
+    grab = { dx: e.clientX - r.left - p.x, dy: e.clientY - r.top - p.y };
+    draggingId = ann.id;
+    (e.currentTarget as Element).setPointerCapture(e.pointerId);
+  }
+
+  function onDrag(e: PointerEvent) {
+    if (!draggingId || !svgEl) return;
+    const r = svgEl.getBoundingClientRect();
+    updateAnnotationPosition(draggingId, screenToData(e.clientX - r.left - grab.dx, e.clientY - r.top - grab.dy));
+  }
+
+  function endDrag() {
+    draggingId = null;
+  }
+
+  function onTextKey(e: KeyboardEvent, ann: { id: string; text: string }) {
+    if (editingId) return;
+    if (e.key === 'Enter' || e.key === 'F2') {
+      e.preventDefault();
+      startEdit(ann);
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      deleteAnnotation(ann.id);
+    }
+  }
 
   function dataToScreen(pt: DataPoint): { x: number; y: number } {
     const aspect = containerWidth / containerHeight;
@@ -67,9 +102,18 @@
     editText = ann.text;
   }
 
+  function focusSelect(node: HTMLInputElement) {
+    // After the double-click that opened the editor has finished selecting a word.
+    setTimeout(() => {
+      node.focus();
+      node.select();
+    }, 0);
+  }
+
   function commitEdit() {
     if (editingId) {
-      updateAnnotationText(editingId, editText);
+      // An emptied label would be an invisible, unselectable box: keep the old text instead.
+      if (editText.trim()) updateAnnotationText(editingId, editText.trim());
       editingId = null;
     }
   }
@@ -114,24 +158,33 @@
 </script>
 
 <!-- SVG overlay for annotations -->
-<svg class="annotation-overlay" viewBox="0 0 {containerWidth} {containerHeight}"
+<svg class="annotation-overlay" bind:this={svgEl} viewBox="0 0 {containerWidth} {containerHeight}"
      xmlns="http://www.w3.org/2000/svg">
 
   {#each annotations as ann (ann.id)}
     {#if ann.type === 'text'}
       {@const pos = dataToScreen(ann.position)}
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-      <g class="annotation-text-group" style="pointer-events: auto; cursor: move;"
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <g class="annotation-text-group" role="button" tabindex="0"
+         aria-label="Text annotation: {ann.text}. Enter to edit, Delete to remove."
+         style="pointer-events: {toolActive ? 'none' : 'auto'}; cursor: {draggingId === ann.id ? 'grabbing' : 'move'};"
+         on:pointerdown|stopPropagation={(e) => startDrag(e, ann)}
+         on:pointermove={onDrag} on:pointerup={endDrag} on:pointercancel={endDrag}
+         on:mousedown|stopPropagation on:click|stopPropagation
+         on:keydown={(e) => onTextKey(e, ann)}
          on:dblclick|stopPropagation={() => startEdit(ann)}>
         <rect x={pos.x - 4} y={pos.y - 14} width={Math.max(ann.text.length * 7 + 8, 40)} height="20"
               rx="3" class="annotation-text-bg" />
         {#if editingId === ann.id}
           <foreignObject x={pos.x - 4} y={pos.y - 14} width="200" height="24">
             <input class="annotation-edit-input"
+                   use:focusSelect
+                   aria-label="Annotation text"
                    bind:value={editText}
                    on:blur={commitEdit}
-                   on:keydown={onEditKeydown}
-                   style="width:100%;height:22px;font-size:11px;background:rgba(8,10,20,0.9);color:var(--text-primary);border:1px solid var(--accent-primary);border-radius:3px;padding:0 4px;outline:none;font-family:var(--font-mono);"
+                   on:keydown|stopPropagation={onEditKeydown}
+                   style="width:100%;height:22px;font-size:11px;background:var(--bg-secondary,#0d1020);color:var(--text-primary);border:1px solid var(--accent-primary);border-radius:3px;padding:0 4px;outline:none;font-family:var(--font-mono);"
             />
           </foreignObject>
         {:else}
@@ -179,7 +232,9 @@
 
 <!-- Annotations list panel -->
 {#if showListPanel}
-  <div class="annotations-panel">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div class="annotations-panel" on:click|stopPropagation on:dblclick|stopPropagation
+       on:mousedown|stopPropagation on:contextmenu|stopPropagation>
     <div class="annotations-panel-header">
       <span>Annotations & Measurements</span>
       <div class="annotations-panel-actions">
@@ -240,7 +295,8 @@
 {/if}
 
 <!-- Toggle for annotations panel -->
-<button class="annotations-toggle" on:click={() => showListPanel = !showListPanel}
+<button class="annotations-toggle" on:click|stopPropagation={() => showListPanel = !showListPanel}
+        on:dblclick|stopPropagation on:mousedown|stopPropagation
         title="Show annotations list"
         class:active={showListPanel}>
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -265,8 +321,20 @@
     overflow: visible;
   }
 
+  .annotation-overlay {
+    --halo: rgba(8, 10, 20, 0.8);
+  }
+  :global(.theme-light) .annotation-overlay {
+    --halo: rgba(255, 255, 255, 0.88);
+  }
+  @media (prefers-color-scheme: light) {
+    :global(.theme-auto) .annotation-overlay {
+      --halo: rgba(255, 255, 255, 0.88);
+    }
+  }
+
   .annotation-text-bg {
-    fill: rgba(8, 10, 20, 0.82);
+    fill: var(--glass-bg-heavy, rgba(8, 10, 20, 0.85));
     stroke: var(--accent-primary, #5b6cf7);
     stroke-width: 1;
   }
@@ -296,7 +364,7 @@
     font-size: 10px;
     text-anchor: middle;
     paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.85);
+    stroke: var(--halo);
     stroke-width: 3px;
     stroke-linejoin: round;
   }
@@ -326,7 +394,7 @@
     align-items: center;
     gap: 4px;
     padding: 6px 8px;
-    background: rgba(13, 16, 32, 0.82);
+    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
@@ -362,7 +430,7 @@
     z-index: 25;
     width: 280px;
     max-height: 360px;
-    background: rgba(13, 16, 32, 0.92);
+    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     backdrop-filter: blur(20px);
@@ -477,7 +545,8 @@
     transition: opacity 100ms;
   }
 
-  .annotation-item:hover .item-delete {
+  .annotation-item:hover .item-delete,
+  .item-delete:focus-visible {
     opacity: 1;
   }
 

@@ -23,25 +23,26 @@
   // Track unread count
   $: unreadCount = notifications.filter((n) => !n.read).length;
 
-  // Subscribe to toasts and capture them as notifications
+  // Subscribe to toasts and capture each one exactly once. Toast ids are unique and increasing,
+  // so remembering the highest id seen is enough: every store update re-delivers the toasts that
+  // are still on screen, and those must not become new notifications.
+  let lastToastId = 0;
   const unsubscribe = toasts.subscribe((currentToasts) => {
-    for (const toast of currentToasts) {
-      const exists = notifications.some(
-        (n) => n.message === toast.message && Date.now() - n.timestamp < 500
-      );
-      if (!exists) {
-        notifications = [
-          {
-            id: nextId++,
-            level: toast.level,
-            message: toast.message,
-            timestamp: Date.now(),
-            read: false,
-          },
-          ...notifications,
-        ].slice(0, MAX_ENTRIES);
-      }
-    }
+    const fresh = currentToasts.filter((t) => t.id > lastToastId);
+    if (fresh.length === 0) return;
+    lastToastId = Math.max(lastToastId, ...fresh.map((t) => t.id));
+    notifications = [
+      ...fresh
+        .map((toast) => ({
+          id: nextId++,
+          level: toast.level,
+          message: toast.message,
+          timestamp: Date.now(),
+          read: open, // arrived while the panel is open: already seen
+        }))
+        .reverse(),
+      ...notifications,
+    ].slice(0, MAX_ENTRIES);
   });
 
   onDestroy(() => {
@@ -114,14 +115,25 @@
     }
   }
 
+  function handleKeydown(e: KeyboardEvent) {
+    if (open && e.key === 'Escape') {
+      open = false;
+      dispatch('close');
+    }
+  }
+
   onMount(() => {
     document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
+    window.addEventListener('keydown', handleKeydown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeydown);
+    };
   });
 </script>
 
 <div class="notif-container">
-  <button class="notif-bell-btn" on:click={toggle} title="Notifications">
+  <button class="notif-bell-btn" on:click={toggle} title="Notifications" aria-label="Notifications{unreadCount > 0 ? `, ${unreadCount} unread` : ''}" aria-expanded={open}>
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
@@ -134,7 +146,7 @@
   </button>
 
   {#if open}
-    <div class="notification-center" transition:fly={{ x: 20, duration: 200 }}>
+    <div class="notification-center" role="region" aria-label="Notifications" transition:fly={{ x: 20, duration: 200 }}>
       <div class="notif-header">
         <h3>Notifications</h3>
         <div class="notif-header-actions">
@@ -143,7 +155,7 @@
               Clear all
             </button>
           {/if}
-          <button class="notif-close-btn" on:click={() => { open = false; dispatch('close'); }} title="Close">
+          <button class="notif-close-btn" aria-label="Close notifications" on:click={() => { open = false; dispatch('close'); }} title="Close">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
             </svg>
@@ -243,7 +255,7 @@
     right: 0;
     width: 360px;
     max-height: 480px;
-    background: rgba(13, 16, 32, 0.92);
+    background: var(--overlay-bg);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
     border: 1px solid var(--glass-border);

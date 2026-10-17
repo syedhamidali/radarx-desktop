@@ -11,7 +11,84 @@
   import { wsManager } from '../utils/websocket';
   import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
+  import { getActiveFile } from '../stores/fileManager';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+
+  // --- Where the file goes -------------------------------------------------
+  // The desktop app asks (native Save / Choose-folder dialog, starting in the folder used last).
+  // Outside Tauri there is no dialog, so the sidecar writes to ~/Downloads/xradar-exports — a normal
+  // folder, never a hidden temp directory.
+  const LAST_DIR_KEY = 'xradar.export.lastDir.v1';
+  const DEFAULT_FOLDER_HINT = '~/Downloads/xradar-exports';
+
+  function inTauri(): boolean {
+    return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  }
+  function lastDir(): string | undefined {
+    try {
+      return localStorage.getItem(LAST_DIR_KEY) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  function rememberDir(dir: string | undefined): void {
+    if (!dir) return;
+    try {
+      localStorage.setItem(LAST_DIR_KEY, dir);
+    } catch {
+      /* storage unavailable — ignore */
+    }
+  }
+  function parentDir(path: string): string | undefined {
+    const i = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return i > 0 ? path.slice(0, i) : undefined;
+  }
+  /** "<file>_<variable>_sweep<N>" with filesystem-safe characters. */
+  function suggestedStem(): string {
+    const file = getActiveFile();
+    const base = (file?.filename ?? 'radar').replace(/\.[^./\\]+$/, '');
+    const variable = $selectedVariable ?? 'data';
+    return `${base}_${variable}_sweep${$selectedSweep}`.replace(/[^A-Za-z0-9._-]+/g, '_');
+  }
+
+  /** Ask where to save. Resolves a path, `null` if the user cancelled, `undefined` if there is no dialog. */
+  async function chooseSavePath(
+    ext: string,
+    label: string,
+  ): Promise<string | null | undefined> {
+    if (!inTauri()) return undefined;
+    const { save } = await import('@tauri-apps/plugin-dialog');
+    const dir = lastDir();
+    const name = `${suggestedStem()}.${ext}`;
+    const path = await save({
+      title: `Export ${label}`,
+      defaultPath: dir ? `${dir}/${name}` : name,
+      filters: [{ name: label, extensions: [ext] }],
+    });
+    if (!path) return null;
+    rememberDir(parentDir(path));
+    return path;
+  }
+
+  async function chooseFolder(): Promise<string | null | undefined> {
+    if (!inTauri()) return undefined;
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: 'Choose a folder for the exported images',
+      defaultPath: batchOutputDir || lastDir(),
+    });
+    const dir = Array.isArray(picked) ? picked[0] : picked;
+    if (!dir) return null;
+    rememberDir(dir);
+    return dir;
+  }
+
+  async function browseBatchFolder() {
+    const dir = await chooseFolder();
+    if (dir) batchOutputDir = dir;
+  }
 
   // --- State ---
   let hasData = false;
@@ -190,12 +267,15 @@
     };
   }
 
-  function doQuickExport(fmt: string) {
+  async function doQuickExport(fmt: string) {
     if (!canExport) return;
+    const path = await chooseSavePath(fmt, fmt.toUpperCase());
+    if (path === null) return; // cancelled
     beginExport(`Exporting ${fmt.toUpperCase()}`, () => doQuickExport(fmt));
     wsManager.send({
       type: 'export',
       format: fmt,
+      path: path ?? undefined,
       dpi: quickDpi,
       variable: $selectedVariable,
       sweep: $selectedSweep,
@@ -203,7 +283,7 @@
     });
   }
 
-  function doBatchExport() {
+  async function doBatchExport() {
     if (!canExport) return;
     const vars = Array.from(selectedBatchVars);
     const sweeps = Array.from(selectedBatchSweeps).sort((a, b) => a - b);
@@ -214,6 +294,12 @@
     if (sweeps.length === 0) {
       addToast('error', 'Select at least one sweep for batch export');
       return;
+    }
+    if (!batchOutputDir) {
+      // No folder chosen yet: ask (desktop) instead of silently writing somewhere the user cannot find.
+      const dir = await chooseFolder();
+      if (dir === null) return; // cancelled
+      if (dir) batchOutputDir = dir;
     }
     beginExport(`Batch export (${vars.length * sweeps.length} images)`, () => doBatchExport());
     wsManager.send({
@@ -227,12 +313,17 @@
     });
   }
 
-  function doDataExport(fmt: string) {
+  const DATA_EXT: Record<string, string> = { netcdf: 'nc', cfradial2: 'nc', csv: 'csv', zarr: 'zarr' };
+
+  async function doDataExport(fmt: string) {
     if (!canExport) return;
+    const path = await chooseSavePath(DATA_EXT[fmt] ?? fmt, fmt.toUpperCase());
+    if (path === null) return; // cancelled
     beginExport(`Exporting ${fmt.toUpperCase()} data`, () => doDataExport(fmt));
     wsManager.send({
       type: 'export',
       format: fmt,
+      path: path ?? undefined,
       variable: $selectedVariable,
       sweep: $selectedSweep,
       dpi: 300,
@@ -240,7 +331,7 @@
     });
   }
 
-  function doAnimationExport() {
+  async function doAnimationExport() {
     if (!canExport) return;
     const sweeps: number[] = [];
     for (let i = animSweepStart; i <= animSweepEnd; i++) {
@@ -250,9 +341,12 @@
       addToast('error', 'Animation requires at least 2 sweeps');
       return;
     }
+    const path = await chooseSavePath('gif', 'Animated GIF');
+    if (path === null) return; // cancelled
     beginExport(`Exporting animation (${sweeps.length} frames)`, () => doAnimationExport());
     wsManager.send({
       type: 'export_animation',
+      path: path ?? undefined,
       variable: $selectedVariable,
       sweeps: sweeps,
       frame_duration_ms: animFrameRate,
@@ -366,7 +460,8 @@
         </div>
         <div class="field inline">
           <label for="batch-dir">Output Dir</label>
-          <input id="batch-dir" type="text" bind:value={batchOutputDir} placeholder="Auto (temp)" disabled={!canExport} />
+          <input id="batch-dir" type="text" bind:value={batchOutputDir} placeholder={DEFAULT_FOLDER_HINT} disabled={!canExport} />
+          <button type="button" class="browse-btn" on:click={browseBatchFolder} disabled={!canExport}>Choose…</button>
         </div>
       </div>
 
@@ -642,5 +737,11 @@
     color: var(--text-muted);
     text-align: center;
     padding: var(--spacing-md) 0;
+  }
+
+  .browse-btn {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    font-size: 11px;
   }
 </style>

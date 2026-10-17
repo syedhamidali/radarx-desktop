@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine.reader import sorted_sweep_names
+from engine.reader import mask_below_threshold, sorted_sweep_names
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def _get_sweep_ds(datatree: xr.DataTree, sweep: int) -> xr.Dataset:
     sweep_nodes = sorted_sweep_names(datatree)
     if sweep >= len(sweep_nodes):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_nodes) - 1})")
-    return datatree[sweep_nodes[sweep]].to_dataset()
+    return mask_below_threshold(datatree[sweep_nodes[sweep]].to_dataset())
 
 
 def scatter_data(

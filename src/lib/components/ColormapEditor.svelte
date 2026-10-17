@@ -7,6 +7,7 @@
     saveCustomColormap,
     deleteCustomColormap,
     exportColormapJSON,
+    isBuiltinColormapName,
     importColormapJSON,
     customColormaps,
   } from '../stores/customColormaps';
@@ -28,6 +29,9 @@
   let discreteSteps = $state(16);
   let selectedStopIdx = $state(-1);
   let draggingIdx = $state(-1);
+
+  let saveError = $state('');
+  let exportNote = $state('');
 
   // Import/export
   let showImport = $state(false);
@@ -131,27 +135,49 @@
   }
 
   // ─── Reverse ───────────────────────────────────────────────────────
+  // Flip the stop positions only: the preview/saved LUT already honours isReversed, so also toggling
+  // it would reverse twice and the button would appear to do nothing.
   function reverseStops() {
     stops = stops.map((s) => ({ ...s, position: 1 - s.position }));
-    isReversed = !isReversed;
+  }
+
+  function stopKey(idx: number, e: KeyboardEvent) {
+    const step = e.shiftKey ? 0.1 : 0.01;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const d = e.key === 'ArrowLeft' ? -step : step;
+      stops = stops.map((s, i) => (i === idx ? { ...s, position: Math.max(0, Math.min(1, s.position + d)) } : s));
+      selectedStopIdx = idx;
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      removeStop(idx);
+    }
   }
 
   // ─── Save / Apply / Export / Import ────────────────────────────────
-  function handleSave() {
-    if (!name.trim()) return;
+  function handleSave(): boolean {
+    saveError = '';
+    const trimmed = name.trim();
+    if (!trimmed) {
+      saveError = 'Give the colormap a name.';
+      return false;
+    }
+    if (isBuiltinColormapName(trimmed)) {
+      saveError = `"${trimmed}" is a built-in colormap. Pick another name.`;
+      return false;
+    }
     const cm: CustomColormap = {
-      name: name.trim(),
+      name: trimmed,
       stops: [...stops],
       isReversed,
       isDiscrete,
-      discreteSteps,
+      discreteSteps: Math.max(2, Math.min(256, Math.round(Number(discreteSteps)) || 16)),
     };
-    saveCustomColormap(cm);
+    return saveCustomColormap(cm);
   }
 
   function handleApply() {
-    handleSave();
-    if (onApply) onApply(name.trim());
+    if (handleSave() && onApply) onApply(name.trim());
   }
 
   function handleExport() {
@@ -163,7 +189,20 @@
       discreteSteps,
     };
     const json = exportColormapJSON(cm);
-    navigator.clipboard.writeText(json).catch(() => {});
+    exportNote = '';
+    navigator.clipboard
+      .writeText(json)
+      .then(() => (exportNote = 'JSON copied to clipboard'))
+      .catch(() => {
+        // Clipboard blocked: fall back to a file download.
+        const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${cm.name || 'colormap'}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+        exportNote = 'Saved as a .json file';
+      });
   }
 
   function handleImport() {
@@ -174,6 +213,7 @@
       return;
     }
     name = cm.name;
+    saveError = '';
     stops = cm.stops;
     isReversed = cm.isReversed;
     isDiscrete = cm.isDiscrete;
@@ -184,6 +224,7 @@
 
   function loadCustom(cm: CustomColormap) {
     name = cm.name;
+    saveError = '';
     stops = [...cm.stops];
     isReversed = cm.isReversed;
     isDiscrete = cm.isDiscrete;
@@ -200,8 +241,10 @@
   }
 </script>
 
+<svelte:window on:keydown={(e) => { if (e.key === 'Escape' && onClose) { e.stopPropagation(); onClose(); } }} />
+
 <div class="cmap-editor-overlay">
-  <div class="cmap-editor">
+  <div class="cmap-editor" role="dialog" aria-modal="true" aria-label="Colormap editor">
     <!-- Header -->
     <div class="editor-header">
       <h3>Colormap Editor</h3>
@@ -227,7 +270,7 @@
         <!-- Name input -->
         <div class="field-row">
           <label class="field-label">Name</label>
-          <input class="field-input" type="text" bind:value={name} placeholder="Colormap name" />
+          <input class="field-input" type="text" bind:value={name} maxlength="48" placeholder="Colormap name" />
         </div>
 
         <!-- Preview gradient -->
@@ -248,8 +291,17 @@
               class="stop-handle"
               class:selected={idx === selectedStopIdx}
               style="left: {stop.position * 100}%; background: {stopColorHex(stop)}"
+              role="slider"
+              tabindex="0"
+              aria-label="Color stop {idx + 1}"
+              aria-valuemin="0"
+              aria-valuemax="1"
+              aria-valuenow={stop.position}
               on:mousedown={(e) => handleStopMouseDown(idx, e)}
-              title="Drag to move, click to select"
+              on:click|stopPropagation={() => (selectedStopIdx = idx)}
+              on:focus={() => (selectedStopIdx = idx)}
+              on:keydown={(e) => stopKey(idx, e)}
+              title="Drag to move, click to select, arrows to nudge, Delete to remove"
             ></div>
           {/each}
         </div>
@@ -320,6 +372,13 @@
           <button class="btn" on:click={() => (showImport = !showImport)}>Import</button>
         </div>
 
+        {#if saveError}
+          <div class="import-error" role="alert">{saveError}</div>
+        {/if}
+        {#if exportNote}
+          <div class="export-note" role="status">{exportNote}</div>
+        {/if}
+
         <!-- Import panel -->
         {#if showImport}
           <div class="import-panel">
@@ -371,6 +430,11 @@
 </div>
 
 <style>
+  .export-note {
+    font-size: 11px;
+    color: var(--accent-success, #34d399);
+  }
+
   .cmap-editor-overlay {
     position: fixed;
     inset: 0;

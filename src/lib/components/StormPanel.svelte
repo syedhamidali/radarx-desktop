@@ -6,18 +6,22 @@
    * and cell selection for highlighting on the PPI.
    */
   import { connectionStatus, radarData, selectedVariable, selectedSweep } from '../stores/radarData';
-  import { stormCells, type CellData } from '../stores/stormCells';
-  import { wsManager } from '../utils/websocket';
+  import { stormCells, clearStormCells, type CellData } from '../stores/stormCells';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
   import { addToast } from '../stores/toasts';
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy, untrack } from 'svelte';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
   // Threshold controls
-  let thresholdDbz: number = 35;
-  let minAreaKm2: number = 10;
+  let thresholdDbz: number | null = 35;
+  let minAreaKm2: number | null = 10;
+  // Tracking: the time between the two scans being compared sets the speed
+  let dtSeconds: number | null = 300;
+  let maxMoveKm: number | null = 30;
 
   // State
   let cells: CellData[] = [];
+  let tracks: import('../stores/stormCells').TrackData[] = [];
   let selectedId: string | null = null;
   let overlayVisible: boolean = true;
   let isIdentifying: boolean = false;
@@ -25,82 +29,154 @@
   let isConnected: boolean = false;
   let variable: string | null = null;
   let sweep: number = 0;
+  let filePath: string | null = null;
+  let source: import('../stores/stormCells').CellSource | null = null;
 
   $: cells = $stormCells.cells;
+  $: tracks = $stormCells.tracks;
   $: selectedId = $stormCells.selectedCellId;
   $: overlayVisible = $stormCells.overlayVisible;
   $: isIdentifying = $stormCells.isIdentifying;
+  $: source = $stormCells.source;
   $: hasData = $radarData.variables.length > 0;
+  $: filePath = $radarData.filePath;
   $: isConnected = $connectionStatus === 'connected';
-  $: variable = $selectedVariable;
   $: sweep = $selectedSweep;
-  $: canIdentify = hasData && isConnected && !isIdentifying;
 
-  // WebSocket message handlers
-  let unsubCells: (() => void) | null = null;
-  let unsubTracks: (() => void) | null = null;
+  const isReflectivity = (v: string) => /^(dbz|zh$|zv$|refl)/i.test(v);
 
-  onMount(() => {
-    unsubCells = wsManager.onMessage('cells_identified', (msg: any) => {
-      const cellList: CellData[] = msg.cells ?? [];
-      stormCells.update((s) => ({
-        ...s,
-        cells: cellList,
-        tracks: [],
-        selectedCellId: null,
-        isIdentifying: false,
-      }));
-      if (cellList.length > 0) {
-        addToast('success', `Found ${cellList.length} storm cells`);
-      } else {
-        addToast('info', 'No storm cells found with current thresholds');
-      }
+  /** Cells are found on reflectivity (the thresholds are dBZ): the viewed field when it is one, else the file's. */
+  // (spelled out in the statement: `$:` only re-runs for what the statement itself names)
+  $: sweepVariables = $radarData.sweeps?.[sweep]?.variables ?? $radarData.variables;
+  $: variable =
+    $selectedVariable && isReflectivity($selectedVariable) && sweepVariables.includes($selectedVariable)
+      ? $selectedVariable
+      : (sweepVariables.find(isReflectivity) ?? null);
+
+  // Threshold sanity (the number boxes read as null when emptied).
+  $: thresholdProblem =
+    thresholdDbz === null || !Number.isFinite(thresholdDbz) || thresholdDbz < 0 || thresholdDbz > 100
+      ? 'Min dBZ must be between 0 and 100'
+      : minAreaKm2 === null || !Number.isFinite(minAreaKm2) || minAreaKm2 <= 0
+        ? 'Min area must be above 0'
+        : '';
+  $: trackProblem =
+    dtSeconds === null || !Number.isFinite(dtSeconds) || dtSeconds <= 0
+      ? 'The time between scans must be above 0'
+      : maxMoveKm === null || !Number.isFinite(maxMoveKm) || maxMoveKm <= 0
+        ? 'Max movement must be above 0'
+        : '';
+
+  $: blockedReason = !variable
+    ? `No reflectivity field in sweep ${sweep}`
+    : thresholdProblem;
+  $: canIdentify = hasData && isConnected && !isIdentifying && !blockedReason;
+  $: canTrack = canIdentify && cells.length > 0 && !trackProblem;
+
+  // Cells belong to one file and sweep: a different file drops them, a different sweep hides them.
+  let lastFile: string | null | undefined = undefined;
+  $: {
+    const f = filePath;
+    untrack(() => {
+      if (lastFile !== undefined && f !== lastFile) clearStormCells();
+      lastFile = f;
     });
+  }
+  $: onOtherSweep = !!source && cells.length > 0 && (source.file !== filePath || source.sweep !== sweep);
 
-    unsubTracks = wsManager.onMessage('cells_tracked', (msg: any) => {
-      stormCells.update((s) => ({
-        ...s,
-        cells: msg.cells ?? [],
-        tracks: msg.tracks ?? [],
-        isIdentifying: false,
-      }));
-      addToast('success', `Tracked ${(msg.tracks ?? []).length} cells`);
-    });
-  });
+  let handle: FeatureRequestHandle | null = null;
 
-  onDestroy(() => {
-    unsubCells?.();
-    unsubTracks?.();
-  });
+  onDestroy(() => handle?.cancel());
+
+  function setBusy(v: boolean) {
+    stormCells.update((s) => ({ ...s, isIdentifying: v }));
+  }
 
   function identifyCells() {
     if (!canIdentify || !variable) return;
-    stormCells.update((s) => ({ ...s, isIdentifying: true }));
-    wsManager.send({
-      type: 'identify_cells',
-      variable,
-      sweep,
-      params: {
-        threshold_dbz: thresholdDbz,
-        min_size_km2: minAreaKm2,
+    const v = variable;
+    const sw = sweep;
+    const file = filePath;
+    setBusy(true);
+    const h = runFeatureRequest({
+      kind: 'storm',
+      label: `Identifying storm cells (${v}, sweep ${sw})`,
+      message: {
+        type: 'identify_cells',
+        variable: v,
+        sweep: sw,
+        params: {
+          threshold_dbz: thresholdDbz,
+          min_size_km2: minAreaKm2,
+        },
       },
+      resultTypes: ['cells_identified'],
+      accept: (msg: any) => msg.variable === v && msg.sweep === sw,
+      onResult: (msg: any) => {
+        const cellList: CellData[] = msg.cells ?? [];
+        stormCells.update((s) => ({
+          ...s,
+          cells: cellList,
+          tracks: [],
+          selectedCellId: null,
+          source: { file, variable: v, sweep: sw },
+        }));
+        if (cellList.length > 0) {
+          addToast('success', `Found ${cellList.length} storm cells`);
+        } else {
+          addToast('info', `No storm cells found at ${thresholdDbz} dBZ / ${minAreaKm2} km\u00B2 in sweep ${sw}; try a lower threshold`);
+        }
+      },
+      onSettled: () => {
+        setBusy(false);
+        if (handle === h) handle = null;
+      },
+      retry: identifyCells,
     });
+    handle = h;
   }
 
   function trackCells() {
-    if (!canIdentify || !variable || cells.length === 0) return;
-    stormCells.update((s) => ({ ...s, isIdentifying: true }));
-    wsManager.send({
-      type: 'track_cells',
-      variable,
-      sweep,
-      params: {
-        threshold_dbz: thresholdDbz,
-        min_size_km2: minAreaKm2,
-        max_distance_km: 30,
-        dt_seconds: 300,
+    if (!canTrack || !variable) return;
+    const v = variable;
+    const sw = sweep;
+    const file = filePath;
+    setBusy(true);
+    const h = runFeatureRequest({
+      kind: 'storm',
+      label: `Tracking storm cells (${v}, sweep ${sw})`,
+      message: {
+        type: 'track_cells',
+        variable: v,
+        sweep: sw,
+        params: {
+          threshold_dbz: thresholdDbz,
+          min_size_km2: minAreaKm2,
+          max_distance_km: maxMoveKm,
+          dt_seconds: dtSeconds,
+        },
       },
+      resultTypes: ['cells_tracked'],
+      accept: (msg: any) => msg.variable === v && msg.sweep === sw,
+      onResult: (msg: any) => {
+        const newTracks = msg.tracks ?? [];
+        stormCells.update((s) => ({
+          ...s,
+          cells: msg.cells ?? [],
+          tracks: newTracks,
+          selectedCellId: null,
+          source: { file, variable: v, sweep: sw },
+        }));
+        const matched = newTracks.filter((t: any) => (t.cell_history?.length ?? 0) > 1).length;
+        addToast(matched > 0 ? 'success' : 'info', `Tracked ${matched} of ${newTracks.length} cells (matched between the two scans)`);
+      },
+      onSettled: () => {
+        setBusy(false);
+        if (handle === h) handle = null;
+      },
+      retry: trackCells,
     });
+    handle = h;
   }
 
   function toggleOverlay() {
@@ -114,14 +190,19 @@
     }));
   }
 
-  function clearCells() {
-    stormCells.update((s) => ({
-      ...s,
-      cells: [],
-      tracks: [],
-      selectedCellId: null,
-    }));
+  function onRowKey(e: KeyboardEvent, id: string) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      selectCell(id);
+    }
   }
+
+  function clearCells() {
+    handle?.cancel();
+    clearStormCells();
+  }
+
+  $: matchedTracks = tracks.filter((t) => (t.cell_history?.length ?? 0) > 1);
 </script>
 
 <CollapsiblePanel title="Storm Cells" badge={cells.length > 0 ? cells.length : null}>
@@ -134,23 +215,23 @@
           id="threshold-dbz"
           type="number"
           bind:value={thresholdDbz}
-          min="10"
-          max="70"
+          min="0"
+          max="100"
           step="5"
-          disabled={!canIdentify}
+          disabled={isIdentifying}
         />
       </div>
 
       <div class="field">
-        <label for="min-area">Min Area (km<sup>2</sup>)</label>
+        <label for="min-area">Min Area (km&sup2;)</label>
         <input
           id="min-area"
           type="number"
           bind:value={minAreaKm2}
           min="1"
-          max="100"
+          max="1000"
           step="5"
-          disabled={!canIdentify}
+          disabled={isIdentifying}
         />
       </div>
 
@@ -160,7 +241,7 @@
           class="primary action-btn"
           on:click={identifyCells}
           disabled={!canIdentify}
-          title={!isConnected ? 'Sidecar not connected' : !hasData ? 'No data loaded' : 'Find storm cells'}
+          title={!isConnected ? 'Sidecar not connected' : !hasData ? 'No data loaded' : blockedReason || `Find storm cells in ${variable}, sweep ${sweep}`}
         >
           {#if isIdentifying}
             <span class="spinner"></span>
@@ -174,15 +255,44 @@
           <button
             class="action-btn secondary"
             on:click={trackCells}
-            disabled={!canIdentify}
-            title="Track cells to current sweep"
+            disabled={!canTrack}
+            title={trackProblem || 'Match the cells found earlier with the cells of the displayed sweep'}
           >
             Track
           </button>
         {/if}
+        {#if isIdentifying}
+          <button class="action-btn secondary" on:click={() => handle?.cancel()} title="Stop waiting for the result">Cancel</button>
+        {/if}
       </div>
 
+      {#if blockedReason && hasData}
+        <p class="note" role="status">{blockedReason}</p>
+      {/if}
+
+      {#if cells.length > 0}
+        <div class="track-fields">
+          <div class="field">
+            <label for="track-dt" title="Time between the two scans being compared">Scan gap (s)</label>
+            <input id="track-dt" type="number" bind:value={dtSeconds} min="1" step="30" disabled={isIdentifying} />
+          </div>
+          <div class="field">
+            <label for="track-dist" title="A cell is matched only if it moved less than this">Max move (km)</label>
+            <input id="track-dist" type="number" bind:value={maxMoveKm} min="1" step="5" disabled={isIdentifying} />
+          </div>
+        </div>
+        <p class="note">
+          Track matches the cells found earlier with those of the displayed sweep; the speeds follow the time you give.
+        </p>
+      {/if}
+
       <!-- Overlay toggle + clear -->
+      {#if onOtherSweep}
+        <p class="note" role="status">
+          These cells are from {source?.file !== filePath ? 'another file' : `sweep ${source?.sweep}`}; they are drawn on the PPI only there.
+        </p>
+      {/if}
+
       {#if cells.length > 0}
         <div class="toggle-row">
           <label class="checkbox-label">
@@ -203,10 +313,10 @@
           <thead>
             <tr>
               <th>ID</th>
-              <th>Max dBZ</th>
-              <th>Mean</th>
-              <th>Area km<sup>2</sup></th>
-              <th>Range km</th>
+              <th title="Maximum reflectivity (dBZ)">Max</th>
+              <th title="Mean reflectivity (dBZ)">Mean</th>
+              <th title="Area (km&sup2;)">km&sup2;</th>
+              <th title="Range of the centroid from the radar (km)">Rng km</th>
             </tr>
           </thead>
           <tbody>
@@ -216,8 +326,10 @@
                 class="cell-row"
                 class:selected={cell.id === selectedId}
                 on:click={() => selectCell(cell.id)}
+                on:keydown={(e) => onRowKey(e, cell.id)}
                 role="button"
                 tabindex="0"
+                aria-pressed={cell.id === selectedId}
               >
                 <td class="cell-id-col">{cell.id}</td>
                 <td class="mono">{cell.max_dbz.toFixed(1)}</td>
@@ -229,6 +341,31 @@
           </tbody>
         </table>
       </div>
+    {/if}
+
+    <!-- Tracks -->
+    {#if tracks.length > 0}
+      <div class="cells-table-wrapper">
+        <table class="cells-table">
+          <thead>
+            <tr><th>Track</th><th>Speed</th><th>From</th><th>Scans</th></tr>
+          </thead>
+          <tbody>
+            {#each tracks as t (t.track_id)}
+              {@const matched = (t.cell_history?.length ?? 0) > 1}
+              <tr>
+                <td class="cell-id-col">{t.track_id}</td>
+                <td class="mono">{matched ? `${t.speed_mps.toFixed(1)} m/s (${(t.speed_mps * 3.6).toFixed(0)} km/h)` : '--'}</td>
+                <td class="mono">{matched && t.speed_mps > 0 ? `${t.direction_deg.toFixed(0)}\u00B0` : '--'}</td>
+                <td class="mono">{matched ? 'matched' : t.track_id.startsWith('TN') ? 'new' : 'ended'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      {#if matchedTracks.length === 0}
+        <p class="note">No cell was found again within the maximum movement.</p>
+      {/if}
     {/if}
 
     <!-- Selected cell detail -->
@@ -243,7 +380,7 @@
             <span class="detail-label">Mean dBZ</span>
             <span class="detail-value">{selected.mean_dbz.toFixed(1)}</span>
             <span class="detail-label">Area</span>
-            <span class="detail-value">{selected.area_km2.toFixed(1)} km<sup>2</sup></span>
+            <span class="detail-value">{selected.area_km2.toFixed(1)} km&sup2;</span>
             <span class="detail-label">Centroid Az</span>
             <span class="detail-value">{selected.centroid_az.toFixed(1)}&deg;</span>
             <span class="detail-label">Centroid Range</span>
@@ -390,7 +527,7 @@
   .cells-table-wrapper {
     margin-top: var(--spacing-sm, 6px);
     max-height: 200px;
-    overflow-y: auto;
+    overflow: auto;
     border: 1px solid var(--border-color, #2a2a3a);
     border-radius: var(--radius-sm, 4px);
   }
@@ -483,6 +620,19 @@
     font-family: var(--font-mono, monospace);
     color: var(--text-primary, #e8e8ee);
     text-align: right;
+  }
+
+  .note {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-secondary, #a0a0b8);
+  }
+
+  .track-fields {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-sm, 6px);
   }
 
   .empty-hint {

@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { wsManager } from '../utils/websocket';
+  import { portal } from '../utils/portal';
 
   let { visible = $bindable(false) }: { visible?: boolean } = $props();
 
@@ -28,30 +29,49 @@
   let copiedPath = $state('');
   let copyFeedbackTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  const filteredTree = $derived(searchQuery.trim() ? filterTree(tree, searchQuery.toLowerCase()) : tree);
+  const filteredTree = $derived(searchQuery.trim() ? filterTree(tree, searchQuery.trim().toLowerCase()) : tree);
 
+  /** Pure: nodes matching the query, plus the ancestors that lead to a match. */
   function filterTree(nodes: MetaNode[], query: string): MetaNode[] {
     const result: MetaNode[] = [];
     for (const node of nodes) {
       const nameMatch = node.name.toLowerCase().includes(query);
       const longNameMatch = (node.long_name || '').toLowerCase().includes(query);
       const unitsMatch = (node.units || '').toLowerCase().includes(query);
-      const valueMatch = node.value !== undefined && String(node.value).toLowerCase().includes(query);
+      const valueMatch = node.value !== undefined && formatValue(node.value).toLowerCase().includes(query);
       const filteredChildren = node.children ? filterTree(node.children, query) : [];
       if (nameMatch || longNameMatch || unitsMatch || valueMatch || filteredChildren.length > 0) {
         result.push({
           ...node,
           children: filteredChildren.length > 0 ? filteredChildren : node.children,
         });
-        // Auto-expand matched parents
-        if (filteredChildren.length > 0) {
-          expandedNodes.add(node.name);
-          expandedNodes = expandedNodes;
-        }
       }
     }
     return result;
   }
+
+  /** Paths of every node that has a matching descendant (so a search opens the way to its hits). */
+  function matchAncestorPaths(nodes: MetaNode[], parent: string, out: Set<string>) {
+    for (const node of nodes) {
+      const path = parent ? `${parent}/${node.name}` : node.name;
+      if (node.children?.length) {
+        out.add(path);
+        matchAncestorPaths(node.children, path, out);
+      }
+    }
+  }
+
+  // Expand along the matches when the search changes (state is written here, not inside $derived)
+  $effect(() => {
+    if (!searchQuery.trim()) return;
+    const open = new Set<string>();
+    matchAncestorPaths(filteredTree, '', open);
+    untrack(() => {
+      const next = new Set(expandedNodes);
+      open.forEach((p) => next.add(p));
+      expandedNodes = next;
+    });
+  });
 
   function requestMetadata() {
     loading = true;
@@ -70,10 +90,7 @@
       }
       tree = msg.tree || [];
       // Auto-expand root
-      for (const node of tree) {
-        expandedNodes.add(node.name);
-      }
-      expandedNodes = expandedNodes;
+      expandedNodes = new Set(tree.map((n: MetaNode) => n.name));
     });
   });
 
@@ -88,13 +105,10 @@
     }
   });
 
-  function toggleNode(name: string) {
-    if (expandedNodes.has(name)) {
-      expandedNodes.delete(name);
-    } else {
-      expandedNodes.add(name);
-    }
-    expandedNodes = expandedNodes;
+  function toggleNode(path: string) {
+    const next = new Set(expandedNodes);
+    if (!next.delete(path)) next.add(path);
+    expandedNodes = next;
   }
 
   function copyValue(value: any, path: string) {
@@ -103,6 +117,10 @@
       copiedPath = path;
       if (copyFeedbackTimeout) clearTimeout(copyFeedbackTimeout);
       copyFeedbackTimeout = setTimeout(() => { copiedPath = ''; }, 1500);
+    }).catch(() => {
+      // Clipboard access denied: say so instead of failing silently
+      errorMsg = '';
+      copiedPath = '';
     });
   }
 
@@ -141,9 +159,77 @@
   }
 </script>
 
+
+{#snippet treeNode(node: MetaNode, path: string, depth: number)}
+  {@const expandable = !!node.children && node.children.length > 0}
+  {@const isExpanded = expandable && expandedNodes.has(path)}
+  <div class="tree-node" role="treeitem" aria-selected="false" aria-expanded={expandable ? isExpanded : undefined}>
+    <button
+      class="tree-row"
+      class:expandable
+      class:leaf={!expandable}
+      on:click={() => {
+        if (expandable) toggleNode(path);
+        if (node.value !== undefined) copyValue(node.value, path);
+      }}
+      title={node.value !== undefined ? `Click to copy: ${truncate(formatValue(node.value), 120)}` : node.name}
+    >
+      {#if expandable}
+        <span class="tree-chevron" class:open={isExpanded}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="9 6 15 12 9 18" />
+          </svg>
+        </span>
+      {:else}
+        <span class="tree-spacer"></span>
+      {/if}
+
+      <span class="tree-icon {nodeIconClass(node.type)}">{nodeIcon(node.type)}</span>
+      <span class="tree-name">{node.name}</span>
+
+      {#if node.dtype}
+        <span class="tree-badge dtype">{node.dtype}</span>
+      {/if}
+      {#if node.shape}
+        <span class="tree-badge shape">[{node.shape.join(' x ')}]</span>
+      {/if}
+      {#if node.units}
+        <span class="tree-badge units">{node.units}</span>
+      {/if}
+      {#if node.min !== null && node.min !== undefined}
+        <span class="tree-stats">
+          {node.min.toFixed(2)} .. {node.max?.toFixed(2)}
+          {#if node.mean !== null && node.mean !== undefined}
+            (avg {node.mean.toFixed(2)})
+          {/if}
+        </span>
+      {/if}
+      {#if node.value !== undefined}
+        <span class="tree-value" class:copied={copiedPath === path}>
+          {copiedPath === path ? 'Copied!' : truncate(formatValue(node.value), 50)}
+        </span>
+      {/if}
+      {#if node.long_name}
+        <span class="tree-longname">{truncate(node.long_name, 40)}</span>
+      {/if}
+    </button>
+
+    {#if isExpanded && node.children}
+      <div class="tree-children" role="group">
+        {#each node.children as child, i (`${i}:${child.name}`)}
+          {@render treeNode(child, `${path}/${child.name}`, depth + 1)}
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
+
+<svelte:window on:keydown={(e) => { if (visible && e.key === 'Escape') { e.stopPropagation(); close(); } }} />
+
 {#if visible}
-<div class="meta-overlay" on:click|self={close}>
-  <div class="meta-panel">
+<!-- On <body>: the sidebar this is declared in has a backdrop-filter, which would trap the fixed overlay. -->
+<div class="meta-overlay" use:portal on:click|self={close}>
+  <div class="meta-panel" role="dialog" aria-modal="true" aria-label="Metadata tree">
     <div class="meta-header">
       <div class="meta-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -192,162 +278,9 @@
           {searchQuery ? 'No results found' : 'No metadata available. Open a file first.'}
         </div>
       {:else}
-        <div class="meta-tree">
-          {#each filteredTree as node}
-            <svelte:self visible={true} />
-            {@const isExpanded = expandedNodes.has(node.name)}
-            <div class="tree-node">
-              <button
-                class="tree-row"
-                class:expandable={node.children && node.children.length > 0}
-                on:click={() => {
-                  if (node.children && node.children.length > 0) {
-                    toggleNode(node.name);
-                  }
-                  if (node.value !== undefined) copyValue(node.value, node.name);
-                }}
-                title={node.value !== undefined ? `Click to copy: ${truncate(formatValue(node.value), 120)}` : node.name}
-              >
-                {#if node.children && node.children.length > 0}
-                  <span class="tree-chevron" class:open={isExpanded}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                      <polyline points="9 6 15 12 9 18" />
-                    </svg>
-                  </span>
-                {:else}
-                  <span class="tree-spacer"></span>
-                {/if}
-
-                <span class="tree-icon {nodeIconClass(node.type)}">{nodeIcon(node.type)}</span>
-                <span class="tree-name">{node.name}</span>
-
-                {#if node.dtype}
-                  <span class="tree-badge dtype">{node.dtype}</span>
-                {/if}
-                {#if node.shape}
-                  <span class="tree-badge shape">[{node.shape.join(' x ')}]</span>
-                {/if}
-                {#if node.units}
-                  <span class="tree-badge units">{node.units}</span>
-                {/if}
-                {#if node.min !== null && node.min !== undefined}
-                  <span class="tree-stats">
-                    {node.min.toFixed(2)} .. {node.max?.toFixed(2)}
-                    {#if node.mean !== null && node.mean !== undefined}
-                      (avg {node.mean.toFixed(2)})
-                    {/if}
-                  </span>
-                {/if}
-                {#if node.value !== undefined && node.type === 'attribute'}
-                  <span class="tree-value" class:copied={copiedPath === node.name}>
-                    {copiedPath === node.name ? 'Copied!' : truncate(formatValue(node.value), 50)}
-                  </span>
-                {/if}
-
-                {#if node.long_name}
-                  <span class="tree-longname">{truncate(node.long_name, 40)}</span>
-                {/if}
-              </button>
-
-              {#if isExpanded && node.children}
-                <div class="tree-children">
-                  {#each node.children as child}
-                    {@const childExpanded = expandedNodes.has(child.name)}
-                    <div class="tree-node">
-                      <button
-                        class="tree-row"
-                        class:expandable={child.children && child.children.length > 0}
-                        on:click={() => {
-                          if (child.children && child.children.length > 0) {
-                            toggleNode(child.name);
-                          }
-                          if (child.value !== undefined) copyValue(child.value, child.name);
-                        }}
-                        title={child.value !== undefined ? `Click to copy: ${truncate(formatValue(child.value), 120)}` : child.name}
-                      >
-                        {#if child.children && child.children.length > 0}
-                          <span class="tree-chevron" class:open={childExpanded}>
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                              <polyline points="9 6 15 12 9 18" />
-                            </svg>
-                          </span>
-                        {:else}
-                          <span class="tree-spacer"></span>
-                        {/if}
-
-                        <span class="tree-icon {nodeIconClass(child.type)}">{nodeIcon(child.type)}</span>
-                        <span class="tree-name">{child.name}</span>
-
-                        {#if child.dtype}
-                          <span class="tree-badge dtype">{child.dtype}</span>
-                        {/if}
-                        {#if child.shape}
-                          <span class="tree-badge shape">[{child.shape.join(' x ')}]</span>
-                        {/if}
-                        {#if child.units}
-                          <span class="tree-badge units">{child.units}</span>
-                        {/if}
-                        {#if child.min !== null && child.min !== undefined}
-                          <span class="tree-stats">
-                            {child.min.toFixed(2)} .. {child.max?.toFixed(2)}
-                            {#if child.mean !== null && child.mean !== undefined}
-                              (avg {child.mean.toFixed(2)})
-                            {/if}
-                          </span>
-                        {/if}
-                        {#if child.value !== undefined && child.type === 'attribute'}
-                          <span class="tree-value" class:copied={copiedPath === child.name}>
-                            {copiedPath === child.name ? 'Copied!' : truncate(formatValue(child.value), 50)}
-                          </span>
-                        {/if}
-                        {#if child.long_name}
-                          <span class="tree-longname">{truncate(child.long_name, 40)}</span>
-                        {/if}
-                      </button>
-
-                      {#if childExpanded && child.children}
-                        <div class="tree-children">
-                          {#each child.children as leaf}
-                            <div class="tree-node">
-                              <button
-                                class="tree-row leaf"
-                                on:click={() => {
-                                  if (leaf.value !== undefined) copyValue(leaf.value, leaf.name);
-                                }}
-                                title={leaf.value !== undefined ? `Click to copy: ${truncate(formatValue(leaf.value), 120)}` : leaf.name}
-                              >
-                                <span class="tree-spacer"></span>
-                                <span class="tree-icon {nodeIconClass(leaf.type)}">{nodeIcon(leaf.type)}</span>
-                                <span class="tree-name">{leaf.name}</span>
-                                {#if leaf.dtype}
-                                  <span class="tree-badge dtype">{leaf.dtype}</span>
-                                {/if}
-                                {#if leaf.shape}
-                                  <span class="tree-badge shape">[{leaf.shape.join(' x ')}]</span>
-                                {/if}
-                                {#if leaf.units}
-                                  <span class="tree-badge units">{leaf.units}</span>
-                                {/if}
-                                {#if leaf.min !== null && leaf.min !== undefined}
-                                  <span class="tree-stats">
-                                    {leaf.min.toFixed(2)} .. {leaf.max?.toFixed(2)}
-                                  </span>
-                                {/if}
-                                {#if leaf.value !== undefined}
-                                  <span class="tree-value" class:copied={copiedPath === leaf.name}>
-                                    {copiedPath === leaf.name ? 'Copied!' : truncate(formatValue(leaf.value), 50)}
-                                  </span>
-                                {/if}
-                              </button>
-                            </div>
-                          {/each}
-                        </div>
-                      {/if}
-                    </div>
-                  {/each}
-                </div>
-              {/if}
-            </div>
+        <div class="meta-tree" role="tree">
+          {#each filteredTree as node (node.name)}
+            {@render treeNode(node, node.name, 0)}
           {/each}
         </div>
       {/if}
@@ -412,6 +345,7 @@
     justify-content: center;
     width: 28px;
     height: 28px;
+    padding: 0; /* the global button padding would squeeze the icon to 2px */
     background: transparent;
     border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.08));
     border-radius: var(--radius-sm, 4px);
@@ -457,6 +391,7 @@
     justify-content: center;
     width: 20px;
     height: 20px;
+    padding: 0;
     background: transparent;
     border: none;
     color: var(--text-muted, #8b949e);
@@ -514,6 +449,9 @@
   .tree-row {
     display: flex;
     align-items: center;
+    justify-content: flex-start; /* global button styles centre their content */
+    height: auto;
+    backdrop-filter: none; /* hundreds of rows: no per-row blur */
     gap: 4px;
     width: 100%;
     padding: 4px var(--spacing-sm, 8px);

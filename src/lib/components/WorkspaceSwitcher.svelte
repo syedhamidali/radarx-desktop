@@ -16,10 +16,15 @@
   let saveAsName = '';
   let confirmDelete: string | null = null;
   let currentName = '';
+  let saveError = '';
+  let confirmOverwrite = false;
+  let renameFrom: string | null = null;
+  let renameName = '';
 
   $: currentName = $currentWorkspaceName;
-  $: presets = workspaceStore.listPresets();
-  $: userWorkspaces = workspaceStore.listUserWorkspaces();
+  // Derive from the store value so the lists follow Save as / Rename / Delete.
+  $: presets = Object.keys(PRESET_WORKSPACES);
+  $: userWorkspaces = Object.keys($workspaceStore.workspaces).filter((n) => !PRESET_WORKSPACES[n]);
 
   const PRESET_ICONS: Record<string, string> = {
     Default: '\u2302',      // house
@@ -30,16 +35,19 @@
 
   function toggle() {
     dropdownOpen = !dropdownOpen;
-    if (!dropdownOpen) {
-      saveAsMode = false;
-      confirmDelete = null;
-    }
+    if (!dropdownOpen) resetTransient();
+  }
+
+  function resetTransient() {
+    saveAsMode = false;
+    confirmDelete = null;
+    renameFrom = null;
+    saveError = '';
   }
 
   function close() {
     dropdownOpen = false;
-    saveAsMode = false;
-    confirmDelete = null;
+    resetTransient();
   }
 
   function switchWorkspace(name: string) {
@@ -58,11 +66,22 @@
   function startSaveAs() {
     saveAsMode = true;
     saveAsName = '';
+    saveError = '';
   }
 
   function confirmSaveAs() {
     const name = saveAsName.trim();
-    if (!name || PRESET_WORKSPACES[name]) return;
+    if (!name) return;
+    if (PRESET_WORKSPACES[name]) {
+      saveError = `"${name}" is a built-in preset name`;
+      return;
+    }
+    if (userWorkspaces.includes(name) && !confirmOverwrite) {
+      saveError = `"${name}" already exists. Save again to overwrite it.`;
+      confirmOverwrite = true;
+      return;
+    }
+    confirmOverwrite = false;
     workspaceStore.saveWorkspace(name);
     dispatch('switch', { config: workspaceStore.getCurrentConfig() });
     saveAsMode = false;
@@ -75,14 +94,55 @@
 
   function doDelete() {
     if (confirmDelete) {
+      const wasCurrent = confirmDelete === currentName;
       workspaceStore.deleteWorkspace(confirmDelete);
       confirmDelete = null;
+      // The deleted workspace was the one on screen: the store fell back to Default, so apply it.
+      if (wasCurrent) dispatch('switch', { config: workspaceStore.getCurrentConfig() });
     }
   }
 
+  function startRename(name: string) {
+    renameFrom = name;
+    renameName = name;
+    saveError = '';
+  }
+
+  function confirmRename() {
+    if (!renameFrom) return;
+    const name = renameName.trim();
+    if (!name || name === renameFrom) {
+      renameFrom = null;
+      return;
+    }
+    if (PRESET_WORKSPACES[name] || userWorkspaces.includes(name)) {
+      saveError = `"${name}" already exists`;
+      return;
+    }
+    workspaceStore.renameWorkspace(renameFrom, name);
+    renameFrom = null;
+    saveError = '';
+  }
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') close();
-    if (e.key === 'Enter' && saveAsMode) confirmSaveAs();
+    if (!dropdownOpen) return;
+    if (e.key === 'Escape') {
+      if (renameFrom || saveAsMode) {
+        // First Esc backs out of the inline editor, the second closes the menu.
+        resetTransient();
+      } else close();
+      return;
+    }
+    if (e.key === 'Enter') {
+      if (saveAsMode) confirmSaveAs();
+      else if (renameFrom) confirmRename();
+    }
+  }
+
+  /** Focus + select the content of an inline editor as it appears. */
+  function selectOnMount(node: HTMLInputElement) {
+    node.focus();
+    node.select();
   }
 
   function handleClickOutside(e: MouseEvent) {
@@ -97,7 +157,7 @@
 
 <!-- svelte-ignore a11y-no-static-element-interactions -->
 <div class="workspace-switcher" on:click|stopPropagation>
-  <button class="ws-trigger" on:click={toggle} title="Switch workspace">
+  <button class="ws-trigger" on:click={toggle} title="Switch workspace" aria-haspopup="menu" aria-expanded={dropdownOpen}>
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <rect x="3" y="3" width="7" height="7" rx="1" />
       <rect x="14" y="3" width="7" height="7" rx="1" />
@@ -134,7 +194,18 @@
         <div class="ws-section-label">Saved</div>
         {#each userWorkspaces as name}
           <div class="ws-item-row">
-            {#if confirmDelete === name}
+            {#if renameFrom === name}
+              <div class="ws-save-as">
+                <input
+                  type="text"
+                  class="ws-save-input"
+                  aria-label="New name for {name}"
+                  bind:value={renameName}
+                  use:selectOnMount
+                />
+                <button class="ws-btn-sm primary" on:click={confirmRename} disabled={!renameName.trim()}>Rename</button>
+              </div>
+            {:else if confirmDelete === name}
               <div class="ws-confirm-delete">
                 <span>Delete "{name}"?</span>
                 <button class="ws-btn-sm ws-btn-danger" on:click={doDelete}>Yes</button>
@@ -154,8 +225,19 @@
               </button>
               <button
                 class="ws-delete-btn"
+                on:click|stopPropagation={() => startRename(name)}
+                title="Rename workspace"
+                aria-label="Rename workspace {name}"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>
+                </svg>
+              </button>
+              <button
+                class="ws-delete-btn"
                 on:click|stopPropagation={() => startDelete(name)}
                 title="Delete workspace"
+                aria-label="Delete workspace {name}"
               >
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
@@ -168,17 +250,22 @@
 
       <!-- Actions -->
       <div class="ws-divider"></div>
+      {#if saveError}
+        <div class="ws-error" role="alert">{saveError}</div>
+      {/if}
       {#if saveAsMode}
         <div class="ws-save-as">
           <input
             type="text"
             class="ws-save-input"
             placeholder="Workspace name..."
+            aria-label="Workspace name"
             bind:value={saveAsName}
-            autofocus
+            on:input={() => { saveError = ''; confirmOverwrite = false; }}
+            use:selectOnMount
           />
           <button class="ws-btn-sm primary" on:click={confirmSaveAs} disabled={!saveAsName.trim()}>
-            Save
+            {confirmOverwrite ? 'Overwrite' : 'Save'}
           </button>
         </div>
       {:else}
@@ -214,7 +301,7 @@
     height: 28px;
     font-size: 11px;
     color: var(--text-secondary);
-    background: rgba(8, 10, 20, 0.5);
+    background: var(--field-bg);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     cursor: pointer;
@@ -348,8 +435,15 @@
     -webkit-backdrop-filter: none;
   }
 
-  .ws-item-row:hover .ws-delete-btn {
+  .ws-item-row:hover .ws-delete-btn,
+  .ws-item-row:focus-within .ws-delete-btn {
     opacity: 1;
+  }
+
+  .ws-error {
+    padding: 4px var(--spacing-md);
+    font-size: 11px;
+    color: var(--accent-danger);
   }
 
   .ws-delete-btn:hover {

@@ -8,8 +8,8 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 from collections.abc import Callable, Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -267,6 +267,31 @@ def _safe_stem(name: str) -> str:
     return stem or "var"
 
 
+def default_export_dir() -> Path:
+    """Where exports go when the caller did not choose a destination.
+
+    A normal, visible folder (``~/Downloads/xradar-exports``, or ``$XRADAR_EXPORT_DIR``), never a
+    hidden system temp directory that the user cannot find.
+    """
+    env = os.environ.get("XRADAR_EXPORT_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    downloads = Path.home() / "Downloads"
+    return (downloads if downloads.is_dir() else Path.home()) / "xradar-exports"
+
+
+def _unique_in(directory: Path, prefix: str, suffix: str) -> Path:
+    """``directory/prefix<timestamp>[-n]suffix`` that does not exist yet (directory is created)."""
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = directory / f"{prefix}{stamp}{suffix}"
+    n = 1
+    while candidate.exists():
+        n += 1
+        candidate = directory / f"{prefix}{stamp}-{n}{suffix}"
+    return candidate
+
+
 @contextlib.contextmanager
 def _output_target(
     output_path: str | None,
@@ -278,16 +303,18 @@ def _output_target(
     """Yield the path to write to; clean up a temp target if the body fails.
 
     A user-supplied *output_path* gets its parent directories created.  When
-    *output_path* is ``None`` a unique temp file (or directory) is created and
-    removed again if the export raises, so failures do not litter the temp dir.
+    *output_path* is ``None`` a uniquely named file (or directory) is created in
+    :func:`default_export_dir` and removed again if the export raises, so failures do
+    not leave half-written files behind.
     """
     created_temp = output_path is None
     if output_path is None:
+        target = _unique_in(default_export_dir(), prefix, suffix)
         if directory:
-            path = tempfile.mkdtemp(prefix=prefix, suffix=suffix)
+            target.mkdir(parents=True)
         else:
-            fd, path = tempfile.mkstemp(suffix=suffix, prefix=prefix)
-            os.close(fd)
+            target.touch()
+        path = str(target)
     else:
         path = str(Path(output_path).expanduser())
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -712,7 +739,8 @@ class RadarExporter:
             raise ValueError("No variables or sweeps selected for batch export")
 
         if output_dir is None:
-            output_dir = tempfile.mkdtemp(prefix="xradar_batch_")
+            output_dir = str(_unique_in(default_export_dir(), "xradar_batch_", ""))
+            os.makedirs(output_dir, exist_ok=True)
         else:
             output_dir = str(Path(output_dir).expanduser())
             os.makedirs(output_dir, exist_ok=True)

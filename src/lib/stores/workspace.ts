@@ -102,24 +102,66 @@ export const PRESET_WORKSPACES: Record<string, WorkspaceConfig> = {
 
 const STORAGE_KEY = 'xradar-workspaces';
 
+function isObj(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Coerce one saved workspace into a complete, correctly-typed config (bad fields fall back). */
+function sanitizeConfig(raw: unknown, name: string): WorkspaceConfig {
+  const base = defaultConfig(name);
+  if (!isObj(raw)) return base;
+  const num = (v: unknown, d: number, lo: number, hi: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
+  const known = new Set(['cloud', 'mosaic', 'volume', 'timeseries', 'crosssection', 'qc', 'storm', 'modules', 'processing', 'export']);
+  const order = Array.isArray(raw.rightPanelOrder)
+    ? [...new Set((raw.rightPanelOrder as unknown[]).filter((x): x is string => typeof x === 'string' && known.has(x)))]
+    : [];
+  const collapsed: Record<string, boolean> = {};
+  if (isObj(raw.rightPanelCollapsed)) {
+    for (const [k, v] of Object.entries(raw.rightPanelCollapsed)) if (typeof v === 'boolean') collapsed[k] = v;
+  }
+  return {
+    ...base,
+    ...(raw as Partial<WorkspaceConfig>),
+    name,
+    layout: ['1x1', '1x2', '2x2'].includes(raw.layout as string) ? (raw.layout as SplitLayout) : base.layout,
+    leftSidebarOpen: typeof raw.leftSidebarOpen === 'boolean' ? raw.leftSidebarOpen : base.leftSidebarOpen,
+    rightSidebarOpen: typeof raw.rightSidebarOpen === 'boolean' ? raw.rightSidebarOpen : base.rightSidebarOpen,
+    leftSidebarWidth: num(raw.leftSidebarWidth, base.leftSidebarWidth, 200, 500),
+    rightSidebarWidth: num(raw.rightSidebarWidth, base.rightSidebarWidth, 200, 500),
+    viewMode: ['2d', '3d', 'dualpol'].includes(raw.viewMode as string) ? (raw.viewMode as WorkspaceConfig['viewMode']) : base.viewMode,
+    openFiles: Array.isArray(raw.openFiles) ? (raw.openFiles as unknown[]).filter((x): x is string => typeof x === 'string') : [],
+    rightPanelOrder: order,
+    rightPanelCollapsed: collapsed,
+  };
+}
+
 function loadState(): WorkspaceManagerState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as WorkspaceManagerState;
-      // Ensure presets are always present
-      for (const [key, preset] of Object.entries(PRESET_WORKSPACES)) {
-        if (!parsed.workspaces[key]) {
-          parsed.workspaces[key] = preset;
+      const parsed = JSON.parse(raw);
+      if (isObj(parsed) && isObj(parsed.workspaces)) {
+        const workspaces: Record<string, WorkspaceConfig> = {};
+        for (const [name, cfg] of Object.entries(parsed.workspaces)) {
+          if (isObj(cfg)) workspaces[name] = sanitizeConfig(cfg, name);
         }
+        // Ensure presets are always present
+        for (const [key, preset] of Object.entries(PRESET_WORKSPACES)) {
+          if (!workspaces[key]) workspaces[key] = preset;
+        }
+        // Inject any newly added panels missing from saved workspaces
+        for (const ws of Object.values(workspaces)) {
+          const missing = DEFAULT_RIGHT_PANELS.filter((id) => !ws.rightPanelOrder.includes(id));
+          if (missing.length) ws.rightPanelOrder = [...missing, ...ws.rightPanelOrder];
+        }
+        const cur = typeof parsed.currentWorkspaceName === 'string' ? parsed.currentWorkspaceName : 'Default';
+        return {
+          currentWorkspaceName: workspaces[cur] ? cur : 'Default',
+          workspaces,
+          autoSave: typeof parsed.autoSave === 'boolean' ? parsed.autoSave : true,
+        };
       }
-      // Inject any newly added panels missing from saved workspaces
-      for (const ws of Object.values(parsed.workspaces)) {
-        const order = ws.rightPanelOrder ?? [];
-        const missing = DEFAULT_RIGHT_PANELS.filter((id) => !order.includes(id));
-        if (missing.length) ws.rightPanelOrder = [...missing, ...order];
-      }
-      return parsed;
     }
   } catch (e) {
     console.warn('[workspace] Failed to load from localStorage:', e);
@@ -240,6 +282,24 @@ function createWorkspaceStore() {
         const { [name]: _, ...rest } = s.workspaces;
         const newName = s.currentWorkspaceName === name ? 'Default' : s.currentWorkspaceName;
         return { ...s, currentWorkspaceName: newName, workspaces: rest };
+      });
+      saveState(get({ subscribe }));
+      return true;
+    },
+
+    /** Rename a user workspace. Fails for presets, unknown names and name collisions. */
+    renameWorkspace(oldName: string, newName: string): boolean {
+      const name = newName.trim();
+      const state = get({ subscribe });
+      if (!name || name === oldName) return false;
+      if (PRESET_WORKSPACES[oldName] || !state.workspaces[oldName] || state.workspaces[name]) return false;
+      update((s) => {
+        const { [oldName]: cfg, ...rest } = s.workspaces;
+        return {
+          ...s,
+          currentWorkspaceName: s.currentWorkspaceName === oldName ? name : s.currentWorkspaceName,
+          workspaces: { ...rest, [name]: { ...cfg, name } },
+        };
       });
       saveState(get({ subscribe }));
       return true;

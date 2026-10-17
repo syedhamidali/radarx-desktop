@@ -81,6 +81,42 @@ def sweep_index(name: str) -> int:
         return 1 << 30
 
 
+def mask_variable(v: xr.DataArray) -> xr.DataArray:
+    """NaN-out the reserved "no measurement" codes of an integer-encoded radar moment.
+
+    Level-II style files store moments as unsigned integers (``value = offset + code * scale``).
+    Code 0 means *below threshold / no echo* and code 1 *range folded*. Decoders turn them into
+    real numbers (-33 dBZ for reflectivity, -8 dB for ZDR, 0.2 for RhoHV, -64.5 m/s for velocity)
+    that then get averaged, histogrammed and interpolated as if they were measurements, and they
+    make up ~90 % of the gates of a sweep. The encoding on the variable says exactly which values
+    those are; arrays without such an encoding (synthetic data, already-masked data) are returned
+    unchanged.
+    """
+    enc = v.encoding
+    scale, offset, dtype = enc.get("scale_factor"), enc.get("add_offset"), enc.get("dtype")
+    if scale is None or offset is None or dtype is None or v.dtype.kind != "f":
+        return v
+    try:
+        if np.dtype(dtype).kind != "u":
+            return v
+    except TypeError:
+        return v
+    scale, offset = float(scale), float(offset)
+    if scale == 0.0 or not np.isfinite(scale) or not np.isfinite(offset):
+        return v
+    tol = 0.25 * abs(scale)
+    vals = v.variable
+    bad = (abs(vals - offset) <= tol) | (abs(vals - (offset + scale)) <= tol)
+    return v.where(~bad, other=np.nan).assign_attrs(v.attrs)
+
+
+def mask_below_threshold(ds: xr.Dataset) -> xr.Dataset:
+    """:func:`mask_variable` applied to every 2-D data variable of *ds*."""
+    masked = {name: mask_variable(v) for name, v in ds.data_vars.items() if v.ndim >= 2}
+    changed = {k: m for k, m in masked.items() if m is not ds[k]}
+    return ds.assign(changed) if changed else ds
+
+
 def sorted_sweep_names(dtree: xr.DataTree) -> list[str]:
     """Names of ``sweep_N`` children in numeric order (``sweep_2`` before ``sweep_10``).
 
@@ -705,8 +741,12 @@ class RadarReader:
         assert self._dtree is not None
         return self._build_schema(self._dtree, self._format)
 
-    def get_sweep_dataset(self, sweep: int) -> xr.Dataset:
+    def get_sweep_dataset(self, sweep: int, *, mask: bool = True) -> xr.Dataset:
         """Return the full ``xr.Dataset`` of one sweep (all variables and coords).
+
+        With ``mask=True`` (default) the reserved "no echo" / "range folded" codes of
+        integer-encoded moments are NaN (see :func:`mask_variable`). This builds new arrays, so
+        ask for ``mask=False`` when only metadata or one variable is needed.
 
         Placeholder sweeps of an ARCO scan are loaded on demand (once, thread-safe)
         and the real dataset is returned.  Non-ARCO sweeps return the node's dataset
@@ -726,7 +766,7 @@ class RadarReader:
         ds = nodes[sweep].to_dataset()
         if _is_placeholder(ds) and self._format == "nexrad_arco":
             ds = self._load_arco_sweep(int(sweep))
-        return ds
+        return mask_below_threshold(ds) if mask else ds
 
     def get_sweep_data(self, sweep: int, variable: str) -> xr.DataArray:
         """Return the DataArray for a specific sweep index and variable.
@@ -742,7 +782,7 @@ class RadarReader:
         -------
         xr.DataArray
         """
-        ds = self.get_sweep_dataset(sweep)
+        ds = self.get_sweep_dataset(sweep, mask=False)  # mask just the one variable below
         if variable not in ds.data_vars:
             available = sorted(str(v) for v in ds.data_vars)
             raise KeyError(f"Variable '{variable}' not in sweep {sweep}. Available: {available}")
@@ -752,7 +792,7 @@ class RadarReader:
             # renders of the same sweep don't download it several times.
             with self._sweep_lock(int(sweep)):
                 da.load()
-        return da
+        return mask_variable(da)
 
     @property
     def datatree(self) -> xr.DataTree | None:

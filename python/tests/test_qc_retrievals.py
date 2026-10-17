@@ -102,6 +102,20 @@ class TestRemoveClutter:
         assert np.isnan(out).sum() == np.isnan(v).sum()
 
 
+class TestPipelineRhohv:
+    def test_pipeline_hands_rhohv_to_remove_clutter(self) -> None:
+        v = np.full((40, 50), 20.0)
+        rhv = np.full((40, 50), 0.95)
+        rhv[5:10, 5:10] = 0.3  # non-meteorological block
+        pipe = qc.QCPipeline()
+        pipe.add_step("remove_clutter", {"texture_threshold": 1.0, "rhohv_threshold": 0.7})
+        without = pipe.run(_field(v)).values
+        with_rhv = pipe.run(_field(v), rhohv=_field(rhv)).values
+        assert not np.isnan(without).any()
+        assert np.isnan(with_rhv[5:10, 5:10]).all()
+        assert np.isnan(with_rhv).sum() == 25
+
+
 class TestVelocityDealiasing:
     NYQ = 25.0
 

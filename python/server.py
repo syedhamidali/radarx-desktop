@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import inspect
 import json
 import logging
@@ -77,6 +78,11 @@ NODATA_SENTINEL = -9999.0
 # Largest text file the UI may ask the engine to write (CSV / GeoJSON exports).
 SAVE_TEXT_MAX_BYTES = 20 * 1024 * 1024
 
+
+# True while the current message task has announced progress < 100 without closing it.
+_PROGRESS_OPEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "xradar_progress_open", default=False
+)
 
 # Shared application state — survives across WebSocket reconnections
 _shared_renderer = RadarRenderer()
@@ -404,6 +410,9 @@ class ConnectionHandler:
         await self.send({"type": "error", "message": message})
 
     async def send_progress(self, percent: int, message: str) -> None:
+        # Remember (per message task) whether a progress run is still open, so handle_message can
+        # close it: many handlers announce "10 %" and then simply finish.
+        _PROGRESS_OPEN.set(percent < 100)
         await self.send({"type": "progress", "percent": percent, "message": message})
 
     def _progress_callback(self, loop: asyncio.AbstractEventLoop) -> Callable[[int, str], None]:
@@ -484,6 +493,7 @@ class ConnectionHandler:
             await self.send_error(f"Unknown message type: {msg_type}")
             return
 
+        _PROGRESS_OPEN.set(False)
         try:
             await handler(msg)
         except (ValueError, TypeError) as exc:
@@ -509,6 +519,10 @@ class ConnectionHandler:
                 traceback.format_exc(),
             )
             await self.send_error(f"Unexpected error in {msg_type}: {exc}")
+        finally:
+            if _PROGRESS_OPEN.get():
+                _PROGRESS_OPEN.set(False)
+                await self.send_progress(100, "Done")
 
     # ------------------------------------------------------------------
     # Dual-pol analysis handlers
@@ -550,7 +564,7 @@ class ConnectionHandler:
             ),
         )
 
-        await self.send({"type": "scatter_data_result", **result})
+        await self.send({"type": "scatter_data_result", "sweep": sweep, **result})
 
     async def _handle_get_histogram(self, msg: dict[str, Any]) -> None:
         """Compute histogram for a variable."""
@@ -576,7 +590,7 @@ class ConnectionHandler:
             lambda: histogram_data(datatree, variable, sweep, bins=int(bins)),
         )
 
-        await self.send({"type": "histogram_result", **result})
+        await self.send({"type": "histogram_result", "sweep": sweep, **result})
 
     async def _handle_get_region_stats(self, msg: dict[str, Any]) -> None:
         """Compute statistics for a polar region."""
@@ -613,7 +627,7 @@ class ConnectionHandler:
             ),
         )
 
-        await self.send({"type": "region_stats_result", **result})
+        await self.send({"type": "region_stats_result", "sweep": sweep, **result})
 
     # ------------------------------------------------------------------
     # 3D volume & cross-section handlers
@@ -1398,7 +1412,9 @@ class ConnectionHandler:
             ),
         )
 
-        await self.send({"type": "vertical_profile_result", **result})
+        await self.send(
+            {"type": "vertical_profile_result", "lat": float(lat), "lon": float(lon), **result}
+        )
 
     # ------------------------------------------------------------------
     # Statistics handler
@@ -1498,8 +1514,20 @@ class ConnectionHandler:
 
         await self.send_progress(30, f"Running {len(pipeline)} QC steps...")
 
+        # remove_clutter also thresholds RhoHV when the sweep has it (split-cut Doppler
+        # sweeps do not).
+        rhohv = None
+        wants_rhohv = any(s["name"] == "remove_clutter" for s in pipeline.steps)
+        if wants_rhohv and variable.upper() != "RHOHV":
+            try:
+                rhohv = await loop.run_in_executor(None, reader.get_sweep_data, sweep, "RHOHV")
+            except (KeyError, ValueError, IndexError):
+                rhohv = None
+            if rhohv is not None and rhohv.shape != data.shape:
+                rhohv = None
+
         def _run_and_pack() -> tuple[dict[str, Any], list[np.ndarray]]:
-            return _pack_field(pipeline.run(data), variable)
+            return _pack_field(pipeline.run(data, rhohv=rhohv), variable)
 
         fields, arrays = await loop.run_in_executor(None, _run_and_pack)
 

@@ -1,9 +1,9 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import ScatterPlot from './ScatterPlot.svelte';
   import HistogramChart from './HistogramChart.svelte';
-  import { wsManager } from '../utils/websocket';
-  import { radarData, selectedVariable, selectedSweep, connectionStatus } from '../stores/radarData';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
+  import { radarData, selectedSweep, connectionStatus } from '../stores/radarData';
 
   // ── State ──────────────────────────────────────────────────────────────
 
@@ -15,8 +15,6 @@
     ['DBZH', 'RHOHV'],
   ];
   let selectedPairIdx = $state(0);
-  let scatterVar1 = $state('DBZH');
-  let scatterVar2 = $state('ZDR');
   let histVar = $state('DBZH');
   let colorVar: string | null = $state(null);
 
@@ -32,57 +30,95 @@
 
   // Region stats
   let regionStats: Record<string, any> | null = $state(null);
+  let regionLabel = $state('');
   let regionLoading = $state(false);
+  let regionHandle: FeatureRequestHandle | null = null;
 
   // Histogram controls
   let binCount = $state(50);
   let showGaussian = $state(true);
   let densityMode = $state(false);
 
-  // PPI thumbnail state
-  let ppiThumbnail: string | null = $state(null);
-
-  // Layout
+  // Layout: the plots fill one grid cell each (all four cells are the same size)
   let containerEl: HTMLDivElement | undefined = $state(undefined);
-  let containerWidth = $state(800);
-  let containerHeight = $state(600);
-  let resizeObs: ResizeObserver | null = null;
-
-  let unsubRegionStats: (() => void) | null = null;
+  let bodyW = $state(400);
+  let bodyH = $state(300);
 
   // ── Derived ────────────────────────────────────────────────────────────
   const variables = $derived($radarData.variables);
+  const sweeps = $derived($radarData.sweeps ?? []);
+  const filePath = $derived($radarData.filePath);
+  const viewSweep = $derived($selectedSweep);
   const isConnected = $derived($connectionStatus === 'connected');
-  const cellW = $derived(Math.floor((containerWidth - 24) / 2));
-  const cellH = $derived(Math.floor((containerHeight - 110) / 2));
+  const plotW = $derived(Math.max(120, bodyW - 2));
+  const plotH = $derived(Math.max(120, bodyH - 2));
+
+  /** Pairs whose both variables are in the file (anything else could only fail). */
+  const availablePairs = $derived.by((): [string, string][] => {
+    const ok = COMMON_PAIRS.filter(([a, b]) => variables.includes(a) && variables.includes(b));
+    if (ok.length > 0) return ok;
+    return variables.length >= 2 ? [[variables[0], variables[1]]] : [];
+  });
+  const pair = $derived(availablePairs[Math.min(selectedPairIdx, Math.max(availablePairs.length - 1, 0))] ?? null);
+  const scatterVar1 = $derived(pair?.[0] ?? '');
+  const scatterVar2 = $derived(pair?.[1] ?? '');
+
+  function sweepVars(i: number): string[] {
+    return sweeps[i]?.variables ?? variables;
+  }
+
+  /**
+   * The sweep to plot for these variables: the one in the viewer when it has them, otherwise the
+   * nearest that does (split-cut volumes measure dual-pol fields only in the surveillance cuts).
+   * null when no sweep has them all.
+   */
+  function sweepWith(vars: (string | null)[]): number | null {
+    const need = vars.filter((v): v is string => !!v);
+    if (need.length === 0 || sweeps.length === 0) return viewSweep;
+    let best: number | null = null;
+    for (let i = 0; i < sweeps.length; i++) {
+      if (!need.every((v) => sweepVars(i).includes(v))) continue;
+      if (best === null || Math.abs(i - viewSweep) < Math.abs(best - viewSweep)) best = i;
+    }
+    return best;
+  }
+
+  // The colour variable only counts where it exists together with the pair.
+  const effColorVar = $derived(colorVar && sweepWith([scatterVar1, scatterVar2, colorVar]) !== null ? colorVar : null);
+  const scatterSweep = $derived(sweepWith([scatterVar1, scatterVar2, effColorVar]));
+  const histSweep = $derived(sweepWith([histVar]));
+
+  function sweepNote(effective: number | null): string {
+    if (effective === null || effective === viewSweep) return '';
+    const el = sweeps[effective]?.elevation;
+    return `sweep ${effective}${el != null ? ` (${el.toFixed(1)}\u00B0)` : ''}`;
+  }
 
   // ── Effects ────────────────────────────────────────────────────────────
+  // Keep the selections valid for the open file.
   $effect(() => {
-    if (selectedPairIdx >= 0 && selectedPairIdx < COMMON_PAIRS.length) {
-      scatterVar1 = COMMON_PAIRS[selectedPairIdx][0];
-      scatterVar2 = COMMON_PAIRS[selectedPairIdx][1];
-    }
+    const vars = variables;
+    untrack(() => {
+      if (vars.length === 0) return;
+      if (!vars.includes(histVar)) histVar = vars.includes('DBZH') ? 'DBZH' : vars[0];
+      if (colorVar && !vars.includes(colorVar)) colorVar = null;
+      if (selectedPairIdx >= availablePairs.length) selectedPairIdx = 0;
+    });
   });
 
-  // ── Lifecycle ──────────────────────────────────────────────────────────
-  onMount(() => {
-    resizeObs = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        containerWidth = Math.round(entry.contentRect.width);
-        containerHeight = Math.round(entry.contentRect.height);
-      }
-    });
-    if (containerEl) resizeObs.observe(containerEl);
-
-    unsubRegionStats = wsManager.onMessage('region_stats_result', (msg: any) => {
-      regionStats = msg;
+  // Region stats describe one file / sweep / variable; show nothing stale.
+  $effect(() => {
+    void [filePath, histVar, histSweep];
+    untrack(() => {
+      regionHandle?.cancel();
+      regionStats = null;
       regionLoading = false;
     });
   });
 
+  // ── Lifecycle ──────────────────────────────────────────────────────────
   onDestroy(() => {
-    resizeObs?.disconnect();
-    unsubRegionStats?.();
+    regionHandle?.cancel();
   });
 
   // ── Handlers ───────────────────────────────────────────────────────────
@@ -103,17 +139,39 @@
     binCount = parseInt((e.target as HTMLInputElement).value, 10);
   }
 
-  function requestRegionStats(azMin: number, azMax: number, rangeMin: number, rangeMax: number) {
+  function requestRegionStats(label: string, azMin: number, azMax: number, rangeMin: number, rangeMax: number) {
+    if (histSweep === null) return;
+    regionHandle?.cancel();
     regionLoading = true;
-    wsManager.send({
-      type: 'get_region_stats',
-      variable: histVar,
-      sweep: $selectedSweep,
-      az_min: azMin,
-      az_max: azMax,
-      range_min: rangeMin,
-      range_max: rangeMax,
+    regionStats = null;
+    const variable = histVar;
+    const sweep = histSweep;
+    const h = runFeatureRequest({
+      kind: 'dualpol',
+      label: `Region stats: ${variable} ${label}`,
+      message: {
+        type: 'get_region_stats',
+        variable,
+        sweep,
+        az_min: azMin,
+        az_max: azMax,
+        range_min: rangeMin,
+        range_max: rangeMax,
+      },
+      resultTypes: ['region_stats_result'],
+      accept: (m: any) => m.variable === variable && (m.sweep === undefined || m.sweep === sweep),
+      onResult: (m: any) => {
+        regionStats = m;
+        regionLabel = label;
+      },
+      onSettled: () => {
+        if (regionHandle !== h) return;
+        regionLoading = false;
+        regionHandle = null;
+      },
+      retry: () => requestRegionStats(label, azMin, azMax, rangeMin, rangeMax),
     });
+    regionHandle = h;
   }
 
   function onScatterSelection(e: CustomEvent) {
@@ -136,6 +194,15 @@
     if (v === undefined || v === null) return '---';
     return typeof v === 'number' ? v.toFixed(2) : String(v);
   }
+
+  const REGIONS: { label: string; az: [number, number]; rng: [number, number] }[] = [
+    { label: 'NE Quad', az: [0, 90], rng: [0, 150000] },
+    { label: 'SE Quad', az: [90, 180], rng: [0, 150000] },
+    { label: 'SW Quad', az: [180, 270], rng: [0, 150000] },
+    { label: 'NW Quad', az: [270, 360], rng: [0, 150000] },
+    { label: 'Near (0-50km)', az: [0, 360], rng: [0, 50000] },
+    { label: 'Far (50-150km)', az: [0, 360], rng: [50000, 150000] },
+  ];
 </script>
 
 <div class="dualpol-dashboard" bind:this={containerEl}>
@@ -143,9 +210,9 @@
   <div class="dp-controls">
     <div class="dp-ctrl-group">
       <label for="dp-pair">Pair</label>
-      <select id="dp-pair" value={selectedPairIdx} on:change={onPairChange} disabled={!isConnected}>
-        {#each COMMON_PAIRS as pair, i}
-          <option value={i}>{pair[0]} / {pair[1]}</option>
+      <select id="dp-pair" value={selectedPairIdx} on:change={onPairChange} disabled={!isConnected || availablePairs.length === 0}>
+        {#each availablePairs as pr, i}
+          <option value={i}>{pr[0]} / {pr[1]}</option>
         {/each}
       </select>
     </div>
@@ -200,11 +267,28 @@
         {/each}
       </div>
 
+      <!-- Quick region selector -->
+      <div class="region-selector">
+        <div class="dp-cell-header">Quick Region Query: {histVar}{histSweep !== null ? `, sweep ${histSweep}` : ''}</div>
+        <div class="region-form">
+          {#each REGIONS as r}
+            <button
+              class="dp-btn"
+              class:active={regionLabel === r.label && !!regionStats}
+              on:click={() => requestRegionStats(r.label, r.az[0], r.az[1], r.rng[0], r.rng[1])}
+              disabled={!isConnected || regionLoading || histSweep === null}
+            >{r.label}</button>
+          {/each}
+        </div>
+      </div>
+
       <!-- Region stats (if available) -->
-      {#if regionStats}
-        <div class="region-stats-box">
-          <div class="dp-cell-header">Region Stats ({regionStats.variable})</div>
-          {#if regionStats.stats}
+      <div class="region-stats-box" aria-live="polite">
+        {#if regionLoading}
+          <div class="rs-empty">Computing...</div>
+        {:else if regionStats}
+          <div class="dp-cell-header">Region Stats: {regionLabel} ({regionStats.variable}{regionStats.units ? `, ${regionStats.units}` : ''})</div>
+          {#if regionStats.stats && Object.keys(regionStats.stats).length > 0}
             <div class="rs-grid">
               <span class="rs-label">Mean</span><span class="rs-value">{fmtStat(regionStats.stats.mean)}</span>
               <span class="rs-label">Std</span><span class="rs-value">{fmtStat(regionStats.stats.std)}</span>
@@ -215,62 +299,81 @@
           {:else}
             <div class="rs-empty">No data in selected region</div>
           {/if}
-        </div>
-      {/if}
-
-      <!-- Quick region selector -->
-      <div class="region-selector">
-        <div class="dp-cell-header">Quick Region Query</div>
-        <div class="region-form">
-          <button class="dp-btn" on:click={() => requestRegionStats(0, 90, 0, 150000)} disabled={!isConnected}>NE Quad</button>
-          <button class="dp-btn" on:click={() => requestRegionStats(90, 180, 0, 150000)} disabled={!isConnected}>SE Quad</button>
-          <button class="dp-btn" on:click={() => requestRegionStats(180, 270, 0, 150000)} disabled={!isConnected}>SW Quad</button>
-          <button class="dp-btn" on:click={() => requestRegionStats(270, 360, 0, 150000)} disabled={!isConnected}>NW Quad</button>
-          <button class="dp-btn" on:click={() => requestRegionStats(0, 360, 0, 50000)} disabled={!isConnected}>Near (0-50km)</button>
-          <button class="dp-btn" on:click={() => requestRegionStats(0, 360, 50000, 150000)} disabled={!isConnected}>Far (50-150km)</button>
-        </div>
+        {:else if histSweep === null}
+          <div class="rs-empty">{histVar} is not measured in any sweep</div>
+        {/if}
       </div>
     </div>
 
     <!-- Top right: Scatter plot -->
     <div class="dp-cell">
-      <div class="dp-cell-header">Scatter: {scatterVar1} vs {scatterVar2}</div>
-      <ScatterPlot
-        var1={scatterVar1}
-        var2={scatterVar2}
-        {colorVar}
-        {densityMode}
-        width={cellW}
-        height={cellH - 20}
-        on:selection={onScatterSelection}
-      />
+      <div class="dp-cell-header">
+        Scatter: {scatterVar1} vs {scatterVar2}
+        {#if sweepNote(scatterSweep)}<span class="dp-sweep-note" title="Not measured in the displayed sweep">{sweepNote(scatterSweep)}</span>{/if}
+      </div>
+      <div class="dp-cell-body" bind:clientWidth={bodyW} bind:clientHeight={bodyH}>
+        {#if pair && scatterSweep !== null}
+          <ScatterPlot
+            var1={scatterVar1}
+            var2={scatterVar2}
+            colorVar={effColorVar}
+            {densityMode}
+            sweepOverride={scatterSweep}
+            width={plotW}
+            height={plotH}
+            on:selection={onScatterSelection}
+          />
+        {:else}
+          <div class="dp-empty">{pair ? `${scatterVar1} and ${scatterVar2} are not measured together in any sweep` : 'This file has fewer than two variables'}</div>
+        {/if}
+      </div>
     </div>
 
     <!-- Bottom left: Histogram -->
     <div class="dp-cell">
-      <div class="dp-cell-header">Distribution: {histVar}</div>
-      <HistogramChart
-        variable={histVar}
-        bins={binCount}
-        {showGaussian}
-        width={cellW}
-        height={cellH - 20}
-        on:rangeSelect={onHistRangeSelect}
-      />
+      <div class="dp-cell-header">
+        Distribution: {histVar}
+        {#if sweepNote(histSweep)}<span class="dp-sweep-note" title="Not measured in the displayed sweep">{sweepNote(histSweep)}</span>{/if}
+      </div>
+      <div class="dp-cell-body">
+        {#if histSweep !== null}
+          <HistogramChart
+            variable={histVar}
+            bins={binCount}
+            {showGaussian}
+            sweepOverride={histSweep}
+            width={plotW}
+            height={plotH}
+            on:rangeSelect={onHistRangeSelect}
+          />
+        {:else}
+          <div class="dp-empty">{histVar} is not measured in any sweep</div>
+        {/if}
+      </div>
     </div>
 
     <!-- Bottom right: Scatter (second pair or rotated view) -->
     <div class="dp-cell">
-      <div class="dp-cell-header">Scatter: {scatterVar2} vs {scatterVar1}</div>
-      <ScatterPlot
-        var1={scatterVar2}
-        var2={scatterVar1}
-        {colorVar}
-        {densityMode}
-        width={cellW}
-        height={cellH - 20}
-        on:selection={onScatterSelection}
-      />
+      <div class="dp-cell-header">
+        Scatter: {scatterVar2} vs {scatterVar1}
+        {#if sweepNote(scatterSweep)}<span class="dp-sweep-note" title="Not measured in the displayed sweep">{sweepNote(scatterSweep)}</span>{/if}
+      </div>
+      <div class="dp-cell-body">
+        {#if pair && scatterSweep !== null}
+          <ScatterPlot
+            var1={scatterVar2}
+            var2={scatterVar1}
+            colorVar={effColorVar}
+            {densityMode}
+            sweepOverride={scatterSweep}
+            width={plotW}
+            height={plotH}
+            on:selection={onScatterSelection}
+          />
+        {:else}
+          <div class="dp-empty">{pair ? `${scatterVar1} and ${scatterVar2} are not measured together in any sweep` : 'This file has fewer than two variables'}</div>
+        {/if}
+      </div>
     </div>
   </div>
 </div>
@@ -349,6 +452,35 @@
     border: 1px solid var(--border-color, #2a2a3e);
     border-radius: var(--radius-md, 6px);
     overflow: hidden;
+  }
+
+  .dp-cell-body {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .dp-empty {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 16px;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted, #6a6a80);
+  }
+
+  .dp-sweep-note {
+    margin-left: 6px;
+    padding: 0 5px;
+    border-radius: 3px;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--accent-hover, #7b8aff);
+    background: rgba(91, 108, 247, 0.15);
   }
 
   .dp-cell-header {
@@ -448,6 +580,11 @@
     background: var(--accent-primary, #5b6cf7);
     color: var(--text-primary, #e0e0f0);
     border-color: var(--accent-primary, #5b6cf7);
+  }
+
+  .dp-btn.active {
+    border-color: var(--accent-primary, #5b6cf7);
+    color: var(--accent-hover, #7b8aff);
   }
 
   .dp-btn:disabled {

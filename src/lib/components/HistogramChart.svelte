@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
-  import { wsManager } from '../utils/websocket';
-  import { selectedSweep } from '../stores/radarData';
+  import { onDestroy, createEventDispatcher } from 'svelte';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
+  import { selectedSweep, radarData } from '../stores/radarData';
 
   const dispatch = createEventDispatcher();
 
@@ -11,6 +11,8 @@
   export let showGaussian: boolean = true;
   export let width: number = 400;
   export let height: number = 340;
+  /** Sweep to plot; null follows the sweep shown in the viewer. */
+  export let sweepOverride: number | null = null;
 
   // ── Internal state ─────────────────────────────────────────────────────
   let binEdges: number[] = [];
@@ -20,6 +22,7 @@
   let units = '';
   let nValid = 0;
   let isLoading = false;
+  let errorText = '';
 
   // Range selection (drag to select value range)
   let rangeSelecting = false;
@@ -32,19 +35,27 @@
   let hoverX = 0;
   let hoverY = 0;
 
+  // Stats rows + info bar under the plot; a narrow chart wraps the stats onto a third row.
+  $: statsH = width < 340 ? 72 : 56;
+  $: svgH = Math.max(60, height - statsH);
   const MARGIN = { top: 10, right: 12, bottom: 38, left: 52 };
   const plotW = () => width - MARGIN.left - MARGIN.right;
-  const plotH = () => height - MARGIN.top - MARGIN.bottom;
+  // Template expressions must read these directly (or get them as arguments): a call to a script
+  // function that reads state internally is not re-evaluated when only that state changes.
+  $: pw = width - MARGIN.left - MARGIN.right;
+  $: ph = svgH - MARGIN.top - MARGIN.bottom;
 
+  const uid = Math.random().toString(36).slice(2, 8);
   let svgEl: SVGSVGElement;
-  let unsub: (() => void) | null = null;
+  let handle: FeatureRequestHandle | null = null;
 
-  $: sweep = $selectedSweep;
+  $: sweep = sweepOverride ?? $selectedSweep;
+  $: filePath = $radarData.filePath;
 
-  // Reactive request
+  // Reactive request (a different file re-requests too: the same variable and sweep are another scan)
   let prevKey = '';
   $: {
-    const key = `${variable}:${sweep}:${bins}`;
+    const key = `${filePath}:${variable}:${sweep}:${bins}`;
     if (variable && key !== prevKey) {
       prevKey = key;
       requestData();
@@ -52,29 +63,46 @@
   }
 
   function requestData() {
+    handle?.cancel();
     isLoading = true;
-    wsManager.send({
-      type: 'get_histogram',
-      variable,
-      sweep,
-      bins,
+    errorText = '';
+    const v = variable;
+    const sw = sweep;
+    const h = runFeatureRequest({
+      kind: 'dualpol',
+      label: `Histogram ${v}`,
+      message: { type: 'get_histogram', variable: v, sweep: sw, bins },
+      resultTypes: ['histogram_result'],
+      accept: (m: any) => m.variable === v && (m.sweep === undefined || m.sweep === sw),
+      acceptError: (text) => !text.includes("'") || text.includes(`'${v}'`),
+      onResult: (msg: any) => {
+        binEdges = msg.bin_edges || [];
+        counts = msg.counts || [];
+        gaussianFit = msg.gaussian_fit || [];
+        stats = msg.stats || {};
+        units = msg.units || '';
+        nValid = msg.n_valid || 0;
+        rangeStart = null;
+        rangeEnd = null;
+      },
+      onSettled: (outcome, err) => {
+        if (handle !== h) return; // superseded by a newer request
+        isLoading = false;
+        handle = null;
+        if (outcome === 'error' || outcome === 'timeout') {
+          binEdges = [];
+          counts = [];
+          gaussianFit = [];
+          stats = {};
+          errorText = outcome === 'timeout' ? 'The request timed out' : (err ?? 'Could not load the data');
+        }
+      },
+      retry: requestData,
     });
+    handle = h;
   }
 
-  onMount(() => {
-    unsub = wsManager.onMessage('histogram_result', (msg: any) => {
-      if (msg.variable !== variable) return;
-      binEdges = msg.bin_edges || [];
-      counts = msg.counts || [];
-      gaussianFit = msg.gaussian_fit || [];
-      stats = msg.stats || {};
-      units = msg.units || '';
-      nValid = msg.n_valid || 0;
-      isLoading = false;
-    });
-  });
-
-  onDestroy(() => { unsub?.(); });
+  onDestroy(() => { handle?.cancel(); });
 
   // ── Derived values ─────────────────────────────────────────────────────
   $: maxCount = counts.length > 0 ? Math.max(...counts, 1) : 1;
@@ -84,18 +112,18 @@
   $: xMin = binEdges.length > 0 ? binEdges[0] : 0;
   $: xMax = binEdges.length > 0 ? binEdges[binEdges.length - 1] : 1;
   $: barWidth = binEdges.length > 1
-    ? (plotW() / (binEdges.length - 1))
-    : plotW();
+    ? (pw / (binEdges.length - 1))
+    : pw;
 
   // ── Coordinate transforms ──────────────────────────────────────────────
-  function dataToSvgX(v: number): number {
-    return MARGIN.left + ((v - xMin) / (xMax - xMin)) * plotW();
+  function xToSvg(v: number, lo: number, hi: number, w: number): number {
+    return MARGIN.left + ((v - lo) / (hi - lo)) * w;
   }
   function svgToDataX(px: number): number {
     return xMin + ((px - MARGIN.left) / plotW()) * (xMax - xMin);
   }
-  function countToSvgY(c: number): number {
-    return MARGIN.top + plotH() - (c / maxCount) * plotH();
+  function cToSvg(c: number, max: number, h: number): number {
+    return MARGIN.top + h - (c / max) * h;
   }
 
   // ── Ticks ──────────────────────────────────────────────────────────────
@@ -134,7 +162,7 @@
   // ── Gaussian line path ─────────────────────────────────────────────────
   $: gaussianPath = showGaussian && gaussianFit.length > 0 && binCenters.length > 0
     ? 'M' + binCenters.map((cx, i) =>
-        `${dataToSvgX(cx)},${countToSvgY(gaussianFit[i])}`
+        `${xToSvg(cx, xMin, xMax, pw)},${cToSvg(gaussianFit[i], maxCount, ph)}`
       ).join('L')
     : '';
 
@@ -196,10 +224,10 @@
 
   // ── Selection highlight rect ───────────────────────────────────────────
   $: selRectX = rangeStart !== null && rangeEnd !== null
-    ? dataToSvgX(Math.min(rangeStart, rangeEnd))
+    ? xToSvg(Math.min(rangeStart, rangeEnd), xMin, xMax, pw)
     : 0;
   $: selRectW = rangeStart !== null && rangeEnd !== null
-    ? Math.abs(dataToSvgX(rangeEnd) - dataToSvgX(rangeStart))
+    ? Math.abs(xToSvg(rangeEnd, xMin, xMax, pw) - xToSvg(rangeStart, xMin, xMax, pw))
     : 0;
 
   // ── Stats format ───────────────────────────────────────────────────────
@@ -210,15 +238,17 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="histogram-container" style="width:{width}px;height:{height + 60}px">
+<div class="histogram-container" style="width:{width}px;height:{height}px">
   {#if isLoading}
     <div class="hist-loading">Loading...</div>
+  {:else if errorText}
+    <div class="hist-loading hist-error" role="alert">{errorText}</div>
   {/if}
 
   <svg
     bind:this={svgEl}
     {width}
-    {height}
+    height={svgH}
     on:mousedown={onMouseDown}
     on:mousemove={onMouseMove}
     on:mouseup={onMouseUp}
@@ -227,47 +257,47 @@
     class="hist-svg"
   >
     <defs>
-      <clipPath id="hist-clip">
-        <rect x={MARGIN.left} y={MARGIN.top} width={plotW()} height={plotH()} />
+      <clipPath id="hist-clip-{uid}">
+        <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} />
       </clipPath>
     </defs>
 
     <!-- Background -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={plotW()} height={plotH()} fill="var(--bg-primary, #0f0f1a)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="var(--bg-primary, #0f0f1a)" />
 
     <!-- Grid lines -->
     {#each xTicks as t}
-      <line x1={dataToSvgX(t)} y1={MARGIN.top} x2={dataToSvgX(t)} y2={MARGIN.top + plotH()}
+      <line x1={xToSvg(t, xMin, xMax, pw)} y1={MARGIN.top} x2={xToSvg(t, xMin, xMax, pw)} y2={MARGIN.top + ph}
             stroke="var(--border-color, #2a2a3e)" stroke-width="0.5" />
-      <text x={dataToSvgX(t)} y={height - MARGIN.bottom + 16}
+      <text x={xToSvg(t, xMin, xMax, pw)} y={svgH - MARGIN.bottom + 16}
             fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="middle"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
     {#each yTicks as t}
-      <line x1={MARGIN.left} y1={countToSvgY(t)} x2={MARGIN.left + plotW()} y2={countToSvgY(t)}
+      <line x1={MARGIN.left} y1={cToSvg(t, maxCount, ph)} x2={MARGIN.left + pw} y2={cToSvg(t, maxCount, ph)}
             stroke="var(--border-color, #2a2a3e)" stroke-width="0.5" />
-      <text x={MARGIN.left - 6} y={countToSvgY(t) + 3}
+      <text x={MARGIN.left - 6} y={cToSvg(t, maxCount, ph) + 3}
             fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="end"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
 
     <!-- Axis labels -->
-    <text x={MARGIN.left + plotW() / 2} y={height - 3}
+    <text x={MARGIN.left + pw / 2} y={svgH - 3}
           fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)">{variable} {units ? `(${units})` : ''}</text>
-    <text x={12} y={MARGIN.top + plotH() / 2}
+    <text x={12} y={MARGIN.top + ph / 2}
           fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)"
-          transform="rotate(-90, 12, {MARGIN.top + plotH() / 2})">Count</text>
+          transform="rotate(-90, 12, {MARGIN.top + ph / 2})">Count</text>
 
     <!-- Bars -->
-    <g clip-path="url(#hist-clip)">
+    <g clip-path="url(#hist-clip-{uid})">
       {#each counts as c, i}
         <rect
           x={MARGIN.left + i * barWidth}
-          y={countToSvgY(c)}
+          y={cToSvg(c, maxCount, ph)}
           width={Math.max(barWidth - 1, 1)}
-          height={MARGIN.top + plotH() - countToSvgY(c)}
+          height={MARGIN.top + ph - cToSvg(c, maxCount, ph)}
           fill={hoveredBin === i ? 'var(--accent-primary, #5b6cf7)' : 'rgba(91, 108, 247, 0.6)'}
         />
       {/each}
@@ -279,24 +309,24 @@
 
       <!-- Mean line -->
       {#if stats.mean !== undefined}
-        <line x1={dataToSvgX(stats.mean)} y1={MARGIN.top} x2={dataToSvgX(stats.mean)} y2={MARGIN.top + plotH()}
+        <line x1={xToSvg(stats.mean, xMin, xMax, pw)} y1={MARGIN.top} x2={xToSvg(stats.mean, xMin, xMax, pw)} y2={MARGIN.top + ph}
               stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,3" />
       {/if}
       <!-- Median line -->
       {#if stats.median !== undefined}
-        <line x1={dataToSvgX(stats.median)} y1={MARGIN.top} x2={dataToSvgX(stats.median)} y2={MARGIN.top + plotH()}
+        <line x1={xToSvg(stats.median, xMin, xMax, pw)} y1={MARGIN.top} x2={xToSvg(stats.median, xMin, xMax, pw)} y2={MARGIN.top + ph}
               stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,3" />
       {/if}
 
       <!-- Selection highlight -->
       {#if rangeStart !== null && rangeEnd !== null}
-        <rect x={selRectX} y={MARGIN.top} width={selRectW} height={plotH()}
+        <rect x={selRectX} y={MARGIN.top} width={selRectW} height={ph}
               fill="rgba(255,107,53,0.15)" stroke="#ff6b35" stroke-width="1" />
       {/if}
     </g>
 
     <!-- Border -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={plotW()} height={plotH()} fill="none" stroke="var(--border-color, #2a2a3e)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="none" stroke="var(--border-color, #2a2a3e)" />
 
     <!-- Hover tooltip -->
     {#if hoveredBin !== null && binEdges.length > hoveredBin + 1}
@@ -362,6 +392,12 @@
     font-size: 12px;
     z-index: 5;
   }
+  .hist-error {
+    background: var(--bg-secondary, #1a1a2e);
+    color: var(--accent-danger, #f87171);
+    padding: 0 16px;
+    text-align: center;
+  }
   .hist-stats {
     padding: 4px 8px;
     display: flex;
@@ -372,8 +408,9 @@
   }
   .stat-row {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: 0 6px;
     font-size: 9px;
     font-family: var(--font-mono, monospace);
   }
@@ -397,5 +434,7 @@
     background: var(--bg-primary, #0f0f1a);
     border-top: 1px solid var(--border-color, #2a2a3e);
   }
+  .hist-info span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .hist-info span:first-child { flex-shrink: 0; }
   .hist-hint { opacity: 0.6; }
 </style>

@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { wsManager } from '../utils/websocket';
   import { openFiles, type FileEntry } from '../stores/fileManager';
-  import { selectedVariable, selectedSweep } from '../stores/radarData';
+  import { selectedVariable, selectedSweep, processingProgress } from '../stores/radarData';
+  import type { SweepDataEntry } from '../utils/ppiRenderer';
   import {
     diffMode,
     diffBaseFileId,
@@ -24,11 +25,15 @@
   let sweep = 0;
   let diffRange = 50; // configurable max diff magnitude for colormap
   let isLoading = false;
+  let errorMsg = '';
 
-  // Diff data received from server
-  let diffHeader: any = null;
-  let pendingBinaryChunks: Uint8Array[] = [];
-  let pendingChunksExpected = 0;
+  // Difference grid (compare - base) received from the server: a polar sweep entry whose values are
+  // float32 with -9999 marking cells that are missing in either file.
+  const DIFF_NODATA = -9999;
+  let entry: SweepDataEntry | null = null;
+  let probe: { x: number; y: number; az: number; rangeKm: number; value: number | null } | null = null;
+  // Fast polar lookup: azimuth (0.1 degree bins) -> nearest ray index
+  let rayLut: Int32Array | null = null;
 
   $: mode = $diffMode;
   $: baseId = $diffBaseFileId;
@@ -37,44 +42,94 @@
   $: variable = $selectedVariable;
   $: sweep = $selectedSweep;
 
-  $: if (mode === 'diff' && baseId && compareId && variable) {
+  // `sweep` is listed so that changing sweep (or either file) recomputes the difference
+  $: if (mode === 'diff' && baseId && compareId && variable && sweep >= 0) {
     requestDiff();
   }
 
+  // Repaint (without asking the server again) when the data, the colour range or the size changes
+  $: if (ctx && entry) paint(entry, diffRange, width, height);
+
   let unsubDiff: (() => void) | null = null;
-  let unsubBinary: (() => void) | null = null;
+  let unsubErr: (() => void) | null = null;
+  let ro: ResizeObserver | null = null;
 
-  onMount(() => {
-    if (canvasEl) {
-      ctx = canvasEl.getContext('2d');
-    }
-
-    const ro = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const s = Math.min(entry.contentRect.width, entry.contentRect.height);
-        width = s;
-        height = s;
+  // The canvas and container only exist while the diff view is on (they are inside {#if}), so they
+  // are picked up reactively rather than once in onMount.
+  $: if (canvasEl && !ctx) ctx = canvasEl.getContext('2d');
+  $: if (!canvasEl) ctx = null;
+  $: if (containerEl && !ro) {
+    ro = new ResizeObserver((entries) => {
+      for (const e of entries) {
+        // Square drawing area that fits the space left under the controls
+        const sz = Math.floor(Math.min(e.contentRect.width, e.contentRect.height));
+        if (sz > 0) {
+          width = sz;
+          height = sz;
+        }
       }
     });
-    if (containerEl) ro.observe(containerEl);
+    ro.observe(containerEl);
+  }
+  $: if (!containerEl && ro) {
+    ro.disconnect();
+    ro = null;
+  }
 
-    unsubDiff = wsManager.onMessage('difference_result', (msg: any) => {
-      diffHeader = msg;
-      pendingBinaryChunks = [];
-      // Binary chunks follow; the WS manager dispatches them raw.
-      // We need to intercept the next binary messages.
-      pendingChunksExpected = 1; // Single combined buffer
+  onMount(() => {
+    unsubDiff = wsManager.onMessage('difference_data_ready', (e: SweepDataEntry) => {
+      if (e.variable !== variable || e.sweep !== sweep) return; // a stale answer for an earlier selection
+      setEntry(e);
       isLoading = false;
+      errorMsg = '';
+      processingProgress.set(null); // the server's "Computing difference... 10%" is never followed by a 100%
     });
-
-    return () => {
-      ro.disconnect();
-      if (unsubDiff) unsubDiff();
-    };
+    unsubErr = wsManager.onMessage('error', (msg: any) => {
+      if (isLoading) {
+        isLoading = false;
+        processingProgress.set(null);
+        errorMsg = String(msg?.message ?? msg?.error ?? 'Difference failed');
+      }
+    });
   });
+
+  onDestroy(() => {
+    ro?.disconnect();
+    unsubDiff?.();
+    unsubErr?.();
+  });
+
+  function setEntry(e: SweepDataEntry) {
+    // Detach from the shared sweep buffer so a cache eviction cannot change what is on screen
+    const az = new Float32Array(e.azimuth);
+    const lut = new Int32Array(3600).fill(-1);
+    for (let i = 0; i < az.length; i++) {
+      const a = ((az[i] % 360) + 360) % 360;
+      lut[Math.round(a * 10) % 3600] = i;
+    }
+    // Fill gaps with the nearest ray so every bearing maps somewhere (sector scans stay blank below)
+    let last = -1;
+    let firstFilled = lut.findIndex((v) => v >= 0);
+    if (firstFilled >= 0) {
+      for (let pass = 0; pass < 2; pass++) {
+        for (let i = 0; i < 3600; i++) {
+          if (lut[i] >= 0) last = lut[i];
+          else if (last >= 0 && pass === 1) lut[i] = last;
+        }
+      }
+    }
+    rayLut = lut;
+    entry = { ...e, azimuth: az, values: new Float32Array(e.values) };
+  }
 
   function requestDiff() {
     if (!baseId || !compareId || !variable) return;
+    if (baseId === compareId) {
+      entry = null;
+      errorMsg = 'Pick two different files to compare.';
+      return;
+    }
+    errorMsg = '';
     isLoading = true;
     wsManager.send({
       type: 'get_difference',
@@ -85,91 +140,74 @@
     });
   }
 
-  // ── Render diff on canvas when header arrives ──────────────────────────
-  // The binary data is handled by the WebSocket manager's binary path.
-  // We register a secondary handler to catch it.
-  // For now, we rely on the header metadata and render a placeholder
-  // until the binary arrives. The real rendering happens when we get
-  // the sweep_data_ready equivalent for diff data.
-
-  // Since the WS manager's binary handling is specific to sweep_data,
-  // we hook into the raw message handler for diff binary data.
-
-  $: if (diffHeader && ctx) {
-    renderDiffFromHeader(diffHeader);
+  /** Nearest gate/ray for a canvas pixel, or null outside the sweep. */
+  function sample(e: SweepDataEntry, px: number, py: number): { az: number; rangeM: number; v: number } | null {
+    const half = width / 2;
+    const maxR = e.maxRange || 1;
+    const dx = px - half;
+    const dy = half - py;
+    const rM = (Math.hypot(dx, dy) / half) * maxR;
+    if (rM > maxR || !rayLut || e.nRange < 1) return null;
+    const az = ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+    const ray = rayLut[Math.round(az * 10) % 3600];
+    if (ray < 0) return null;
+    const r0 = e.range[0];
+    const dr = e.nRange > 1 ? (e.range[e.nRange - 1] - r0) / (e.nRange - 1) : 1;
+    const gate = Math.round((rM - r0) / (dr || 1));
+    if (gate < 0 || gate >= e.nRange) return null;
+    return { az, rangeM: rM, v: e.values[ray * e.nRange + gate] };
   }
 
-  function renderDiffFromHeader(header: any) {
+  function paint(e: SweepDataEntry, range: number, w: number, h: number) {
     if (!ctx || !canvasEl) return;
-
-    canvasEl.width = width;
-    canvasEl.height = height;
-    ctx.clearRect(0, 0, width, height);
-
-    const nAz = header.n_az ?? 0;
-    const nRange = header.n_range ?? 0;
-    const vmin = header.vmin ?? -diffRange;
-    const vmax = header.vmax ?? diffRange;
-    const maxRange = header.max_range ?? 1;
-
-    if (nAz === 0 || nRange === 0) return;
-
-    // Draw a "waiting for binary data" indicator
-    ctx.fillStyle = 'rgba(8, 10, 20, 0.8)';
-    ctx.fillRect(0, 0, width, height);
-
-    // Draw diff info
-    ctx.fillStyle = '#aaa';
-    ctx.font = '12px system-ui';
+    if (canvasEl.width !== w || canvasEl.height !== h) {
+      canvasEl.width = w;
+      canvasEl.height = h;
+    }
+    const img = ctx.createImageData(w, h);
+    const d = img.data;
+    const span = range > 0 ? range : 1;
+    for (let py = 0; py < h; py++) {
+      for (let px = 0; px < w; px++) {
+        const s = sample(e, px + 0.5, py + 0.5);
+        if (!s || !Number.isFinite(s.v) || s.v === DIFF_NODATA) continue;
+        const t = Math.max(0, Math.min(1, (s.v / span + 1) / 2));
+        const [r, g, b] = divergingColor(t);
+        const o = (py * w + px) * 4;
+        d[o] = r;
+        d[o + 1] = g;
+        d[o + 2] = b;
+        d[o + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    // Outer range circle + north tick so the sweep's extent and orientation are readable
+    ctx.strokeStyle = 'rgba(160, 170, 220, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(w / 2, h / 2, w / 2 - 1, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(200, 205, 240, 0.8)';
+    ctx.font = '11px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText(
-      `Diff: ${header.variable} sweep ${header.sweep}`,
-      width / 2,
-      height / 2 - 20,
-    );
-    ctx.fillText(
-      `${nAz} az x ${nRange} rng | range: [${vmin.toFixed(1)}, ${vmax.toFixed(1)}]`,
-      width / 2,
-      height / 2,
-    );
-    ctx.fillText('Binary data rendering in progress...', width / 2, height / 2 + 20);
-
-    // Draw the diverging colorbar legend at bottom
-    drawColorbar(ctx, width, height, vmin, vmax);
+    ctx.fillText('N', w / 2, 13);
   }
 
-  function drawColorbar(
-    c: CanvasRenderingContext2D,
-    w: number,
-    h: number,
-    vmin: number,
-    vmax: number,
-  ) {
-    const barH = 12;
-    const barW = w * 0.6;
-    const x0 = (w - barW) / 2;
-    const y0 = h - 40;
-
-    for (let i = 0; i < barW; i++) {
-      const t = i / barW; // 0..1
-      const [r, g, b] = divergingColor(t);
-      c.fillStyle = `rgb(${r},${g},${b})`;
-      c.fillRect(x0 + i, y0, 1, barH);
-    }
-
-    // Border
-    c.strokeStyle = 'rgba(255,255,255,0.2)';
-    c.strokeRect(x0, y0, barW, barH);
-
-    // Labels
-    c.fillStyle = '#888';
-    c.font = '10px monospace';
-    c.textAlign = 'left';
-    c.fillText(vmin.toFixed(1), x0, y0 + barH + 12);
-    c.textAlign = 'center';
-    c.fillText('0', x0 + barW / 2, y0 + barH + 12);
-    c.textAlign = 'right';
-    c.fillText(vmax.toFixed(1), x0 + barW, y0 + barH + 12);
+  function onMove(ev: MouseEvent) {
+    if (!entry) return;
+    const r = canvasEl.getBoundingClientRect();
+    const px = ((ev.clientX - r.left) / r.width) * width;
+    const py = ((ev.clientY - r.top) / r.height) * height;
+    const s = sample(entry, px, py);
+    probe = s
+      ? {
+          x: ev.clientX - r.left,
+          y: ev.clientY - r.top,
+          az: s.az,
+          rangeKm: s.rangeM / 1000,
+          value: Number.isFinite(s.v) && s.v !== DIFF_NODATA ? s.v : null,
+        }
+      : null;
   }
 
   /**
@@ -210,11 +248,11 @@
 </script>
 
 {#if mode === 'diff'}
-  <div class="diff-viewer" bind:this={containerEl}>
+  <div class="diff-viewer">
     <div class="diff-controls">
       <div class="diff-select-group">
-        <label class="diff-label">Base</label>
-        <select class="diff-select" on:change={handleBaseChange} value={baseId ?? ''}>
+        <label class="diff-label" for="diff-base">Base</label>
+        <select id="diff-base" class="diff-select" on:change={handleBaseChange} value={baseId ?? ''}>
           <option value="">-- select --</option>
           {#each files as f}
             <option value={f.id}>{f.filename}</option>
@@ -229,8 +267,8 @@
       </span>
 
       <div class="diff-select-group">
-        <label class="diff-label">Compare</label>
-        <select class="diff-select" on:change={handleCompareChange} value={compareId ?? ''}>
+        <label class="diff-label" for="diff-compare">Compare</label>
+        <select id="diff-compare" class="diff-select" on:change={handleCompareChange} value={compareId ?? ''}>
           <option value="">-- select --</option>
           {#each files as f}
             <option value={f.id}>{f.filename}</option>
@@ -239,8 +277,9 @@
       </div>
 
       <div class="diff-range-group">
-        <label class="diff-label">Range</label>
+        <label class="diff-label" for="diff-range">Range</label>
         <input
+          id="diff-range"
           class="diff-range-input"
           type="number"
           value={diffRange}
@@ -252,11 +291,28 @@
       </div>
     </div>
 
-    <div class="diff-canvas-container">
+    <div class="diff-canvas-container" bind:this={containerEl}>
       {#if isLoading}
         <div class="diff-loading">Computing difference...</div>
+      {:else if errorMsg}
+        <div class="diff-loading" role="alert">{errorMsg}</div>
+      {:else if !entry && (!baseId || !compareId)}
+        <div class="diff-loading">Choose a base and a comparison file.</div>
       {/if}
-      <canvas bind:this={canvasEl} width={width} height={height} class="diff-canvas" />
+      <canvas
+        bind:this={canvasEl}
+        width={width}
+        height={height}
+        class="diff-canvas"
+        on:mousemove={onMove}
+        on:mouseleave={() => (probe = null)}
+      ></canvas>
+      {#if probe}
+        <div class="diff-probe" style="left: {Math.min(probe.x + 12, width - 150)}px; top: {Math.max(0, probe.y - 30)}px">
+          <strong>{probe.value === null ? 'no data' : `${probe.value > 0 ? '+' : ''}${probe.value.toFixed(2)}`}</strong>
+          <span>{probe.az.toFixed(1)}&deg; / {probe.rangeKm.toFixed(1)} km</span>
+        </div>
+      {/if}
     </div>
 
     <!-- Colorbar legend -->
@@ -367,6 +423,27 @@
     max-width: 100%;
     max-height: 100%;
     border-radius: var(--radius-sm);
+  }
+
+  .diff-probe {
+    position: absolute;
+    display: flex;
+    flex-direction: column;
+    padding: 3px 8px;
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--text-primary);
+    background: var(--glass-bg-heavy);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-sm);
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 3;
+  }
+
+  .diff-probe span {
+    color: var(--text-muted);
+    font-size: 10px;
   }
 
   .diff-loading {

@@ -455,3 +455,57 @@ class TestArco:
         assert reader._arco_loaded_sweeps == {}
         assert reader._arco_session is None
         assert reader.get_sweep_data(0, "DBZH").shape == (4, 4)
+
+
+class TestMaskReservedCodes:
+    """Integer-encoded moments: raw 0 (no echo) and raw 1 (range folded) are not measurements."""
+
+    @staticmethod
+    def _coded(codes: np.ndarray, scale: float, offset: float) -> xr.DataArray:
+        values = offset + codes.astype(np.float64) * scale
+        da = xr.DataArray(values, dims=("azimuth", "range"), attrs={"units": "dBZ"})
+        da.encoding.update(
+            {"dtype": np.dtype("uint8"), "scale_factor": scale, "add_offset": offset}
+        )
+        return da
+
+    def test_codes_0_and_1_become_nan_real_values_survive(self) -> None:
+        from engine.reader import mask_variable
+
+        codes = np.array([[0, 1, 2, 3, 100, 255]])
+        out = mask_variable(self._coded(codes, 0.5, -33.0))
+        assert np.isnan(out.values[0, :2]).all()
+        np.testing.assert_allclose(out.values[0, 2:], [-32.0, -31.5, 17.0, 94.5])
+        assert out.attrs["units"] == "dBZ"
+
+    def test_negative_scale_and_unencoded_arrays(self) -> None:
+        from engine.reader import mask_variable
+
+        out = mask_variable(self._coded(np.array([[0, 1, 2, 3]]), -0.5, 10.0))
+        assert np.isnan(out.values[0, :2]).all() and np.isfinite(out.values[0, 2:]).all()
+        plain = xr.DataArray(np.array([[-33.0, 1.0]]), dims=("azimuth", "range"))
+        assert (
+            mask_variable(plain) is plain
+        )  # no encoding -> untouched (synthetic / pre-masked data)
+
+    def test_dataset_masks_every_2d_variable(self) -> None:
+        from engine.reader import mask_below_threshold
+
+        ds = xr.Dataset({"DBZH": self._coded(np.array([[0, 5]]), 0.5, -33.0)})
+        assert np.isnan(mask_below_threshold(ds)["DBZH"].values[0, 0])
+
+    _KATX = Path(
+        "/private/tmp/claude-502/-Users-syed44-Git-Stuff-Git-Projects-xradar-desktop/"
+        "4919c2aa-1324-499f-9e5a-79edf19be890/scratchpad/data/KATX20130717_195021_V06"
+    )
+
+    @pytest.mark.skipif(not _KATX.exists(), reason="real NEXRAD sample not available")
+    def test_real_nexrad_sweep_is_mostly_no_echo(self) -> None:
+        reader = RadarReader()
+        reader.open_file(str(self._KATX))
+        v = reader.get_sweep_data(0, "DBZH").values
+        assert np.isnan(v).mean() > 0.8  # ~93 % of gates are "below threshold"
+        assert np.nanmin(v) >= -32.0  # no -33 fill left
+        # the raw (unmasked) view is untouched
+        raw = reader.get_sweep_dataset(0, mask=False)["DBZH"].values
+        assert np.isfinite(raw).all() and raw.min() == -33.0

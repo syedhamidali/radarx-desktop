@@ -6,10 +6,10 @@
    * Communicates with the PPI via events (box-select toggle) and listens
    * to the WebSocket for volume_data messages.
    */
-  import { onMount, onDestroy } from 'svelte';
-  import { wsManager } from '../utils/websocket';
-  import { selectedVariable } from '../stores/radarData';
+  import { onDestroy, untrack } from 'svelte';
+  import { selectedVariable, radarData, connectionStatus } from '../stores/radarData';
   import { addToast } from '../stores/toasts';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
   import { boxSelectActive, selectedBox as selectedBoxStore } from '../stores/volumeSelect';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import VolumeViewer from './VolumeViewer.svelte';
@@ -27,13 +27,20 @@
 
   // Settings
   let resolution: number = $state(100);
-  let maxHeight: number = $state(15); // km
+  let maxHeight: number | null = $state(15); // km (null while the box is empty)
 
   // Transfer function
   let transferFunction = $state(createDefaultTransferFunction());
 
   // Store subscriptions
   const variable = $derived($selectedVariable ?? '');
+  const filePath = $derived($radarData.filePath);
+  const isConnected = $derived($connectionStatus === 'connected');
+  const heightProblem = $derived(
+    maxHeight === null || !Number.isFinite(maxHeight) || maxHeight < 1 || maxHeight > 25
+      ? 'Max height must be between 1 and 25 km'
+      : '',
+  );
 
   // Selected box (in meters from radar center)
   let selectedBox: { xMin: number; xMax: number; yMin: number; yMax: number } | null = $state(null);
@@ -41,53 +48,27 @@
   // Volume viewer ref
   let volumeViewer: VolumeViewer;
 
-  // WebSocket listener
-  let unsubVolume: (() => void) | null = null;
-
-  onMount(() => {
-    unsubVolume = wsManager.onMessage('volume_data', (msg: any) => {
-      isLoading = false;
-
-      if (msg.error) {
-        addToast('error', `Volume error: ${msg.error}`);
-        return;
-      }
-
-      // Decode volume data from the message
-      const dataArray = msg.data;
-      if (dataArray && Array.isArray(dataArray)) {
-        volumeData = new Float32Array(dataArray);
-      } else if (dataArray instanceof Float32Array) {
-        volumeData = dataArray;
-      } else if (dataArray instanceof ArrayBuffer) {
-        volumeData = new Float32Array(dataArray);
-      } else {
-        volumeData = null;
-      }
-
-      nx = msg.nx ?? 0;
-      ny = msg.ny ?? 0;
-      nz = msg.nz ?? 0;
-      bounds = {
-        xMin: msg.bounds?.xMin ?? 0,
-        xMax: msg.bounds?.xMax ?? 1,
-        yMin: msg.bounds?.yMin ?? 0,
-        yMax: msg.bounds?.yMax ?? 1,
-        zMin: msg.bounds?.zMin ?? 0,
-        zMax: msg.bounds?.zMax ?? maxHeight * 1000,
-      };
-      vmin = msg.vmin ?? 0;
-      vmax = msg.vmax ?? 60;
-
-      if (volumeData) {
-        addToast('success', `Volume loaded: ${nx}x${ny}x${nz} (${variable})`);
-      }
-    });
-  });
+  let handle: FeatureRequestHandle | null = null;
 
   onDestroy(() => {
-    unsubVolume?.();
+    handle?.cancel();
     unsubBox();
+  });
+
+  // A different file: the box and the volume belong to the old one.
+  let lastFile: string | null | undefined = undefined;
+  $effect(() => {
+    const f = filePath;
+    untrack(() => {
+      if (lastFile !== undefined && f !== lastFile) {
+        handle?.cancel();
+        volumeData = null;
+        selectedBox = null;
+        selectedBoxStore.set(null);
+        isLoading = false;
+      }
+      lastFile = f;
+    });
   });
 
   function toggleBoxSelect() {
@@ -108,22 +89,80 @@
       addToast('info', 'Select a region on the PPI first');
       return;
     }
+    if (heightProblem) {
+      addToast('info', heightProblem);
+      return;
+    }
+    if (!isConnected) return;
 
+    handle?.cancel();
     isLoading = true;
     volumeData = null;
 
-    wsManager.send({
-      type: 'get_volume',
-      variable,
-      box: {
-        x_min: selectedBox.xMin,
-        x_max: selectedBox.xMax,
-        y_min: selectedBox.yMin,
-        y_max: selectedBox.yMax,
+    const box = selectedBox;
+    const v = variable;
+    const h = runFeatureRequest({
+      kind: 'volume',
+      label: `Extracting 3D volume (${v})`,
+      message: {
+        type: 'get_volume',
+        variable: v,
+        box: {
+          x_min: box.xMin,
+          x_max: box.xMax,
+          y_min: box.yMin,
+          y_max: box.yMax,
+        },
+        resolution,
+        z_max: (maxHeight ?? 15) * 1000,
       },
-      resolution,
-      z_max: maxHeight * 1000,
+      resultTypes: ['volume_data'],
+      timeoutMs: 120000,
+      onResult: (msg: any) => {
+        if (msg.error) {
+          addToast('error', `Volume error: ${msg.error}`);
+          return;
+        }
+
+        // Decode volume data from the message
+        const dataArray = msg.data;
+        if (dataArray && Array.isArray(dataArray)) {
+          volumeData = new Float32Array(dataArray);
+        } else if (dataArray instanceof Float32Array) {
+          volumeData = dataArray;
+        } else if (dataArray instanceof ArrayBuffer) {
+          volumeData = new Float32Array(dataArray);
+        } else {
+          volumeData = null;
+        }
+
+        nx = msg.nx ?? 0;
+        ny = msg.ny ?? 0;
+        nz = msg.nz ?? 0;
+        bounds = {
+          xMin: msg.bounds?.xMin ?? 0,
+          xMax: msg.bounds?.xMax ?? 1,
+          yMin: msg.bounds?.yMin ?? 0,
+          yMax: msg.bounds?.yMax ?? 1,
+          zMin: msg.bounds?.zMin ?? 0,
+          zMax: msg.bounds?.zMax ?? (maxHeight ?? 15) * 1000,
+        };
+        vmin = msg.vmin ?? 0;
+        vmax = msg.vmax ?? 60;
+
+        if (volumeData) {
+          addToast('success', `Volume loaded: ${nx}x${ny}x${nz} (${v})`);
+        }
+      },
+      onSettled: () => {
+        if (handle === h) {
+          handle = null;
+          isLoading = false;
+        }
+      },
+      retry: requestVolume,
     });
+    handle = h;
   }
 
   function onTransferFunctionChange(detail: { transferFunction: Uint8Array }) {
@@ -188,6 +227,9 @@
           id="vp-max-height"
           type="number"
           class="vp-input"
+          class:invalid={!!heightProblem}
+          aria-invalid={!!heightProblem}
+          title={heightProblem || '1 to 25 km'}
           bind:value={maxHeight}
           min="1"
           max="25"
@@ -201,7 +243,8 @@
       <button
         class="vp-btn primary"
         on:click={requestVolume}
-        disabled={isLoading || !variable}
+        disabled={isLoading || !variable || !!heightProblem || !isConnected}
+        title={heightProblem || undefined}
       >
         {#if isLoading}
           <span class="vp-spinner"></span>
@@ -210,6 +253,9 @@
           Render Volume
         {/if}
       </button>
+      {#if isLoading}
+        <button class="vp-btn" on:click={() => handle?.cancel()} title="Stop waiting for the volume">Cancel</button>
+      {/if}
     {/if}
 
     <!-- Transfer function editor -->
@@ -253,8 +299,8 @@
     font-size: 11px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--glass-border, rgba(255,255,255,0.1));
-    background: rgba(15, 15, 26, 0.6);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: var(--bg-surface, rgba(15, 15, 26, 0.6));
     color: var(--text-secondary, rgba(255,255,255,0.7));
     cursor: pointer;
     transition: all 150ms ease;
@@ -331,6 +377,11 @@
     border: 1px solid var(--border-color, rgba(255,255,255,0.1));
     border-radius: var(--radius-sm, 4px);
     color: var(--text-primary, #fff);
+  }
+
+  .vp-input.invalid {
+    border-color: var(--accent-danger, #f44336);
+    box-shadow: 0 0 0 1px var(--accent-danger, #f44336);
   }
 
   .vp-input {

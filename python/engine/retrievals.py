@@ -14,7 +14,7 @@ import numpy as np
 import xarray as xr
 from scipy import ndimage
 
-from engine.reader import sorted_sweep_names
+from engine.reader import mask_below_threshold, sorted_sweep_names
 
 logger = logging.getLogger(__name__)
 
@@ -621,7 +621,7 @@ def run_retrieval(
     if sweep >= len(sweep_nodes):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_nodes) - 1})")
 
-    ds = datatree[sweep_nodes[sweep]].to_dataset()
+    ds = mask_below_threshold(datatree[sweep_nodes[sweep]].to_dataset())
 
     # Flexible variable name matching (e.g. DBZH, DBZ, reflectivity, Z)
     var_aliases: dict[str, list[str]] = {

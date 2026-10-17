@@ -2,7 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import { recentFiles } from '../stores/recentFiles';
   import type { RecentFile } from '../stores/settings';
-  import { workspaceStore } from '../stores/workspace';
+  import { workspaceStore, PRESET_WORKSPACES } from '../stores/workspace';
 
   const dispatch = createEventDispatcher<{
     'open-file': void;
@@ -12,7 +12,10 @@
 
   const recent = $derived($recentFiles);
 
-  const savedWorkspaces = $derived(workspaceStore.listWorkspaces());
+  // User-saved layouts only (the presets are in the toolbar switcher); follows the store.
+  const savedWorkspaces = $derived(
+    Object.keys($workspaceStore.workspaces).filter((n) => !PRESET_WORKSPACES[n]),
+  );
 
   const APP_VERSION = '0.1.0';
 
@@ -92,7 +95,7 @@
           </div>
           <div class="action-text">
             <span class="action-title">Load Workspace</span>
-            <span class="action-desc">Restore a saved layout</span>
+            <span class="action-desc">Restore “{savedWorkspaces[0]}”</span>
           </div>
         </button>
       {/if}
@@ -183,8 +186,8 @@
 <style>
   .welcome-screen {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    /* Centre with auto margins on the child (not align-items: center), so content taller than the
+       window starts at the top and scrolls instead of being clipped above the viewport. */
     width: 100%;
     height: 100%;
     overflow-y: auto;
@@ -199,6 +202,7 @@
     padding: var(--spacing-2xl);
     max-width: 780px;
     width: 100%;
+    margin: auto;
     animation: fade-in 400ms ease-out;
   }
 
@@ -265,7 +269,7 @@
     align-items: center;
     gap: var(--spacing-md);
     padding: var(--spacing-lg);
-    background: rgba(13, 16, 32, 0.6);
+    background: var(--card-bg);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid var(--glass-border);
@@ -335,7 +339,7 @@
 
   /* Cards */
   .welcome-card {
-    background: rgba(13, 16, 32, 0.5);
+    background: var(--card-bg);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
     border: 1px solid var(--glass-border);
@@ -359,7 +363,7 @@
     letter-spacing: 0.06em;
     color: var(--text-secondary);
     border-bottom: 1px solid var(--glass-border);
-    background: rgba(17, 22, 40, 0.4);
+    background: var(--panel-header-bg);
   }
 
   .card-body {

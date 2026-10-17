@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
-  import { wsManager } from '../utils/websocket';
-  import { selectedSweep } from '../stores/radarData';
+  import { onDestroy, createEventDispatcher } from 'svelte';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
+  import { selectedSweep, radarData } from '../stores/radarData';
 
   const dispatch = createEventDispatcher();
 
@@ -12,6 +12,8 @@
   export let subsample: number = 5000;
   export let width: number = 400;
   export let height: number = 340;
+  /** Sweep to plot; null follows the sweep shown in the viewer. */
+  export let sweepOverride: number | null = null;
 
   // ── Internal state ─────────────────────────────────────────────────────
   let data: { x: number[]; y: number[]; color?: number[] } | null = null;
@@ -20,6 +22,7 @@
   let nReturned = 0;
   let nValid = 0;
   let isLoading = false;
+  let errorText = '';
 
   // View transform (zoom/pan)
   let viewXMin = 0;
@@ -50,19 +53,27 @@
   const DENSITY_BINS = 50;
 
   // Layout constants
+  const INFO_H = 18; // the point-count bar under the plot
+  $: svgH = Math.max(60, height - INFO_H);
   const MARGIN = { top: 10, right: 15, bottom: 38, left: 52 };
   const plotW = () => width - MARGIN.left - MARGIN.right;
-  const plotH = () => height - MARGIN.top - MARGIN.bottom;
+  const plotH = () => svgH - MARGIN.top - MARGIN.bottom;
+  // Template expressions must read these directly (or get them as arguments): a call to a script
+  // function that reads state internally is not re-evaluated when only that state changes.
+  $: pw = width - MARGIN.left - MARGIN.right;
+  $: ph = svgH - MARGIN.top - MARGIN.bottom;
 
+  const uid = Math.random().toString(36).slice(2, 8);
   let svgEl: SVGSVGElement;
-  let unsub: (() => void) | null = null;
+  let handle: FeatureRequestHandle | null = null;
 
-  $: sweep = $selectedSweep;
+  $: sweep = sweepOverride ?? $selectedSweep;
+  $: filePath = $radarData.filePath;
 
-  // Reactive request
+  // Reactive request (a different file re-requests too: the same variables and sweep are another scan)
   let prevKey = '';
   $: {
-    const key = `${var1}:${var2}:${sweep}:${colorVar}:${subsample}`;
+    const key = `${filePath}:${var1}:${var2}:${sweep}:${colorVar}:${subsample}`;
     if (var1 && var2 && key !== prevKey) {
       prevKey = key;
       requestData();
@@ -70,33 +81,56 @@
   }
 
   function requestData() {
+    handle?.cancel();
     isLoading = true;
+    errorText = '';
+    const v1 = var1;
+    const v2 = var2;
+    const sw = sweep;
     const msg: Record<string, any> = {
       type: 'get_scatter_data',
-      var1,
-      var2,
-      sweep,
+      var1: v1,
+      var2: v2,
+      sweep: sw,
       subsample,
     };
     if (colorVar) msg.color_var = colorVar;
-    wsManager.send(msg);
+    const mine = (text: string) => {
+      const quoted = [...text.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+      return quoted.length === 0 || quoted.includes(v1) || quoted.includes(v2) || (!!colorVar && quoted.includes(colorVar));
+    };
+    const h = runFeatureRequest({
+      kind: 'dualpol',
+      label: `Scatter ${v1} vs ${v2}`,
+      message: msg,
+      resultTypes: ['scatter_data_result'],
+      accept: (m: any) => m.var1 === v1 && m.var2 === v2 && (m.sweep === undefined || m.sweep === sw),
+      acceptError: mine,
+      onResult: (m: any) => {
+        data = { x: m.x, y: m.y, color: m.color };
+        units1 = m.units1 || '';
+        units2 = m.units2 || '';
+        nReturned = m.n_returned || 0;
+        nValid = m.n_valid || 0;
+        selectedIndices = new Set();
+        fitView();
+        if (densityMode) computeDensity();
+      },
+      onSettled: (outcome, err) => {
+        if (handle !== h) return; // superseded by a newer request
+        isLoading = false;
+        handle = null;
+        if (outcome === 'error' || outcome === 'timeout') {
+          data = null;
+          errorText = outcome === 'timeout' ? 'The request timed out' : (err ?? 'Could not load the data');
+        }
+      },
+      retry: requestData,
+    });
+    handle = h;
   }
 
-  onMount(() => {
-    unsub = wsManager.onMessage('scatter_data_result', (msg: any) => {
-      if (msg.var1 !== var1 || msg.var2 !== var2) return;
-      data = { x: msg.x, y: msg.y, color: msg.color };
-      units1 = msg.units1 || '';
-      units2 = msg.units2 || '';
-      nReturned = msg.n_returned || 0;
-      nValid = msg.n_valid || 0;
-      isLoading = false;
-      fitView();
-      if (densityMode) computeDensity();
-    });
-  });
-
-  onDestroy(() => { unsub?.(); });
+  onDestroy(() => { handle?.cancel(); });
 
   /** Single-pass min/max (no argument spreading: spread throws on very large arrays). */
   function minMax(arr: ArrayLike<number>): [number, number] {
@@ -123,11 +157,11 @@
   }
 
   // ── Coordinate transforms ──────────────────────────────────────────────
-  function dataToSvgX(v: number): number {
-    return MARGIN.left + ((v - viewXMin) / (viewXMax - viewXMin)) * plotW();
+  function xToSvg(v: number, lo: number, hi: number, w: number): number {
+    return MARGIN.left + ((v - lo) / (hi - lo)) * w;
   }
-  function dataToSvgY(v: number): number {
-    return MARGIN.top + plotH() - ((v - viewYMin) / (viewYMax - viewYMin)) * plotH();
+  function yToSvg(v: number, lo: number, hi: number, h: number): number {
+    return MARGIN.top + h - ((v - lo) / (hi - lo)) * h;
   }
   function svgToDataX(px: number): number {
     return viewXMin + ((px - MARGIN.left) / plotW()) * (viewXMax - viewXMin);
@@ -188,19 +222,23 @@
   }
 
   // ── Density heatmap ────────────────────────────────────────────────────
+  // The bins cover the whole data extent (not the current zoom), so the heat map follows pan and zoom.
+  let densityExtent = { xLo: 0, xHi: 1, yLo: 0, yHi: 1 };
+
   function computeDensity() {
     if (!data || data.x.length === 0) return;
+    const [xLo, xHi] = minMax(data.x);
+    const [yLo, yHi] = minMax(data.y);
+    const xRange = xHi - xLo || 1;
+    const yRange = yHi - yLo || 1;
+    densityExtent = { xLo, xHi: xLo + xRange, yLo, yHi: yLo + yRange };
     const grid: number[][] = Array.from({ length: DENSITY_BINS }, () =>
       new Array(DENSITY_BINS).fill(0)
     );
-    const xRange = viewXMax - viewXMin;
-    const yRange = viewYMax - viewYMin;
     for (let i = 0; i < data.x.length; i++) {
-      const bx = Math.floor(((data.x[i] - viewXMin) / xRange) * DENSITY_BINS);
-      const by = Math.floor(((data.y[i] - viewYMin) / yRange) * DENSITY_BINS);
-      if (bx >= 0 && bx < DENSITY_BINS && by >= 0 && by < DENSITY_BINS) {
-        grid[by][bx]++;
-      }
+      const bx = Math.min(DENSITY_BINS - 1, Math.floor(((data.x[i] - xLo) / xRange) * DENSITY_BINS));
+      const by = Math.min(DENSITY_BINS - 1, Math.floor(((data.y[i] - yLo) / yRange) * DENSITY_BINS));
+      grid[by][bx]++;
     }
     densityGrid = grid;
   }
@@ -339,7 +377,7 @@
 
   // ── Lasso SVG path ─────────────────────────────────────────────────────
   $: lassoPath = lassoPoints.length > 1
-    ? 'M' + lassoPoints.map(p => `${dataToSvgX(p.x)},${dataToSvgY(p.y)}`).join('L') + 'Z'
+    ? 'M' + lassoPoints.map(p => `${xToSvg(p.x, viewXMin, viewXMax, pw)},${yToSvg(p.y, viewYMin, viewYMax, ph)}`).join('L') + 'Z'
     : '';
 
   // ── Density rendering helpers ──────────────────────────────────────────
@@ -358,12 +396,14 @@
 <div class="scatter-container" style="width:{width}px;height:{height}px">
   {#if isLoading}
     <div class="scatter-loading">Loading...</div>
+  {:else if errorText}
+    <div class="scatter-loading scatter-error" role="alert">{errorText}</div>
   {/if}
 
   <svg
     bind:this={svgEl}
     {width}
-    {height}
+    height={svgH}
     on:wheel={onWheel}
     on:mousedown={onMouseDown}
     on:mousemove={onMouseMove}
@@ -374,66 +414,64 @@
   >
     <!-- Clip path -->
     <defs>
-      <clipPath id="plot-clip">
-        <rect x={MARGIN.left} y={MARGIN.top} width={plotW()} height={plotH()} />
+      <clipPath id="plot-clip-{uid}">
+        <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} />
       </clipPath>
     </defs>
 
     <!-- Background -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={plotW()} height={plotH()} fill="var(--bg-primary, #0f0f1a)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="var(--bg-primary, #0f0f1a)" />
 
     <!-- Grid lines -->
     {#each xTicks as t}
       <line
-        x1={dataToSvgX(t)} y1={MARGIN.top}
-        x2={dataToSvgX(t)} y2={MARGIN.top + plotH()}
+        x1={xToSvg(t, viewXMin, viewXMax, pw)} y1={MARGIN.top}
+        x2={xToSvg(t, viewXMin, viewXMax, pw)} y2={MARGIN.top + ph}
         stroke="var(--border-color, #2a2a3e)" stroke-width="0.5"
       />
-      <text x={dataToSvgX(t)} y={height - MARGIN.bottom + 16}
+      <text x={xToSvg(t, viewXMin, viewXMax, pw)} y={svgH - MARGIN.bottom + 16}
             fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="middle"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
     {#each yTicks as t}
       <line
-        x1={MARGIN.left} y1={dataToSvgY(t)}
-        x2={MARGIN.left + plotW()} y2={dataToSvgY(t)}
+        x1={MARGIN.left} y1={yToSvg(t, viewYMin, viewYMax, ph)}
+        x2={MARGIN.left + pw} y2={yToSvg(t, viewYMin, viewYMax, ph)}
         stroke="var(--border-color, #2a2a3e)" stroke-width="0.5"
       />
-      <text x={MARGIN.left - 6} y={dataToSvgY(t) + 3}
+      <text x={MARGIN.left - 6} y={yToSvg(t, viewYMin, viewYMax, ph) + 3}
             fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="end"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
 
     <!-- Axis labels -->
-    <text x={MARGIN.left + plotW() / 2} y={height - 3}
+    <text x={MARGIN.left + pw / 2} y={svgH - 3}
           fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)">{var1} {units1 ? `(${units1})` : ''}</text>
-    <text x={12} y={MARGIN.top + plotH() / 2}
+    <text x={12} y={MARGIN.top + ph / 2}
           fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)"
-          transform="rotate(-90, 12, {MARGIN.top + plotH() / 2})">{var2} {units2 ? `(${units2})` : ''}</text>
+          transform="rotate(-90, 12, {MARGIN.top + ph / 2})">{var2} {units2 ? `(${units2})` : ''}</text>
 
     <!-- Data points or density -->
-    <g clip-path="url(#plot-clip)">
+    <g clip-path="url(#plot-clip-{uid})">
       {#if densityMode && densityGrid.length > 0}
         {#each densityGrid as row, by}
           {#each row as count, bx}
             {#if count > 0}
-              <rect
-                x={MARGIN.left + (bx / DENSITY_BINS) * plotW()}
-                y={MARGIN.top + ((DENSITY_BINS - 1 - by) / DENSITY_BINS) * plotH()}
-                width={plotW() / DENSITY_BINS + 1}
-                height={plotH() / DENSITY_BINS + 1}
-                fill={densityColor(count, maxDensity)}
-              />
+              {@const x0 = xToSvg(densityExtent.xLo + (bx / DENSITY_BINS) * (densityExtent.xHi - densityExtent.xLo), viewXMin, viewXMax, pw)}
+              {@const x1 = xToSvg(densityExtent.xLo + ((bx + 1) / DENSITY_BINS) * (densityExtent.xHi - densityExtent.xLo), viewXMin, viewXMax, pw)}
+              {@const y0 = yToSvg(densityExtent.yLo + ((by + 1) / DENSITY_BINS) * (densityExtent.yHi - densityExtent.yLo), viewYMin, viewYMax, ph)}
+              {@const y1 = yToSvg(densityExtent.yLo + (by / DENSITY_BINS) * (densityExtent.yHi - densityExtent.yLo), viewYMin, viewYMax, ph)}
+              <rect x={x0} y={y0} width={Math.max(1, x1 - x0 + 1)} height={Math.max(1, y1 - y0 + 1)} fill={densityColor(count, maxDensity)} />
             {/if}
           {/each}
         {/each}
       {:else if data}
         {#each data.x as xv, i}
           <circle
-            cx={dataToSvgX(xv)}
-            cy={dataToSvgY(data.y[i])}
+            cx={xToSvg(xv, viewXMin, viewXMax, pw)}
+            cy={yToSvg(data.y[i], viewYMin, viewYMax, ph)}
             r={hoveredIdx === i ? 4 : 2}
             fill={pointColor(i)}
             opacity={hoveredIdx === i ? 1 : 0.6}
@@ -448,7 +486,7 @@
     </g>
 
     <!-- Border -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={plotW()} height={plotH()} fill="none" stroke="var(--border-color, #2a2a3e)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="none" stroke="var(--border-color, #2a2a3e)" />
 
     <!-- Hover tooltip -->
     {#if hoveredIdx !== null && data}
@@ -494,6 +532,12 @@
     font-size: 12px;
     z-index: 5;
   }
+  .scatter-error {
+    background: var(--bg-secondary, #1a1a2e);
+    color: var(--accent-danger, #f87171);
+    padding: 0 16px;
+    text-align: center;
+  }
   .scatter-info {
     display: flex;
     justify-content: space-between;
@@ -504,5 +548,7 @@
     background: var(--bg-primary, #0f0f1a);
     border-top: 1px solid var(--border-color, #2a2a3e);
   }
+  .scatter-info span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .scatter-info span:first-child { flex-shrink: 0; }
   .scatter-hint { opacity: 0.6; }
 </style>

@@ -5,7 +5,7 @@
    * Displays a gradient preview bar, an opacity curve editor with draggable
    * control points, and preset buttons for common radar variable mappings.
    */
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
 
   let {
     transferFunction = $bindable(new Uint8Array(256 * 4)),
@@ -34,6 +34,18 @@
 
   let dragIndex = $state<number>(-1);
   let gradientCanvas = $state<HTMLCanvasElement>(undefined as any);
+  let curveSvg = $state<SVGSVGElement>(undefined as any);
+
+  /**
+   * Pointer position in the SVG's own 300x80 units. The SVG is CSS-sized (100% wide), so it is
+   * usually scaled and letterboxed: map through the screen CTM instead of subtracting the rect.
+   */
+  function toSvgUnits(e: MouseEvent): { x: number; y: number } | null {
+    const ctm = curveSvg?.getScreenCTM();
+    if (!ctm) return null;
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+    return { x: Math.max(0, Math.min(SVG_WIDTH, p.x)), y: Math.max(0, Math.min(SVG_HEIGHT, p.y)) };
+  }
 
   // Build the alpha curve from control points (linear interpolation)
   function buildAlphaCurve(): Uint8Array {
@@ -157,11 +169,10 @@
 
   function onDragMove(e: MouseEvent) {
     if (dragIndex < 0) return;
-    const svg = document.querySelector('.tfe-curve-svg') as SVGSVGElement | null;
-    if (!svg) return;
-    const rect = svg.getBoundingClientRect();
-    const svgX = Math.max(0, Math.min(SVG_WIDTH, e.clientX - rect.left));
-    const svgY = Math.max(0, Math.min(SVG_HEIGHT, e.clientY - rect.top));
+    const pt = toSvgUnits(e);
+    if (!pt) return;
+    const svgX = pt.x;
+    const svgY = pt.y;
 
     const newX = Math.round((svgX / SVG_WIDTH) * 255);
     const newY = Math.round((1 - svgY / SVG_HEIGHT) * 255);
@@ -190,15 +201,43 @@
   // Click on SVG background to add new control point
   function onSvgClick(e: MouseEvent) {
     if (dragIndex >= 0) return;
-    const svg = e.currentTarget as SVGSVGElement;
-    const rect = svg.getBoundingClientRect();
-    const svgX = e.clientX - rect.left;
-    const svgY = e.clientY - rect.top;
+    const pt = toSvgUnits(e);
+    if (!pt) return;
+    const svgX = pt.x;
+    const svgY = pt.y;
 
     const newX = Math.round((svgX / SVG_WIDTH) * 255);
     const newY = Math.round((1 - svgY / SVG_HEIGHT) * 255);
 
     controlPoints = [...controlPoints, { x: Math.max(1, Math.min(254, newX)), y: Math.max(0, Math.min(255, newY)) }];
+    applyAlpha();
+  }
+
+  // Remove an interior control point (the two end points always stay).
+  function removePoint(index: number) {
+    if (index <= 0 || index >= controlPoints.length - 1) return;
+    controlPoints = controlPoints.filter((_, i) => i !== index);
+    applyAlpha();
+  }
+
+  function onPointKey(e: KeyboardEvent, index: number) {
+    const big = e.shiftKey ? 10 : 2;
+    const last = controlPoints.length - 1;
+    const cp = controlPoints[index];
+    let next: ControlPoint | null = null;
+    if (e.key === 'ArrowUp') next = { x: cp.x, y: Math.min(255, cp.y + big) };
+    else if (e.key === 'ArrowDown') next = { x: cp.x, y: Math.max(0, cp.y - big) };
+    else if (e.key === 'ArrowLeft' && index > 0 && index < last) next = { x: Math.max(1, cp.x - big), y: cp.y };
+    else if (e.key === 'ArrowRight' && index > 0 && index < last) next = { x: Math.min(254, cp.x + big), y: cp.y };
+    else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault();
+      removePoint(index);
+      return;
+    }
+    if (!next) return;
+    e.preventDefault();
+    controlPoints[index] = next;
+    controlPoints = controlPoints;
     applyAlpha();
   }
 
@@ -303,6 +342,12 @@
   onMount(() => {
     renderGradient();
   });
+
+  // Do not leave window listeners behind if the editor unmounts mid-drag.
+  onDestroy(() => {
+    window.removeEventListener('mousemove', onDragMove);
+    window.removeEventListener('mouseup', onDragEnd);
+  });
 </script>
 
 <div class="tfe-root">
@@ -322,6 +367,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <svg
       class="tfe-curve-svg"
+      bind:this={curveSvg}
       width={SVG_WIDTH}
       height={SVG_HEIGHT}
       viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}"
@@ -356,7 +402,17 @@
           r="5"
           class="tfe-control-point"
           class:dragging={dragIndex === i}
+          role="slider"
+          tabindex="0"
+          aria-label="Opacity point {i + 1}: value {cp.x}, opacity {cp.y}. Arrow keys to move, Delete to remove."
+          aria-valuenow={cp.y}
+          aria-valuemin="0"
+          aria-valuemax="255"
           onmousedown={(e) => onPointDown(e, i)}
+          onclick={(e) => e.stopPropagation()}
+          ondblclick={(e) => { e.stopPropagation(); removePoint(i); }}
+          oncontextmenu={(e) => { e.preventDefault(); removePoint(i); }}
+          onkeydown={(e) => onPointKey(e, i)}
         />
       {/each}
     </svg>
@@ -413,6 +469,7 @@
     border: 1px solid var(--border-color, rgba(255,255,255,0.1));
     border-radius: var(--radius-sm, 4px);
     cursor: crosshair;
+    overflow: visible; /* end-point handles sit on the border: keep them whole and clickable */
   }
 
   .tfe-grid-line {
@@ -429,6 +486,12 @@
     stroke: rgba(0, 220, 255, 0.6);
     stroke-width: 1.5;
     stroke-linejoin: round;
+  }
+
+  .tfe-control-point:focus-visible {
+    outline: none;
+    stroke: var(--accent-primary, #5b6cf7);
+    stroke-width: 3;
   }
 
   .tfe-control-point {

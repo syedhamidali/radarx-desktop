@@ -1,12 +1,15 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
-  import { processingProgress, radarData, connectionStatus } from '../stores/radarData';
+  import { onMount, onDestroy, untrack } from 'svelte';
+  import { processingProgress, radarData, connectionStatus, selectedVariable, selectedSweep } from '../stores/radarData';
   import { wsManager } from '../utils/websocket';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
   let despeckle = $state(false);
   let velocityDealiasing = $state(false);
-  let griddingMethod = $state('none');
+
+  /** Variables the QC steps can be applied to (velocity-only steps need one of these). */
+  const VELOCITY_VARS = ['VRADH', 'VRAD', 'V', 'VEL'];
 
   // Retrievals state
   interface RetrievalDef {
@@ -17,11 +20,12 @@
   }
 
   let retrievals = $state<RetrievalDef[]>([]);
+  let retrievalsFailed = $state(false);
   let selectedRetrieval = $state<string>('');
   let retrievalParams = $state<Record<string, number>>({});
   let retrievalSweep = $state<number>(0);
   let retrievalRunning = $state(false);
-  let retrievalResult = $state<{ name: string; units: string; long_name: string; stats: Record<string, number> } | null>(null);
+  let retrievalResult = $state<{ name: string; sweep: number; units: string; long_name: string; stats: Record<string, number> } | null>(null);
 
   // Statistics state
   let statVariable = $state<string>('');
@@ -30,17 +34,63 @@
   let statResult = $state<Record<string, any> | null>(null);
   let statRunning = $state(false);
 
+  // Despeckle / dealiasing run
+  let processingRunning = $state(false);
+  let processingDone = $state<string | null>(null);
+
   const progress = $derived($processingProgress);
   const hasData = $derived($radarData.variables.length > 0);
   const isConnected = $derived($connectionStatus === 'connected');
   const canProcess = $derived(hasData && isConnected);
-  const isProcessing = $derived(progress !== null && progress.percent < 100);
   const variables = $derived($radarData.variables);
   const sweeps = $derived($radarData.sweeps || []);
+  const filePath = $derived($radarData.filePath);
+  const viewVariable = $derived($selectedVariable);
+  const viewSweep = $derived($selectedSweep);
+  const anyRunning = $derived(processingRunning || retrievalRunning || statRunning);
+
+  /** Variables present in a sweep (split-cut volumes carry different ones per sweep). */
+  function sweepVariables(i: number): string[] {
+    return sweeps[i]?.variables ?? variables;
+  }
+
+  // Processing steps apply to the displayed variable.
+  const dealiasBlocked = $derived(
+    velocityDealiasing && !!viewVariable && !VELOCITY_VARS.includes(viewVariable.toUpperCase()),
+  );
+  const processingHint = $derived(
+    !despeckle && !velocityDealiasing
+      ? 'Tick at least one step'
+      : dealiasBlocked
+        ? `Velocity dealiasing needs a velocity field; ${viewVariable} is displayed`
+        : '',
+  );
+
+  // Retrieval requirements, checked against the chosen sweep.
+  const retrievalDef = $derived(retrievals.find((r) => r.name === selectedRetrieval) ?? null);
+  const missingRequired = $derived(
+    retrievalDef ? retrievalDef.required_variables.filter((v) => !sweepVariables(retrievalSweep).includes(v)) : [],
+  );
+  /** Nearest sweep that has everything the retrieval needs (null when the file has none). */
+  const suggestedSweep = $derived.by(() => {
+    if (!retrievalDef || missingRequired.length === 0) return null;
+    let best: number | null = null;
+    for (let i = 0; i < sweeps.length; i++) {
+      if (!retrievalDef.required_variables.every((v) => sweepVariables(i).includes(v))) continue;
+      if (best === null || Math.abs(i - retrievalSweep) < Math.abs(best - retrievalSweep)) best = i;
+    }
+    return best;
+  });
+  const retrievalBlocked = $derived(missingRequired.length > 0);
+
+  // Statistics: the variable must exist in the chosen sweep.
+  const statVariables = $derived(sweepVariables(statSweep));
 
   let unsubRadar: (() => void) | null = null;
   let unsubConnection: (() => void) | null = null;
   let retrievalsFetched = false;
+  let retrievalsTimer: ReturnType<typeof setTimeout> | null = null;
+  let procHandle: FeatureRequestHandle | null = null;
 
   function updateRetrievalParams(name: string) {
     const def = retrievals.find(r => r.name === name);
@@ -52,14 +102,44 @@
     }
   }
 
-  onMount(() => {
-    unsubRadar = radarData.subscribe((rd) => {
-      if (rd.variables.length > 0 && !statVariable) {
-        statVariable = rd.variables[0];
+  // A different file: results, sweep choices and variable choices of the old one no longer apply.
+  let lastFile: string | null | undefined = undefined;
+  $effect(() => {
+    const f = filePath;
+    untrack(() => {
+      if (lastFile !== undefined && f !== lastFile) {
+        retrievalResult = null;
+        statResult = null;
+        processingDone = null;
+        retrievalSweep = 0;
+        statSweep = 0;
+        statVariable = '';
       }
+      lastFile = f;
+    });
+  });
+
+  // Keep the selections valid (variable in the sweep, sweep in the file).
+  $effect(() => {
+    const vars = statVariables;
+    const nSweeps = sweeps.length;
+    untrack(() => {
+      if (nSweeps > 0) {
+        if (retrievalSweep >= nSweeps) retrievalSweep = 0;
+        if (statSweep >= nSweeps) statSweep = 0;
+      }
+      if (vars.length > 0 && !vars.includes(statVariable)) {
+        statVariable = viewVariable && vars.includes(viewVariable) ? viewVariable : vars[0];
+      }
+    });
+  });
+
+  onMount(() => {
+    unsubRadar = radarData.subscribe(() => {
       tryFetchRetrievals();
     });
-    unsubConnection = connectionStatus.subscribe(() => {
+    unsubConnection = connectionStatus.subscribe((st) => {
+      if (st !== 'connected' && retrievals.length === 0) retrievalsFetched = false;
       tryFetchRetrievals();
     });
   });
@@ -67,6 +147,7 @@
   onDestroy(() => {
     unsubRadar?.();
     unsubConnection?.();
+    if (retrievalsTimer) clearTimeout(retrievalsTimer);
   });
 
   function tryFetchRetrievals() {
@@ -79,56 +160,86 @@
   }
 
   function fetchRetrievals() {
-    wsManager.send({ type: 'list_retrievals' });
+    retrievalsFailed = false;
     const unsubscribe = wsManager.onMessage('retrievals_list', (msg: any) => {
       retrievals = msg.retrievals;
+      retrievalsFailed = false;
       if (retrievals.length > 0 && !selectedRetrieval) {
         selectedRetrieval = retrievals[0].name;
+        updateRetrievalParams(selectedRetrieval);
       }
+      if (retrievalsTimer) clearTimeout(retrievalsTimer);
       unsubscribe();
+    });
+    wsManager.send({ type: 'list_retrievals' });
+    if (retrievalsTimer) clearTimeout(retrievalsTimer);
+    retrievalsTimer = setTimeout(() => {
+      if (retrievals.length === 0) {
+        unsubscribe();
+        retrievalsFailed = true;
+        retrievalsFetched = false;
+      }
+    }, 8000);
+  }
+
+  /**
+   * Despeckle / dealiasing act on the displayed variable and sweep, through the same quality-control
+   * engine as the Quality Control panel (the server's generic `process` pipeline is a stub that
+   * leaves the data unchanged).
+   */
+  function applyProcessing() {
+    if (!canProcess || processingRunning || processingHint || !viewVariable) return;
+    const variable = viewVariable;
+    const sweep = viewSweep;
+    const steps: { name: string; params: Record<string, any> }[] = [];
+    if (despeckle) steps.push({ name: 'despeckle', params: { window_size: 3, threshold: 0.5 } });
+    if (velocityDealiasing) steps.push({ name: 'velocity_dealiasing', params: { nyquist_vel: 25 } });
+    const names = steps.map((s) => s.name.replace(/_/g, ' ')).join(' + ');
+
+    processingRunning = true;
+    processingDone = null;
+    procHandle = runFeatureRequest({
+      kind: 'qc',
+      label: `Processing ${variable} sweep ${sweep}: ${names}`,
+      message: { type: 'run_qc', steps, variable, sweep },
+      resultTypes: ['qc_data_ready'],
+      accept: (e: any) => e.variable === variable && e.sweep === sweep,
+      onResult: () => { processingDone = `Applied ${names} to ${variable}, sweep ${sweep}`; },
+      onSettled: () => { processingRunning = false; procHandle = null; },
+      retry: applyProcessing,
+      timeoutMs: 120000,
     });
   }
 
-  function applyProcessing() {
-    if (!canProcess) return;
-    const pipeline: Record<string, any> = {
-      despeckle,
-      dealias: velocityDealiasing,
-      gridding: griddingMethod,
-    };
-    wsManager.send({ type: 'process', pipeline });
-  }
-
   function runRetrieval() {
-    if (!canProcess || retrievalRunning || !selectedRetrieval) return;
+    if (!canProcess || retrievalRunning || !selectedRetrieval || retrievalBlocked) return;
     retrievalRunning = true;
     retrievalResult = null;
 
     const currentRetrieval = selectedRetrieval;
-    wsManager.send({
-      type: 'run_retrieval',
-      name: currentRetrieval,
-      sweep: retrievalSweep,
-      params: retrievalParams,
-    });
-
-    const unsubResult = wsManager.onMessage('retrieval_result', (msg: any) => {
-      if (msg.name === currentRetrieval) {
+    const sweep = retrievalSweep;
+    runFeatureRequest({
+      kind: 'retrieval',
+      label: `Retrieval: ${retrievalDef?.description ?? currentRetrieval}`,
+      message: {
+        type: 'run_retrieval',
+        name: currentRetrieval,
+        sweep,
+        params: $state.snapshot(retrievalParams),
+      },
+      resultTypes: ['retrieval_result'],
+      accept: (msg: any) => msg.name === currentRetrieval && msg.sweep === sweep,
+      onResult: (msg: any) => {
         retrievalResult = {
           name: msg.name,
+          sweep: msg.sweep,
           units: msg.units,
           long_name: msg.long_name,
           stats: msg.stats,
         };
-        retrievalRunning = false;
-        unsubResult();
-        unsubErr();
-      }
-    });
-    const unsubErr = wsManager.onMessage('error', () => {
-      retrievalRunning = false;
-      unsubResult();
-      unsubErr();
+      },
+      onSettled: () => { retrievalRunning = false; },
+      retry: runRetrieval,
     });
   }
 
@@ -137,57 +248,52 @@
     statRunning = true;
     statResult = null;
 
-    wsManager.send({
-      type: 'get_statistics',
-      variable: statVariable,
-      sweep: statSweep,
-      stat_type: statType,
+    const variable = statVariable;
+    const sweep = statSweep;
+    const type = statType;
+    runFeatureRequest({
+      kind: 'stats',
+      label: `Statistics: ${variable} sweep ${sweep}`,
+      message: { type: 'get_statistics', variable, sweep, stat_type: type },
+      resultTypes: ['statistics_result'],
+      onResult: (msg: any) => { statResult = { ...msg, _type: type, _sweep: sweep }; },
+      onSettled: () => { statRunning = false; },
+      retry: runStatistics,
     });
+  }
 
-    const unsubStat = wsManager.onMessage('statistics_result', (msg: any) => {
-      statResult = msg;
-      statRunning = false;
-      unsubStat();
-      unsubStatErr();
-    });
-    const unsubStatErr = wsManager.onMessage('error', () => {
-      statRunning = false;
-      unsubStat();
-      unsubStatErr();
-    });
+  function fmtNum(v: any, digits = 2): string {
+    return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : 'N/A';
   }
 </script>
 
 <CollapsiblePanel title="Processing">
   {#if hasData}
     <div class="controls">
-      <label class="checkbox-label" title="Remove isolated noisy pixels from radar data">
-        <input type="checkbox" bind:checked={despeckle} disabled={!canProcess || isProcessing} />
+      <label class="checkbox-label" title="Remove isolated noisy pixels from the displayed sweep">
+        <input type="checkbox" bind:checked={despeckle} disabled={!canProcess || processingRunning} />
         <span>Despeckle</span>
       </label>
 
-      <label class="checkbox-label" title="Correct aliased velocity values">
-        <input type="checkbox" bind:checked={velocityDealiasing} disabled={!canProcess || isProcessing} />
+      <label class="checkbox-label" title="Correct aliased velocity values of the displayed sweep">
+        <input type="checkbox" bind:checked={velocityDealiasing} disabled={!canProcess || processingRunning} />
         <span>Velocity Dealiasing</span>
       </label>
 
       <div class="field">
         <label for="gridding-method">Gridding Method</label>
-        <select id="gridding-method" bind:value={griddingMethod} disabled={!canProcess || isProcessing}>
+        <select id="gridding-method" disabled title="Gridding to a Cartesian grid is not available yet (see the 3D Volume and Mosaic panels)">
           <option value="none">None</option>
-          <option value="nearest">Nearest</option>
-          <option value="linear">Linear</option>
-          <option value="barnes">Barnes</option>
         </select>
       </div>
 
       <button
         class="primary action-btn"
         on:click={applyProcessing}
-        disabled={!canProcess || isProcessing}
-        title={!isConnected ? 'Sidecar not connected' : !hasData ? 'No data loaded' : 'Run processing pipeline'}
+        disabled={!canProcess || processingRunning || !!processingHint}
+        title={!isConnected ? 'Sidecar not connected' : !hasData ? 'No data loaded' : processingHint || `Run on ${viewVariable}, sweep ${viewSweep}`}
       >
-        {#if isProcessing}
+        {#if processingRunning}
           <span class="spinner"></span>
           Processing...
         {:else}
@@ -195,9 +301,15 @@
           Apply Processing
         {/if}
       </button>
+      {#if processingHint && (despeckle || velocityDealiasing)}
+        <p class="hint" role="status">{processingHint}</p>
+      {/if}
+      {#if processingDone && !processingRunning}
+        <p class="hint ok" role="status">{processingDone}</p>
+      {/if}
     </div>
 
-    {#if progress}
+    {#if processingRunning && progress}
       <div class="progress-section">
         <div class="progress-label">
           <span>{progress.message}</span>
@@ -218,53 +330,61 @@
     <div class="controls">
       <div class="field">
         <label for="retrieval-select">Algorithm</label>
-        <select id="retrieval-select" bind:value={selectedRetrieval} disabled={!canProcess || retrievalRunning} on:change={() => updateRetrievalParams(selectedRetrieval)}>
+        <select id="retrieval-select" bind:value={selectedRetrieval} disabled={!canProcess || retrievalRunning} on:change={() => { updateRetrievalParams(selectedRetrieval); retrievalResult = null; }}>
           {#each retrievals as ret}
             <option value={ret.name}>{ret.description}</option>
           {/each}
         </select>
       </div>
 
-      {#if selectedRetrieval}
-        {@const def = retrievals.find(r => r.name === selectedRetrieval)}
-        {#if def}
-          {#if def.required_variables.length > 0}
-            <div class="req-vars">
-              <span class="req-label">Requires:</span>
-              {#each def.required_variables as v}
-                <span class="var-tag" class:available={variables.includes(v)} class:missing={!variables.includes(v)}>{v}</span>
-              {/each}
-            </div>
-          {/if}
-
-          {#each Object.entries(def.params) as [key, spec]}
-            <div class="field param-field">
-              <label for="param-{key}">{spec.label}</label>
-              <input
-                id="param-{key}"
-                type="number"
-                step="any"
-                bind:value={retrievalParams[key]}
-                disabled={!canProcess || retrievalRunning}
-              />
-            </div>
-          {/each}
+      {#if retrievalDef}
+        {#if retrievalDef.required_variables.length > 0}
+          <div class="req-vars">
+            <span class="req-label">Requires:</span>
+            {#each retrievalDef.required_variables as v}
+              {@const have = sweepVariables(retrievalSweep).includes(v)}
+              <span class="var-tag" class:available={have} class:missing={!have}>{v}</span>
+            {/each}
+          </div>
         {/if}
+
+        {#each Object.entries(retrievalDef.params) as [key, spec]}
+          <div class="field param-field">
+            <label for="param-{key}">{spec.label}</label>
+            <input
+              id="param-{key}"
+              type="number"
+              step="any"
+              bind:value={retrievalParams[key]}
+              disabled={!canProcess || retrievalRunning}
+            />
+          </div>
+        {/each}
       {/if}
 
       <div class="field">
         <label for="retrieval-sweep">Sweep</label>
-        <select id="retrieval-sweep" bind:value={retrievalSweep} disabled={!canProcess || retrievalRunning}>
+        <select id="retrieval-sweep" bind:value={retrievalSweep} disabled={!canProcess || retrievalRunning} on:change={() => (retrievalResult = null)}>
           {#each sweeps as s, i}
-            <option value={i}>Sweep {i}{s.elevation != null ? ` (${s.elevation.toFixed(1)}°)` : ''}</option>
+            <option value={i}>Sweep {i}{s.elevation != null ? ` (${s.elevation.toFixed(1)}\u00B0)` : ''}</option>
           {/each}
         </select>
       </div>
 
+      {#if retrievalBlocked}
+        <p class="hint" role="status">
+          {missingRequired.join(', ')} {missingRequired.length > 1 ? 'are' : 'is'} not in sweep {retrievalSweep}{missingRequired.some((v) => !variables.includes(v)) ? ' or this file' : ''}.
+          {#if suggestedSweep !== null}
+            <button class="link-btn" on:click={() => (retrievalSweep = suggestedSweep ?? 0)}>Use sweep {suggestedSweep}</button>
+          {/if}
+        </p>
+      {/if}
+
       <button
         class="primary action-btn"
         on:click={runRetrieval}
-        disabled={!canProcess || retrievalRunning}
+        disabled={!canProcess || retrievalRunning || retrievalBlocked}
+        title={retrievalBlocked ? `Missing ${missingRequired.join(', ')}` : 'Run the retrieval on the chosen sweep'}
       >
         {#if retrievalRunning}
           <span class="spinner"></span>
@@ -277,7 +397,7 @@
 
       {#if retrievalResult}
         <div class="result-card">
-          <div class="result-title">{retrievalResult.long_name}</div>
+          <div class="result-title">{retrievalResult.long_name} (sweep {retrievalResult.sweep})</div>
           <div class="result-units">{retrievalResult.units}</div>
           {#if retrievalResult.stats && Object.keys(retrievalResult.stats).length > 0}
             <div class="result-stats">
@@ -285,10 +405,17 @@
               {#if retrievalResult.stats.max != null}<span>Max: {retrievalResult.stats.max.toFixed(2)}</span>{/if}
               {#if retrievalResult.stats.mean != null}<span>Mean: {retrievalResult.stats.mean.toFixed(2)}</span>{/if}
             </div>
+          {:else}
+            <div class="result-stats"><span>No valid values</span></div>
           {/if}
         </div>
       {/if}
     </div>
+  {:else if hasData && retrievalsFailed}
+    <p class="no-data-msg">
+      Could not load the retrievals.
+      <button class="link-btn" on:click={tryFetchRetrievals}>Retry</button>
+    </p>
   {:else if hasData}
     <p class="no-data-msg">Loading retrievals...</p>
   {:else}
@@ -300,26 +427,26 @@
   {#if hasData}
     <div class="controls">
       <div class="field">
+        <label for="stat-sweep">Sweep</label>
+        <select id="stat-sweep" bind:value={statSweep} disabled={!canProcess || statRunning} on:change={() => (statResult = null)}>
+          {#each sweeps as s, i}
+            <option value={i}>Sweep {i}{s.elevation != null ? ` (${s.elevation.toFixed(1)}\u00B0)` : ''}</option>
+          {/each}
+        </select>
+      </div>
+
+      <div class="field">
         <label for="stat-variable">Variable</label>
-        <select id="stat-variable" bind:value={statVariable} disabled={!canProcess || statRunning}>
-          {#each variables as v}
+        <select id="stat-variable" bind:value={statVariable} disabled={!canProcess || statRunning} on:change={() => (statResult = null)}>
+          {#each statVariables as v}
             <option value={v}>{v}</option>
           {/each}
         </select>
       </div>
 
       <div class="field">
-        <label for="stat-sweep">Sweep</label>
-        <select id="stat-sweep" bind:value={statSweep} disabled={!canProcess || statRunning}>
-          {#each sweeps as s, i}
-            <option value={i}>Sweep {i}{s.elevation != null ? ` (${s.elevation.toFixed(1)}°)` : ''}</option>
-          {/each}
-        </select>
-      </div>
-
-      <div class="field">
         <label for="stat-type">Statistic</label>
-        <select id="stat-type" bind:value={statType} disabled={!canProcess || statRunning}>
+        <select id="stat-type" bind:value={statType} disabled={!canProcess || statRunning} on:change={() => (statResult = null)}>
           <option value="histogram">Histogram</option>
           <option value="profile">Vertical Profile</option>
           <option value="cell_stats">Cell Statistics</option>
@@ -330,7 +457,7 @@
       <button
         class="primary action-btn"
         on:click={runStatistics}
-        disabled={!canProcess || statRunning}
+        disabled={!canProcess || statRunning || !statVariable}
       >
         {#if statRunning}
           <span class="spinner"></span>
@@ -346,16 +473,16 @@
 
       {#if statResult}
         <div class="result-card">
-          {#if statType === 'histogram' && statResult.stats}
-            <div class="result-title">Histogram: {statResult.variable}</div>
+          {#if statResult._type === 'histogram' && statResult.stats}
+            <div class="result-title">Histogram: {statResult.variable} (sweep {statResult._sweep})</div>
             <div class="result-stats">
-              <span>Mean: {statResult.stats.mean?.toFixed(2)}</span>
-              <span>Std: {statResult.stats.std?.toFixed(2)}</span>
-              <span>Min: {statResult.stats.min?.toFixed(2)}</span>
-              <span>Max: {statResult.stats.max?.toFixed(2)}</span>
-              <span>Valid: {statResult.stats.count_valid?.toLocaleString()}</span>
+              <span>Mean: {fmtNum(statResult.stats.mean)}</span>
+              <span>Std: {fmtNum(statResult.stats.std)}</span>
+              <span>Min: {fmtNum(statResult.stats.min)}</span>
+              <span>Max: {fmtNum(statResult.stats.max)}</span>
+              <span>Valid: {statResult.stats.count_valid?.toLocaleString() ?? 'N/A'}</span>
             </div>
-          {:else if statType === 'cell_stats'}
+          {:else if statResult._type === 'cell_stats'}
             <div class="result-title">Cell Statistics</div>
             <div class="result-stats">
               {#if statResult.max_reflectivity != null}<span>Max Z: {statResult.max_reflectivity.toFixed(1)} dBZ</span>{/if}
@@ -363,20 +490,22 @@
               {#if statResult.echo_top_km != null}<span>Echo Top: {statResult.echo_top_km} km</span>{/if}
               <span>Sweeps: {statResult.n_sweeps}</span>
             </div>
-          {:else if statType === 'qc'}
-            <div class="result-title">QC: {statResult.variable}</div>
+          {:else if statResult._type === 'qc'}
+            <div class="result-title">QC: {statResult.variable} (sweep {statResult._sweep})</div>
             <div class="result-stats">
               <span>Total gates: {statResult.total_gates?.toLocaleString()}</span>
               <span>Missing: {statResult.pct_missing}%</span>
               {#if statResult.pct_below_noise > 0}<span>Below noise: {statResult.pct_below_noise}%</span>{/if}
             </div>
-          {:else if statType === 'profile'}
+          {:else if statResult._type === 'profile'}
             <div class="result-title">Vertical Profile: {statResult.variable}</div>
             <div class="result-stats">
               {#each statResult.elevations as elev, i}
-                <span>{elev.toFixed(1)}: {statResult.means[i] != null && !isNaN(statResult.means[i]) ? statResult.means[i].toFixed(2) : 'N/A'}</span>
+                <span>{elev.toFixed(1)}&deg;: {fmtNum(statResult.means[i])}</span>
               {/each}
             </div>
+          {:else}
+            <div class="result-stats"><span>No data</span></div>
           {/if}
         </div>
       {/if}
@@ -474,6 +603,31 @@
     color: var(--text-accent);
   }
 
+  .hint {
+    margin: 0;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-secondary);
+  }
+
+  .hint.ok {
+    color: var(--accent-success, #4caf50);
+  }
+
+  .link-btn {
+    display: inline;
+    padding: 0 4px;
+    height: auto;
+    font-size: inherit;
+    color: var(--accent-primary, #5b6cf7);
+    background: transparent;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
   .no-data-msg {
     font-size: 12px;
     color: var(--text-muted);
@@ -502,12 +656,12 @@
 
   .var-tag.available {
     background: rgba(76, 175, 80, 0.2);
-    color: #4caf50;
+    color: var(--accent-success, #4caf50);
   }
 
   .var-tag.missing {
     background: rgba(244, 67, 54, 0.2);
-    color: #f44336;
+    color: var(--accent-danger, #f44336);
   }
 
   .result-card {

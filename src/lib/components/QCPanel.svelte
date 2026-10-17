@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, untrack } from 'svelte';
   import { radarData, connectionStatus, selectedVariable, selectedSweep, processingProgress } from '../stores/radarData';
   import { wsManager } from '../utils/websocket';
+  import { runFeatureRequest, type FeatureRequestHandle } from '../utils/featureRequest';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
   // --- Types ---
@@ -36,25 +37,67 @@
   let algorithms: QCAlgorithm[] = $state([]);
   let pipelineSteps: PipelineStep[] = $state([]);
   let isRunning = $state(false);
-  let hasQCData = $state(false);
-  let previewMode = $state(false);
+  /** Targets (file | variable | sweep) QC has been applied to, with the steps that were applied. */
+  let qcApplied: Record<string, string[]> = $state({});
   let presets: PipelinePreset[] = $state([]);
   let presetName = $state('');
   let dragIndex: number | null = $state(null);
   let dropIndex: number | null = $state(null);
+  let algorithmsFailed = $state(false);
+  let runHandle: FeatureRequestHandle | null = null;
 
   const progress = $derived($processingProgress);
   const hasData = $derived($radarData.variables.length > 0);
   const isConnected = $derived($connectionStatus === 'connected');
-  const canRun = $derived(hasData && isConnected && pipelineSteps.length > 0 && !isRunning);
   const variables = $derived($radarData.variables);
   const sweeps = $derived($radarData.sweeps || []);
   const currentVariable = $derived($selectedVariable);
   const currentSweep = $derived($selectedSweep);
+  const filePath = $derived($radarData.filePath);
+
+  // QC changes the cached sweep itself, so "applied" belongs to one file/variable/sweep: changing
+  // any of them must not keep claiming that the sweep on screen is cleaned.
+  const currentKey = $derived(`${filePath ?? ''}|${currentVariable ?? ''}|${currentSweep}`);
+  const hasQCData = $derived(currentKey in qcApplied);
+  const appliedSteps = $derived(qcApplied[currentKey] ?? []);
+
+  // Problems that make the pipeline unrunnable for the displayed variable.
+  const stepIssues = $derived(pipelineSteps.map((s) => applicability(s.name)));
+  const paramIssues = $derived(
+    pipelineSteps.map((s) => {
+      const out: Record<string, string> = {};
+      for (const [key, spec] of Object.entries(getAlgoParams(s.name))) {
+        const msg = paramProblem(s.params[key], spec);
+        if (msg) out[key] = msg;
+      }
+      return out;
+    }),
+  );
+  const blockedReason = $derived.by(() => {
+    const bi = stepIssues.findIndex((x) => x === 'block');
+    if (bi >= 0) return `Step ${bi + 1} (${pipelineSteps[bi].name.replace(/_/g, ' ')}) does not apply to ${currentVariable}`;
+    const pi = paramIssues.findIndex((x) => Object.keys(x).length > 0);
+    if (pi >= 0) return `Step ${pi + 1}: fix the highlighted parameter`;
+    return '';
+  });
+  const canRun = $derived(
+    hasData && isConnected && pipelineSteps.length > 0 && !isRunning && !!currentVariable && !blockedReason,
+  );
 
   let unsubRadar: (() => void) | null = null;
   let unsubConnection: (() => void) | null = null;
   let algorithmsFetched = false;
+  let algorithmsTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // A different file: nothing that was applied to the old one carries over.
+  let lastFile: string | null | undefined = undefined;
+  $effect(() => {
+    const f = filePath;
+    untrack(() => {
+      if (lastFile !== undefined && f !== lastFile) qcApplied = {};
+      lastFile = f;
+    });
+  });
 
   onMount(() => {
     // Load presets from localStorage once
@@ -64,12 +107,17 @@
     } catch { /* ignore */ }
 
     unsubRadar = radarData.subscribe(() => tryFetchAlgorithms());
-    unsubConnection = connectionStatus.subscribe(() => tryFetchAlgorithms());
+    unsubConnection = connectionStatus.subscribe((st) => {
+      // After a reconnect the list is fetched again if it never arrived.
+      if (st !== 'connected' && algorithms.length === 0) algorithmsFetched = false;
+      tryFetchAlgorithms();
+    });
   });
 
   onDestroy(() => {
     unsubRadar?.();
     unsubConnection?.();
+    if (algorithmsTimer) clearTimeout(algorithmsTimer);
   });
 
   function tryFetchAlgorithms() {
@@ -82,11 +130,42 @@
   }
 
   function fetchAlgorithms() {
-    wsManager.send({ type: 'list_qc_algorithms' });
+    algorithmsFailed = false;
     const unsub = wsManager.onMessage('qc_algorithms_list', (msg: any) => {
       algorithms = msg.algorithms;
+      algorithmsFailed = false;
+      if (algorithmsTimer) clearTimeout(algorithmsTimer);
       unsub();
     });
+    wsManager.send({ type: 'list_qc_algorithms' });
+    if (algorithmsTimer) clearTimeout(algorithmsTimer);
+    algorithmsTimer = setTimeout(() => {
+      if (algorithms.length === 0) {
+        unsub();
+        algorithmsFailed = true;
+        algorithmsFetched = false;
+      }
+    }, 8000);
+  }
+
+  /** Is the algorithm meant for the displayed variable? 'block' when its list is narrow (a mismatch is nonsense). */
+  function applicability(name: string): 'ok' | 'warn' | 'block' {
+    const algo = algorithms.find((a) => a.name === name);
+    if (!algo || !currentVariable) return 'ok';
+    const list = algo.applicable_variables.map((v) => v.toUpperCase());
+    if (list.includes(currentVariable.toUpperCase())) return 'ok';
+    return list.length <= 5 ? 'block' : 'warn';
+  }
+
+  function paramProblem(v: any, spec: QCParamSpec): string | null {
+    if (spec.options) return spec.options.includes(v) ? null : 'Pick an option';
+    if (spec.type !== 'float' && spec.type !== 'int') return null;
+    if (v === null || v === undefined || v === '') return spec.default === null ? null : 'Required';
+    if (typeof v !== 'number' || !Number.isFinite(v)) return 'Not a number';
+    if (spec.type === 'int' && !Number.isInteger(v)) return 'Whole number';
+    if (spec.min != null && v < spec.min) return `Min ${spec.min}`;
+    if (spec.max != null && v > spec.max) return `Max ${spec.max}`;
+    return null;
   }
 
   function addStep(algoName: string) {
@@ -152,49 +231,54 @@
   // --- Run pipeline ---
   function runQC() {
     if (!canRun || !currentVariable) return;
-    isRunning = true;
-    hasQCData = false;
+    const variable = currentVariable;
+    const sweep = currentSweep;
+    const key = currentKey;
 
     const steps = pipelineSteps.map(s => ({
       name: s.name,
       params: { ...s.params },
     }));
+    const names = steps.map((s) => s.name);
+    const mark = () => { qcApplied = { ...qcApplied, [key]: names }; };
 
-    wsManager.send({
-      type: 'run_qc',
-      steps,
-      variable: currentVariable,
-      sweep: currentSweep,
+    isRunning = true;
+    runHandle = runFeatureRequest({
+      kind: 'qc',
+      label: `Quality control: ${variable} sweep ${sweep}`,
+      message: { type: 'run_qc', steps, variable, sweep },
+      resultTypes: ['qc_data_ready'],
+      accept: (e: any) => e.variable === variable && e.sweep === sweep,
+      onResult: mark,
+      // The result replaces the sweep wherever it shows up, even after Cancel / a timeout.
+      onLate: mark,
+      onSettled: () => { isRunning = false; runHandle = null; },
+      retry: runQC,
+      timeoutMs: 120000,
     });
+  }
 
-    const unsubData = wsManager.onMessage('qc_data_ready', () => {
-      isRunning = false;
-      hasQCData = true;
-      unsubData();
-      unsubErr();
-    });
-    const unsubErr = wsManager.onMessage('error', () => {
-      isRunning = false;
-      unsubData();
-      unsubErr();
-    });
+  function cancelQC() {
+    runHandle?.cancel();
   }
 
   // --- Undo: reload original data ---
   function undoQC() {
-    if (!currentVariable) return;
-    hasQCData = false;
-    wsManager.requestSweepData(currentVariable, currentSweep);
+    if (!currentVariable || !hasQCData) return;
+    const key = currentKey;
+    wsManager.requestSweepData(currentVariable, currentSweep, undefined, {
+      onSettled: (result) => {
+        if (result !== 'done') return;
+        const { [key]: _gone, ...rest } = qcApplied;
+        qcApplied = rest;
+      },
+    });
   }
 
   // --- Preview toggle ---
   function togglePreview() {
-    previewMode = !previewMode;
-    if (previewMode && !hasQCData) {
-      runQC();
-    } else if (!previewMode && hasQCData) {
-      undoQC();
-    }
+    if (hasQCData) undoQC();
+    else runQC();
   }
 
   // --- Presets ---
@@ -211,7 +295,6 @@
 
   function loadPreset(preset: PipelinePreset) {
     pipelineSteps = preset.steps.map(s => ({ name: s.name, params: { ...s.params }, expanded: false }));
-    hasQCData = false;
   }
 
   function deletePreset(name: string) {
@@ -250,7 +333,14 @@
           </button>
         {/each}
         {#if algorithms.length === 0}
-          <div class="loading-msg">Loading algorithms...</div>
+          {#if algorithmsFailed}
+            <div class="loading-msg">
+              Could not load the algorithm list.
+              <button class="link-btn" on:click={tryFetchAlgorithms}>Retry</button>
+            </div>
+          {:else}
+            <div class="loading-msg">Loading algorithms...</div>
+          {/if}
         {/if}
       </div>
 
@@ -283,12 +373,37 @@
                 <button class="step-name-btn" on:click={() => toggleExpand(i)} title={getAlgoDescription(step.name)}>
                   {step.name.replace(/_/g, ' ')}
                 </button>
-                <button class="step-remove-btn" on:click={() => removeStep(i)} title="Remove step" disabled={isRunning}>
+                <button
+                  class="step-move-btn"
+                  on:click={() => moveStep(i, i - 1)}
+                  title="Move up"
+                  aria-label="Move step {i + 1} up"
+                  disabled={isRunning || i === 0}
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="18 15 12 9 6 15"/></svg>
+                </button>
+                <button
+                  class="step-move-btn"
+                  on:click={() => moveStep(i, i + 1)}
+                  title="Move down"
+                  aria-label="Move step {i + 1} down"
+                  disabled={isRunning || i === pipelineSteps.length - 1}
+                >
+                  <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <button class="step-remove-btn" on:click={() => removeStep(i)} title="Remove step" aria-label="Remove step {i + 1}" disabled={isRunning}>
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                   </svg>
                 </button>
               </div>
+
+              {#if stepIssues[i] !== 'ok'}
+                <div class="step-note" class:block={stepIssues[i] === 'block'} role="note">
+                  {stepIssues[i] === 'block' ? 'Not applicable to' : 'Not meant for'} {currentVariable}
+                  (expects {algorithms.find((a) => a.name === step.name)?.applicable_variables.slice(0, 4).join(', ')})
+                </div>
+              {/if}
 
               {#if step.expanded}
                 <div class="step-params">
@@ -316,7 +431,13 @@
                           bind:value={step.params[key]}
                           disabled={isRunning}
                           class="param-input"
+                          class:invalid={!!paramIssues[i]?.[key]}
+                          aria-invalid={!!paramIssues[i]?.[key]}
+                          title={paramIssues[i]?.[key] ?? (spec.min != null && spec.max != null ? `${spec.min} to ${spec.max}` : '')}
                         />
+                        {#if paramIssues[i]?.[key]}
+                          <span class="param-error">{paramIssues[i][key]}</span>
+                        {/if}
                       {:else}
                         <input
                           id="qc-param-{i}-{key}"
@@ -343,7 +464,7 @@
             class="primary action-btn"
             on:click={runQC}
             disabled={!canRun}
-            title={!isConnected ? 'Not connected' : !hasData ? 'No data' : pipelineSteps.length === 0 ? 'Add steps first' : 'Run QC pipeline'}
+            title={!isConnected ? 'Not connected' : !hasData ? 'No data' : pipelineSteps.length === 0 ? 'Add steps first' : blockedReason || 'Run QC pipeline on the displayed sweep'}
           >
             {#if isRunning}
               <span class="spinner"></span>
@@ -354,28 +475,38 @@
             {/if}
           </button>
 
-          <div class="action-row">
-            <button
-              class="secondary action-btn-sm"
-              on:click={togglePreview}
-              disabled={isRunning || pipelineSteps.length === 0}
-              class:active={previewMode}
-            >
-              {previewMode ? 'Hide Preview' : 'Preview'}
+          {#if isRunning}
+            <button class="secondary action-btn-sm cancel-btn" on:click={cancelQC} title="Stop waiting for the result">
+              Cancel
             </button>
+          {:else}
+            <div class="action-row">
+              <button
+                class="secondary action-btn-sm"
+                on:click={togglePreview}
+                disabled={!hasQCData && !canRun}
+                class:active={hasQCData}
+                title={hasQCData ? 'Show the original data again' : 'Apply the pipeline to preview it on the displayed sweep'}
+              >
+                {hasQCData ? 'Hide Preview' : 'Preview'}
+              </button>
 
-            <button
-              class="secondary action-btn-sm"
-              on:click={undoQC}
-              disabled={!hasQCData || isRunning}
-              title="Revert to original data"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
-              </svg>
-              Undo
-            </button>
-          </div>
+              <button
+                class="secondary action-btn-sm"
+                on:click={undoQC}
+                disabled={!hasQCData}
+                title="Revert the displayed sweep to the original data"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                </svg>
+                Undo
+              </button>
+            </div>
+          {/if}
+          {#if blockedReason && !isRunning}
+            <div class="blocked-hint" role="status">{blockedReason}</div>
+          {/if}
         </div>
 
         <!-- Progress -->
@@ -393,10 +524,10 @@
 
         {#if hasQCData && !isRunning}
           <div class="result-card">
-            <div class="result-title">QC Applied</div>
+            <div class="result-title">QC applied to {currentVariable}, sweep {currentSweep}</div>
             <div class="result-stats">
-              {#each pipelineSteps as step, i}
-                <span>{i + 1}. {step.name.replace(/_/g, ' ')}</span>
+              {#each appliedSteps as name, i}
+                <span>{i + 1}. {name.replace(/_/g, ' ')}</span>
               {/each}
             </div>
           </div>
@@ -568,6 +699,7 @@
 
   .step-name-btn {
     flex: 1;
+    justify-content: flex-start;
     font-size: 11px;
     font-weight: 500;
     color: var(--text-primary);
@@ -635,6 +767,81 @@
     font-size: 11px;
     padding: 3px 5px;
     min-width: 0;
+  }
+
+  .param-input.invalid {
+    border-color: var(--accent-danger, #f44336);
+    box-shadow: 0 0 0 1px var(--accent-danger, #f44336);
+  }
+
+  .param-error {
+    font-size: 9px;
+    color: var(--accent-danger, #f44336);
+    white-space: nowrap;
+  }
+
+  .step-move-btn {
+    padding: 2px;
+    color: var(--text-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: auto;
+    width: auto;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .step-move-btn:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: rgba(91, 108, 247, 0.12);
+  }
+
+  .step-move-btn:disabled {
+    opacity: 0.25;
+    cursor: default;
+  }
+
+  .step-note {
+    margin: 0 6px 6px 28px;
+    padding: 3px 6px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    background: rgba(255, 179, 0, 0.1);
+    border-left: 2px solid #ffb300;
+    border-radius: 2px;
+  }
+
+  .step-note.block {
+    background: rgba(244, 67, 54, 0.1);
+    border-left-color: var(--accent-danger, #f44336);
+  }
+
+  .blocked-hint {
+    font-size: 10px;
+    color: var(--text-secondary);
+  }
+
+  .cancel-btn {
+    width: 100%;
+  }
+
+  .link-btn {
+    display: inline;
+    padding: 0 4px;
+    height: auto;
+    font-size: inherit;
+    color: var(--accent-primary, #5b6cf7);
+    background: transparent;
+    border: none;
+    text-decoration: underline;
+    cursor: pointer;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* Actions */
@@ -730,7 +937,7 @@
   .result-title {
     font-size: 11px;
     font-weight: 600;
-    color: #4caf50;
+    color: var(--accent-success, #4caf50);
     margin-bottom: 3px;
   }
 

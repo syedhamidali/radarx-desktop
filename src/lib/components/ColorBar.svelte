@@ -3,6 +3,7 @@
   import { getColormapRGB } from '../utils/ppiRenderer';
   import { customColormaps } from '../stores/customColormaps';
   import ColormapEditor from './ColormapEditor.svelte';
+  import { portal } from '../utils/portal';
 
   export let cmapName: string = 'turbo';
   export let vmin: number = 0;
@@ -18,12 +19,13 @@
   let vminInput = '';
   let vmaxInput = '';
 
-  $: gradientCSS = buildGradient(cmapName);
+  // $customColormaps: re-saving a custom map under the same name must refresh the swatch too
+  $: gradientCSS = buildGradient(cmapName, $customColormaps);
   $: tickValues = computeTicks(vmin, vmax);
   // Force reactive updates when custom colormaps change
   $: allCategories = buildAllCategories($customColormaps);
 
-  function buildGradient(name: string): string {
+  function buildGradient(name: string, _custom?: unknown): string {
     const rgb = COLORMAP_DATA[name];
     if (!rgb) return 'linear-gradient(to right, #000, #fff)';
     const stops: string[] = [];
@@ -76,12 +78,14 @@
   }
 
   function commitVmin() {
+    if (!editingVmin) return; // Enter already committed; the input's blur fires again as it unmounts
     editingVmin = false;
     const v = parseFloat(vminInput);
     if (!isNaN(v) && v < vmax && onRangeChange) onRangeChange(v, vmax);
   }
 
   function commitVmax() {
+    if (!editingVmax) return;
     editingVmax = false;
     const v = parseFloat(vmaxInput);
     if (!isNaN(v) && v > vmin && onRangeChange) onRangeChange(vmin, v);
@@ -89,24 +93,26 @@
 
   function handleVminKey(e: KeyboardEvent) {
     if (e.key === 'Enter') commitVmin();
-    if (e.key === 'Escape') editingVmin = false;
+    if (e.key === 'Escape') { e.stopPropagation(); editingVmin = false; }
   }
 
   function handleVmaxKey(e: KeyboardEvent) {
     if (e.key === 'Enter') commitVmax();
-    if (e.key === 'Escape') editingVmax = false;
+    if (e.key === 'Escape') { e.stopPropagation(); editingVmax = false; }
   }
 
-  /** Keyboard: arrow left/right to adjust vmin/vmax by 1 unit. */
+  /** Keyboard: arrow left/right shift the range by ~1% of its span (1 dBZ on a 95 dBZ scale). */
   function handleBarKeydown(e: KeyboardEvent) {
     if (!onRangeChange) return;
-    if (e.key === 'ArrowLeft') {
-      e.preventDefault();
-      onRangeChange(vmin - 1, vmax - 1);
-    } else if (e.key === 'ArrowRight') {
-      e.preventDefault();
-      onRangeChange(vmin + 1, vmax + 1);
-    }
+    if ((e.target as HTMLElement)?.tagName === 'INPUT') return; // caret movement while typing a limit
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    e.stopPropagation(); // the arrows also step through sweeps/frames at app level
+    const span = vmax - vmin;
+    const step = span > 0 ? Math.pow(10, Math.floor(Math.log10(span)) - 1) : 1;
+    const d = e.key === 'ArrowLeft' ? -step : step;
+    const round = (v: number) => Math.round(v / step) * step;
+    onRangeChange(+round(vmin + d).toFixed(6), +round(vmax + d).toFixed(6));
   }
 
   function cmapPreviewGradient(name: string): string {
@@ -210,7 +216,10 @@
 
 <!-- Colormap editor modal -->
 {#if showEditor}
-  <ColormapEditor onApply={onEditorApply} onClose={onEditorClose} />
+  <!-- On <body>: this bar has a backdrop-filter, which would otherwise trap the fixed overlay. -->
+  <div use:portal style="display: contents">
+    <ColormapEditor onApply={onEditorApply} onClose={onEditorClose} />
+  </div>
 {/if}
 
 <style>
@@ -220,7 +229,7 @@
     align-items: center;
     gap: 8px;
     padding: 4px 10px;
-    background: rgba(15, 15, 26, 0.92);
+    background: var(--glass-bg-heavy, rgba(15, 15, 26, 0.92));
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     backdrop-filter: blur(8px);
@@ -379,7 +388,7 @@
     height: 10px;
     border-radius: 2px;
     flex-shrink: 0;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.06));
   }
 
   .cmap-name {

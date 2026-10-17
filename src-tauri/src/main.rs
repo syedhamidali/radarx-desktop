@@ -65,6 +65,9 @@ struct SidecarState {
     /// Set once the app is exiting so nothing restarts the sidecar afterwards.
     shutting_down: AtomicBool,
     token: String,
+    /// Why the sidecar could not be started / restarted (None while healthy). The window shows
+    /// "Disconnected" either way, so the frontend asks for this to explain it.
+    last_error: Mutex<Option<String>>,
 }
 
 impl Drop for SidecarState {
@@ -323,6 +326,9 @@ fn ensure_sidecar(state: &SidecarState) -> Result<u16, String> {
                     shutdown_sidecar(state);
                     return Err("Application is shutting down".to_string());
                 }
+                if let Ok(mut g) = state.last_error.lock() {
+                    *g = None;
+                }
                 return Ok(port);
             }
             Err(e) => {
@@ -337,6 +343,9 @@ fn ensure_sidecar(state: &SidecarState) -> Result<u16, String> {
             }
         }
     }
+    if let Ok(mut g) = state.last_error.lock() {
+        *g = Some(last_error.clone());
+    }
     Err(last_error)
 }
 
@@ -347,6 +356,12 @@ fn get_sidecar_port(state: State<SharedSidecar>) -> Result<u16, String> {
         .lock()
         .map_err(|e| format!("Failed to lock port state: {}", e))?
         .ok_or_else(|| "Sidecar port not available yet".to_string())
+}
+
+/// The last sidecar start/restart failure, if any (see `SidecarState::last_error`).
+#[tauri::command]
+fn get_sidecar_error(state: State<SharedSidecar>) -> Option<String> {
+    state.last_error.lock().ok().and_then(|g| g.clone())
 }
 
 #[tauri::command]
@@ -485,6 +500,9 @@ fn start_sidecar_monitor(state: Arc<SidecarState>) {
                             shutdown_sidecar(&state);
                             return;
                         }
+                        if let Ok(mut g) = state.last_error.lock() {
+                            *g = None;
+                        }
                         eprintln!(
                             "[sidecar-monitor] Sidecar restarted successfully on port {}",
                             port
@@ -492,6 +510,9 @@ fn start_sidecar_monitor(state: Arc<SidecarState>) {
                     }
                     Err(e) => {
                         eprintln!("[sidecar-monitor] Failed to restart sidecar: {}", e.message);
+                        if let Ok(mut g) = state.last_error.lock() {
+                            *g = Some(format!("The analysis engine stopped and could not restart: {}", e.message));
+                        }
                     }
                 }
             }
@@ -508,6 +529,7 @@ fn main() {
         spawn_lock: Mutex::new(()),
         shutting_down: AtomicBool::new(false),
         token: generate_sidecar_token(),
+        last_error: Mutex::new(None),
     });
 
     // Clones for the monitor thread (started in setup) and the exit handler
@@ -548,6 +570,10 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!("Warning: Failed to start Python sidecar: {}", e);
+                    // ensure_sidecar stored the reason; also push it to a listening frontend.
+                    if let Err(err) = app_handle.emit("sidecar-error", e) {
+                        eprintln!("Failed to emit sidecar-error event: {}", err);
+                    }
                 }
             });
 
@@ -567,6 +593,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             start_python_sidecar,
             get_sidecar_port,
+            get_sidecar_error,
             get_sidecar_token,
             open_file_dialog,
             sidecar_health_check,
@@ -613,6 +640,7 @@ mod tests {
             spawn_lock: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
             token: "t".to_string(),
+            last_error: Mutex::new(None),
         };
         shutdown_sidecar(&state);
         assert!(state.process.lock().unwrap().is_none());
@@ -633,6 +661,7 @@ mod tests {
             spawn_lock: Mutex::new(()),
             shutting_down: AtomicBool::new(false),
             token: "test-token".to_string(),
+            last_error: Mutex::new(None),
         };
         let port = ensure_sidecar(&state).expect("sidecar should start");
         assert_eq!(ensure_sidecar(&state), Ok(port)); // idempotent: no second process

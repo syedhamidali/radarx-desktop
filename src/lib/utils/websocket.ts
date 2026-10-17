@@ -804,11 +804,16 @@ class WebSocketManager {
    * Caches the entry, notifies listeners, and triggers prefetch.
    */
   private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data'): void {
+    if (msgType === 'difference_result') {
+      // A difference is not the sweep it is named after: it must neither replace that sweep in the
+      // cache nor be announced as sweep data (the main PPI would show the difference disk).
+      this._dispatchHandlers('difference_data_ready', entry);
+      return;
+    }
     if (msgType !== 'sweep_data') {
-      // QC / difference results are not scheduled requests.
+      // QC results are not scheduled requests; they intentionally replace the displayed data.
       cacheSweepData(entry);
       if (isQc) this._dispatchHandlers('qc_data_ready', entry);
-      if (msgType === 'difference_result') this._dispatchHandlers('difference_data_ready', entry);
       this._dispatchHandlers('sweep_data_ready', entry);
       return;
     }

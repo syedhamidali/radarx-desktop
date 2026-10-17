@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { fade, fly } from 'svelte/transition';
+  import { focusTrap } from '../utils/focusTrap';
 
   export let visible = false;
 
@@ -44,8 +45,8 @@
     },
     {
       title: 'Settings',
-      description: 'Customize themes, colormaps, rendering, keyboard shortcuts, and more from the settings panel.',
-      selector: '.connection-indicator',
+      description: 'Customize themes, accent colour, rendering, keyboard shortcuts, and more from the settings panel (Ctrl+,).',
+      selector: '.settings-btn',
       position: 'bottom',
     },
     {
@@ -57,15 +58,20 @@
   ];
 
   let currentStep = 0;
-  let dontShowAgain = false;
+  // Finishing or skipping the tour is a decision: remember it unless the user un-ticks the box.
+  let dontShowAgain = true;
   let spotlight = { top: 0, left: 0, width: 0, height: 0 };
   let tooltipStyle = '';
+  let vw = typeof window !== 'undefined' ? window.innerWidth : 1280;
+  let vh = typeof window !== 'undefined' ? window.innerHeight : 800;
 
   $: step = steps[currentStep];
   $: progress = ((currentStep + 1) / steps.length) * 100;
 
   function updateSpotlight() {
     if (!visible) return;
+    vw = window.innerWidth;
+    vh = window.innerHeight;
     const el = document.querySelector(step.selector);
     if (!el) {
       spotlight = { top: window.innerHeight / 2 - 40, left: window.innerWidth / 2 - 100, width: 200, height: 80 };
@@ -137,7 +143,11 @@
 
   function finish() {
     if (dontShowAgain) {
-      localStorage.setItem('xradar-onboarding-done', 'true');
+      try {
+        localStorage.setItem('xradar-onboarding-done', 'true');
+      } catch {
+        /* storage unavailable: the tour simply shows again next launch */
+      }
     }
     visible = false;
     currentStep = 0;
@@ -146,7 +156,7 @@
   function handleKeyDown(e: KeyboardEvent) {
     if (!visible) return;
     if (e.key === 'Escape') { skip(); e.preventDefault(); }
-    else if (e.key === 'ArrowRight' || e.key === 'Enter') { next(); e.preventDefault(); }
+    else if (e.key === 'ArrowRight' || (e.key === 'Enter' && !['BUTTON', 'INPUT'].includes((e.target as HTMLElement)?.tagName))) { next(); e.preventDefault(); }
     else if (e.key === 'ArrowLeft') { prev(); e.preventDefault(); }
   }
 
@@ -167,9 +177,9 @@
 </script>
 
 {#if visible}
-  <div class="onboarding-overlay" transition:fade={{ duration: 200 }}>
+  <div class="onboarding-overlay" role="dialog" aria-modal="true" aria-label="Welcome tour" transition:fade={{ duration: 200 }}>
     <!-- SVG mask for spotlight cutout -->
-    <svg class="spotlight-mask" viewBox="0 0 {window.innerWidth} {window.innerHeight}">
+    <svg class="spotlight-mask" viewBox="0 0 {vw} {vh}">
       <defs>
         <mask id="spotlight-mask">
           <rect x="0" y="0" width="100%" height="100%" fill="white" />
@@ -197,7 +207,7 @@
     ></div>
 
     <!-- Tooltip -->
-    <div class="tour-tooltip" style={tooltipStyle} transition:fly={{ y: 8, duration: 200 }}>
+    <div class="tour-tooltip" style={tooltipStyle} transition:fly={{ y: 8, duration: 200 }} use:focusTrap={{ initial: '.tour-btn-primary' }}>
       <div class="tour-step-badge">Step {currentStep + 1} of {steps.length}</div>
       <h3 class="tour-title">{step.title}</h3>
       <p class="tour-desc">{step.description}</p>
@@ -215,10 +225,9 @@
           {/each}
         </div>
         <div class="tour-buttons">
+          <button class="tour-btn tour-btn-secondary" on:click={skip}>Skip</button>
           {#if currentStep > 0}
             <button class="tour-btn tour-btn-secondary" on:click={prev}>Back</button>
-          {:else}
-            <button class="tour-btn tour-btn-secondary" on:click={skip}>Skip</button>
           {/if}
           <button class="tour-btn tour-btn-primary" on:click={next}>
             {currentStep === steps.length - 1 ? 'Done' : 'Next'}
