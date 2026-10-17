@@ -1,3 +1,4 @@
+import { beginOp, cancelOp, dismissOp, setOpPriority, type OpHandle, type OpPriority } from './requestScheduler';
 import { pickDefaultVariable, firstSweepWith } from './variables';
 import { get } from 'svelte/store';
 import {
@@ -54,8 +55,55 @@ interface InflightBinary {
 const MAX_RETRY_DELAY_MS = 5000;
 /** Messages queued while the socket is still CONNECTING (flushed on open). */
 const MAX_QUEUED_MESSAGES = 64;
-/** Prefetch / de-duplication bookkeeping entries older than this are ignored. */
-const PENDING_REQUEST_TTL_MS = 8000;
+
+// ── Sweep request scheduling ─────────────────────────────────────────────────
+/** At most this many `get_sweep_data` requests are on the wire at once. */
+const SWEEP_MAX_CONCURRENT = 3;
+/** An in-flight sweep request that has not been answered after this long is failed (Retry offered). */
+const SWEEP_TIMEOUT_MS = 25000;
+/** After this long an in-flight sweep op is flagged 'slow' ("still working..."). */
+const SWEEP_SLOW_MS = 4000;
+/** Replies for cancelled / timed-out requests are still cached if they show up within this window. */
+const ORPHAN_TTL_MS = 120000;
+const PRIORITY_RANK: Record<OpPriority, number> = { visible: 0, prefetch: 1, background: 2 };
+
+/** Options for {@link WebSocketManager.requestSweepData}. */
+export interface SweepRequestOptions {
+  /** 'visible' (default): needed on screen now. 'prefetch': cache warm-up. 'background': bulk (3D volume). */
+  priority?: OpPriority;
+  /**
+   * Owner tag. Grouped requests are managed by their owner (see `cancelGroup`) and are NOT
+   * dropped by `setViewContext` pruning (the timeline uses this for frames ahead).
+   */
+  group?: string;
+  /** Called once when this request settles (every de-duplicated caller gets its own call). */
+  onSettled?: (result: 'done' | 'failed' | 'cancelled', info?: { reason?: SweepFailReason; message?: string }) => void;
+}
+
+export type SweepFailReason = 'unavailable' | 'timeout' | 'error';
+
+/** What the viewer is currently showing; used to drop stale queued requests. */
+export interface ViewContext {
+  fileId?: string | null;
+  variable: string | null;
+  sweep: number | null;
+}
+
+interface SweepJob {
+  key: string;
+  seq: number;
+  variable: string;
+  sweep: number;
+  /** Normalised file id ('' = server default). */
+  fileId: string;
+  priority: OpPriority;
+  group?: string;
+  /** Reply should be announced as `sweep_data_ready` (false = cache warm-up only). */
+  broadcast: boolean;
+  state: 'queued' | 'inflight' | 'retired';
+  handle: OpHandle;
+  waiters: NonNullable<SweepRequestOptions['onSettled']>[];
+}
 
 class WebSocketManager {
   private ws: WebSocket | null = null;
@@ -70,12 +118,21 @@ class WebSocketManager {
   /** Messages submitted while the socket is CONNECTING. */
   private sendQueue: Record<string, any>[] = [];
 
-  // Prefetch tracking — "variable:sweep" keys currently being prefetched
-  // (responses for these must not be broadcast as sweep_data_ready, otherwise a
-  // prefetched neighbour sweep would replace the sweep the user is looking at).
-  private prefetchInFlight = new Map<string, number>();
-  /** Recently issued interactive sweep requests (key -> {time, fileId}), used to drop duplicates. */
-  private recentRequests = new Map<string, { t: number; fileId: string }>();
+  // ── Sweep request queue ──
+  /** Every outstanding (queued or in-flight) sweep request by `variable:sweep:fileId` (de-duplication). */
+  private sweepJobs = new Map<string, SweepJob>();
+  /** Requests on the wire, oldest first. */
+  private sweepInflight: SweepJob[] = [];
+  private sweepSeq = 0;
+  private maxConcurrentSweeps = SWEEP_MAX_CONCURRENT;
+  private drainSuspended = 0;
+  private viewCtx: { fileId: string; variable: string | null; sweep: number | null } | null = null;
+  /** Requests that were abandoned while on the wire: their reply may still arrive (cache-only). */
+  private orphans = new Map<string, { fileId: string; t: number }[]>();
+  /** Last failed op per request key, so a fresh request can clear the stale failure. */
+  private failedSweepOps = new Map<string, string>();
+  /** `fileId|variable:sweep` the server said does not exist. */
+  private unavailableSweeps = new Set<string>();
 
   // Timers for transient notifications (so a new message cancels the old timer)
   private progressClearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -118,9 +175,10 @@ class WebSocketManager {
   /** Drop all per-connection protocol state (called on connect, close, disconnect). */
   private resetConnectionState(): void {
     this.inflight = null;
-    this.prefetchInFlight.clear();
-    this.recentRequests.clear();
     this.sendQueue.length = 0;
+    // Nothing sent on the old connection will be answered any more.
+    this.failAllSweepJobs('Connection lost');
+    this.orphans.clear();
   }
 
   private doConnect(): void {
@@ -265,7 +323,7 @@ class WebSocketManager {
         `[WS] New '${header.type}' header while '${this.inflight.header.type}' was incomplete ` +
         `(${this.inflight.chunksSeen}/${this.inflight.expectedChunks} frames) — dropping the stale payload`,
       );
-      this.releaseInflightPrefetch(this.inflight.header);
+      this.failSweepForHeader(this.inflight.header, 'Incomplete reply from the server');
     }
 
     // Total payload size, derived from whichever byte counts the header carries.
@@ -398,13 +456,14 @@ class WebSocketManager {
   private abortInflight(): void {
     const st = this.inflight;
     this.inflight = null;
-    if (st) this.releaseInflightPrefetch(st.header);
+    if (st) this.failSweepForHeader(st.header, 'Corrupted reply from the server');
   }
 
-  private releaseInflightPrefetch(header: any): void {
-    if (header && typeof header.variable === 'string') {
-      this.prefetchInFlight.delete(`${header.variable}:${header.sweep}`);
-    }
+  /** A sweep payload could not be used: fail the request it answered so nothing waits for it. */
+  private failSweepForHeader(header: any, message: string): void {
+    if (!header || header.type !== 'sweep_data' || typeof header.variable !== 'string') return;
+    const job = this.sweepInflight.find((j) => j.variable === header.variable && j.sweep === header.sweep);
+    if (job) this.failJob(job, message, 'error');
   }
 
   private handleMessage(raw: string | ArrayBuffer): void {
@@ -446,9 +505,9 @@ class WebSocketManager {
 
           processingProgress.set(null);
           clearSweepCache();
-          // Requests issued against the previous file are moot.
-          this.prefetchInFlight.clear();
-          this.recentRequests.clear();
+          // Queued requests issued against the previous file are moot.
+          this.cancelQueuedSweeps((j) => !j.group);
+          this.unavailableSweeps.clear();
 
           const firstVar = pickDefaultVariable(vars);
           const firstSweep = firstSweepWith(swps, firstVar);
@@ -564,17 +623,29 @@ class WebSocketManager {
         // Handled by custom handlers registered in DataTable / MetadataViewer
         break;
 
-      case 'error':
-        console.error('[WS] Server error:', msg.message);
-        // Also clear any processing progress on error
+      case 'error': {
+        const text: string = typeof msg.message === 'string' ? msg.message : 'Unknown error from server';
+        // Errors that answer a queued sweep request fail that request (the viewer reacts to
+        // `sweep_request_failed`); "variable not in this sweep" is expected on split-cut volumes
+        // and stays silent.
+        const sweepErr = this.handleSweepError(text);
+        // Errors attributed to a sweep request are reported through `sweep_request_failed`. They must
+        // NOT reach the generic 'error' handlers (those fail running module/export/open/mosaic ops)
+        // nor clear the global progress bar of some unrelated task.
+        if (sweepErr === 'quiet') {
+          console.warn('[WS] Sweep unavailable:', text);
+          return;
+        }
+        if (sweepErr === 'handled') {
+          console.error('[WS] Sweep request failed:', text);
+          this.notifyError(text);
+          return;
+        }
+        console.error('[WS] Server error:', text);
         processingProgress.set(null);
-        // The failed request will never produce data: forget in-flight bookkeeping
-        // so later requests for the same sweep are not suppressed.
-        this.prefetchInFlight.clear();
-        this.recentRequests.clear();
-        // Notify user
-        this.notifyError(msg.message ?? 'Unknown error from server');
+        this.notifyError(text);
         break;
+      }
 
       default:
         console.log('[WS] Unhandled message type:', type, msg);
@@ -652,7 +723,7 @@ class WebSocketManager {
         `[WS] Malformed '${msgType}' payload for ${key}: ${buffer.byteLength} bytes, ` +
         `az=${azBytes}, range=${rngBytes}, grid=${header.n_az}x${header.n_range}`,
       );
-      this.prefetchInFlight.delete(key);
+      if (msgType === 'sweep_data') this.failSweepForHeader(header, 'Malformed reply from the server');
       return;
     }
 
@@ -733,35 +804,51 @@ class WebSocketManager {
    * Caches the entry, notifies listeners, and triggers prefetch.
    */
   private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data'): void {
+    if (msgType !== 'sweep_data') {
+      // QC / difference results are not scheduled requests.
+      cacheSweepData(entry);
+      if (isQc) this._dispatchHandlers('qc_data_ready', entry);
+      if (msgType === 'difference_result') this._dispatchHandlers('difference_data_ready', entry);
+      this._dispatchHandlers('sweep_data_ready', entry);
+      return;
+    }
+
     const key = `${entry.variable}:${entry.sweep}`;
-    const prefetchT = this.prefetchInFlight.get(key);
-    this.prefetchInFlight.delete(key);
-    const wasPrefetch =
-      msgType === 'sweep_data' && prefetchT !== undefined && performance.now() - prefetchT < PENDING_REQUEST_TTL_MS * 4;
-    this.recentRequests.delete(key);
-
-    cacheSweepData(entry);
-
-    // A prefetched neighbour sweep only warms the cache. Broadcasting it as
-    // sweep_data_ready would make the viewer display it instead of the sweep
-    // the user selected.
-    if (wasPrefetch) return;
-
-    // Dispatch to type-specific handlers
-    if (isQc) {
-      this._dispatchHandlers('qc_data_ready', entry);
+    let broadcast = true;
+    let cache = true;
+    const job = this.sweepInflight.find((j) => j.variable === entry.variable && j.sweep === entry.sweep);
+    if (job) {
+      this.retireJob(job);
+      this.clearFailedOp(job.key);
+      job.handle.done();
+      // A prefetched neighbour only warms the cache: broadcasting it as sweep_data_ready would make
+      // the viewer show it instead of the sweep the user selected. It is announced if it turns out
+      // to be the sweep on screen (the user got there while it was loading).
+      broadcast = job.broadcast || this.matchesContext(job.variable, job.sweep, job.fileId);
+      // The cache is not file-aware: another file's lookahead must not poison the shown file's entries.
+      cache = broadcast || this.sameAsContextFile(job.fileId);
+      this.settleWaiters(job, 'done');
+    } else {
+      const orphan = this.takeOrphan(key);
+      if (orphan) {
+        // The request was cancelled / timed out meanwhile: keep the data, never repaint the view.
+        broadcast = false;
+        cache = this.sameAsContextFile(orphan.fileId);
+      }
+      // else: unsolicited reply — legacy behaviour (cache + announce).
     }
-    if (msgType === 'difference_result') {
-      this._dispatchHandlers('difference_data_ready', entry);
-    }
 
-    // Always fire sweep_data_ready so the viewer refreshes
-    this._dispatchHandlers('sweep_data_ready', entry);
+    if (cache) cacheSweepData(entry);
+    if (broadcast) this._dispatchHandlers('sweep_data_ready', entry);
 
-    // Trigger background prefetch of adjacent sweeps (not for special results)
-    if (!isQc && msgType === 'sweep_data') {
-      this.prefetchAdjacentSweeps(entry.variable, entry.sweep);
+    // Warm the neighbours of the sweep on screen.
+    if (broadcast && !isQc) {
+      const c = this.viewCtx;
+      if (!c || c.variable === null || (c.variable === entry.variable && c.sweep === entry.sweep)) {
+        this.prefetchAdjacentSweeps(entry.variable, entry.sweep);
+      }
     }
+    this.drainSweepQueue();
   }
 
   /** Fire all registered handlers for a given event type. */
@@ -776,67 +863,358 @@ class WebSocketManager {
     }
   }
 
-  // ── Prefetch ─────────────────────────────────────────────────────────────
+  // ── Sweep request queue ──────────────────────────────────────────────────
 
   /**
-   * Prefetch sweep N-1 and N+1 in background so switching is instant.
-   * Skips if the data is already cached or a request is in flight.
+   * Prefetch sweep N-1 and N+1 in the background so switching is instant.
+   * Skips sweeps that are cached, already requested, or known not to carry the variable.
    */
   private prefetchAdjacentSweeps(variable: string, currentSweep: number): void {
     const sweepList = get(radarData).sweeps;
     const totalSweeps = sweepList.length;
-    const adjacent = [currentSweep - 1, currentSweep + 1];
-    for (const s of adjacent) {
+    const fileId = this.viewCtx?.fileId ?? getActiveFile()?.id ?? '';
+    for (const s of [currentSweep - 1, currentSweep + 1]) {
       if (s < 0 || s >= totalSweeps) continue;
 
       // Skip if this sweep's variable list is known and doesn't include the variable
       const sweepInfo = sweepList.find((sw) => sw.index === s);
       if (sweepInfo?.variables && sweepInfo.variables.length > 0 && !sweepInfo.variables.includes(variable)) continue;
-
-      const key = `${variable}:${s}`;
-
-      // Already cached or in-flight — skip
+      if (this.isUnavailable(variable, s, fileId)) continue;
       if (getCachedSweep(variable, s)) continue;
-      if (this.isPendingFresh(this.prefetchInFlight.get(key))) continue;
-      if (this.isPendingFresh(this.recentRequests.get(key)?.t)) continue;
+      if (this.sweepJobs.has(this.jobKey(variable, s, fileId))) continue;
 
-      this.prefetchInFlight.set(key, performance.now());
-      this.sendSweepRequest(variable, s);
+      this.requestSweepData(variable, s, fileId || undefined, { priority: 'prefetch' });
     }
+  }
+
+  private jobKey(variable: string, sweep: number, fileId: string): string {
+    return `${variable}:${sweep}:${fileId}`;
+  }
+
+  /** Tell the scheduler what the user is looking at so stale queued work can be dropped. */
+  setViewContext(ctx: ViewContext): void {
+    this.viewCtx = {
+      fileId: ctx.fileId ?? getActiveFile()?.id ?? '',
+      variable: ctx.variable,
+      sweep: ctx.sweep,
+    };
+    this.cancelQueuedSweeps((j) => !j.group && !this.isRelevant(j));
+    // Showing a cached sweep never goes through a reply, so warm its neighbours here.
+    const { variable, sweep } = this.viewCtx;
+    if (variable !== null && sweep !== null && getCachedSweep(variable, sweep)) {
+      this.prefetchAdjacentSweeps(variable, sweep);
+    }
+  }
+
+  /** Whether a queued request still matters for the current view. */
+  private isRelevant(j: SweepJob): boolean {
+    const c = this.viewCtx;
+    if (!c || c.variable === null || c.sweep === null) return true;
+    if (c.fileId && j.fileId && c.fileId !== j.fileId) return false;
+    switch (j.priority) {
+      case 'visible':
+        return j.variable === c.variable && j.sweep === c.sweep;
+      case 'prefetch':
+        return j.variable === c.variable && Math.abs(j.sweep - c.sweep) <= 1;
+      default:
+        return j.variable === c.variable;
+    }
+  }
+
+  private matchesContext(variable: string, sweep: number, fileId: string): boolean {
+    const c = this.viewCtx;
+    if (!c || c.variable === null) return false;
+    if (c.variable !== variable || c.sweep !== sweep) return false;
+    return !c.fileId || !fileId || c.fileId === fileId;
+  }
+
+  private sameAsContextFile(fileId: string): boolean {
+    const c = this.viewCtx;
+    return !c || !c.fileId || !fileId || c.fileId === fileId;
+  }
+
+  /** Cancel queued (never in-flight) sweep requests matching `pred`. */
+  private cancelQueuedSweeps(pred: (j: SweepJob) => boolean): void {
+    for (const j of [...this.sweepJobs.values()]) {
+      if (j.state === 'queued' && pred(j)) cancelOp(j.handle.id);
+    }
+  }
+
+  /** Cancel the queued requests that were issued under `group`. */
+  cancelGroup(group: string): void {
+    this.cancelQueuedSweeps((j) => j.group === group);
+  }
+
+  /** True if the server already said `variable` does not exist in `sweep` (for that file). */
+  isUnavailable(variable: string, sweep: number, fileId?: string): boolean {
+    const fid = fileId ?? this.viewCtx?.fileId ?? getActiveFile()?.id ?? '';
+    return this.unavailableSweeps.has(`${fid}|${variable}:${sweep}`);
+  }
+
+  /** Number of sweep requests queued / on the wire (diagnostics and tests). */
+  get sweepQueueStats(): { queued: number; inflight: number; max: number } {
+    return {
+      queued: this.sweepJobs.size - this.sweepInflight.length,
+      inflight: this.sweepInflight.length,
+      max: this.maxConcurrentSweeps,
+    };
+  }
+
+  /** Change the in-flight cap (default 3). */
+  setMaxConcurrentSweeps(n: number): void {
+    this.maxConcurrentSweeps = Math.max(1, Math.floor(n));
+    this.drainSweepQueue();
   }
 
   /**
    * Request raw sweep data for client-side rendering.
    * Optionally target a specific open file by its server-assigned id.
+   *
+   * Each request is an Op (see requestScheduler) waiting in a priority queue: at most
+   * {@link SWEEP_MAX_CONCURRENT} are on the wire; visible first, then prefetch, then
+   * background; FIFO within a priority. Identical outstanding requests share one reply.
+   * Returns the op id.
    */
-  requestSweepData(variable: string, sweep: number, fileId?: string): void {
-    const key = `${variable}:${sweep}`;
+  requestSweepData(
+    variable: string,
+    sweep: number,
+    fileId?: string,
+    opts?: SweepRequestOptions,
+  ): string {
+    const fid = fileId ?? getActiveFile()?.id ?? '';
+    const priority: OpPriority = opts?.priority ?? 'visible';
+    const key = this.jobKey(variable, sweep, fid);
 
-    // An interactive request takes over a prefetch that is already on its way:
-    // its response will now be broadcast like a normal one.
-    if (this.isPendingFresh(this.prefetchInFlight.get(key))) {
-      this.prefetchInFlight.delete(key);
-      this.recentRequests.set(key, { t: performance.now(), fileId: fileId ?? '' });
-      return;
+    // Identical request already outstanding (viewer + file_opened handler both asking for the
+    // first sweep, a prefetch the user now needs...): share it; every caller is notified.
+    const existing = this.sweepJobs.get(key);
+    if (existing) {
+      if (PRIORITY_RANK[priority] < PRIORITY_RANK[existing.priority]) {
+        existing.priority = priority;
+        setOpPriority(existing.handle.id, priority);
+      }
+      if (priority !== 'prefetch') existing.broadcast = true;
+      if (existing.group !== opts?.group) existing.group = undefined; // shared: no single owner any more
+      if (opts?.onSettled) existing.waiters.push(opts.onSettled);
+      if (existing.state === 'queued') this.drainSweepQueue();
+      return existing.handle.id;
     }
 
-    // Identical request already outstanding (e.g. viewer + file_opened handler
-    // both asking for the first sweep): its response reaches every listener anyway.
-    const recent = this.recentRequests.get(key);
-    if (recent && recent.fileId === (fileId ?? '') && this.isPendingFresh(recent.t)) return;
+    this.clearFailedOp(key, true);
 
-    this.recentRequests.set(key, { t: performance.now(), fileId: fileId ?? '' });
-    this.sendSweepRequest(variable, sweep, fileId);
+    const group = opts?.group;
+    const job: SweepJob = {
+      key,
+      seq: ++this.sweepSeq,
+      variable,
+      sweep,
+      fileId: fid,
+      priority,
+      group,
+      broadcast: priority !== 'prefetch',
+      state: 'queued',
+      handle: undefined as unknown as OpHandle,
+      waiters: opts?.onSettled ? [opts.onSettled] : [],
+    };
+    job.handle = beginOp({
+      kind: 'sweep',
+      label: `Loading ${variable} sweep ${sweep}`,
+      priority,
+      queued: true,
+      slowMs: SWEEP_SLOW_MS,
+      timeoutMs: SWEEP_TIMEOUT_MS,
+      onCancel: () => this.onJobCancelled(job),
+      onTimeout: () => this.onJobTimeout(job),
+      onRetry: () => {
+        // The original owner is gone; retrying is the user asking for this sweep. A request that
+        // targeted "the active file" re-resolves it (the file may have been re-opened since).
+        this.requestSweepData(variable, sweep, fileId, { priority, group });
+      },
+    });
+    this.sweepJobs.set(key, job);
+    this.drainSweepQueue();
+    return job.handle.id;
   }
 
-  private isPendingFresh(t: number | undefined): boolean {
-    return t !== undefined && performance.now() - t < PENDING_REQUEST_TTL_MS;
+  /** Start as many queued requests as the concurrency limit allows. */
+  private drainSweepQueue(): void {
+    if (this.drainSuspended > 0) return;
+    for (;;) {
+      const inflight = this.sweepInflight.length;
+      if (inflight >= this.maxConcurrentSweeps) return;
+      // Bulk / prefetch work may not take the last slot: a visible request must never wait for it.
+      const lowerCap = this.maxConcurrentSweeps > 1 ? this.maxConcurrentSweeps - 1 : 1;
+
+      let next: SweepJob | null = null;
+      for (const j of this.sweepJobs.values()) {
+        if (j.state !== 'queued') continue;
+        // One request per variable:sweep at a time: replies carry no file id, so they could not be told apart.
+        if (this.sweepInflight.some((f) => f.variable === j.variable && f.sweep === j.sweep)) continue;
+        if (PRIORITY_RANK[j.priority] > 0 && inflight >= lowerCap) continue;
+        if (
+          !next ||
+          PRIORITY_RANK[j.priority] < PRIORITY_RANK[next.priority] ||
+          (j.priority === next.priority && j.seq < next.seq)
+        ) {
+          next = j;
+        }
+      }
+      if (!next) return;
+
+      const rs = this.ws?.readyState;
+      if (rs !== WebSocket.OPEN && rs !== WebSocket.CONNECTING) {
+        this.failJob(next, 'Not connected to the server', 'error');
+        continue;
+      }
+      next.state = 'inflight';
+      this.sweepInflight.push(next);
+      next.handle.start();
+      this.sendSweepRequest(next.variable, next.sweep, next.fileId || undefined);
+    }
   }
 
   private sendSweepRequest(variable: string, sweep: number, fileId?: string): void {
     const msg: Record<string, any> = { type: 'get_sweep_data', variable, sweep };
     if (fileId) msg.file_id = fileId;
-    this.send(msg);
+    void this.send(msg);
+  }
+
+  /** Take a request out of the queue / wire bookkeeping (idempotent). */
+  private retireJob(job: SweepJob): void {
+    if (job.state === 'retired') return;
+    const wasInflight = job.state === 'inflight';
+    job.state = 'retired';
+    if (this.sweepJobs.get(job.key) === job) this.sweepJobs.delete(job.key);
+    if (wasInflight) {
+      const i = this.sweepInflight.indexOf(job);
+      if (i >= 0) this.sweepInflight.splice(i, 1);
+    }
+  }
+
+  private addOrphan(job: SweepJob): void {
+    const k = `${job.variable}:${job.sweep}`;
+    const now = performance.now();
+    const list = (this.orphans.get(k) ?? []).filter((o) => now - o.t < ORPHAN_TTL_MS);
+    list.push({ fileId: job.fileId, t: now });
+    this.orphans.set(k, list);
+  }
+
+  private takeOrphan(key: string): { fileId: string; t: number } | undefined {
+    const list = this.orphans.get(key);
+    if (!list) return undefined;
+    const now = performance.now();
+    while (list.length > 0) {
+      const o = list.shift()!;
+      if (now - o.t < ORPHAN_TTL_MS) {
+        if (list.length === 0) this.orphans.delete(key);
+        return o;
+      }
+    }
+    this.orphans.delete(key);
+    return undefined;
+  }
+
+  private settleWaiters(
+    job: SweepJob,
+    result: 'done' | 'failed' | 'cancelled',
+    info?: { reason?: SweepFailReason; message?: string },
+  ): void {
+    const waiters = job.waiters.splice(0);
+    for (const w of waiters) {
+      try { w(result, info); } catch (err) { console.error('[WS] sweep onSettled handler error:', err); }
+    }
+  }
+
+  private clearFailedOp(key: string, dismiss = false): void {
+    const id = this.failedSweepOps.get(key);
+    if (id === undefined) return;
+    this.failedSweepOps.delete(key);
+    if (dismiss) dismissOp(id);
+  }
+
+  private emitSweepFailed(job: SweepJob, reason: SweepFailReason, message: string): void {
+    this._dispatchHandlers('sweep_request_failed', {
+      variable: job.variable,
+      sweep: job.sweep,
+      fileId: job.fileId,
+      reason,
+      message,
+      opId: job.handle.id,
+    });
+  }
+
+  /** The request was cancelled (user, stale-pruning, ...): free its slot. */
+  private onJobCancelled(job: SweepJob): void {
+    if (job.state === 'retired') return;
+    if (job.state === 'inflight') this.addOrphan(job); // the reply may still come: cache it, don't repaint
+    this.retireJob(job);
+    this.settleWaiters(job, 'cancelled');
+    this.drainSweepQueue();
+  }
+
+  /** The scheduler's deadline fired (op already marked failed): free the slot, never wedge the queue. */
+  private onJobTimeout(job: SweepJob): void {
+    if (job.state === 'retired') return;
+    this.addOrphan(job);
+    this.retireJob(job);
+    this.failedSweepOps.set(job.key, job.handle.id);
+    const message = `Timed out after ${Math.round(SWEEP_TIMEOUT_MS / 1000)} s`;
+    this.settleWaiters(job, 'failed', { reason: 'timeout', message });
+    this.emitSweepFailed(job, 'timeout', message);
+    this.drainSweepQueue();
+  }
+
+  /** Mark a request failed, release its slot and start the next one. */
+  private failJob(job: SweepJob, message: string, reason: SweepFailReason): void {
+    if (job.state === 'retired') return;
+    this.retireJob(job);
+    if (reason === 'unavailable') {
+      this.unavailableSweeps.add(`${job.fileId}|${job.variable}:${job.sweep}`);
+      job.handle.fail(message);
+      dismissOp(job.handle.id); // expected on split-cut volumes: no failed row to clutter the tray
+    } else {
+      job.handle.fail(message);
+      this.failedSweepOps.set(job.key, job.handle.id);
+    }
+    this.settleWaiters(job, 'failed', { reason, message });
+    this.emitSweepFailed(job, reason, message);
+    this.drainSweepQueue();
+  }
+
+  /** Fail everything outstanding (connection dropped). Retry works once the socket is back. */
+  private failAllSweepJobs(message: string): void {
+    const jobs = [...this.sweepJobs.values()];
+    if (jobs.length === 0) return;
+    this.drainSuspended++;
+    try {
+      for (const j of jobs) this.failJob(j, message, 'error');
+    } finally {
+      this.drainSuspended--;
+    }
+  }
+
+  /**
+   * An `error` message arrived. If it answers a sweep request, fail that request.
+   * Returns 'quiet' for expected "variable not in sweep" errors, 'handled' for other sweep errors
+   * (still toasted) and 'other' for everything else.
+   */
+  private handleSweepError(text: string): 'quiet' | 'handled' | 'other' {
+    const m = /Variable '([^']+)' not in sweep (\d+)/.exec(text);
+    if (m) {
+      const variable = m[1];
+      const sweep = parseInt(m[2], 10);
+      const job = this.sweepInflight.find((j) => j.variable === variable && j.sweep === sweep);
+      const short = `${variable} is not available in sweep ${sweep}`;
+      if (job) this.failJob(job, short, 'unavailable');
+      else this.takeOrphan(`${variable}:${sweep}`);
+      return 'quiet';
+    }
+    if (/get_sweep_data/.test(text) && this.sweepInflight.length > 0) {
+      // Errors that name the request but not the sweep: the oldest request on the wire is the best guess.
+      this.failJob(this.sweepInflight[0], text, 'error');
+      return 'handled';
+    }
+    return 'other';
   }
 
   /**

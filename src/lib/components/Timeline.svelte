@@ -25,6 +25,28 @@
   $: isPlaying = $timelinePlaybackActive;
   $: intervalMs = $timelineIntervalMs;
 
+  /** Frames to warm ahead of the playhead during playback (kept small: every one is a server round trip). */
+  const LOOKAHEAD = 3;
+  const GROUP = 'timeline';
+  /** Frames already warmed recently (`fileId:variable:sweep` -> time), so playback does not re-request them every tick. */
+  const warmed = new Map<string, number>();
+  const WARM_TTL_MS = 30000;
+
+  /** A frame is playable unless its variable is known not to exist in its sweep. */
+  function isPlayable(file: FileEntry): boolean {
+    const v = file.selectedVariable;
+    return v !== null && !wsManager.isUnavailable(v, file.selectedSweep, file.id);
+  }
+
+  /** Next playable frame after `from` (wrapping), or -1 if none other than `from` is playable. */
+  function nextPlayable(from: number): number {
+    for (let step = 1; step < files.length; step++) {
+      const idx = (from + step) % files.length;
+      if (isPlayable(files[idx])) return idx;
+    }
+    return -1;
+  }
+
   // ── Playback ───────────────────────────────────────────────────────────
   function togglePlay() {
     if (isPlaying) {
@@ -45,7 +67,8 @@
         return;
       }
       // Side effects (activateFile) must not run inside a store update callback.
-      const next = (currentIdx + 1) % files.length;
+      const next = nextPlayable(currentIdx);
+      if (next < 0) return; // every other frame is unavailable: stay on this one
       timelineIndex.set(next);
       activateFile(next);
     }, intervalMs);
@@ -64,11 +87,36 @@
     const file = files[idx];
     setActiveFile(file.id);
 
-    // Also request sweep data for the active variable/sweep
+    // Frames queued for an earlier position are stale now.
+    wsManager.cancelGroup(GROUP);
+
+    // The frame on screen is needed now ...
     const v = file.selectedVariable;
     const s = file.selectedSweep;
     if (v !== null) {
-      wsManager.requestSweepData(v, s, file.id);
+      wsManager.requestSweepData(v, s, file.id, { priority: 'visible', group: GROUP });
+    }
+
+    // ... and while playing, the next few are warmed in the background.
+    if (!isPlaying) return;
+    const now = performance.now();
+    let queued = 0;
+    for (let step = 1; step < files.length && queued < LOOKAHEAD; step++) {
+      const ahead = files[(idx + step) % files.length];
+      if (!isPlayable(ahead)) continue;
+      const key = `${ahead.id}:${ahead.selectedVariable}:${ahead.selectedSweep}`;
+      queued++; // warmed frames still count towards the lookahead window
+      const t = warmed.get(key);
+      if (t !== undefined && now - t < WARM_TTL_MS) continue;
+      warmed.set(key, now);
+      wsManager.requestSweepData(ahead.selectedVariable!, ahead.selectedSweep, ahead.id, {
+        priority: 'prefetch',
+        group: GROUP,
+        onSettled: (result) => { if (result !== 'done') warmed.delete(key); },
+      });
+    }
+    if (warmed.size > 256) {
+      for (const [k, t] of warmed) if (now - t >= WARM_TTL_MS) warmed.delete(k);
     }
   }
 
@@ -137,6 +185,7 @@
 
   onDestroy(() => {
     stopPlayback();
+    wsManager.cancelGroup(GROUP);
   });
 
   // ── Computed ───────────────────────────────────────────────────────────
