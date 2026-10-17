@@ -192,6 +192,16 @@ def _count_sweep_nodes(datatree: xr.DataTree) -> int:
     return len([n for n in datatree.children if n.startswith("sweep_")])
 
 
+def _opt_range(options: dict[str, Any]) -> tuple[float | None, float | None]:
+    """Optional colour-scale override ``(vmin, vmax)`` from client options (finite numbers only)."""
+    out = []
+    for key in ("vmin", "vmax"):
+        v = options.get(key)
+        ok = isinstance(v, (int, float)) and not isinstance(v, bool) and np.isfinite(v)
+        out.append(float(v) if ok else None)
+    return out[0], out[1]
+
+
 def _opt_float(options: dict[str, Any], key: str, default: float, lo: float, hi: float) -> float:
     """Read a numeric option, falling back to *default* and clamping to [lo, hi].
 
@@ -246,14 +256,41 @@ def _netcdf_attr(value: Any) -> Any:
     return value
 
 
-def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
-    """A shallow copy of *datatree* whose attributes are all NetCDF-serialisable.
+_SITE_POSITION_VARS = ("latitude", "longitude", "altitude", "altitude_agl")
 
-    The original (the reader's live tree) is never modified.
+
+def _collapse_site_position(ds: xr.Dataset) -> xr.Dataset:
+    """Turn a per-ray site position into the single value CfRadial1 expects.
+
+    A radar site has one latitude/longitude/altitude, but some files store them along ``time`` with
+    fill values (NaN, ``-9999``) on some rays; ``to_cfradial1`` then fails with "conflicting sizes
+    for dimension 'time'". Fill values are ignored and the most common valid value is kept. A
+    variable with no valid value at all is dropped.
+    """
+    for name in _SITE_POSITION_VARS:
+        var = ds.variables.get(name)
+        if var is None or "time" not in var.dims:
+            continue
+        values = np.asarray(var.values, dtype="float64")
+        valid = values[np.isfinite(values) & (values > -9990.0)]
+        ds = ds.drop_vars(name)
+        if valid.size:
+            uniq, counts = np.unique(valid, return_counts=True)
+            ds = ds.assign({name: ((), float(uniq[np.argmax(counts)]), var.attrs)})
+    return ds
+
+
+def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
+    """A shallow copy of *datatree* that NetCDF can store.
+
+    Attributes are coerced to serialisable values and per-ray site position is collapsed to a
+    scalar. The original (the reader's live tree) is never modified.
     """
     safe = datatree.copy(deep=False)
     for node in safe.subtree:
         ds = node.to_dataset().copy(deep=False)
+        if node is safe:
+            ds = _collapse_site_position(ds)
         ds.attrs = {k: _netcdf_attr(v) for k, v in ds.attrs.items()}
         for var in ds.variables.values():
             var.attrs = {k: _netcdf_attr(v) for k, v in var.attrs.items()}
@@ -664,6 +701,7 @@ class RadarExporter:
         show_title = options.get("show_title", True)
         title_override = options.get("title")
         dark_bg = options.get("dark_background", False)
+        vmin, vmax = _opt_range(options)
 
         progress(30, "Rendering figure")
 
@@ -679,6 +717,8 @@ class RadarExporter:
             show_title=show_title,
             title_override=title_override,
             dark_background=dark_bg,
+            vmin=vmin,
+            vmax=vmax,
         )
 
         try:

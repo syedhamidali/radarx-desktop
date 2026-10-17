@@ -506,3 +506,82 @@ def build_variables(
         used.add(name)
         out.append((name, arrays, meta))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Writing derived variables into the data that gets exported
+# ---------------------------------------------------------------------------
+
+
+def export_name(name: str) -> str:
+    """NetCDF/Zarr-safe name: ``"qc:cleaned_zdr"`` -> ``"qc__cleaned_zdr"``."""
+    return name.replace(":", "__")
+
+
+def tree_with_derived(
+    datatree: Any,
+    store: DerivedStore,
+    *,
+    names: list[str] | None = None,
+    include_original: bool = True,
+) -> Any:
+    """A shallow copy of *datatree* with derived variables added to every sweep.
+
+    Each derived variable becomes a ``(azimuth, range)`` float32 data variable called
+    :func:`export_name` with CF-style attributes (``long_name``, ``units``, ``comment`` naming the
+    module and its parameters; categorical ones also get ``flag_values`` / ``flag_meanings``).
+    A sweep a variable was not computed for (e.g. no dual-pol on a Doppler cut) gets an all-NaN
+    array so every sweep of the file stays the same shape. With ``include_original=False`` the 2-D
+    moment variables of the file are dropped, leaving a file with the derived fields (plus the
+    1-D metadata) only. The reader's own tree is never modified.
+    """
+    import xarray as xr
+
+    from engine.reader import sorted_sweep_names
+
+    available = {v["name"]: v for v in store.variables()}
+    chosen = list(available) if names is None else [n for n in names if n in available]
+    missing = [n for n in (names or []) if n not in available]
+    if missing:
+        raise DerivedError(f"Unknown derived variable(s): {', '.join(missing)}")
+    if not chosen and not include_original:
+        raise DerivedError(
+            "Nothing to export: no derived variables and original variables excluded"
+        )
+
+    out = datatree.copy(deep=False)
+    for index, node_name in enumerate(sorted_sweep_names(out)):
+        ds = out[node_name].to_dataset().copy(deep=False)
+        shape = (ds.sizes.get("azimuth"), ds.sizes.get("range"))
+        if not include_original:
+            drop = [n for n, v in ds.data_vars.items() if "azimuth" in v.dims and "range" in v.dims]
+            ds = ds.drop_vars(drop)
+        new = {}
+        for name in chosen:
+            info = available[name]
+            got = store.get(index, name)
+            arr = got[0] if got is not None else np.full(shape, np.nan, dtype=np.float32)
+            if tuple(arr.shape) != shape:
+                raise DerivedError(
+                    f"Derived variable {name!r} has shape {arr.shape} on sweep {index} but the "
+                    f"sweep is {shape}"
+                )
+            attrs: dict[str, Any] = {
+                "long_name": str(info.get("label") or name),
+                "units": str(info.get("units") or ""),
+                "comment": (
+                    f"derived by xradar-desktop module {info.get('module')} "
+                    f"(field {info.get('field')}); params {info.get('params')}"
+                ),
+            }
+            cats = info.get("categories")
+            if cats:
+                attrs["flag_values"] = np.array([int(c["value"]) for c in cats], dtype=np.int32)
+                attrs["flag_meanings"] = " ".join(
+                    re.sub(r"[^A-Za-z0-9_]+", "_", str(c["label"])).strip("_") for c in cats
+                )
+            new[export_name(name)] = xr.DataArray(
+                np.asarray(arr, dtype=np.float32), dims=("azimuth", "range"), attrs=attrs
+            )
+        out[node_name].dataset = ds.assign(new) if new else ds
+    return out

@@ -352,6 +352,52 @@ def _pack_field(
     return fields, [azimuth, range_m, values]
 
 
+def _export_inputs(
+    reader: RadarReader,
+    datatree: Any,
+    *,
+    variables: list[str],
+    include_derived: Any,
+    include_original: Any,
+    options: dict[str, Any],
+) -> tuple[Any, list[str], dict[str, Any], list[str]]:
+    """The data an export should write, with derived (e.g. cleaned) variables added if needed.
+
+    Returns ``(tree, variables, options, derived_names)``. ``variables`` may name derived
+    variables (they are mapped to their NetCDF-safe names); ``include_derived`` is ``True`` (all),
+    a list of names, or falsy; ``include_original=False`` drops the file's own 2-D moments.
+    Raises ``derived.DerivedError`` (a ``ValueError``) with a user-facing message.
+    """
+    store = derived.store_for(reader, create=False)
+    stored = {v["name"]: v for v in store.variables()} if store is not None else {}
+    asked = [v for v in variables if v in stored]
+    if include_derived is True:
+        wanted = list(stored)
+    elif isinstance(include_derived, list):
+        wanted = [str(n) for n in include_derived]
+    else:
+        wanted = []
+    if include_derived and not stored:
+        raise derived.DerivedError(
+            "This file has no derived variables yet: run a module with 'All sweeps' first"
+        )
+    if include_original is False and not (wanted or asked):
+        raise derived.DerivedError("Nothing to export: no derived variables selected")
+    names = sorted({*wanted, *asked})
+    if not names:
+        return datatree, variables, options, []
+    tree = derived.tree_with_derived(
+        datatree, store, names=names, include_original=include_original is not False
+    )
+    opts = dict(options)
+    if asked:  # a derived variable keeps its own colour scale in figures
+        meta = stored[asked[0]]
+        for key in ("vmin", "vmax"):
+            if opts.get(key) is None and isinstance(meta.get(key), (int, float)):
+                opts[key] = meta[key]
+    return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
+
+
 class ConnectionHandler:
     """Manages message routing for a single WebSocket connection, using shared state."""
 
@@ -1135,23 +1181,37 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
 
         progress_sync = self._progress_callback(loop)
+        reader = _get_reader(file_id)
+        include_derived = msg.get("include_derived")
+        include_original = msg.get("include_original", True)
+
+        def _do_export() -> tuple[str, list[str]]:
+            tree, variables, opts, names = _export_inputs(
+                reader,
+                datatree,
+                variables=[variable] if variable else [],
+                include_derived=include_derived,
+                include_original=include_original,
+                options=options,
+            )
+            path = _shared_exporter.export(
+                tree,
+                fmt=fmt,
+                dpi=dpi,
+                output_path=output_path,
+                variable=variables[0] if variables else None,
+                sweep=sweep,
+                progress=progress_sync,
+                options=opts,
+            )
+            return path, names
 
         async with _mutation_lock():
-            saved_path = await loop.run_in_executor(
-                None,
-                lambda: _shared_exporter.export(
-                    datatree,
-                    fmt=fmt,
-                    dpi=dpi,
-                    output_path=output_path,
-                    variable=variable,
-                    sweep=sweep,
-                    progress=progress_sync,
-                    options=options,
-                ),
-            )
+            saved_path, derived_names = await loop.run_in_executor(None, _do_export)
 
-        await self.send({"type": "export_complete", "path": saved_path})
+        await self.send(
+            {"type": "export_complete", "path": saved_path, "derived_exported": derived_names}
+        )
 
     async def _handle_batch_export(self, msg: dict[str, Any]) -> None:
         variables = msg.get("variables", [])
@@ -1190,19 +1250,29 @@ class ConnectionHandler:
         progress_sync = self._progress_callback(loop)
 
         async with _mutation_lock():
-            saved_paths = await loop.run_in_executor(
-                None,
-                lambda: _shared_exporter.batch_export(
+            batch_reader = _get_reader(file_id)
+
+            def _do_batch() -> list[str]:
+                tree, mapped, opts, _ = _export_inputs(
+                    batch_reader,
                     datatree,
                     variables=variables,
+                    include_derived=None,
+                    include_original=True,
+                    options=options,
+                )
+                return _shared_exporter.batch_export(
+                    tree,
+                    variables=mapped,
                     sweeps=sweeps,
                     fmt=fmt,
                     dpi=dpi,
                     output_dir=output_dir,
                     progress=progress_sync,
-                    options=options,
-                ),
-            )
+                    options=opts,
+                )
+
+            saved_paths = await loop.run_in_executor(None, _do_batch)
 
         await self.send(
             {
@@ -1253,20 +1323,30 @@ class ConnectionHandler:
 
         progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock():
-            saved_path = await loop.run_in_executor(
-                None,
-                lambda: _shared_exporter.export_animation(
-                    datatree,
-                    variable=variable,
-                    sweeps=sweeps,
-                    output_path=output_path,
-                    frame_duration_ms=frame_duration_ms,
-                    dpi=dpi,
-                    progress=progress_sync,
-                    options=options,
-                ),
+        anim_reader = _get_reader(file_id)
+
+        def _do_animation() -> str:
+            tree, mapped, opts, _ = _export_inputs(
+                anim_reader,
+                datatree,
+                variables=[variable],
+                include_derived=None,
+                include_original=True,
+                options=options,
             )
+            return _shared_exporter.export_animation(
+                tree,
+                variable=mapped[0],
+                sweeps=sweeps,
+                output_path=output_path,
+                frame_duration_ms=frame_duration_ms,
+                dpi=dpi,
+                progress=progress_sync,
+                options=opts,
+            )
+
+        async with _mutation_lock():
+            saved_path = await loop.run_in_executor(None, _do_animation)
 
         await self.send({"type": "animation_export_complete", "path": saved_path})
 
