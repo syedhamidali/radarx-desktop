@@ -1,0 +1,9 @@
+{
+  "bundle": {
+    "macOS": {
+      "files": {
+        "Resources/engine": "../python/dist/xradar-engine"
+      }
+    }
+  }
+}

@@ -5,13 +5,14 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use rand::RngCore;
 use tauri::{Emitter, Manager, State};
 
-/// How long to wait for the sidecar's `READY:<port>` line.
-const READY_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long to wait for the sidecar's `READY:<port>` line. Generous because the very first start
+/// of an installed app is slow (the OS scans the freshly installed libraries, caches get built).
+const READY_TIMEOUT: Duration = Duration::from_secs(180);
 /// Spawn attempts when the sidecar dies right after start (e.g. the picked port was
 /// grabbed by another process between `pick_unused_port` and the server's `bind`).
 const MAX_SPAWN_ATTEMPTS: u32 = 3;
@@ -19,6 +20,19 @@ const MAX_SPAWN_ATTEMPTS: u32 = 3;
 /// PID of the running sidecar (0 = none). Kept outside `SidecarState` so the panic
 /// hook, which has no access to Tauri state, can still kill the child.
 static SIDECAR_PID: AtomicU32 = AtomicU32::new(0);
+
+/// Directory holding the packaged engine (set once at startup from the app's resource dir).
+static BUNDLED_ENGINE_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// File name of the packaged engine executable.
+const ENGINE_EXE: &str = if cfg!(windows) { "xradar-engine.exe" } else { "xradar-engine" };
+
+/// The packaged, self-contained engine (built by `python/packaging/build_engine.py`), when this is
+/// an installed app. `None` in development, where the project's Python environment is used.
+fn bundled_engine() -> Option<PathBuf> {
+    let exe = BUNDLED_ENGINE_DIR.get()?.join(ENGINE_EXE);
+    exe.is_file().then_some(exe)
+}
 
 fn project_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -199,32 +213,44 @@ impl SpawnError {
 /// the life of the process: if the read end of the pipe were closed after READY,
 /// the sidecar's next `print` would fail with a broken pipe.
 fn spawn_sidecar(port: u16, token: &str) -> Result<Child, SpawnError> {
-    let python = find_python();
-    let script = server_script();
+    // Installed app: the packaged engine. Development (or `XRADAR_PYTHON` set): python + server.py.
+    let forced_python = std::env::var_os("XRADAR_PYTHON").is_some_and(|p| !p.is_empty());
+    let (program, script) = match bundled_engine() {
+        Some(exe) if !forced_python => (exe, None),
+        _ => (find_python(), Some(server_script())),
+    };
 
     eprintln!(
-        "Starting Python sidecar: {} {} --port {}",
-        python.display(),
-        script.display(),
+        "Starting sidecar: {} {} --port {}",
+        program.display(),
+        script.as_ref().map(|s| s.display().to_string()).unwrap_or_default(),
         port
     );
 
-    let mut child = Command::new(&python)
-        .arg(&script)
+    let mut command = Command::new(&program);
+    if let Some(script) = &script {
+        command.arg(script);
+    }
+    command
         .arg("--port")
         .arg(port.to_string())
         .env("XRADAR_SESSION_TOKEN", token)
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| {
-            SpawnError::fatal(format!(
-                "Failed to spawn Python sidecar: {} (python={}, script={})",
-                e,
-                python.display(),
-                script.display()
-            ))
-        })?;
+        .stderr(Stdio::inherit());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW); // the engine is a console program; no black window
+    }
+    let mut child = command.spawn().map_err(|e| {
+        SpawnError::fatal(format!(
+            "Failed to start the analysis engine: {} (program={}, script={})",
+            e,
+            program.display(),
+            script.as_ref().map(|s| s.display().to_string()).unwrap_or_default()
+        ))
+    })?;
 
     let stdout = match child.stdout.take() {
         Some(s) => s,
@@ -541,6 +567,10 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SharedSidecar(Arc::clone(&shared)))
         .setup(move |app| {
+            // Installed app: the packaged engine ships in the resource directory.
+            if let Ok(resources) = app.path().resource_dir() {
+                let _ = BUNDLED_ENGINE_DIR.set(resources.join("engine"));
+            }
             let state_arc = Arc::clone(&app.state::<SharedSidecar>().0);
             let app_handle = app.handle().clone();
 
@@ -561,11 +591,14 @@ fn main() {
                     }
 
                     // Also write port to a file the frontend can fetch via Vite
+                    // (development only: an installed app has no source checkout to write into)
                     let port_file = project_root().join("public/.sidecar-port");
-                    if let Err(e) = std::fs::write(&port_file, port.to_string()) {
-                        eprintln!("Failed to write port file: {}", e);
-                    } else {
-                        eprintln!("Wrote port {} to {}", port, port_file.display());
+                    if port_file.parent().is_some_and(|d| d.is_dir()) {
+                        if let Err(e) = std::fs::write(&port_file, port.to_string()) {
+                            eprintln!("Failed to write port file: {}", e);
+                        } else {
+                            eprintln!("Wrote port {} to {}", port, port_file.display());
+                        }
                     }
                 }
                 Err(e) => {

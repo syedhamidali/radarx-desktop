@@ -26,10 +26,14 @@
     "targets": "all",
     "icon": [
       "icons/icon.icns",
+      "icons/icon.ico",
       "icons/icon.png",
       "icons/icon-256.png",
       "icons/icon-128.png",
       "icons/icon-32.png"
-    ]
+    ],
+    "category": "Utility",
+    "shortDescription": "Radar data research tool",
+    "longDescription": "Open, process, visualise and export weather radar data (NEXRAD, ODIM, CfRadial and more)."
   }
 }
