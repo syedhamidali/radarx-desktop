@@ -10,9 +10,11 @@
   import VolumePanel from './VolumePanel.svelte';
   import CloudDataPanel from './CloudDataPanel.svelte';
   import ModulesPanel from './ModulesPanel.svelte';
+  import MosaicPanel from './MosaicPanel.svelte';
 
   const PANEL_MAP: Record<string, { component: any; label: string; icon: string }> = {
     cloud: { component: CloudDataPanel, label: 'Cloud Data', icon: '☁' },
+    mosaic: { component: MosaicPanel, label: 'Mosaic', icon: '\u{1F5FA}' },
     volume: { component: VolumePanel, label: '3D Volume', icon: '\u{1F4E6}' },
     timeseries: { component: TimeSeriesChart, label: 'Time Series', icon: '\u{1F4C8}' },
     crosssection: { component: CrossSectionPanel, label: 'Cross-Section', icon: '///' },
@@ -30,7 +32,15 @@
 
   let unsubWorkspace: (() => void) | null = null;
 
+  /** A mosaic request (e.g. from the Cloud Data panel) opens the Mosaic panel. */
+  function expandMosaic() {
+    if (!panelCollapsed.mosaic) return;
+    panelCollapsed = { ...panelCollapsed, mosaic: false };
+    workspaceStore.updateCurrentConfig({ rightPanelCollapsed: panelCollapsed });
+  }
+
   onMount(() => {
+    window.addEventListener('xradar:mosaic-request', expandMosaic);
     unsubWorkspace = currentWorkspace.subscribe((ws) => {
       const known = Object.keys(PANEL_MAP);
       const saved = (ws.rightPanelOrder ?? []).filter((id: string) => PANEL_MAP[id]);
@@ -42,6 +52,7 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('xradar:mosaic-request', expandMosaic);
     unsubWorkspace?.();
   });
 
@@ -256,7 +267,7 @@
   }
 
   .managed-panel-content.visible {
-    max-height: 2000px;
+    max-height: 5000px;
     transition: max-height 350ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 </style>

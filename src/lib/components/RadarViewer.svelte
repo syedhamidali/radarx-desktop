@@ -19,6 +19,8 @@
   import PerformanceMonitor from './PerformanceMonitor.svelte';
   import BoxSelectTool from './BoxSelectTool.svelte';
   import { boxSelectActive, selectedBox } from '../stores/volumeSelect';
+  import { mosaicLayer, mosaicDisplay, registerViewBoundsProvider, type GeoBounds } from '../stores/mosaic';
+  import { latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
   import type { SweepInfo } from '../stores/radarData';
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -94,6 +96,8 @@
   const hasData = $derived($radarData.filePath !== null || $radarData.variables.length > 0);
   const isConnected = $derived($connectionStatus === 'connected');
   const zoomLabel = $derived(Math.round(scale * 100) + '%');
+  // Mosaic: show the map with the mosaic instead of the PPI canvas
+  const mosaicViewOn = $derived(!!$mosaicLayer && $mosaicLayer.visible && $mosaicLayer.view);
 
   // Radar site location from file attributes
   const radarLat = $derived(parseFloat($radarData.attributes?.latitude ?? $radarData.attributes?.origin_latitude ?? '0') || 0);
@@ -203,9 +207,15 @@
       }
     });
     if (canvasEl) resizeObserver.observe(canvasEl);
+
+    // Mosaic hooks: the panel asks for the visible lon/lat box and for "fit to mosaic".
+    registerViewBoundsProvider(currentViewBounds);
+    window.addEventListener('xradar:mosaic-fit', onMosaicFit);
   });
 
   onDestroy(() => {
+    registerViewBoundsProvider(null);
+    window.removeEventListener('xradar:mosaic-fit', onMosaicFit);
     resizeObserver?.disconnect();
     unsubSweepData?.();
     unsubField?.();
@@ -315,7 +325,7 @@
     if (!hasRendered) return;
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-    const newScale = Math.min(Math.max(scale * factor, 0.1), 20);
+    const newScale = Math.min(Math.max(scale * factor, 0.02), 20);
 
     const rect = canvasEl.getBoundingClientRect();
     const ndcX = (e.clientX - rect.left) / rect.width * 2 - 1;
@@ -485,6 +495,40 @@
     wsManager.send({ type: 'get_vertical_profile', lat, lon, variable });
   }
 
+  // ── Mosaic hooks ─────────────────────────────────────────────────────────
+  /** Lon/lat box currently visible on the map (null until a sweep is rendered). */
+  function currentViewBounds(): GeoBounds | null {
+    if (!hasRendered || (radarLat === 0 && radarLon === 0)) return null;
+    const w = containerWidth;
+    const h = containerHeight;
+    const pts = [[0, 0], [w, 0], [w, h], [0, h]].map(([x, y]) =>
+      pixelToLatLon(x, y, radarLat, radarLon, currentMaxRange, scale, translateX, translateY, w, h),
+    );
+    const lats = pts.map((p) => p[0]);
+    const lons = pts.map((p) => p[1]);
+    return { west: Math.min(...lons), south: Math.min(...lats), east: Math.max(...lons), north: Math.max(...lats) };
+  }
+
+  /** Pan/zoom so a lon/lat box fills the view (10% margin). */
+  function onMosaicFit(e: Event) {
+    const b = (e as CustomEvent<GeoBounds>).detail;
+    if (!b || !hasRendered || (radarLat === 0 && radarLon === 0)) return;
+    const [x1, y1] = latLonToDataSpace(b.south, b.west, radarLat, radarLon);
+    const [x2, y2] = latLonToDataSpace(b.north, b.east, radarLat, radarLon);
+    const cx = (x1 + x2) / 2;
+    const cy = (y1 + y2) / 2;
+    const hx = Math.max(Math.abs(x2 - x1) / 2, 1) * 1.1;
+    const hy = Math.max(Math.abs(y2 - y1) / 2, 1) * 1.1;
+    const mr = currentMaxRange;
+    const aspect = containerWidth / containerHeight;
+    // Solve sx*hx <= 1 and sy*hy <= 1 for scale (see the NDC transform in screenToData)
+    const fit = aspect >= 1 ? Math.min((aspect * mr) / hx, mr / hy) : Math.min(mr / hx, mr / (aspect * hy));
+    scale = Math.min(Math.max(fit, 0.02), 20);
+    translateX = -cx;
+    translateY = -cy;
+    renderFrame();
+  }
+
   function screenToData(clientX: number, clientY: number): [number, number] {
     const rect = canvasEl.getBoundingClientRect();
     const ndcX = (clientX - rect.left) / rect.width * 2 - 1;
@@ -558,6 +602,15 @@
             Geo
           </label>
         </div>
+        {#if $mosaicLayer}
+          <div class="control-group map-controls">
+            <label class="toggle-label" title="Show the map with the mosaic instead of the PPI">
+              <input type="checkbox" checked={$mosaicDisplay.mosaicView}
+                     on:change={(e) => mosaicDisplay.update((d) => ({ ...d, mosaicView: e.currentTarget.checked, visible: e.currentTarget.checked ? true : d.visible }))} />
+              Mosaic view
+            </label>
+          </div>
+        {/if}
         <button class="measure-toggle" class:active={measureToolsVisible}
                 on:click={toggleMeasureTools} title="Measurement & annotation tools (M)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -594,8 +647,9 @@
          role="application" tabindex="0"
          aria-label="Radar PPI — scroll to zoom, drag to pan, double-click to reset, right-click to probe">
 
-      {#if showMap && hasRendered && (radarLat !== 0 || radarLon !== 0)}
+      {#if (showMap || mosaicViewOn || !!$mosaicLayer?.visible) && hasRendered && (radarLat !== 0 || radarLon !== 0)}
         <MapBackground
+          showTiles={showMap}
           {radarLat}
           {radarLon}
           maxRange={currentMaxRange}
@@ -608,7 +662,7 @@
         />
       {/if}
 
-      <canvas bind:this={webglCanvas} class="webgl-canvas" class:has-map={showMap}></canvas>
+      <canvas bind:this={webglCanvas} class="webgl-canvas" class:has-map={showMap} class:mosaic-hidden={mosaicViewOn}></canvas>
 
       {#if showGeoOverlay && hasRendered && (radarLat !== 0 || radarLon !== 0)}
         <GeoOverlay
@@ -760,7 +814,7 @@
         </div>
       {/if}
 
-      {#if hasRendered}
+      {#if hasRendered && !mosaicViewOn}
         <div class="colorbar-wrapper">
           {#if fieldShown?.spec.categories}
             <div class="cat-legend" role="list" aria-label="{fieldShown.title} categories">
@@ -926,6 +980,10 @@
     width: 100%;
     height: 100%;
     z-index: 1;
+  }
+
+  .webgl-canvas.mosaic-hidden {
+    visibility: hidden;
   }
 
   .webgl-canvas.has-map {

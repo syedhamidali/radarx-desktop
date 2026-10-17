@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import ClassVar
 
 import pytest
 
@@ -182,3 +183,95 @@ class TestClient:
         cfg = a.meta.config
         assert cfg.connect_timeout == cloud._CONNECT_TIMEOUT_S
         assert cfg.read_timeout == cloud._READ_TIMEOUT_S
+
+
+class TestStationTable:
+    def test_every_station_has_valid_coordinates(self, fake_s3: FakeS3) -> None:
+        assert set(cloud._NEXRAD_SITES) == set(cloud._NEXRAD_STATIONS)
+        for s in cloud.list_nexrad_stations():
+            assert {"id", "arco", "latitude", "longitude", "elevation_m"} <= set(s)
+            assert 10 < s["latitude"] < 72
+            assert -180 < s["longitude"] < 180
+            assert -5 <= s["elevation_m"] < 4000
+
+    def test_known_sites(self) -> None:
+        lat, lon, _ = cloud._NEXRAD_SITES["KTLX"]
+        assert (lat, lon) == pytest.approx((35.333, -97.278), abs=0.01)
+        lat, lon, _ = cloud._NEXRAD_SITES["KATX"]
+        assert (lat, lon) == pytest.approx((48.195, -122.496), abs=0.01)
+
+
+class TestNearbyStations:
+    # Chicago (KLOT) centre
+    LAT, LON = 41.60444, -88.08444
+
+    def test_sorted_by_distance_and_excludes_centre(self) -> None:
+        res = cloud.nearby_stations(self.LAT, self.LON, 300, 5, exclude="klot")
+        assert [r["id"] for r in res][:3] == ["KMKX", "KILX", "KIWX"]
+        assert "KLOT" not in [r["id"] for r in res]
+        dists = [r["distance_km"] for r in res]
+        assert dists == sorted(dists)
+        assert all(d <= 300 for d in dists)
+        assert len(res) == 5
+
+    def test_distance_and_bearing(self) -> None:
+        res = {r["id"]: r for r in cloud.nearby_stations(self.LAT, self.LON, 300, 0)}
+        assert res["KMKX"]["distance_km"] == pytest.approx(156.3, abs=1.0)
+        assert res["KMKX"]["bearing_deg"] == pytest.approx(346, abs=2)  # NNW
+        assert res["KDVN"]["bearing_deg"] == pytest.approx(271, abs=2)  # W
+        assert 0 <= res["KIWX"]["bearing_deg"] < 360
+
+    def test_radius_limit_and_zero_limit(self) -> None:
+        assert cloud.nearby_stations(self.LAT, self.LON, 1, 3) == [
+            {
+                "id": "KLOT",
+                "latitude": 41.60444,
+                "longitude": -88.08444,
+                "distance_km": 0.0,
+                "bearing_deg": 0.0,
+            }
+        ]
+        assert cloud.nearby_stations(self.LAT, self.LON, 1, 3, exclude="KLOT") == []
+        many = cloud.nearby_stations(self.LAT, self.LON, 2000, 0)
+        assert len(many) > 20
+
+    def test_invalid_coordinates(self) -> None:
+        with pytest.raises(ValueError, match="Invalid coordinates"):
+            cloud.nearby_stations(95.0, 0.0, 100)
+
+
+class TestNearestScan:
+    FILES: ClassVar[list[dict[str, str]]] = [
+        {"name": "KLOT20240101_000000_V06"},
+        {"name": "KLOT20240101_000500_V06"},
+        {"name": "KLOT20240101_001000_V06"},
+        {"name": "KLOT20240101_001500_V06_MDM"},
+        {"name": "garbage"},
+    ]
+
+    def test_picks_closest(self) -> None:
+        t = datetime(2024, 1, 1, 0, 3, tzinfo=timezone.utc)
+        assert cloud.nearest_scan_to_time(self.FILES, t)["name"] == "KLOT20240101_000500_V06"
+
+    def test_naive_target_is_utc_and_tie_goes_earlier(self) -> None:
+        got = cloud.nearest_scan_to_time(self.FILES, datetime(2024, 1, 1, 0, 2, 30))
+        assert got["name"] == "KLOT20240101_000000_V06"
+
+    def test_max_gap(self) -> None:
+        t = datetime(2024, 1, 1, 5, 0)
+        assert cloud.nearest_scan_to_time(self.FILES, t) is not None
+        assert cloud.nearest_scan_to_time(self.FILES, t, max_gap=timedelta(minutes=30)) is None
+
+    def test_ignores_mdm_files(self) -> None:
+        t = datetime(2024, 1, 1, 0, 16)
+        assert cloud.nearest_scan_to_time(self.FILES, t)["name"] == "KLOT20240101_001000_V06"
+
+    def test_empty_and_unparsable(self) -> None:
+        assert cloud.nearest_scan_to_time([], datetime(2024, 1, 1)) is None
+        assert cloud.nearest_scan_to_time([{"name": "x"}], datetime(2024, 1, 1)) is None
+
+    def test_scan_time(self) -> None:
+        assert cloud.scan_time("2024/01/01/KLOT/KLOT20240101_000500_V06") == datetime(
+            2024, 1, 1, 0, 5, tzinfo=timezone.utc
+        )
+        assert cloud.scan_time("KLOT20241399_000500_V06") is None

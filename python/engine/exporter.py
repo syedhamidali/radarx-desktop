@@ -223,6 +223,44 @@ _FORMAT_EXT: dict[str, str] = {
 }
 
 
+def _netcdf_attr(value: Any) -> Any:
+    """Coerce one attribute value to something NetCDF4 can store.
+
+    NEXRAD volumes carry booleans (e.g. ``mpda_vcp``), which netCDF4 rejects with
+    ``illegal data type for attribute``; ``None`` and dicts fail likewise.
+    """
+    if isinstance(value, (bool, np.bool_)):
+        return int(value)
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return str(value)
+    if isinstance(value, np.ndarray) and value.dtype == np.bool_:
+        return value.astype(np.int8)
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and all(isinstance(v, (bool, np.bool_)) for v in value)
+    ):
+        return [int(v) for v in value]
+    return value
+
+
+def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
+    """A shallow copy of *datatree* whose attributes are all NetCDF-serialisable.
+
+    The original (the reader's live tree) is never modified.
+    """
+    safe = datatree.copy(deep=False)
+    for node in safe.subtree:
+        ds = node.to_dataset().copy(deep=False)
+        ds.attrs = {k: _netcdf_attr(v) for k, v in ds.attrs.items()}
+        for var in ds.variables.values():
+            var.attrs = {k: _netcdf_attr(v) for k, v in var.attrs.items()}
+        node.dataset = ds
+    return safe
+
+
 def _safe_stem(name: str) -> str:
     """Make *name* safe to use as (part of) a file name: no separators or '..'."""
     stem = re.sub(r"[^\w.\-]+", "_", str(name)).strip("._")
@@ -860,7 +898,7 @@ class RadarExporter:
 
         progress(10, "Preparing CfRadial1 NetCDF export")
         with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
-            to_cfradial1(dtree=datatree, filename=target)
+            to_cfradial1(dtree=_netcdf_safe_tree(datatree), filename=target)
 
         progress(100, f"CfRadial1 export complete: {target}")
         return str(Path(target).resolve())
@@ -881,7 +919,7 @@ class RadarExporter:
 
         progress(10, "Preparing CfRadial2 export")
         with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
-            to_cfradial2(datatree, target)
+            to_cfradial2(_netcdf_safe_tree(datatree), target)
 
         progress(100, f"CfRadial2 export complete: {target}")
         return str(Path(target).resolve())

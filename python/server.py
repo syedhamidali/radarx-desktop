@@ -12,6 +12,7 @@ import os
 import re
 import signal
 import sys
+import time
 import traceback
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -27,7 +28,7 @@ if str(_server_dir) not in sys.path:
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import plugins
+from engine import mosaic, plugins
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -474,6 +475,9 @@ class ConnectionHandler:
             "list_modules": self._handle_list_modules,
             "run_module": self._handle_run_module,
             "save_text_file": self._handle_save_text_file,
+            "create_mosaic": self._handle_create_mosaic,
+            "mosaic_probe": self._handle_mosaic_probe,
+            "export_mosaic": self._handle_export_mosaic,
         }.get(msg_type)
 
         if handler is None:
@@ -2198,17 +2202,210 @@ class ConnectionHandler:
             )
             return
 
-        def _write() -> None:
-            tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
-            try:
-                tmp.write_bytes(data)
-                os.replace(tmp, target)
-            finally:
-                with contextlib.suppress(OSError):
-                    tmp.unlink()
-
-        await asyncio.get_running_loop().run_in_executor(None, _write)
+        await asyncio.get_running_loop().run_in_executor(
+            None, _atomic_write, target, lambda tmp: tmp.write_bytes(data)
+        )
         await self.send({"type": "file_saved", "path": str(target)})
+
+    # ------------------------------------------------------------------
+    # Multi-radar mosaics (engine/mosaic.py, needs the optional radarx package)
+    # ------------------------------------------------------------------
+
+    async def _handle_create_mosaic(self, msg: dict[str, Any]) -> None:
+        """Build a mosaic of the open files ``file_ids`` and stream it back.
+
+        ``{type: "create_mosaic", request_id, file_ids: [...], variable, product, height_m?,
+        threshold_dbz?, grid: {...}, merge: {...}, vmin?, vmax?}`` ->
+        progress messages, then ``{type: "mosaic_result", request_id, mosaic_id, ...,
+        png_bytes, chunks}`` followed by ``chunks`` binary frames with the PNG. Any failure:
+        ``{type: "mosaic_error", request_id, message}``; progress always closes at 100.
+        """
+        request_id = msg.get("request_id")
+        try:
+            await self._create_mosaic(msg, request_id)
+        except (mosaic.MosaicError, plugins.ModuleError) as exc:
+            logger.warning("Mosaic error: %s", exc)
+            await self._mosaic_error(request_id, str(exc))
+        except UnknownFileError as exc:
+            await self._mosaic_error(request_id, str(exc))
+        except ImportError as exc:
+            await self._mosaic_error(
+                request_id,
+                f"Multi-radar mosaics need the Python package radarx: {exc} (pip install radarx)",
+            )
+        except Exception as exc:
+            logger.error("Mosaic failed: %s\n%s", exc, traceback.format_exc())
+            await self._mosaic_error(request_id, f"{type(exc).__name__}: {exc}")
+        finally:
+            await self.send_progress(100, "Mosaic finished")
+
+    async def _mosaic_error(self, request_id: Any, message: str) -> None:
+        await self.send({"type": "mosaic_error", "request_id": request_id, "message": message})
+
+    async def _create_mosaic(self, msg: dict[str, Any], request_id: Any) -> None:
+        file_ids = msg.get("file_ids")
+        if (
+            not isinstance(file_ids, list)
+            or not file_ids
+            or not all(isinstance(f, str) and f for f in file_ids)
+        ):
+            raise mosaic.MosaicError("create_mosaic: 'file_ids' must be a non-empty list")
+        if len(set(file_ids)) != len(file_ids):
+            raise mosaic.MosaicError("create_mosaic: 'file_ids' contains duplicates")
+        if len(file_ids) > 24:
+            raise mosaic.MosaicError("create_mosaic: at most 24 radars per mosaic")
+        variable = msg.get("variable", "DBZH")
+        product = msg.get("product", "cappi")
+        for key in ("grid", "merge"):
+            if msg.get(key) is not None and not isinstance(msg[key], dict):
+                raise mosaic.MosaicError(f"create_mosaic: '{key}' must be an object")
+        pairs = []
+        for fid in file_ids:
+            _, reader = _resolve_reader(fid)  # UnknownFileError for closed files
+            if reader.datatree is None:
+                raise mosaic.MosaicError(f"File {fid} is not open")
+            pairs.append((fid, reader))
+        # Fail early (before the progress bar) when radarx is missing.
+        mosaic._radarx()
+
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        await self.send_progress(5, "Building mosaic...")
+
+        def _build() -> mosaic.MosaicRecord:
+            return mosaic.build_mosaic(
+                pairs,
+                variable,
+                product,
+                msg.get("grid"),
+                msg.get("merge"),
+                height_m=msg.get("height_m", 3000.0),
+                threshold_dbz=msg.get("threshold_dbz", 18.0),
+                vmin=msg.get("vmin"),
+                vmax=msg.get("vmax"),
+                min_rhohv=msg.get("min_rhohv"),
+                progress=progress_sync,
+            )
+
+        t0 = time.perf_counter()
+        async with _locks.get("mosaic"):  # one heavy build at a time (radarx uses every core)
+            record = await loop.run_in_executor(None, _build)
+        header = {
+            "type": "mosaic_result",
+            "request_id": request_id,
+            **record.header(),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+        }
+        await self._send_binary_chunks([record.png], header, length_key="png_bytes")
+
+    async def _handle_mosaic_probe(self, msg: dict[str, Any]) -> None:
+        """``{type: "mosaic_probe", mosaic_id, lon, lat}`` -> ``mosaic_probe_result``."""
+        mosaic_id = msg.get("mosaic_id")
+        try:
+            if not isinstance(mosaic_id, str) or not mosaic_id:
+                raise mosaic.MosaicError("mosaic_probe: missing 'mosaic_id'")
+            result = await asyncio.get_running_loop().run_in_executor(
+                None, mosaic.probe, mosaic_id, msg.get("lon"), msg.get("lat")
+            )
+        except mosaic.MosaicError as exc:
+            await self.send(
+                {
+                    "type": "mosaic_error",
+                    "request_id": msg.get("request_id"),
+                    "mosaic_id": mosaic_id,
+                    "message": str(exc),
+                }
+            )
+            return
+        await self.send({"type": "mosaic_probe_result", **result})
+
+    async def _handle_export_mosaic(self, msg: dict[str, Any]) -> None:
+        """``{type: "export_mosaic", mosaic_id, format: "netcdf"|"png", path, overwrite?}``.
+
+        Success: ``{type: "file_saved", path}``; failure: ``mosaic_error``. The PNG export also
+        writes ``<name>.pgw`` (world file) and ``<name>.prj`` (EPSG:3857) next to it.
+        """
+        mosaic_id = msg.get("mosaic_id")
+        try:
+            path = await self._export_mosaic(msg)
+        except mosaic.MosaicError as exc:
+            await self.send(
+                {
+                    "type": "mosaic_error",
+                    "request_id": msg.get("request_id"),
+                    "mosaic_id": mosaic_id,
+                    "message": str(exc),
+                }
+            )
+            return
+        except OSError as exc:
+            await self.send(
+                {
+                    "type": "mosaic_error",
+                    "request_id": msg.get("request_id"),
+                    "mosaic_id": mosaic_id,
+                    "message": f"export_mosaic: could not write the file: {exc}",
+                }
+            )
+            return
+        await self.send({"type": "file_saved", "path": str(path)})
+
+    async def _export_mosaic(self, msg: dict[str, Any]) -> Path:
+        mosaic_id = msg.get("mosaic_id")
+        fmt = msg.get("format", "netcdf")
+        path = msg.get("path")
+        if not isinstance(mosaic_id, str) or not mosaic_id:
+            raise mosaic.MosaicError("export_mosaic: missing 'mosaic_id'")
+        if fmt not in ("netcdf", "png"):
+            raise mosaic.MosaicError("export_mosaic: 'format' must be 'netcdf' or 'png'")
+        if not isinstance(path, str) or not path.strip() or "\x00" in path:
+            raise mosaic.MosaicError("export_mosaic: 'path' must be a non-empty string")
+        record = mosaic.MOSAICS.get(mosaic_id)
+        target = Path(path).expanduser()
+        if not target.parent.is_dir():
+            raise mosaic.MosaicError(f"export_mosaic: folder does not exist: {target.parent}")
+        if target.is_dir():
+            raise mosaic.MosaicError(f"export_mosaic: path is a folder: {target}")
+        sidecars = [target.with_suffix(".pgw"), target.with_suffix(".prj")] if fmt == "png" else []
+        overwrite = msg.get("overwrite") is True
+        for existing in [target, *sidecars]:
+            if existing.exists() and not overwrite:
+                raise mosaic.MosaicError(
+                    f"export_mosaic: {existing} already exists (pass overwrite=true to replace it)"
+                )
+        loop = asyncio.get_running_loop()
+        if fmt == "netcdf":
+            await loop.run_in_executor(
+                None, _atomic_write, target, lambda tmp: mosaic.write_netcdf(record, tmp)
+            )
+        else:
+            await loop.run_in_executor(
+                None, _atomic_write, target, lambda tmp: tmp.write_bytes(record.png)
+            )
+            await loop.run_in_executor(
+                None,
+                _atomic_write,
+                sidecars[0],
+                lambda tmp: tmp.write_text(mosaic.world_file(record), encoding="ascii"),
+            )
+            await loop.run_in_executor(
+                None,
+                _atomic_write,
+                sidecars[1],
+                lambda tmp: tmp.write_text(mosaic.projection_wkt(), encoding="ascii"),
+            )
+        return target
+
+
+def _atomic_write(target: Path, write: Callable[[Path], Any]) -> None:
+    """Write ``target`` atomically: ``write(tmp)`` fills a sibling temp file that replaces it."""
+    tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        write(tmp)
+        os.replace(tmp, target)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
 
 
 def _pack_module_fields(
