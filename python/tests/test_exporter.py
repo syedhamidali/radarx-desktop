@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -354,3 +355,67 @@ class TestGeometryHelpers:
         assert _opt_float({"fig_size": 1e9}, "fig_size", 10.0, 2.0, 30.0) == 30.0
         assert _opt_float({"fig_size": "abc"}, "fig_size", 10.0, 2.0, 30.0) == 10.0
         assert _opt_float({"fig_size": float("nan")}, "fig_size", 10.0, 2.0, 30.0) == 10.0
+
+
+# ---------------------------------------------------------------------------
+# NetCDF-unsafe attributes (NEXRAD volumes carry booleans such as mpda_vcp)
+# ---------------------------------------------------------------------------
+
+
+def _tree_with_unsafe_attrs() -> xr.DataTree:
+    import numpy as np
+
+    from tests.conftest import make_synthetic_datatree
+
+    tree = make_synthetic_datatree(n_azimuth=12, n_range=20)
+    for node in tree.subtree:
+        ds = node.to_dataset()
+        ds.attrs = {**ds.attrs, "mpda_vcp": True, "flag_np": np.bool_(False), "nothing": None}
+        for var in ds.data_vars.values():
+            var.attrs = {**var.attrs, "is_valid": True}
+        node.dataset = ds
+    return tree
+
+
+def test_netcdf_safe_tree_coerces_attrs_without_touching_original() -> None:
+    from engine.exporter import _netcdf_safe_tree
+
+    tree = _tree_with_unsafe_attrs()
+    safe = _netcdf_safe_tree(tree)
+    root = safe.to_dataset().attrs
+    assert root["mpda_vcp"] == 1 and root["flag_np"] == 0 and root["nothing"] == ""
+    assert not isinstance(root["mpda_vcp"], bool)
+    # the live tree keeps its original values
+    assert tree.to_dataset().attrs["mpda_vcp"] is True
+
+
+def test_sanitized_attrs_are_accepted_by_netcdf4(tmp_path) -> None:
+    from engine.exporter import _netcdf_safe_tree
+
+    tree = _tree_with_unsafe_attrs()
+    with pytest.raises(TypeError):  # sanity: the raw attributes really are rejected
+        tree.to_dataset().to_netcdf(tmp_path / "raw.nc", engine="netcdf4")
+    for i, node in enumerate(_netcdf_safe_tree(tree).subtree):
+        node.to_dataset().to_netcdf(tmp_path / f"safe_{i}.nc", engine="netcdf4")
+
+
+_KATX = Path(
+    "/private/tmp/claude-502/-Users-syed44-Git-Stuff-Git-Projects-xradar-desktop/"
+    "4919c2aa-1324-499f-9e5a-79edf19be890/scratchpad/data/KATX20130717_195021_V06"
+)
+
+
+@pytest.mark.skipif(
+    not _KATX.exists() or not os.environ.get("XRADAR_SLOW_TESTS"),
+    reason="slow (~45 s): set XRADAR_SLOW_TESTS=1 and provide the real NEXRAD sample",
+)
+def test_real_nexrad_netcdf_export_roundtrip(tmp_path) -> None:
+    from engine.reader import RadarReader
+
+    reader = RadarReader()
+    reader.open_file(str(_KATX))
+    out = RadarExporter().export(
+        reader.datatree, fmt="netcdf", output_path=str(tmp_path / "katx.nc")
+    )
+    with xr.open_dataset(out) as ds:
+        assert ds.sizes["time"] > 0 and "DBZH" in ds.data_vars
