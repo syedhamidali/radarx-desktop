@@ -58,6 +58,27 @@ NaN/Inf and numpy types are cleaned automatically. A field must have exactly the
 sweep's `(n_azimuth, n_range)` shape (the server rejects anything else). In the panel, table
 blocks have a **CSV** button and overlay blocks a **GeoJSON** button (needs a known radar site).
 
+## Cleaning data (QC)
+
+Cleaning means deciding, gate by gate, whether an echo is weather and hiding what is not. A
+single-variable filter cannot do that well (e.g. "hide reflectivity where RhoHV, SNR or ZDR texture say
+it is noise"), so the **QC** modules combine several fields and output cleaned copies plus a *QC flags*
+map that shows why each gate was removed.
+
+* **Clean radar data (radarx QC)** (`radarx_clean`, recommended): radarx's fuzzy-logic echo mask (RhoHV,
+  ZDR, and the along-ray *texture* of ZDR / PhiDP / DBZH: weather is smooth, clutter and noise are not)
+  plus an SNR gate and speckle removal. Keeps the interior of heavy rain that fixed thresholds punch holes
+  in. ~50-100 ms per sweep. Optional noise-bias correction of ZDR / RhoHV (only for moments that still
+  contain the noise). Needs `radarx`.
+* **Clean radar data (quick thresholds)** (`qc_clean`): no-dependency fallback with fixed SNR / NCP / RhoHV /
+  clutter / speckle thresholds.
+
+Outputs: *Cleaned reflectivity*, *Cleaned ZDR*, *Cleaned velocity*, *Cleaned RhoHV* and *QC flags*
+(categorical). Press **All sweeps -> 3D** to get them as variables for every sweep. Tune per radar.
+
+Neither fixes partial beam blockage (radial streaks / dark wedges with ZDR spikes; use radarx
+`beam_blockage` with a terrain model), ZDR calibration offsets, attenuation or range folding.
+
 ## Optional dependencies
 
 Declare packages a module needs with `needs=["radarx"]` and import them **inside** the function.
@@ -71,6 +92,7 @@ Python 3.12+; or `pip install -e ".[radarx]"` from `python/`) the app gains `rad
 
 | Module | Product |
 |---|---|
+| `radarx_clean` | cleaned reflectivity / ZDR / velocity / RhoHV + QC flag map (echo mask + SNR gate) |
 | `radarx_echo_mask` | meteorological / non-meteorological / speckle field |
 | `radarx_kdp` | KDP, processed PhiDP or uncertainty field |
 | `radarx_hid` | hydrometeor classification (categorical field + class counts) |
