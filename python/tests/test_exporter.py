@@ -101,18 +101,31 @@ class TestImageExport:
                 sweep=0,
             )
 
-    def test_png_generates_temp_path_when_none(self, synthetic_datatree: xr.DataTree) -> None:
+    def test_png_without_path_goes_to_a_visible_export_folder(
+        self,
+        synthetic_datatree: xr.DataTree,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No destination goes to $XRADAR_EXPORT_DIR (default ~/Downloads/xradar-exports)."""
+        monkeypatch.setenv("XRADAR_EXPORT_DIR", str(tmp_path / "exports"))
         exporter = RadarExporter()
-        result = exporter.export(
-            synthetic_datatree,
-            fmt="png",
-            output_path=None,
-            variable="DBZH",
-            sweep=0,
+        first = exporter.export(
+            synthetic_datatree, fmt="png", output_path=None, variable="DBZH", sweep=0
         )
-        assert Path(result).exists()
-        # Clean up
-        Path(result).unlink(missing_ok=True)
+        second = exporter.export(
+            synthetic_datatree, fmt="png", output_path=None, variable="DBZH", sweep=0
+        )
+        assert Path(first).parent == tmp_path / "exports" and Path(first).exists()
+        assert Path(second).exists() and first != second  # same second -> no overwrite
+
+    def test_default_export_dir_is_not_the_system_temp(self, monkeypatch) -> None:
+        from engine.exporter import default_export_dir
+
+        monkeypatch.delenv("XRADAR_EXPORT_DIR", raising=False)
+        d = default_export_dir()
+        assert d.name == "xradar-exports"
+        assert str(Path(tempfile.gettempdir()).resolve()) not in str(d.resolve())
 
     def test_progress_callback_called(
         self, synthetic_datatree: xr.DataTree, tmp_output_file: Path
@@ -183,7 +196,7 @@ class TestExportRobustness:
         import matplotlib.figure
         import matplotlib.pyplot as plt
 
-        monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+        monkeypatch.setenv("XRADAR_EXPORT_DIR", str(tmp_path))
 
         def boom(self: object, *args: object, **kwargs: object) -> None:
             raise OSError("disk full")
