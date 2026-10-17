@@ -12,11 +12,21 @@
  *  - Fragment shader marches rays through a 3D texture, sampling and compositing
  *  - Transfer function encoded as a 256x1 RGBA lookup texture
  *  - Wireframe bounding box overlay for spatial reference
- *  - On-demand requestAnimationFrame scheduling: no frame loop while idle; coarser
- *    ray steps while the camera is being dragged, full quality once it settles
+ *  - Adaptive quality (see qualityGovernor.ts): every frame is drawn in bounded bands into an
+ *    off-screen target at a render scale chosen from measured GPU cost, with coarser ray steps
+ *    while the camera moves and one settled frame afterwards; nothing runs while idle
+ *  - Volume conversion/downsampling/upload is time-sliced and bounded by a texture budget
  *  - WebGL context-loss recovery (GPU state is rebuilt from CPU-side copies)
  *  - ResizeObserver for responsive canvas sizing
  */
+
+import {
+  QualityGovernor,
+  ProgressiveRenderer,
+  yieldToMain,
+  type ProgressiveJob,
+  type QualityParams,
+} from './qualityGovernor';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -60,6 +70,7 @@ in vec3 v_position;
 uniform sampler3D u_volume;
 uniform sampler2D u_transferFn;
 uniform float u_stepSize;
+uniform int u_maxSteps;
 uniform float u_alphaScale;
 
 out vec4 fragColor;
@@ -87,15 +98,20 @@ void main() {
 
   tHit.x = max(tHit.x, 0.0);
 
-  vec3 pos = v_rayOrigin + rayDir * tHit.x;
+  // The iteration cap wins over the requested step: long rays take longer steps. Opacity is
+  // proportional to the step actually taken, so the look does not change with quality.
+  float stepEff = max(u_stepSize, (tHit.y - tHit.x) / float(u_maxSteps));
   vec4 color = vec4(0.0);
 
-  for (float t = tHit.x; t < tHit.y; t += u_stepSize) {
-    float val = texture(u_volume, pos).r;
+  for (int i = 0; i < 4096; i++) {
+    if (i >= u_maxSteps) break;
+    float t = tHit.x + float(i) * stepEff;
+    if (t >= tHit.y) break;
+    float val = texture(u_volume, v_rayOrigin + rayDir * t).r;
 
     if (val > 0.001) {
       vec4 tfColor = texture(u_transferFn, vec2(val, 0.5));
-      tfColor.a *= u_alphaScale * u_stepSize * 100.0;
+      tfColor.a *= u_alphaScale * stepEff * 100.0;
 
       // Front-to-back compositing
       color.rgb += (1.0 - color.a) * tfColor.rgb * tfColor.a;
@@ -103,8 +119,6 @@ void main() {
 
       if (color.a > 0.99) break;
     }
-
-    pos += rayDir * u_stepSize;
   }
 
   fragColor = color;
@@ -366,6 +380,12 @@ export class VolumeRenderer {
   private canvas: HTMLCanvasElement;
   private gl: WebGL2RenderingContext;
 
+  /** Adaptive quality controller (shared preference with the radar 3D view). */
+  readonly governor: QualityGovernor;
+  private pr!: ProgressiveRenderer;
+  /** Called when drawing fails for good; the view should offer the 2D fallback. */
+  onFatal: ((message: string) => void) | null = null;
+
   // Programs
   private volumeProgram!: WebGLProgram;
   private wireframeProgram!: WebGLProgram;
@@ -374,6 +394,7 @@ export class VolumeRenderer {
   private uMvpLoc: WebGLUniformLocation | null = null;
   private uCameraPosLoc: WebGLUniformLocation | null = null;
   private uStepSizeLoc: WebGLUniformLocation | null = null;
+  private uMaxStepsLoc: WebGLUniformLocation | null = null;
   private uAlphaScaleLoc: WebGLUniformLocation | null = null;
   private uVolumeLoc: WebGLUniformLocation | null = null;
   private uTransferFnLoc: WebGLUniformLocation | null = null;
@@ -398,9 +419,11 @@ export class VolumeRenderer {
   // CPU-side copies used to rebuild GPU state after a context loss
   private volumeU8: Uint8Array | null = null;
   private transferRGBA: Uint8Array = createDefaultTransferFunction();
-  /** Dimensions of the texture currently allocated on the GPU (to allow in-place updates). */
+  /** Dimensions of the texture currently allocated on the GPU. */
   private texDims: [number, number, number] = [0, 0, 0];
   private contextLost = false;
+  /** Bumped by every new volume so an older, still-running conversion stops. */
+  private volGen = 0;
 
   // Volume metadata
   private volumeDims: [number, number, number] = [0, 0, 0];
@@ -424,13 +447,14 @@ export class VolumeRenderer {
   private lastMouseY = 0;
 
   // Render scheduling
-  private dirty = true;
-  private animFrameId = 0;
   private resizeObserver: ResizeObserver | null = null;
   private disposed = false;
-  /** True while the user is dragging / zooming: ray steps are coarsened for responsiveness. */
-  private interacting = false;
-  private settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Per-frame snapshot (set by the progressive job's begin())
+  private frameMvp: Mat4 = mat4Identity();
+  private frameCam: [number, number, number] = [0, 0, 0];
+  private frameStep = 0.005;
+  private frameMaxSteps = 512;
 
   // Bound event handlers (stored for removal on dispose)
   private onMouseDownBound: (e: MouseEvent) => void;
@@ -451,12 +475,13 @@ export class VolumeRenderer {
     this.canvas.style.display = 'block';
     this.container.appendChild(this.canvas);
 
-    // Initialize WebGL2
+    // Initialize WebGL2. preserveDrawingBuffer: frames are drawn band by band, and the bands
+    // already drawn must stay on screen while the next ones are computed.
     const gl = this.canvas.getContext('webgl2', {
       alpha: true,
       premultipliedAlpha: false,
-      antialias: true,
-      preserveDrawingBuffer: false,
+      antialias: false,
+      preserveDrawingBuffer: true,
     });
     if (!gl) {
       this.canvas.remove();
@@ -464,7 +489,26 @@ export class VolumeRenderer {
     }
     this.gl = gl;
 
+    this.governor = new QualityGovernor('volume');
+    this.governor.configureGpu(gl);
+
     this.setupGL();
+
+    const job: ProgressiveJob = {
+      begin: (params, w, h) => this.beginFrame(params, w, h),
+      drawBand: () => this.drawBand(),
+    };
+    this.pr = new ProgressiveRenderer({
+      gl,
+      canvas: this.canvas,
+      governor: this.governor,
+      job,
+      onError: (e) => {
+        const msg = `3D rendering stopped (${e instanceof Error ? e.message : String(e)}).`;
+        console.error('[Volume]', e);
+        this.onFatal?.(msg);
+      },
+    });
 
     // Size the canvas to its container
     this.resizeCanvas();
@@ -472,10 +516,9 @@ export class VolumeRenderer {
     // Observe container resizes
     this.resizeObserver = new ResizeObserver(() => {
       if (this.resizeCanvas()) {
-        // Resizing cleared the canvas, and this callback runs after the frame's
-        // rAF phase: draw right away so no blank frame is presented.
-        this.dirty = false;
-        this.render();
+        // Resizing cleared the canvas: put the last image back right away, refine afterwards.
+        this.pr.presentLast();
+        this.pr.noteInteraction();
       }
     });
     this.resizeObserver.observe(this.container);
@@ -489,7 +532,7 @@ export class VolumeRenderer {
     this.onContextLostBound = (e: Event) => {
       e.preventDefault(); // allows 'webglcontextrestored' to fire
       this.contextLost = true;
-      if (this.animFrameId) { cancelAnimationFrame(this.animFrameId); this.animFrameId = 0; }
+      this.pr.setLost(true);
     };
     this.onContextRestoredBound = () => {
       if (this.disposed) return;
@@ -497,7 +540,7 @@ export class VolumeRenderer {
       this.setupGL();
       this.resizeCanvas(true);
       this.restoreGpuData();
-      this.markDirty();
+      this.pr.setLost(false);
     };
 
     this.canvas.addEventListener('mousedown', this.onMouseDownBound);
@@ -529,10 +572,12 @@ export class VolumeRenderer {
     this.initTransferTexture();
   }
 
-  /** Re-upload the volume and transfer function from CPU copies after a context restore. */
+  /** Re-upload the volume from the CPU copy after a context restore. */
   private restoreGpuData(): void {
     if (this.volumeU8 && this.hasVolume) {
-      this.uploadVolumeTexture(this.volumeU8, this.volumeDims[0], this.volumeDims[1], this.volumeDims[2]);
+      const [nx, ny, nz] = this.texDims.some((d) => d === 0) ? this.volumeDims : this.texDims;
+      const gen = ++this.volGen;
+      void this.uploadSliced(this.volumeU8, nx, ny, nz, gen).then(() => this.markDirty());
     }
   }
 
@@ -545,6 +590,7 @@ export class VolumeRenderer {
     this.uMvpLoc = gl.getUniformLocation(this.volumeProgram, 'u_mvp');
     this.uCameraPosLoc = gl.getUniformLocation(this.volumeProgram, 'u_cameraPos');
     this.uStepSizeLoc = gl.getUniformLocation(this.volumeProgram, 'u_stepSize');
+    this.uMaxStepsLoc = gl.getUniformLocation(this.volumeProgram, 'u_maxSteps');
     this.uAlphaScaleLoc = gl.getUniformLocation(this.volumeProgram, 'u_alphaScale');
     this.uVolumeLoc = gl.getUniformLocation(this.volumeProgram, 'u_volume');
     this.uTransferFnLoc = gl.getUniformLocation(this.volumeProgram, 'u_transferFn');
@@ -627,8 +673,8 @@ export class VolumeRenderer {
 
   /** Resize the backing store to the container. Returns true if the size changed. */
   private resizeCanvas(force = false): boolean {
-    // Ray marching cost scales with pixel count: cap the pixel ratio at 2.
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    // Ray marching cost scales with pixel count: cap the pixel ratio (1 on software GL).
+    const dpr = Math.min(window.devicePixelRatio || 1, this.governor.dprCap);
     const width = Math.max(1, Math.round(this.container.clientWidth * dpr));
     const height = Math.max(1, Math.round(this.container.clientHeight * dpr));
 
@@ -636,7 +682,6 @@ export class VolumeRenderer {
     if (!force && width === this.canvas.width && height === this.canvas.height) return false;
     this.canvas.width = width;
     this.canvas.height = height;
-    if (!this.contextLost) this.gl.viewport(0, 0, width, height);
     return true;
   }
 
@@ -645,6 +690,10 @@ export class VolumeRenderer {
   /**
    * Upload a 3D volume data grid. The flat Float32Array is indexed as
    * data[x + y * nx + z * nx * ny] (x varies fastest).
+   *
+   * Conversion to 8 bits, downsampling to the texture budget and the GPU upload run in
+   * time-sliced tasks (a few ms each), so a big grid never blocks the page; the previous volume
+   * stays on screen until the new one is complete. A newer call supersedes one still running.
    */
   setVolumeData(
     data: Float32Array,
@@ -653,34 +702,93 @@ export class VolumeRenderer {
     nz: number,
     bounds: VolumeBounds,
   ): void {
-    const gl = this.gl;
     const expectedLen = nx * ny * nz;
     if (data.length !== expectedLen) {
       throw new Error(
         `Volume data length (${data.length}) does not match dimensions ${nx}x${ny}x${nz} = ${expectedLen}`,
       );
     }
+    const gen = ++this.volGen;
+    void this.convertAndUpload(data, nx, ny, nz, { ...bounds }, gen).catch((e) => {
+      if (gen !== this.volGen || this.disposed) return;
+      console.error('[Volume] volume build failed:', e);
+      this.onFatal?.(`Could not build the 3D volume (${e instanceof Error ? e.message : String(e)}).`);
+    });
+  }
 
-    this.volumeDims = [nx, ny, nz];
-    this.bounds = { ...bounds };
+  /** Largest integer per-axis factors that bring the grid under the texture budget. */
+  private chooseDownsample(nx: number, ny: number, nz: number): [number, number, number] {
+    const gl = this.gl;
+    const maxTex = (gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number) || 256;
+    const budget = this.governor.textureBudgetMB() * 1048576;
+    const f: [number, number, number] = [1, 1, 1];
+    const dims = [nx, ny, nz];
+    const out = () => dims.map((d, i) => Math.ceil(d / f[i]));
+    for (let guard = 0; guard < 200; guard++) {
+      const o = out();
+      if (o[0] * o[1] * o[2] <= budget && o[0] <= maxTex && o[1] <= maxTex && o[2] <= maxTex) break;
+      // Coarsen the axis that currently has the most voxels.
+      const axis = o[0] >= o[1] && o[0] >= o[2] ? 0 : o[1] >= o[2] ? 1 : 2;
+      f[axis]++;
+    }
+    return f;
+  }
 
+  private async convertAndUpload(
+    data: Float32Array,
+    nx: number,
+    ny: number,
+    nz: number,
+    bounds: VolumeBounds,
+    gen: number,
+  ): Promise<void> {
     // Normalize to 8 bits: the transfer function is a 256-entry LUT, so 8 bits lose
     // nothing visible, the texture is 4x smaller than R32F, and R8 is always
-    // linearly filterable in WebGL2 (R32F needs OES_texture_float_linear, which
-    // was never requested here, so trilinear sampling could fail on some GPUs).
-    const normalized = new Uint8Array(expectedLen);
+    // linearly filterable in WebGL2.
+    const [fx, fy, fz] = this.chooseDownsample(nx, ny, nz);
+    const onx = Math.ceil(nx / fx), ony = Math.ceil(ny / fy), onz = Math.ceil(nz / fz);
+    const out = new Uint8Array(onx * ony * onz);
     const range = this.vmax - this.vmin;
     const scale = range !== 0 ? 255 / range : 0;
     const vmin = this.vmin;
+    const nxy = nx * ny;
+    const SLICE_MS = 6;
+    let t0 = performance.now();
 
-    for (let i = 0; i < expectedLen; i++) {
-      const v = (data[i] - vmin) * scale;
-      // NaN fails both comparisons -> stays 0 (no data); +/-Infinity clamp.
-      normalized[i] = v >= 255 ? 255 : v > 0 ? (v + 0.5) | 0 : 0;
+    for (let oz = 0; oz < onz; oz++) {
+      const z0 = oz * fz, z1 = Math.min(nz, z0 + fz);
+      for (let oy = 0; oy < ony; oy++) {
+        const y0 = oy * fy, y1 = Math.min(ny, y0 + fy);
+        const dstRow = (oz * ony + oy) * onx;
+        for (let ox = 0; ox < onx; ox++) {
+          const x0 = ox * fx, x1 = Math.min(nx, x0 + fx);
+          let m = 0;
+          for (let z = z0; z < z1; z++) {
+            for (let y = y0; y < y1; y++) {
+              const row = z * nxy + y * nx;
+              for (let x = x0; x < x1; x++) {
+                // NaN fails both comparisons -> stays 0 (no data); +/-Infinity clamp.
+                const v = (data[row + x] - vmin) * scale;
+                const b = v >= 255 ? 255 : v > 0 ? (v + 0.5) | 0 : 0;
+                if (b > m) m = b;
+              }
+            }
+          }
+          out[dstRow + ox] = m;
+        }
+      }
+      if (performance.now() - t0 > SLICE_MS) {
+        await yieldToMain();
+        if (gen !== this.volGen || this.disposed) return;
+        t0 = performance.now();
+      }
     }
 
-    this.volumeU8 = normalized;
-    this.uploadVolumeTexture(normalized, nx, ny, nz);
+    this.volumeDims = [onx, ony, onz];
+    this.bounds = bounds;
+    this.volumeU8 = out;
+    await this.uploadSliced(out, onx, ony, onz, gen);
+    if (gen !== this.volGen || this.disposed) return;
 
     // Compute an appropriate step size (~1/200 of the volume diagonal)
     const dx = bounds.xMax - bounds.xMin;
@@ -691,35 +799,47 @@ export class VolumeRenderer {
     const maxExtent = Math.max(dx, dy, dz);
     this.stepSize = (diagonal / maxExtent) / 200;
 
+    this.governor.setVolumeMB(out.length / 1048576);
     this.hasVolume = true;
     this.markDirty();
   }
 
-  /** Create / update the 3D texture from normalized 8-bit voxels. */
-  private uploadVolumeTexture(voxels: Uint8Array, nx: number, ny: number, nz: number): void {
+  /**
+   * Allocate a fresh 3D texture and fill it in slabs (<= ~1.5 MB per call, one task each); the
+   * old texture is replaced only once the new one is complete.
+   */
+  private async uploadSliced(voxels: Uint8Array, nx: number, ny: number, nz: number, gen: number): Promise<void> {
     if (this.contextLost) return;
     const gl = this.gl;
-
-    const sameShape = this.texDims[0] === nx && this.texDims[1] === ny && this.texDims[2] === nz;
-    if (!this.volumeTexture) this.volumeTexture = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_3D, this.volumeTexture);
-
-    // Tightly packed rows (R8 rows are not 4-byte aligned in general).
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (sameShape) {
-      // Same size: update in place instead of reallocating GPU storage.
-      gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, 0, nx, ny, nz, gl.RED, gl.UNSIGNED_BYTE, voxels);
-    } else {
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-      gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, nx, ny, nz, 0, gl.RED, gl.UNSIGNED_BYTE, voxels);
-      this.texDims = [nx, ny, nz];
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, tex);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1); // R8 rows are not 4-byte aligned in general
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.R8, nx, ny, nz, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    const slice = nx * ny;
+    const perSlab = Math.max(1, Math.floor(1_500_000 / Math.max(1, slice)));
+    for (let z = 0; z < nz; z += perSlab) {
+      if (gen !== this.volGen || this.disposed || this.contextLost) {
+        if (!this.contextLost) gl.deleteTexture(tex);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+        return;
+      }
+      const d = Math.min(perSlab, nz - z);
+      gl.bindTexture(gl.TEXTURE_3D, tex);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texSubImage3D(gl.TEXTURE_3D, 0, 0, 0, z, nx, ny, d, gl.RED, gl.UNSIGNED_BYTE,
+        voxels.subarray(z * slice, (z + d) * slice));
+      if (z + perSlab < nz) await yieldToMain();
     }
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     gl.bindTexture(gl.TEXTURE_3D, null);
+    if (this.volumeTexture) gl.deleteTexture(this.volumeTexture);
+    this.volumeTexture = tex;
+    this.texDims = [nx, ny, nz];
   }
 
   /**
@@ -771,58 +891,22 @@ export class VolumeRenderer {
     this.markDirty();
   }
 
-  /** Trigger a single render pass (call automatically via dirty flag, but available publicly). */
+  /** Request a render pass (coalesced; the frame is drawn in bounded bands). */
   render(): void {
-    if (this.disposed || this.contextLost) return;
+    this.markDirty();
+  }
 
-    const gl = this.gl;
-    const width = this.canvas.width;
-    const height = this.canvas.height;
-    if (width === 0 || height === 0) return;
-
-    gl.viewport(0, 0, width, height);
-    gl.clearColor(0.05, 0.05, 0.1, 1.0);
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-    // Build camera matrices
-    const aspect = width / height;
-    const proj = mat4Perspective(Math.PI / 4, aspect, 0.01, 100.0);
-
-    const eyeX = this.camTarget[0] + this.camRadius * Math.sin(this.camPhi) * Math.cos(this.camTheta);
-    const eyeY = this.camTarget[1] + this.camRadius * Math.cos(this.camPhi);
-    const eyeZ = this.camTarget[2] + this.camRadius * Math.sin(this.camPhi) * Math.sin(this.camTheta);
-    const eye: [number, number, number] = [eyeX, eyeY, eyeZ];
-
-    // Flip up vector when camera is below the orbit equator to prevent gimbal lock
-    const up: [number, number, number] = [0, this.camPhi < Math.PI / 2 ? 1 : -1, 0];
-    const view = mat4LookAt(eye, this.camTarget, up);
-    const mvp = mat4Multiply(proj, view);
-
-    // Camera position in volume space [0,1]^3 (already in that space since cube is [0,1]^3)
-    const camPos: [number, number, number] = [eyeX, eyeY, eyeZ];
-
-    // Draw wireframe bounding box
-    this.renderWireframe(mvp);
-
-    // Draw volume (if data is loaded)
-    if (this.hasVolume) {
-      this.renderVolume(mvp, camPos);
-    }
+  /** The user picked a quality preference: apply it to the next frame. */
+  refreshQuality(): void {
+    this.markDirty();
   }
 
   /** Clean up all WebGL resources and remove event listeners. */
   dispose(): void {
     this.disposed = true;
-
-    if (this.animFrameId) {
-      cancelAnimationFrame(this.animFrameId);
-      this.animFrameId = 0;
-    }
-
-    if (this.settleTimer) {
-      clearTimeout(this.settleTimer);
-      this.settleTimer = null;
-    }
+    this.volGen++;
+    this.pr.dispose();
+    this.governor.release();
 
     if (this.resizeObserver) {
       this.resizeObserver.disconnect();
@@ -863,7 +947,46 @@ export class VolumeRenderer {
     }
   }
 
-  // ── Rendering ─────────────────────────────────────────────────────────
+  // ── Rendering (driven by ProgressiveRenderer) ─────────────────────────
+
+  /** Snapshot the camera and quality for one frame. `w`/`h` is the render resolution. */
+  private beginFrame(params: QualityParams, w: number, h: number): boolean {
+    if (this.disposed || this.contextLost) return false;
+
+    const aspect = w / h;
+    const proj = mat4Perspective(Math.PI / 4, aspect, 0.01, 100.0);
+
+    const eyeX = this.camTarget[0] + this.camRadius * Math.sin(this.camPhi) * Math.cos(this.camTheta);
+    const eyeY = this.camTarget[1] + this.camRadius * Math.cos(this.camPhi);
+    const eyeZ = this.camTarget[2] + this.camRadius * Math.sin(this.camPhi) * Math.sin(this.camTheta);
+    const eye: [number, number, number] = [eyeX, eyeY, eyeZ];
+
+    // Flip up vector when camera is below the orbit equator to prevent gimbal lock
+    const up: [number, number, number] = [0, this.camPhi < Math.PI / 2 ? 1 : -1, 0];
+    const view = mat4LookAt(eye, this.camTarget, up);
+    this.frameMvp = mat4Multiply(proj, view);
+    this.frameCam = eye;
+    // Coarser ray steps at lower quality / while the camera moves. (Opacity is step-size
+    // compensated in the shader, so the look stays the same.)
+    this.frameStep = this.stepSize * params.stepMul;
+    this.frameMaxSteps = params.maxSteps;
+    return true;
+  }
+
+  /** Draw the rows the progressive renderer scissored: clear, wireframe and volume. */
+  private drawBand(): void {
+    const gl = this.gl;
+    gl.clearColor(0.05, 0.05, 0.1, 1.0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    // Draw wireframe bounding box
+    this.renderWireframe(this.frameMvp);
+
+    // Draw volume (if data is loaded)
+    if (this.hasVolume && this.volumeTexture) {
+      this.renderVolume(this.frameMvp, this.frameCam);
+    }
+  }
 
   private renderVolume(mvp: Mat4, camPos: [number, number, number]): void {
     const gl = this.gl;
@@ -885,9 +1008,8 @@ export class VolumeRenderer {
     // Set uniforms
     gl.uniformMatrix4fv(this.uMvpLoc, false, mvp);
     gl.uniform3f(this.uCameraPosLoc, camPos[0], camPos[1], camPos[2]);
-    // Coarser ray steps while orbiting/zooming: ~2.5x fewer samples per pixel.
-    // (Opacity is step-size compensated in the shader, so the look stays the same.)
-    gl.uniform1f(this.uStepSizeLoc, this.interacting ? this.stepSize * 2.5 : this.stepSize);
+    gl.uniform1f(this.uStepSizeLoc, this.frameStep);
+    gl.uniform1i(this.uMaxStepsLoc, this.frameMaxSteps);
     gl.uniform1f(this.uAlphaScaleLoc, this.alphaScale);
 
     // Bind 3D volume texture to unit 0
@@ -925,32 +1047,10 @@ export class VolumeRenderer {
 
   // ── Render Loop ───────────────────────────────────────────────────────
 
-  /** Request a redraw; at most one rAF is ever pending and nothing runs while idle. */
+  /** Request a redraw; at most one frame is ever in progress and nothing runs while idle. */
   private markDirty(): void {
-    this.dirty = true;
-    if (this.animFrameId || this.disposed || this.contextLost) return;
-    this.animFrameId = requestAnimationFrame(this.renderLoop);
-  }
-
-  private renderLoop = (): void => {
-    this.animFrameId = 0;
-    if (this.disposed) return;
-
-    if (this.dirty) {
-      this.dirty = false;
-      this.render();
-    }
-  };
-
-  /** Mark the camera as moving; a full-quality frame follows once input pauses. */
-  private beginInteraction(): void {
-    this.interacting = true;
-    if (this.settleTimer) clearTimeout(this.settleTimer);
-    this.settleTimer = setTimeout(() => {
-      this.settleTimer = null;
-      this.interacting = false;
-      this.markDirty();
-    }, 150);
+    if (this.disposed || this.contextLost) return;
+    this.pr.request();
   }
 
   // ── Input Handlers ────────────────────────────────────────────────────
@@ -1005,8 +1105,7 @@ export class VolumeRenderer {
       this.camPhi = Math.max(0.01, Math.min(Math.PI - 0.01, this.camPhi));
     }
 
-    this.beginInteraction();
-    this.markDirty();
+    this.pr.noteInteraction();
   }
 
   private onMouseUp(e: MouseEvent): void {
@@ -1023,7 +1122,6 @@ export class VolumeRenderer {
     this.camRadius *= 1.0 + e.deltaY * zoomSpeed;
     this.camRadius = Math.max(0.3, Math.min(20.0, this.camRadius));
 
-    this.beginInteraction();
-    this.markDirty();
+    this.pr.noteInteraction();
   }
 }

@@ -8,6 +8,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { VolumeRenderer } from '../utils/volumeRenderer';
+  import type { GovernorState, QualityMode } from '../utils/qualityGovernor';
 
   export let volumeData: Float32Array | null = null;
   export let nx: number = 0;
@@ -24,6 +25,23 @@
   let renderer: VolumeRenderer | null = null;
   let alphaScale: number = 1.0;
   let isLoading: boolean = false;
+  let qState: GovernorState | null = null;
+  let unsubQuality: (() => void) | null = null;
+  /** Set when the renderer stopped for good (draw error / unrecoverable context loss). */
+  let fatalMsg = '';
+
+  const QUALITY_OPTIONS: { value: QualityMode; label: string }[] = [
+    { value: 'auto', label: 'Auto' },
+    { value: 'high', label: 'High' },
+    { value: 'medium', label: 'Medium' },
+    { value: 'low', label: 'Low' },
+  ];
+
+  function onQualityChange(e: Event) {
+    if (!renderer) return;
+    renderer.governor.setMode((e.target as HTMLSelectElement).value as QualityMode);
+    renderer.refreshQuality();
+  }
 
   $: hasData = volumeData !== null && volumeData.length > 0;
   $: gridLabel = hasData ? `${nx}x${ny}x${nz}` : '';
@@ -41,11 +59,19 @@
 
   onMount(() => {
     if (container) {
-      renderer = new VolumeRenderer(container);
+      try {
+        renderer = new VolumeRenderer(container);
+        renderer.onFatal = (m) => { fatalMsg = m; };
+        unsubQuality = renderer.governor.state.subscribe((s) => { qState = s; });
+      } catch (e) {
+        fatalMsg = e instanceof Error ? e.message : String(e);
+      }
     }
   });
 
   onDestroy(() => {
+    unsubQuality?.();
+    unsubQuality = null;
     if (renderer) {
       renderer.dispose();
       renderer = null;
@@ -80,6 +106,15 @@
       {/if}
     </div>
     <div class="vv-toolbar-right">
+      <select id="vv-quality-select" class="vv-select" aria-label="Render quality" value={qState?.mode ?? 'auto'} on:change={onQualityChange}
+              title="Auto adapts to your GPU to keep the app responsive.">
+        {#each QUALITY_OPTIONS as o (o.value)}
+          <option value={o.value}>{o.label}</option>
+        {/each}
+      </select>
+      {#if qState}
+        <span class="vv-dims" title={`GPU: ${qState.gpu || 'unknown'}\nFrame: ${qState.frameMsEma.toFixed(0)} ms`}>{qState.idleLevel}</span>
+      {/if}
       <label class="vv-alpha-label" for="vv-alpha-slider">
         Opacity
         <span class="vv-alpha-value">{formatAlpha(alphaScale)}</span>
@@ -101,7 +136,12 @@
 
   <!-- Viewport -->
   <div class="vv-viewport" bind:this={container}>
-    {#if isLoading}
+    {#if fatalMsg}
+      <div class="vv-overlay">
+        <span class="vv-overlay-text">{fatalMsg}</span>
+        <span class="vv-overlay-text placeholder">Use the 2D view to keep working.</span>
+      </div>
+    {:else if isLoading}
       <div class="vv-overlay">
         <div class="vv-spinner"></div>
         <span class="vv-overlay-text">Loading volume data...</span>
@@ -114,6 +154,14 @@
       </div>
     {/if}
   </div>
+
+  {#if qState?.hint}
+    <div class="vv-quality-hint">
+      <span>Reduced 3D quality to keep the app responsive</span>
+      <button class="vv-btn" on:click={() => renderer?.governor.keepMySetting()}>Keep my setting</button>
+      <button class="vv-btn" aria-label="Dismiss" on:click={() => renderer?.governor.dismissHint()}>x</button>
+    </div>
+  {/if}
 
   <!-- Hint bar -->
   <div class="vv-hint">
@@ -141,6 +189,7 @@
     background: rgba(17, 22, 40, 0.6);
     border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.1));
     flex-shrink: 0;
+    flex-wrap: wrap;
     gap: var(--spacing-sm, 6px);
     min-height: 32px;
   }
@@ -284,6 +333,28 @@
 
   @keyframes vv-spin {
     to { transform: rotate(360deg); }
+  }
+
+  .vv-select {
+    font-size: 10px;
+    padding: 1px 4px;
+    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border-radius: var(--radius-sm, 4px);
+    background: rgba(15, 15, 26, 0.6);
+    color: var(--text-secondary, rgba(255,255,255,0.7));
+  }
+
+  .vv-quality-hint {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 3px var(--spacing-sm, 6px);
+    font-size: 10px;
+    color: var(--text-secondary, rgba(255,255,255,0.7));
+    background: rgba(17, 22, 40, 0.8);
+    border-top: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    flex-shrink: 0;
   }
 
   /* Hint bar */

@@ -28,6 +28,12 @@
   let cacheHitRatio = 0;
   let cacheSizeMB = 0;
   let cacheEntries = 0;
+  // 3D view (empty until a 3D view has rendered)
+  let quality3d = '';
+  let frame3dMs = 0;
+  let renderScale3d = 1;
+  let volumeMB = 0;
+  let gpuRenderer = '';
 
   /** Frame time history — last 60 entries for the mini bar chart */
   let frameHistory: number[] = new Array(60).fill(0);
@@ -61,6 +67,11 @@
     renderTimeMs = stats.renderTimeMs;
     meshBuildTimeMs = stats.meshBuildTimeMs;
     dataTransferTimeMs = stats.dataTransferTimeMs;
+    quality3d = stats.quality;
+    frame3dMs = stats.frameMsEma;
+    renderScale3d = stats.renderScale;
+    volumeMB = stats.volumeTexMB;
+    gpuRenderer = stats.gpuRenderer;
 
     // Memory usage (Performance API if available)
     const perf = performance as any;
@@ -138,6 +149,32 @@
       <span class="perf-label">Memory</span>
       <span class="perf-value">{memoryMB.toFixed(0)} MB</span>
     </div>
+
+    {#if quality3d}
+      <div class="perf-divider"></div>
+      <div class="perf-row">
+        <span class="perf-label">3D quality</span>
+        <span class="perf-value">{quality3d}</span>
+      </div>
+      <div class="perf-row">
+        <span class="perf-label">3D frame</span>
+        <span class="perf-value">{frame3dMs.toFixed(0)} ms</span>
+      </div>
+      <div class="perf-row">
+        <span class="perf-label">3D scale</span>
+        <span class="perf-value">{(renderScale3d * 100).toFixed(0)}%</span>
+      </div>
+      <div class="perf-row">
+        <span class="perf-label">3D volume</span>
+        <span class="perf-value">{volumeMB.toFixed(1)} MB</span>
+      </div>
+      {#if gpuRenderer}
+        <div class="perf-row" title={gpuRenderer}>
+          <span class="perf-label">GPU</span>
+          <span class="perf-value perf-gpu">{gpuRenderer.replace(/^ANGLE \((.*)\)$/, '$1')}</span>
+        </div>
+      {/if}
+    {/if}
 
     <div class="perf-divider"></div>
 
@@ -225,6 +262,13 @@
   .perf-value {
     color: rgba(255, 255, 255, 0.85);
     text-align: right;
+  }
+
+  .perf-gpu {
+    max-width: 110px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .perf-divider {
