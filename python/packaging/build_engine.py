@@ -44,10 +44,19 @@ def build() -> Path:
         cwd=PYTHON_DIR,
         check=True,
     )
+    _remove_dangling_symlinks(DIST / "xradar-engine")
     exe = DIST / "xradar-engine" / EXE_NAME
     if not exe.exists():
         raise SystemExit(f"build finished but {exe} is missing")
     return exe
+
+
+def _remove_dangling_symlinks(root: Path) -> None:
+    """Links to files the spec left out; Tauri refuses a resource folder that contains any."""
+    for path in root.rglob("*"):
+        if path.is_symlink() and not path.exists():
+            print("removing dangling symlink", path.relative_to(root))
+            path.unlink()
 
 
 def _free_port() -> int:
@@ -109,7 +118,7 @@ def _check_engine(port: int, token: str) -> None:
 
     import websockets
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         volume = Path(tmp) / "synthetic_cfrad.nc"
         _synthetic_volume(volume)
 
@@ -179,6 +188,10 @@ def _check_engine(port: int, token: str) -> None:
                     "module_result",
                 )
                 print("  run_module ok")
+
+                await ws.send(
+                    json.dumps({"type": "close_file", "file_id": file_id, "token": token})
+                )
 
         asyncio.run(run())
 

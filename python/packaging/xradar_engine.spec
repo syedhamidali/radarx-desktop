@@ -97,7 +97,9 @@ import re
 # boto3/botocore ship a JSON model for every AWS service (~20 MB); the engine only talks to S3.
 _KEEP_SERVICES = {"s3", "sts", "sso", "sso-oidc", "signin"}
 _DROP_PATTERNS = [
-    r"(^|/)pyarrow/(libarrow_flight|libarrow_substrait|libgandiva|_flight|_substrait|_gandiva)",
+    # (also the top-level symlinks PyInstaller makes to these libraries)
+    r"(^|/)(pyarrow/)?(libarrow_flight|libarrow_substrait|libgandiva)",
+    r"(^|/)pyarrow/(_flight|_substrait|_gandiva)",
     r"(^|/)pyarrow/include/",
     r"(^|/)pyarrow/(tests|_generated_version)",
     r"\.(pyx|pxd|pxi|h|hpp|c|cc|cpp|md|rst|pyi|a)$",
