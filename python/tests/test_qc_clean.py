@@ -173,3 +173,52 @@ def test_fill_off_and_smooth_on_outputs() -> None:
     smoothed = sm["Smoothed reflectivity"]
     assert np.isnan(smoothed[100:102, 50:53]).all()  # smoothing only touches clean gates
     assert np.isfinite(smoothed[0, 0])
+
+
+def _with_extra_fields():
+    shape = (N_AZ, N_RNG)
+    snr = np.full(shape, 20.0)
+    snr[10:20, 60:70] = 1.0  # flagged region
+    return _sweep(
+        SNRHC=snr,
+        KDP=np.full(shape, 0.7),
+        WIDTH=np.full(shape, 2.0),
+        PHIDP=np.full(shape, 40.0),
+        DBZHC=np.full(shape, 31.0),  # a second reflectivity variant (DBZHCC is the main one)
+        **{"DBZHCC": np.full(shape, 30.0), "DBZH": None},
+    )
+
+
+def test_mask_applies_to_every_polar_field_by_default() -> None:
+    ds = _with_extra_fields()
+    _, fields = _run(ds, despeckle_min=0, fill_gaps=False)
+    flagged = fields["QC flags"] != CLEAN
+    assert flagged[10:20, 60:70].all()
+    for name in ("KDP", "WIDTH", "PHIDP", "DBZHC", "SNRHC"):
+        out = fields[f"Cleaned {name}"]
+        assert np.isnan(out[flagged]).all(), name  # hidden exactly where the flag map says
+        assert np.isfinite(out[~flagged]).all(), name
+    assert fields["Cleaned KDP"][0, 0] == pytest.approx(0.7)
+    # the main reflectivity keeps its friendly name; no duplicate under its raw name
+    assert "Cleaned reflectivity" in fields and "Cleaned DBZHCC" not in fields
+
+
+def test_main_fields_only_skips_the_others() -> None:
+    _, fields = _run(_with_extra_fields(), apply_to="main fields only")
+    assert "Cleaned KDP" not in fields and "Cleaned WIDTH" not in fields
+    assert "Cleaned reflectivity" in fields
+
+
+def test_velocity_and_phase_fields_are_never_gap_filled() -> None:
+    from importlib import util
+    from pathlib import Path
+
+    spec = util.spec_from_file_location(
+        "gapfill_under_test", Path(__file__).parents[1] / "modules" / "_gapfill.py"
+    )
+    mod = util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    for name in ("VEL", "VEL_F", "VS_F", "VL", "VRADH", "PHIDP", "UPHIDP", "velocity"):
+        assert not mod.is_fillable(name), name
+    for name in ("KDP", "DBZHC", "WIDTH", "RHOHV", "ZDR", "SNRHC"):
+        assert mod.is_fillable(name), name

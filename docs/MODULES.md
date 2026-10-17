@@ -82,8 +82,15 @@ never interpolated. The fill radius sets the largest patch it will bridge: ~0.6 
 2-3 km also bridges narrow blocked radials; larger values start to grow echo edges. Filled gates are
 estimates, not measurements.
 
-Outputs: *Cleaned / Gap-filled / Smoothed* reflectivity, ZDR and RhoHV, *Cleaned velocity* and *QC flags*
-(categorical). Press **All sweeps -> 3D** to get them as variables for every sweep. Tune per radar.
+**Apply the mask to** (default *all fields*): the same flag map hides the gates in *every* polar field of the
+sweep (e.g. KDP, PhiDP, SNR, WIDTH, the V-channel and "_F" variants), each as its own *Cleaned <name>*
+output. Gap filling and smoothing stay on the main fields (reflectivity, ZDR, RhoHV); velocity and phase
+fields are never interpolated. Cost: a file with ~25 fields adds ~25 derived variables per sweep (a 7-sweep
+X-band volume is ~700 MB of derived data, the budget is 1 GB), so choose *main fields only* when you
+just want the principal moments (~190 MB).
+
+Outputs: *Cleaned / Gap-filled / Smoothed* reflectivity, ZDR and RhoHV, *Cleaned velocity*, a *Cleaned <name>*
+for every other field (all-fields mode) and *QC flags* (categorical). Press **All sweeps -> 3D** to get them as variables for every sweep. Tune per radar.
 
 Neither fixes partial beam blockage (radial streaks / dark wedges with ZDR spikes; use radarx
 `beam_blockage` with a terrain model), ZDR calibration offsets, attenuation or range folding.
