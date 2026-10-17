@@ -1,6 +1,7 @@
 {
   "bundle": {
     "macOS": {
+      "signingIdentity": "-",
       "files": {
         "Resources/engine": "../python/dist/xradar-engine"
       }

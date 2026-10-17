@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "xradar desktop",
+  "productName": "xradar-desktop",
   "version": "0.1.0",
   "identifier": "com.xradar.desktop",
   "build": {
