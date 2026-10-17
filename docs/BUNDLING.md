@@ -56,10 +56,18 @@ each symlink as a full file, ~140 MB of duplicates).
 Where the rest is: pyarrow 83, NetCDF/HDF5 libraries 55, icechunk 38, scipy 36, rustytree 20, pyproj 17,
 pandas 17 MB. Smaller still would mean dropping a feature (icechunk cloud archive) or a dependency.
 
+## Installing the unsigned builds
+
+The installers are not code-signed (no certificates), so the OS warns on first launch:
+
+- **macOS:** open the dmg, drag the app to Applications, then right-click it -> Open -> Open. If macOS says the app
+  is "damaged", run `xattr -dr com.apple.quarantine "/Applications/xradar desktop.app"` once.
+- **Windows:** SmartScreen shows "Windows protected your PC": click More info -> Run anyway.
+- **Linux:** `sudo apt install ./xradar-desktop_*.deb` (or `sudo dnf install ./*.rpm`); no warning.
+
 ## Known limits
 
-- **Not signed.** macOS Gatekeeper and Windows SmartScreen will warn on first launch. Distributing publicly
-  needs an Apple Developer ID + notarization and a Windows code-signing certificate (Tauri reads them from
+- **Not signed** (see above). Signing would need an Apple Developer ID + notarization and a Windows code-signing certificate (Tauri reads them from
   the usual `APPLE_*` / `TAURI_SIGNING_*` secrets).
 - **First launch is slow** (seconds to a minute on macOS): the OS scans the newly installed libraries.
   Later launches take about a second. The app waits up to 3 minutes for the engine.
