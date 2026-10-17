@@ -64,5 +64,5 @@ Frontend ↔ Python sidecar communicate via WebSocket:
 
 - Node.js 18+
 - Rust (via rustup)
-- Python 3.10+ with xradar, xarray, dask, datashader, pycairo, pillow
+- Python 3.10+ with xradar, xarray, dask, pycairo, pillow
 - Tauri CLI: `cargo install tauri-cli@^2`

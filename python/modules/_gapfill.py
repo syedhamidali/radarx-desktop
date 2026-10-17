@@ -11,8 +11,12 @@ of inventing data there, and gates that had no data originally are never filled.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 from scipy import ndimage
+
+from engine.plugins import VAR_ALIASES
 
 
 def covers_full_circle(azimuth_deg: np.ndarray) -> bool:
@@ -76,3 +80,44 @@ def smooth_clean(
     """Light NaN-aware Gaussian smoothing of the clean gates only (other gates stay NaN)."""
     smoothed, _ = normalized_gaussian(values, keep, sigma, wrap_azimuth)
     return np.where(keep, smoothed, np.nan)
+
+
+MAIN_FIELDS = ("DBZH", "ZDR", "RHOHV", "VRADH")  # emitted by the modules under friendly names
+_NOT_FILLABLE = re.compile(r"VEL|VRAD|^VS|^VL|PHI|PSI", re.IGNORECASE)  # can fold / wrap
+
+
+def main_field_names(dataset) -> set[str]:
+    """Names in *dataset* that stand for the four main fields (canonical name or first alias)."""
+    names = set()
+    for canon in MAIN_FIELDS:
+        pick = canon if canon in dataset.data_vars else None
+        for alias in VAR_ALIASES.get(canon, []):
+            if pick is None and alias in dataset.data_vars:
+                pick = alias
+        if pick is not None:
+            names.add(pick)
+    return names
+
+
+def is_fillable(name: str) -> bool:
+    """Velocity- and phase-like fields are never interpolated (they fold / wrap between gates)."""
+    return _NOT_FILLABLE.search(name) is None
+
+
+def other_polar_fields(dataset, shape: tuple[int, int]) -> list[tuple[str, np.ndarray, str]]:
+    """``(name, array, units)`` of every polar float field except the four main ones."""
+    skip = main_field_names(dataset)
+    out = []
+    for name, da in dataset.data_vars.items():
+        if name in skip or not np.issubdtype(da.dtype, np.floating):
+            continue
+        if "azimuth" not in da.dims or "range" not in da.dims:
+            continue
+        extra = [d for d in da.dims if d not in ("azimuth", "range")]
+        if extra:
+            da = da.isel(dict.fromkeys(extra, 0))
+        da = da.transpose("azimuth", "range")
+        if da.shape != tuple(shape):
+            continue
+        out.append((str(name), da.values.astype(np.float64), str(da.attrs.get("units", ""))))
+    return out
