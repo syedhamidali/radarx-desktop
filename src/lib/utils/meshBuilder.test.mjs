@@ -2,7 +2,7 @@
 // Run with Node >= 22.6:  npm run test:unit
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSharpMesh, buildSmoothMesh, rayLayout } from './meshBuilder.ts';
+import { buildSharpMesh, buildSmoothMesh, rayLayout, rayAtAzimuth } from './meshBuilder.ts';
 
 const NR = 4; // gates
 const range = Float32Array.from([1000, 2000, 3000, 4000]);
@@ -87,4 +87,19 @@ test('descending scan direction works', () => {
   assert.equal(rayLayout(az, n).dir, -1);
   const spans = cellSpans(buildSharpMesh(az, range, values, n, NR).positions);
   assert.ok(spans.every((b) => width(b) < 1.01));
+});
+
+test('hover lookup: empty outside a sector, the right ray inside, empty in a big hole', () => {
+  const sector = Float32Array.from(Array.from({ length: 131 }, (_, i) => 50 + i));
+  assert.equal(rayAtAzimuth(sector, 131, 100.2), 50); // ray 50 is at 100 deg
+  assert.equal(rayAtAzimuth(sector, 131, 49.8), 0); // inside the first ray's wedge
+  assert.equal(rayAtAzimuth(sector, 131, 10), -1); // outside the sector
+  assert.equal(rayAtAzimuth(sector, 131, 250), -1);
+  assert.equal(rayAtAzimuth(sector, 131, 181.0), -1); // just past the last ray's half width
+  const holey = Float32Array.from([10, 11, 12, 13, 40, 41, 42]);
+  assert.equal(rayAtAzimuth(holey, 7, 25), -1);
+  assert.equal(rayAtAzimuth(holey, 7, 41.2), 5);
+  const full = Float32Array.from(Array.from({ length: 360 }, (_, i) => i));
+  assert.equal(rayAtAzimuth(full, 360, 359.7), 0); // wraps to ray 0 across north
+  assert.equal(rayAtAzimuth(full, 360, 180.4), 180);
 });

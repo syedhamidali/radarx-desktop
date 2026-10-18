@@ -91,6 +91,48 @@ export interface SmoothMesh {
   vertexCount: number;
 }
 
+/**
+ * How far ray `ai` reaches on each side of its azimuth, in degrees: half-way to a neighbour,
+ * or half a normal step at a sector end / next to a hole too big to fill. This is exactly the wedge
+ * the sharp mesh draws, so hover lookups agree with what is on screen.
+ */
+export function rayHalfWidths(
+  azimuth: Float32Array,
+  nAz: number,
+  ai: number,
+  lay: RayLayout = rayLayout(azimuth, nAz),
+): { halfPrev: number; halfNext: number } {
+  const toNext = stepToNext(azimuth, nAz, ai, lay);
+  const prevIdx = ai > 0 ? ai - 1 : nAz - 1;
+  const fromPrev = ai > 0 || lay.closed ? stepToNext(azimuth, nAz, prevIdx, lay) : -1;
+  return {
+    halfPrev: (fromPrev >= 0 ? fromPrev : lay.step) / 2,
+    halfNext: (toNext >= 0 ? toNext : lay.step) / 2,
+  };
+}
+
+/**
+ * Index of the ray drawn at bearing `az` (degrees), or -1 when that bearing is empty: outside a
+ * sector scan, or inside a hole that is not filled.
+ */
+export function rayAtAzimuth(azimuth: Float32Array, nAz: number, az: number): number {
+  if (nAz <= 0) return -1;
+  const lay = rayLayout(azimuth, nAz);
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < nAz; i++) {
+    const d = Math.abs(wrap180(az - azimuth[i]));
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  const { halfPrev, halfNext } = rayHalfWidths(azimuth, nAz, best, lay);
+  const offset = wrap180(az - azimuth[best]) * lay.dir; // >0: on the side of the next ray
+  const reach = offset >= 0 ? halfNext : halfPrev;
+  return Math.abs(offset) <= reach + 1e-6 ? best : -1;
+}
+
 /** Flat-colour mesh: 2 triangles per valid gate, value constant over the gate. */
 export function buildSharpMesh(
   azimuth: Float32Array,
@@ -123,11 +165,7 @@ export function buildSharpMesh(
   for (let ai = 0; ai < nAz; ai++) {
     // The wedge is centred on the ray's azimuth and reaches half-way to each neighbour. Next to a
     // hole, or at the end of a sector scan, it is only half a normal ray wide.
-    const toNext = stepToNext(azimuth, nAz, ai, lay);
-    const prevIdx = ai > 0 ? ai - 1 : nAz - 1;
-    const fromPrev = ai > 0 || lay.closed ? stepToNext(azimuth, nAz, prevIdx, lay) : -1;
-    const halfNext = (toNext >= 0 ? toNext : lay.step) / 2;
-    const halfPrev = (fromPrev >= 0 ? fromPrev : lay.step) / 2;
+    const { halfPrev, halfNext } = rayHalfWidths(azimuth, nAz, ai, lay);
     const az0 = (azimuth[ai] - lay.dir * halfPrev) * DEG2RAD;
     const az1 = (azimuth[ai] + lay.dir * halfNext) * DEG2RAD;
     const s0 = Math.sin(az0), c0 = Math.cos(az0);

@@ -5,6 +5,7 @@
   import { activeFileId } from '../stores/fileManager';
   import { wsManager } from '../utils/websocket';
   import { retryOp, dismissOp, operations } from '../utils/requestScheduler';
+  import { rayAtAzimuth } from '../utils/meshBuilder';
   import { PPIRenderer, getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import ColorBar from './ColorBar.svelte';
   import StormOverlay from './StormOverlay.svelte';
@@ -543,12 +544,12 @@
 
     const entry = currentEntry;
     // Find nearest azimuth index
-    let bestAi = 0;
-    let bestAzDist = 999;
-    for (let ai = 0; ai < entry.nAz; ai++) {
-      let d = Math.abs(entry.azimuth[ai] - az);
-      if (d > 180) d = 360 - d;
-      if (d < bestAzDist) { bestAzDist = d; bestAi = ai; }
+    // (-1: nothing is drawn at this bearing, e.g. outside a sector scan or inside a hole)
+    const bestAi = rayAtAzimuth(entry.azimuth, entry.nAz, az);
+    if (bestAi < 0) {
+      probeValue = null;
+      probeLabel = null;
+      return;
     }
     // Find nearest range index
     let bestRi = 0;
