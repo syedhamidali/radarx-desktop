@@ -12,31 +12,42 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import varmap
 from engine.reader import mask_below_threshold, sorted_sweep_names
 
 logger = logging.getLogger(__name__)
 
-# Canonical variable name aliases (same as in retrievals.py)
-_VAR_ALIASES: dict[str, list[str]] = {
-    "DBZH": ["DBZH", "DBZ", "reflectivity", "Z", "corrected_reflectivity_horizontal"],
-    "ZDR": ["ZDR", "differential_reflectivity", "Zdr"],
-    "PHIDP": ["PHIDP", "differential_phase", "PhiDP", "UPHIDP"],
-    "KDP": ["KDP", "specific_differential_phase"],
-    "RHOHV": ["RHOHV", "cross_correlation_ratio", "RhoHV", "CCORH"],
-    "VRADH": ["VRADH", "velocity", "V", "radial_velocity"],
-}
+
+def _find_var(
+    ds: xr.Dataset, name: str, overrides: dict[str, str] | None = None
+) -> xr.DataArray | None:
+    """Find a variable by role / canonical name / alias (see :mod:`engine.varmap`)."""
+    return varmap.find_in(ds, name, overrides=overrides)
 
 
-def _find_var(ds: xr.Dataset, name: str) -> xr.DataArray | None:
-    """Find a variable in a dataset using canonical aliases."""
-    aliases = _VAR_ALIASES.get(name, [name])
-    for alias in aliases:
-        if alias in ds.data_vars:
-            return ds[alias]
-    # Fall back to exact name
-    if name in ds.data_vars:
-        return ds[name]
-    return None
+def _get_var(
+    datatree: xr.DataTree,
+    ds: xr.Dataset,
+    sweep: int,
+    name: str,
+    overrides: dict[str, str] | None,
+    notes: list[str],
+) -> xr.DataArray:
+    """Like :func:`_find_var` but falls back to the paired same-elevation sweep (aligned to this
+    sweep's grid, with a note) and raises ``ValueError`` with a helpful message if absent."""
+    da = _find_var(ds, name, overrides)
+    if da is not None:
+        return da
+    m = None
+    if varmap.role_for_name(name) is not None:
+        m = varmap.find_paired_sweep(datatree, sweep, name, overrides=overrides)
+    if m is None or m.sweep is None:
+        raise ValueError(
+            varmap.explain_missing(name, ds, sweep=sweep, tree=datatree, overrides=overrides)
+        )
+    src = _get_sweep_ds(datatree, m.sweep)
+    notes.append(f"{name} taken from sweep {m.sweep} ({m.variable})")
+    return varmap.align_to_sweep(src[m.variable], src, ds)
 
 
 def _get_sweep_ds(datatree: xr.DataTree, sweep: int) -> xr.Dataset:
@@ -54,6 +65,7 @@ def scatter_data(
     sweep: int = 0,
     subsample: int = 5000,
     color_var: str | None = None,
+    overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Return paired arrays for a scatter plot of two variables.
 
@@ -69,6 +81,8 @@ def scatter_data(
         Maximum number of points to return.
     color_var : str, optional
         Third variable for coloring points.
+    overrides : dict, optional
+        User variable mapping ``{role: variable}`` (see :mod:`engine.varmap`).
 
     Returns
     -------
@@ -78,12 +92,9 @@ def scatter_data(
     """
     ds = _get_sweep_ds(datatree, sweep)
 
-    da1 = _find_var(ds, var1)
-    da2 = _find_var(ds, var2)
-    if da1 is None:
-        raise ValueError(f"Variable '{var1}' not found in sweep {sweep}")
-    if da2 is None:
-        raise ValueError(f"Variable '{var2}' not found in sweep {sweep}")
+    notes: list[str] = []
+    da1 = _get_var(datatree, ds, sweep, var1, overrides, notes)
+    da2 = _get_var(datatree, ds, sweep, var2, overrides, notes)
 
     v1 = da1.values.ravel()
     v2 = da2.values.ravel()
@@ -94,7 +105,7 @@ def scatter_data(
     color_vals = None
     color_units = ""
     if color_var:
-        da_c = _find_var(ds, color_var)
+        da_c = _find_var(ds, color_var, overrides)
         if da_c is not None:
             vc = da_c.values.ravel()
             valid &= np.isfinite(vc)
@@ -128,6 +139,8 @@ def scatter_data(
         result["color"] = color_vals[idx_sample].astype(np.float64).tolist()
         result["color_var"] = color_var
         result["color_units"] = color_units
+    if notes:
+        result["notes"] = notes
 
     return result
 
@@ -137,6 +150,7 @@ def histogram_data(
     variable: str,
     sweep: int = 0,
     bins: int = 50,
+    overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compute histogram data for a variable.
 
@@ -158,9 +172,8 @@ def histogram_data(
         min, max, skewness), units, n_valid.
     """
     ds = _get_sweep_ds(datatree, sweep)
-    da = _find_var(ds, variable)
-    if da is None:
-        raise ValueError(f"Variable '{variable}' not found in sweep {sweep}")
+    notes: list[str] = []
+    da = _get_var(datatree, ds, sweep, variable, overrides, notes)
 
     vals = da.values.ravel().astype(np.float64)
     valid = vals[np.isfinite(vals)]
@@ -173,6 +186,7 @@ def histogram_data(
             "stats": {},
             "units": str(da.attrs.get("units", "")),
             "n_valid": 0,
+            **({"notes": notes} if notes else {}),
         }
 
     counts, bin_edges = np.histogram(valid, bins=int(bins))
@@ -215,6 +229,7 @@ def histogram_data(
         },
         "units": str(da.attrs.get("units", "")),
         "n_valid": len(valid),
+        **({"notes": notes} if notes else {}),
     }
 
 
@@ -226,6 +241,7 @@ def region_stats(
     az_max: float = 360.0,
     range_min: float = 0.0,
     range_max: float = 300000.0,
+    overrides: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compute statistics for a polar region.
 
@@ -248,9 +264,8 @@ def region_stats(
         Keys: variable, stats, n_valid, n_total, units.
     """
     ds = _get_sweep_ds(datatree, sweep)
-    da = _find_var(ds, variable)
-    if da is None:
-        raise ValueError(f"Variable '{variable}' not found in sweep {sweep}")
+    notes: list[str] = []
+    da = _get_var(datatree, ds, sweep, variable, overrides, notes)
 
     # Get coordinate arrays
     az = (
@@ -293,6 +308,7 @@ def region_stats(
             "n_valid": 0,
             "n_total": n_total,
             "units": str(da.attrs.get("units", "")),
+            **({"notes": notes} if notes else {}),
         }
 
     mean = float(np.mean(valid))
@@ -312,4 +328,5 @@ def region_stats(
         "n_valid": len(valid),
         "n_total": n_total,
         "units": str(da.attrs.get("units", "")),
+        **({"notes": notes} if notes else {}),
     }

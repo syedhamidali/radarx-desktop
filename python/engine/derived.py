@@ -29,8 +29,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
+import xarray as xr
 
-from engine import plugins
+from engine import plugins, varmap
 
 logger = logging.getLogger(__name__)
 
@@ -294,13 +295,49 @@ class RunCancelledError(Exception):
     """The caller (connection) went away; stop after the current sweep."""
 
 
-def _missing_required(spec: plugins.ModuleSpec, variables: set[str]) -> str | None:
-    """Reason string if the sweep lacks a required field (aliases honoured), else ``None``."""
+def _missing_required(
+    spec: plugins.ModuleSpec,
+    variables: set[str],
+    *,
+    load_dataset: Callable[[], Any] | None = None,
+    datatree: Any = None,
+    sweep: int | None = None,
+    var_overrides: dict[str, str] | None = None,
+) -> str | None:
+    """Reason string if the sweep lacks a required field, else ``None``.
+
+    Cheap check first (role aliases / patterns on the variable *names*); only when that misses
+    is the sweep dataset consulted (CF ``standard_name``, user overrides, paired sweep).
+    """
+    ds = None
     for req in spec.requires:
-        aliases = plugins.VAR_ALIASES.get(req, [req])
-        if not any(a in variables for a in aliases):
-            have = ", ".join(sorted(variables)) or "no fields"
-            return f"no {req} field on this sweep (has {have})"
+        role = varmap.role_for_name(req)
+        if role is None:
+            if req not in variables:
+                have = ", ".join(sorted(variables)) or "no fields"
+                return f"no {req} field on this sweep (has {have})"
+            continue
+        override = (var_overrides or {}).get(role.key)
+        if override and override in variables:
+            continue
+        stub = xr.Dataset({v: xr.DataArray(np.zeros((1, 1))) for v in variables})
+        if varmap.resolve(stub, req) is not None:
+            continue
+        if load_dataset is None:
+            return varmap.explain_missing(req, stub, sweep=sweep)
+        if ds is None:
+            ds = load_dataset()
+        paired_ok = role.key in {r.key for n in spec.paired if (r := varmap.role_for_name(n))}
+        if varmap.resolve(ds, req, overrides=var_overrides) is not None:
+            continue
+        if (
+            paired_ok
+            and sweep is not None
+            and datatree is not None
+            and varmap.find_paired_sweep(datatree, sweep, req, overrides=var_overrides)
+        ):
+            continue
+        return varmap.explain_missing(req, ds, sweep=sweep, tree=datatree, overrides=var_overrides)
     return None
 
 
@@ -327,6 +364,7 @@ def run_all_sweeps(
     get_sweep_grid: Callable[[int], tuple[int, int]],
     progress: Callable[[int, str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
+    var_overrides: dict[str, str] | None = None,
 ) -> VolumeRun:
     """Run a per-sweep module on sweeps ``0..n_sweeps-1``, one at a time.
 
@@ -365,7 +403,14 @@ def run_all_sweeps(
                 progress(pct, _label)
 
         report(0, "")
-        reason = _missing_required(spec, get_sweep_variables(sweep))
+        reason = _missing_required(
+            spec,
+            get_sweep_variables(sweep),
+            load_dataset=lambda _i=sweep: get_sweep_dataset(_i),
+            datatree=datatree,
+            sweep=sweep,
+            var_overrides=var_overrides,
+        )
         if reason is not None:
             run.skipped.append({"sweep": sweep, "reason": reason})
             continue
@@ -379,6 +424,7 @@ def run_all_sweeps(
                 get_sweep_dataset=get_sweep_dataset,
                 progress=report,
                 return_fields=True,
+                var_overrides=var_overrides,
             )
             expected = tuple(get_sweep_grid(sweep))
             for name, arr in fields.items():

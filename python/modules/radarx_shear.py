@@ -60,6 +60,7 @@ found) before the fit. Shear that is real needs azimuthal resolution: 0.5 degree
     ),
     category="Kinematics",
     requires=["VRADH"],
+    paired=["VRADH"],  # velocity may come from the paired Doppler cut (same elevation)
     optional=["DBZH"],
     needs=A.NEEDS,
     params=[

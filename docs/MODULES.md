@@ -189,3 +189,5 @@ some rays. They are exported as the single valid value, since a radar site has o
   to it. A single-file personal module should copy the few helpers it needs.
 * Heavy math should be vectorized NumPy/SciPy. If a kernel is still slow after that, it is
   the right candidate for a native (Rust/PyO3) implementation behind the same module API.
+
+See also: [Variable mapping](VARMAP.md) - how field names, CF names, overrides and paired sweeps resolve for `ctx.field()`.

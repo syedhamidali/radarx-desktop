@@ -57,6 +57,7 @@ otherwise - enter the real value when you know it (NEXRAD: 20-35 m/s depending o
     ),
     category="Kinematics",
     requires=["VRADH"],
+    paired=["VRADH"],  # velocity may come from the paired Doppler cut (same elevation)
     needs=A.NEEDS,
     params=[
         param(

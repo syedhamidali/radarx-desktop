@@ -41,7 +41,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, plugins
+from engine import derived, mosaic, plugins, varmap
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -109,6 +109,8 @@ _shared_reader = RadarReader()
 # Bumped whenever a reader's datatree is replaced (e.g. by ``process``) so the
 # renderer cache never serves stale pixels for a previous incarnation of the data.
 _generations: dict[str, int] = {}
+# User variable mappings ({role: variable}) per file_id; persisted per file path (engine.varmap).
+_var_overrides = varmap.OverrideStore()
 # Strong refs to fire-and-forget tasks so they are not garbage collected mid-run.
 _background_tasks: set[asyncio.Task[Any]] = set()
 
@@ -179,6 +181,12 @@ def _get_reader(file_id: str | None) -> RadarReader:
 
 def _get_datatree(file_id: str | None):
     return _get_reader(file_id).datatree
+
+
+def _overrides_for(file_id: str | None) -> dict[str, str]:
+    """The user's variable mapping for a file (``{role: variable}``; empty when none)."""
+    resolved_id, reader = _resolve_reader(file_id)
+    return _var_overrides.get(resolved_id, reader._path)
 
 
 def _register_reader(reader: RadarReader) -> str:
@@ -527,6 +535,8 @@ class ConnectionHandler:
             "list_qc_algorithms": self._handle_list_qc_algorithms,
             "get_data_table": self._handle_get_data_table,
             "get_metadata_tree": self._handle_get_metadata_tree,
+            "get_variable_mapping": self._handle_get_variable_mapping,
+            "set_variable_mapping": self._handle_set_variable_mapping,
             "ping": self._handle_ping,
             "list_nexrad_stations": self._handle_list_nexrad_stations,
             "list_nexrad_l2_files": self._handle_list_nexrad_l2_files,
@@ -610,6 +620,7 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("get_scatter_data: no file is open")
             return
+        overrides = _overrides_for(msg.get("file_id"))
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -621,6 +632,7 @@ class ConnectionHandler:
                 sweep,
                 subsample=int(subsample),
                 color_var=color_var,
+                overrides=overrides,
             ),
         )
 
@@ -643,11 +655,12 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("get_histogram: no file is open")
             return
+        overrides = _overrides_for(msg.get("file_id"))
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: histogram_data(datatree, variable, sweep, bins=int(bins)),
+            lambda: histogram_data(datatree, variable, sweep, bins=int(bins), overrides=overrides),
         )
 
         await self.send({"type": "histogram_result", "sweep": sweep, **result})
@@ -672,6 +685,7 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("get_region_stats: no file is open")
             return
+        overrides = _overrides_for(msg.get("file_id"))
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -684,6 +698,7 @@ class ConnectionHandler:
                 az_max=float(az_max),
                 range_min=float(range_min),
                 range_max=float(range_max),
+                overrides=overrides,
             ),
         )
 
@@ -981,6 +996,7 @@ class ConnectionHandler:
 
         removed = _file_readers.pop(file_id, None)
         _generations.pop(file_id, None)
+        _var_overrides.drop(file_id)
         if removed is None:
             logger.debug("close_file: file_id %s not found (already closed?)", file_id)
         else:
@@ -1374,13 +1390,14 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("run_retrieval: no file is open")
             return
+        var_overrides = _overrides_for(msg.get("file_id"))
 
         await self.send_progress(10, f"Running retrieval: {name}...")
 
         loop = asyncio.get_running_loop()
 
         def _compute() -> tuple[dict[str, Any], np.ndarray]:
-            result_da = run_retrieval(datatree, name, sweep, params)
+            result_da = run_retrieval(datatree, name, sweep, params, var_overrides=var_overrides)
             values = np.array(result_da.values, dtype=np.float32, copy=True)
             observed = _finite_range(values)
             stats: dict[str, Any] = {}
@@ -2051,6 +2068,63 @@ class ConnectionHandler:
     # Metadata tree handler — full DataTree structure as nested dict
     # ------------------------------------------------------------------
 
+    async def _handle_get_variable_mapping(self, msg: dict[str, Any]) -> None:
+        """Resolved role -> variable map of a file, with how each role matched.
+
+        Request ``{type: "get_variable_mapping", file_id?, sweep?}``; reply
+        ``{type: "variable_mapping", file_id, sweep, overrides, roles: [{role, label, override,
+        variable, kind, confidence, sweep, corrected}], variables: [...]}``. ``kind`` is one of
+        override / cf / alias / pattern; ``sweep`` is set when the field lives on the paired sweep.
+        """
+        await self._send_variable_mapping(msg)
+
+    async def _handle_set_variable_mapping(self, msg: dict[str, Any]) -> None:
+        """Set (merge) user overrides ``{role: variable_name}`` for a file; a blank value clears.
+
+        Stored per open file and persisted per file path (``~/.xradar-desktop/variable_maps.json``).
+        ``replace: true`` replaces the whole mapping. Replies like ``get_variable_mapping``.
+        """
+        mapping = msg.get("mapping")
+        if not isinstance(mapping, dict):
+            await self.send_error("set_variable_mapping: 'mapping' must be an object")
+            return
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        if reader.datatree is None:
+            await self.send_error("set_variable_mapping: no file is open")
+            return
+        try:
+            _var_overrides.update(
+                resolved_id, reader._path, mapping, replace=bool(msg.get("replace", False))
+            )
+        except varmap.VarMapError as exc:
+            await self.send_error(f"set_variable_mapping: {exc}")
+            return
+        await self._send_variable_mapping(msg)
+
+    async def _send_variable_mapping(self, msg: dict[str, Any]) -> None:
+        sweep = msg.get("sweep", 0)
+        if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+            await self.send_error("variable mapping: 'sweep' must be a non-negative integer")
+            return
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        tree = reader.datatree
+        if tree is None:
+            await self.send_error("variable mapping: no file is open")
+            return
+        overrides = _var_overrides.get(resolved_id, reader._path)
+        loop = asyncio.get_running_loop()
+        report = await loop.run_in_executor(
+            None, lambda: varmap.mapping_report(tree, sweep, overrides)
+        )
+        await self.send(
+            {
+                "type": "variable_mapping",
+                "file_id": resolved_id or msg.get("file_id"),
+                "overrides": overrides,
+                **report,
+            }
+        )
+
     async def _handle_get_metadata_tree(self, msg: dict[str, Any]) -> None:
         """Return the full DataTree structure as a nested metadata tree.
 
@@ -2260,6 +2334,7 @@ class ConnectionHandler:
         if datatree is None:
             raise plugins.ModuleError("No file is open")
 
+        var_overrides = _var_overrides.get(resolved_id, reader._path)
         await self.send_progress(5, f"Running module {module_id}...")
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
@@ -2273,6 +2348,7 @@ class ConnectionHandler:
                 get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
                 progress=progress_sync,
                 return_fields=True,
+                var_overrides=var_overrides,
             )
             packed = _pack_module_fields(module_id, fields, _sweep_dataset(reader, sweep))
             return payload, fields, packed
@@ -2352,6 +2428,7 @@ class ConnectionHandler:
                 get_sweep_grid=_grid,
                 progress=progress_sync,
                 is_cancelled=cancel.is_set,
+                var_overrides=_var_overrides.get(resolved_id, reader._path),
             )
             return run, derived.build_variables(run)
 

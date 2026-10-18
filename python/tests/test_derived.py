@@ -345,7 +345,7 @@ def test_run_all_sweeps_skips_sweeps_lacking_required_field(registered):
     n = a.pop("n_sweeps")
     run = derived.run_all_sweeps("d_test_scale", tree, n, {}, **a)
     reasons = {s["sweep"]: s["reason"] for s in run.skipped}
-    assert "no DBZH field" in reasons[1] and "VRADH" in reasons[1]
+    assert "no reflectivity field" in reasons[1].lower() and "VRADH" in reasons[1]
     assert 1 not in run.arrays["Scaled (radarx)"]
 
 
