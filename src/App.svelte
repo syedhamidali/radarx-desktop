@@ -35,6 +35,9 @@
   import { startUiHealth, stopUiHealth } from './lib/utils/uiHealth';
   import { addToast } from './lib/stores/toasts';
   import { workspaceStore, type WorkspaceConfig } from './lib/stores/workspace';
+  import { isWebMode } from './lib/utils/env';
+  import { webUi, engineState, engineStatusMessage } from './lib/stores/webInfo';
+  import { uploadFiles } from './lib/utils/upload';
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -49,9 +52,16 @@
   );
   const statusText = $derived(
     $connectionStatus === 'connected' ? 'Connected'
+    : $engineState.phase === 'waking' ? 'Waking engine...'
     : $connectionStatus === 'connecting' ? 'Connecting...'
     : 'Disconnected'
   );
+  // Web mode only: why the remote engine is not reachable right now (null = nothing to say).
+  const engineMsg = $derived(
+    isWebMode() && $connectionStatus !== 'connected' ? engineStatusMessage($engineState) : null,
+  );
+  let demoBannerDismissed = $state(false);
+  let fileInput = $state<HTMLInputElement | null>(null);
 
   // --- Local reactive state ---
   let leftSidebarOpen = $state(true);
@@ -175,7 +185,13 @@
         console.warn('[App] sidecar error channel unavailable:', err);
       }
     }
-    try {
+    if (isWebMode()) {
+      window.addEventListener('dragenter', onDomDragEnter);
+      window.addEventListener('dragover', onDomDragOver);
+      window.addEventListener('dragleave', onDomDragLeave);
+      window.addEventListener('drop', onDomDrop);
+    }
+    if (!isWebMode()) try {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const unlisten = await getCurrentWindow().onDragDropEvent((event) => {
         if (destroyed) return;
@@ -203,6 +219,10 @@
     destroyed = true;
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('xradar:set-view-mode', handleSetViewMode);
+    window.removeEventListener('dragenter', onDomDragEnter);
+    window.removeEventListener('dragover', onDomDragOver);
+    window.removeEventListener('dragleave', onDomDragLeave);
+    window.removeEventListener('drop', onDomDrop);
     // Sidebar drag may still be in progress (listeners are attached lazily).
     window.removeEventListener('mousemove', onResizeMove);
     window.removeEventListener('mouseup', onResizeEnd);
@@ -318,6 +338,11 @@
   }
 
   async function openFile() {
+    if (isWebMode() && get(webUi)) {
+      // Browser: pick files with a normal <input type=file>; they are uploaded to the engine.
+      fileInput?.click();
+      return;
+    }
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const dir = get(settings).data.defaultDirectory.trim();
@@ -339,6 +364,62 @@
       const path = prompt('Enter the path to a radar file:');
       if (path) openPaths([path.trim()]);
     }
+  }
+
+  /** Web mode: files picked with the file input are uploaded, then opened by their server path. */
+  function handleFilesChosen(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const files = input.files ? Array.from(input.files) : [];
+    input.value = ''; // picking the same file again must fire `change` again
+    uploadWebFiles(files);
+  }
+
+  function uploadWebFiles(files: File[]) {
+    if (files.length === 0) return;
+    stopAnimation();
+    uploadFiles(files, { onUploaded: (path) => enqueueOpen(path) });
+  }
+
+  /** A server-side path became available (upload finished): open it after any open in flight. */
+  function enqueueOpen(path: string) {
+    if (destroyed) return;
+    if (openOp) { openQueue.push(path); return; }
+    if (!sendOpenFile(path)) nextQueued();
+  }
+
+  // Browser drag & drop (the Tauri window has its own native drop events, below).
+  let dragDepth = 0;
+  function hasFiles(e: DragEvent): boolean {
+    return !!e.dataTransfer && Array.from(e.dataTransfer.types ?? []).includes('Files');
+  }
+  function onDomDragEnter(e: DragEvent) {
+    if (!get(webUi) || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    isDragOver = true;
+  }
+  function onDomDragOver(e: DragEvent) {
+    if (!get(webUi) || !hasFiles(e)) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  }
+  function onDomDragLeave(e: DragEvent) {
+    if (!get(webUi) || !hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) isDragOver = false;
+  }
+  function onDomDrop(e: DragEvent) {
+    if (!get(webUi) || !hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    isDragOver = false;
+    uploadWebFiles(Array.from(e.dataTransfer?.files ?? []));
+  }
+
+  /** Welcome screen: open the Cloud Data panel and fetch the latest scan of its station. */
+  async function openLatestFromCloud() {
+    await showPanel('cloud');
+    window.dispatchEvent(new CustomEvent('xradar:cloud-open-latest'));
   }
 
   /** Open one or more files; the first immediately, the rest one after the other. */
@@ -486,7 +567,7 @@
       // new file registers, and that tab would come back blank.
       openRestore = null;
     }
-    pendingRecent = path.includes('://') ? null : path;
+    pendingRecent = path.includes('://') || get(webUi) ? null : path;
     wsManager.openFile(path);
     addToast('info', `Opening ${name}...`);
     return true;
@@ -495,6 +576,7 @@
   /** Re-open the most recent file on start-up when "Auto-load last file" is on. */
   function autoLoadLast() {
     const st = get(settings);
+    if (get(webUi)) return; // recent files are local paths of another machine
     if (!st.data.autoLoadLast || get(openFiles).length > 0 || get(radarData).filePath) return;
     const last = st.data.recentFiles.find((f) => !f.path.includes('://'));
     if (last) openPaths([last.path]);
@@ -632,6 +714,16 @@
 
 <!-- svelte-ignore a11y-no-static-element-interactions -->
 <div class="app-layout">
+  <input
+    type="file"
+    multiple
+    class="visually-hidden-input"
+    bind:this={fileInput}
+    on:change={handleFilesChosen}
+    tabindex="-1"
+    aria-hidden="true"
+    data-testid="web-file-input"
+  />
   {#if isDragOver}
     <div class="drop-overlay">
       <div class="drop-overlay-inner">
@@ -649,7 +741,7 @@
     <div class="toolbar-left">
       <div class="app-title">
         <span class="title-x">x</span><span class="title-rest">radar</span>
-        <span class="title-desktop">desktop</span>
+        <span class="title-desktop">{$webUi ? 'web' : 'desktop'}</span>
       </div>
       <WorkspaceSwitcher on:switch={handleWorkspaceSwitch} />
       <button class="cmd-trigger" on:click={() => (commandPaletteVisible = true)} title="Command Palette">
@@ -731,13 +823,28 @@
         </svg>
       </button>
       <div class="toolbar-separator"></div>
-      <div class="connection-indicator" title="{statusText} to Python sidecar">
+      <div class="connection-indicator" title={$webUi ? `${statusText} to the engine` : `${statusText} to Python sidecar`}>
         <span class="status-dot" style="background: {statusColor}"></span>
         <span class="status-text">{statusText}</span>
       </div>
     </div>
   </header>
 
+  {#if engineMsg}
+    <div class="web-banner engine-banner" class:bad={$engineState.phase === 'rejected' || $engineState.phase === 'unreachable' || $engineState.phase === 'unconfigured'} role="status" data-testid="engine-banner">
+      {#if $engineState.phase === 'waking' || $engineState.phase === 'connecting'}<span class="spinner" aria-hidden="true"></span>{/if}
+      <span>{engineMsg}</span>
+      {#if $engineState.phase === 'waking' && $engineState.since != null}
+        <span class="banner-dim">{$engineState.since}s, attempt {$engineState.attempt}</span>
+      {/if}
+    </div>
+  {/if}
+  {#if $webUi && !demoBannerDismissed}
+    <div class="web-banner demo-banner" data-testid="demo-banner">
+      <span>Demo: files are processed on a shared server and deleted when you close the tab.</span>
+      <button class="banner-close" on:click={() => (demoBannerDismissed = true)} aria-label="Dismiss">&times;</button>
+    </div>
+  {/if}
   <main class="main-content">
     <aside
       class="sidebar sidebar-left"
@@ -771,6 +878,7 @@
         {:else}
           <WelcomeScreen
             on:open-file={openFile}
+            on:open-cloud={openLatestFromCloud}
             on:open-recent={(e) => openPaths([e.detail.path])}
             on:load-workspace={(e) => {
               const config = workspaceStore.loadWorkspace(e.detail.name);
@@ -852,6 +960,25 @@
 </div>
 
 <style>
+  .visually-hidden-input { position: fixed; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+  .web-banner {
+    display: flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0;
+    padding: 3px var(--spacing-lg); font-size: 11px; color: var(--text-secondary);
+    background: var(--glass-bg-heavy); border-bottom: 1px solid var(--glass-border);
+  }
+  .engine-banner { color: var(--accent-warning); }
+  .engine-banner.bad { color: var(--accent-danger); }
+  .banner-dim { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .banner-close {
+    background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 14px; line-height: 1; padding: 0 4px; height: auto; box-shadow: none;
+  }
+  .banner-close:hover { color: var(--text-primary); }
+  .spinner {
+    width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor;
+    border-right-color: transparent; animation: banner-spin 0.9s linear infinite;
+  }
+  @keyframes banner-spin { to { transform: rotate(360deg); } }
   .app-layout {
     display: flex; flex-direction: column; height: 100vh; width: 100vw;
     overflow: hidden; background: var(--bg-primary); position: relative;

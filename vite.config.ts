@@ -1,12 +1,60 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-export default defineConfig({
-  plugins: [svelte()],
-  clearScreen: false,
-  server: {
-    port: 1420,
-    strictPort: true,
-  },
-  envPrefix: ["VITE_", "TAURI_"],
+/**
+ * Web build only (`vite build --mode web`): the desktop app gets its CSP from tauri.conf.json, a
+ * static site has no such file, so the equivalent policy is injected as a <meta> tag.
+ *
+ * connect-src is limited to this origin and the engine in VITE_ENGINE_URL (ws/wss plus the same
+ * host over http/https for downloads). Without VITE_ENGINE_URL no tag is written (the engine would
+ * only be known at run time via ?engine=); set the equivalent header on the host instead.
+ */
+function webCsp(engineUrl: string | undefined): Plugin {
+  return {
+    name: "xradar-web-csp",
+    apply: "build",
+    transformIndexHtml(html) {
+      if (!engineUrl) return html;
+      let host: string;
+      let secure: boolean;
+      try {
+        const u = new URL(engineUrl.replace(/^http/, "ws"));
+        host = u.host;
+        secure = u.protocol === "wss:";
+      } catch {
+        return html;
+      }
+      const engine = secure ? `wss://${host} https://${host}` : `ws://${host} http://${host}`;
+      const csp = [
+        "default-src 'self'",
+        `connect-src 'self' ${engine}`,
+        // Same tile servers as the desktop CSP (the map background loads them as images).
+        "img-src 'self' data: blob: https://api.mapbox.com https://*.tiles.mapbox.com https://tile.openstreetmap.org https://*.tile.opentopomap.org",
+        "style-src 'self' 'unsafe-inline' https://api.mapbox.com",
+        "font-src 'self' data:",
+        "script-src 'self' 'unsafe-inline' blob:",
+        "worker-src 'self' blob:",
+        "object-src 'none'",
+        "base-uri 'self'",
+      ].join("; ");
+      // After <meta charset> (which must stay within the first 1024 bytes), before any script.
+      return html.replace(
+        /(<meta charset[^>]*>)/i,
+        `$1\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`,
+      );
+    },
+  };
+}
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), "VITE_");
+  return {
+    plugins: [svelte(), ...(mode === "web" ? [webCsp(env.VITE_ENGINE_URL)] : [])],
+    clearScreen: false,
+    server: {
+      port: 1420,
+      strictPort: true,
+    },
+    envPrefix: ["VITE_", "TAURI_"],
+  };
 });

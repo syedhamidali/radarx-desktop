@@ -12,9 +12,12 @@ import {
 } from '../stores/radarData';
 import { addToast } from '../stores/toasts';
 import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './ppiRenderer';
-import { addFile, getActiveFile, saveActiveSelection, type FileEntry } from '../stores/fileManager';
+import { addFile, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
 import { registerVariableStyle, styleFor } from './variableStyles';
+import { isWebMode, engineUrl, basename } from './env';
+import { collectDownloads, triggerDownloads } from './download';
+import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
 
 type MessageHandler = (data: any) => void;
 
@@ -54,6 +57,8 @@ interface InflightBinary {
 }
 
 const MAX_RETRY_DELAY_MS = 5000;
+/** A remote engine on a sleeping free host needs ~30-60 s; keep trying for ~10 minutes. */
+const REMOTE_MAX_RETRIES = 130;
 /** Messages queued while the socket is still CONNECTING (flushed on open). */
 const MAX_QUEUED_MESSAGES = 64;
 
@@ -108,7 +113,13 @@ interface SweepJob {
 
 class WebSocketManager {
   private ws: WebSocket | null = null;
-  private port: number | null = null;
+  /** WebSocket URL of the engine: the local sidecar (desktop) or the remote engine (web). */
+  private target: string | null = null;
+  /** True when {@link target} is a remote engine (web build): cold starts are expected. */
+  private remote = false;
+  private everConnected = false;
+  private firstFailureAt = 0;
+  private disconnectHandlers = new Set<() => void>();
   private retryCount = 0;
   private maxRetries = 60;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -143,15 +154,28 @@ class WebSocketManager {
    * Connect to the Python sidecar WebSocket server.
    */
   connect(port: number): void {
-    // Skip if already connected to this port
-    if (this.port === port && this.ws?.readyState === WebSocket.OPEN) {
+    this.connectTo(`ws://localhost:${port}`, false);
+  }
+
+  /**
+   * Connect to a remote engine (web mode). Free hosts sleep and take 30-60 s to wake, so retries
+   * go on for much longer and the UI is told that the engine is waking up.
+   */
+  connectRemote(url: string): void {
+    this.connectTo(url, true);
+  }
+
+  private connectTo(url: string, remote: boolean): void {
+    // Skip if already connected / connecting to this target
+    if (this.target === url && this.ws?.readyState === WebSocket.OPEN) {
       return;
     }
-    // Skip if already connecting to this port
-    if (this.port === port && this.ws?.readyState === WebSocket.CONNECTING) {
+    if (this.target === url && this.ws?.readyState === WebSocket.CONNECTING) {
       return;
     }
-    this.port = port;
+    this.target = url;
+    this.remote = remote;
+    if (remote) this.maxRetries = REMOTE_MAX_RETRIES;
     this.retryCount = 0;
     // Cancel any pending reconnect timer
     if (this.retryTimer) {
@@ -163,7 +187,7 @@ class WebSocketManager {
 
   /** Manually restart the connection (e.g. after retries were exhausted). */
   reconnect(): void {
-    if (this.port == null) return;
+    if (this.target == null) return;
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.retryCount = 0;
     if (this.retryTimer) {
@@ -183,7 +207,7 @@ class WebSocketManager {
   }
 
   private doConnect(): void {
-    if (!this.port) return;
+    if (!this.target) return;
 
     // Clean up any existing connection
     if (this.ws) {
@@ -200,7 +224,8 @@ class WebSocketManager {
     this.resetConnectionState();
 
     connectionStatus.set('connecting');
-    const url = `ws://localhost:${this.port}`;
+    if (this.remote && get(engineState).phase === 'idle') setEngineState({ phase: 'connecting' });
+    const url = this.target;
 
     let ws: WebSocket;
     try {
@@ -218,6 +243,15 @@ class WebSocketManager {
       console.log(`[WS] Connected to ${url}`);
       connectionStatus.set('connected');
       this.retryCount = 0;
+      if (this.remote) {
+        // A new connection is a new server-side session: files opened on the old one are gone.
+        if (this.everConnected && get(openFilesStore).length > 0) {
+          addToast('warning', 'The engine session was reset. Please open your files again.', 10000);
+        }
+        this.everConnected = true;
+        this.firstFailureAt = 0;
+        setEngineState({ phase: 'connected', attempt: 0, reason: null, since: null });
+      }
       this.flushSendQueue();
     };
 
@@ -227,6 +261,8 @@ class WebSocketManager {
       // Anything half-received on this connection is unusable now.
       this.resetConnectionState();
       connectionStatus.set('disconnected');
+      for (const h of [...this.disconnectHandlers]) { try { h(); } catch { /* ignore */ } }
+      if (this.remote && this.handleRemoteClose(event)) return;
       this.scheduleReconnect();
     };
 
@@ -276,10 +312,32 @@ class WebSocketManager {
     return this.authTokenPromise;
   }
 
+  /**
+   * A remote engine closed the socket. When it says why (server full, origin refused, idle timeout)
+   * show the reason. Returns true when no reconnect should be attempted (policy / origin refusal).
+   */
+  private handleRemoteClose(event: CloseEvent): boolean {
+    const reason = (event.reason || '').trim();
+    const abnormal = event.code !== 1000 && event.code !== 1001 && event.code !== 1005 && event.code !== 1006;
+    if (!reason && !abnormal) return false;
+    const text = reason || (event.code === 1008 ? 'This site is not allowed to use the engine.' : `closed (code ${event.code})`);
+    setEngineState({ phase: 'rejected', reason: text });
+    addToast('error', `Engine: ${text}`, 12000);
+    // 1008 = policy violation (origin rejected): retrying cannot help.
+    if (event.code === 1008) {
+      this.retryCount = this.maxRetries;
+      return true;
+    }
+    // A full server accepts the socket and then closes it: do not hammer it every 500 ms.
+    this.retryCount = Math.max(this.retryCount, 4);
+    return false;
+  }
+
   private scheduleReconnect(): void {
     if (this.retryCount >= this.maxRetries) {
       console.warn(`[WS] Max retries (${this.maxRetries}) reached. Giving up.`);
       connectionStatus.set('disconnected');
+      if (this.remote) setEngineState({ phase: 'unreachable' });
       return;
     }
 
@@ -287,6 +345,16 @@ class WebSocketManager {
     // the same port within seconds, so waiting minutes between attempts is useless.
     const delay = Math.min(this.baseDelay * Math.pow(2, this.retryCount), MAX_RETRY_DELAY_MS);
     this.retryCount++;
+    if (this.remote) {
+      if (!this.firstFailureAt) this.firstFailureAt = Date.now();
+      // A close reason from the engine ('rejected') stays on screen while we keep trying.
+      const keep = get(engineState).phase === 'rejected';
+      setEngineState({
+        ...(keep ? {} : { phase: this.everConnected && this.retryCount < 3 ? 'connecting' : 'waking' }),
+        attempt: this.retryCount,
+        since: Math.round((Date.now() - this.firstFailureAt) / 1000),
+      });
+    }
     console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.retryCount}/${this.maxRetries})...`);
 
     if (this.retryTimer) {
@@ -501,6 +569,17 @@ class WebSocketManager {
       return;
     }
 
+    // Web mode: the engine announces its limits / features, and hands out downloads.
+    if (type === 'web_info') {
+      const info = parseWebInfo(msg);
+      if (info) webInfo.set(info);
+      return;
+    }
+    if (isWebMode() && (msg.download_url || msg.download_urls)) {
+      const targets = collectDownloads(this.target, msg);
+      if (targets.length > 0) triggerDownloads(targets);
+    }
+
     // Dispatch to built-in store handlers
     switch (type) {
       case 'file_opened': {
@@ -610,17 +689,19 @@ class WebSocketManager {
         break;
 
       case 'export_complete':
-        this.showExportNotification(msg.path ?? 'Export complete');
+        this.showExportNotification(this.exportText(msg, msg.path ?? 'Export complete'));
         break;
 
       case 'batch_export_complete':
         this.showExportNotification(
-          `Batch export complete: ${msg.count ?? 0} files in ${msg.output_dir ?? 'temp'}`
+          msg.download_url || msg.download_urls
+            ? `Batch export complete: ${msg.count ?? 0} files downloaded`
+            : `Batch export complete: ${msg.count ?? 0} files in ${msg.output_dir ?? 'temp'}`
         );
         break;
 
       case 'animation_export_complete':
-        this.showExportNotification(msg.path ?? 'Animation export complete');
+        this.showExportNotification(this.exportText(msg, msg.path ?? 'Animation export complete'));
         break;
 
       case 'multidoppler_error':
@@ -696,6 +777,14 @@ class WebSocketManager {
         }
       }
     }
+  }
+
+  /** Toast text of a finished export: web replies carry a basename in `path` and a download link. */
+  private exportText(msg: any, fallback: string): string {
+    if (isWebMode() && (msg.download_url || msg.download_urls)) {
+      return `Downloaded ${basename(String(msg.path ?? msg.download_url ?? 'export'))}`;
+    }
+    return fallback;
   }
 
   private showExportNotification(text: string): void {
@@ -1336,6 +1425,7 @@ class WebSocketManager {
       payloadMessage.type !== 'open_file' &&
       payloadMessage.type !== 'close_file' &&
       payloadMessage.type !== 'ping' &&
+      !String(payloadMessage.type).startsWith('upload_') &&
       payloadMessage.type !== 'get_time_series' &&
       payloadMessage.type !== 'get_accumulation';
     if (needsActiveFile) {
@@ -1383,6 +1473,17 @@ class WebSocketManager {
     connectionStatus.set('disconnected');
   }
 
+  /** Register a callback for when the connection drops (used by uploads). */
+  onDisconnect(handler: () => void): () => void {
+    this.disconnectHandlers.add(handler);
+    return () => { this.disconnectHandlers.delete(handler); };
+  }
+
+  /** The engine URL (web mode), used to build absolute download links. */
+  get engineTarget(): string | null {
+    return this.target;
+  }
+
   /**
    * Whether the WebSocket is currently connected.
    */
@@ -1400,6 +1501,21 @@ export const wsManager = new WebSocketManager();
 // This directly asks the Rust backend for the port — no file polling, no event
 // timing, no race conditions. Falls back to file polling for non-Tauri contexts.
 (function autoConnect() {
+  // Web build: connect to the remote engine (VITE_ENGINE_URL, or ?engine= for development).
+  // No sidecar port, no token. A web build without any engine address says so instead of polling.
+  if (isWebMode()) {
+    const url = engineUrl();
+    if (url) {
+      console.log(`[WS] autoConnect: remote engine ${url}`);
+      wsManager.connectRemote(url);
+      return;
+    }
+    if ((import.meta as any).env?.MODE === 'web') {
+      setEngineState({ phase: 'unconfigured' });
+      return;
+    }
+    // Plain `vite` dev in a browser: fall through to the local port-file discovery below.
+  }
   let attempts = 0;
 
   async function tryTauriInvoke(): Promise<number | null> {

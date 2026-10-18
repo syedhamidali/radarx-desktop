@@ -4,6 +4,9 @@ target/
 __pycache__/
 *.pyc
 .env
+.env.*.local
+.env.local
+dist-web/
 .venv/
 *.egg-info/
 build/
