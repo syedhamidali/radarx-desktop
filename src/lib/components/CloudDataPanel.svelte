@@ -5,6 +5,7 @@
   import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
   import { activeFile } from '../stores/fileManager';
+  import { webUi } from '../stores/webInfo';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import {
     findNeighbours,
@@ -98,8 +99,21 @@
   let unsubOpened: (() => void) | null = null;
   let unsubError: (() => void) | null = null;
   let unsubDrop: (() => void) | null = null;
+  let unsubWebUi: (() => void) | null = null;
+
+  /** Welcome screen (web): switch to the real-time tab and fetch the latest scan. */
+  function onOpenLatestRequest() {
+    mode = 'realtime';
+    openRealtime();
+  }
 
   onMount(() => {
+    // Hosted web app: the first thing a visitor sees is the latest scan of a busy radar.
+    unsubWebUi = webUi.subscribe((on) => {
+      if (on && selectedStation === 'KLOT') selectedStation = 'KTLX';
+    });
+    window.addEventListener('xradar:cloud-open-latest', onOpenLatestRequest);
+
     unsubStations = wsManager.onMessage('nexrad_stations', (msg: any) => {
       stations = msg.stations ?? [];
       loadingStations = false;
@@ -142,6 +156,8 @@
   });
 
   onDestroy(() => {
+    window.removeEventListener('xradar:cloud-open-latest', onOpenLatestRequest);
+    unsubWebUi?.();
     if (cloudOp) cancelOp(cloudOp.id);
     unsubStations?.();
     unsubFiles?.();

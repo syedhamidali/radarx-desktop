@@ -1,0 +1,43 @@
+# Render Blueprint: the engine (Docker web service) + the static web app.
+# New -> Blueprint on Render, pick this repo. See docs/RENDER.md for the two values you fill in.
+services:
+  # ---- the data engine (Python, WebSocket + HTTP downloads) ---------------------------------
+  - type: web
+    name: xradar-engine
+    runtime: docker
+    dockerfilePath: ./python/Dockerfile
+    dockerContext: ./python
+    # A NEXRAD volume needs ~300 MB and several users share the instance: 2 GB or more.
+    # (The free/starter 512 MB tiers run out of memory.)
+    plan: standard
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: XRADAR_WEB
+        value: "1"
+      - key: XRADAR_ALLOWED_ORIGINS
+        sync: false            # e.g. https://xradar-web.onrender.com  (the static site's URL)
+      - key: XRADAR_MAX_SESSIONS
+        value: "6"
+      - key: XRADAR_MAX_UPLOAD_MB
+        value: "150"
+      - key: XRADAR_MAX_OPEN_FILES
+        value: "2"
+      - key: XRADAR_MODULE_TIMEOUT_S
+        value: "120"
+
+  # ---- the web app (static) ------------------------------------------------------------------
+  - type: web
+    name: xradar-web
+    runtime: static
+    buildCommand: npm ci && npm run build:web
+    staticPublishPath: ./dist-web
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: VITE_ENGINE_URL
+        sync: false            # e.g. wss://xradar-engine.onrender.com  (the engine's URL, wss://)
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff

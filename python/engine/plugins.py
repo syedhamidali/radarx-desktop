@@ -663,11 +663,18 @@ def module(
     return decorator
 
 
+def _web_mode() -> bool:
+    from engine import web
+
+    return web.is_web_mode()
+
+
 def module_dirs() -> list[Path]:
-    dirs = [
-        Path(__file__).resolve().parent.parent / "modules",
-        Path.home() / ".xradar-desktop" / "modules",
-    ]
+    builtin = Path(__file__).resolve().parent.parent / "modules"
+    if _web_mode():
+        # A public service never loads code from user-writable folders (see docs/WEB.md).
+        return [builtin]
+    dirs = [builtin, Path.home() / ".xradar-desktop" / "modules"]
     for extra in os.environ.get("XRADAR_MODULES_DIR", "").split(os.pathsep):
         if extra.strip():
             dirs.append(Path(extra.strip()).expanduser())
@@ -677,6 +684,8 @@ def module_dirs() -> list[Path]:
 def discover_modules(extra_dirs: list[Path] | None = None) -> dict[str, ModuleSpec]:
     """(Re)scan module directories. A module that fails to import is skipped and recorded."""
     global _current_source
+    if _web_mode():
+        extra_dirs = None  # only the built-in modules are ever loaded in web mode
     MODULES.clear()
     LOAD_ERRORS.clear()
     for directory in [*module_dirs(), *(extra_dirs or [])]:

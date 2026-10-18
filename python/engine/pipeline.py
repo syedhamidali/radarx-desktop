@@ -23,6 +23,7 @@ too (:func:`save_recipe`, :func:`recipe_to_script`).
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -895,7 +896,27 @@ def module_overrides(
 # ---------------------------------------------------------------------------
 
 
+def _web_mode() -> bool:
+    from engine import web
+
+    return web.is_web_mode()
+
+
+#: Web mode: the calling session's private recipes folder (set per request by the server).
+SESSION_RECIPES_DIR: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "xradar_session_recipes_dir", default=None
+)
+
+
 def recipes_dir() -> Path:
+    from engine import web
+
+    if web.is_web_mode():
+        # Never ~/.xradar-desktop in a public service: recipes live in the session folder.
+        folder = SESSION_RECIPES_DIR.get()
+        if folder is None:
+            raise ModuleError("Recipes are not available outside a web session")
+        return folder
     env = os.environ.get("XRADAR_RECIPES_DIR")
     return Path(env).expanduser() if env else Path.home() / ".xradar-desktop" / "recipes"
 
@@ -973,6 +994,8 @@ def save_recipe(raw: Any) -> Recipe:
     recipe.builtin = False
     path = _path_for(recipe.name)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if _web_mode() and not path.exists() and len(list(path.parent.glob("*.json"))) >= 50:
+        raise ModuleError("Too many saved recipes in this session (limit 50); delete some first")
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
         tmp.write_text(json.dumps(recipe.to_dict(), indent=2), encoding="utf-8")
@@ -1002,7 +1025,7 @@ def list_recipes() -> dict[str, Any]:
     return {
         "recipes": [r.to_dict() for r in [*builtin_recipes(), *user]],
         "errors": errors,
-        "dir": str(recipes_dir()),
+        "dir": "" if _web_mode() else str(recipes_dir()),
     }
 
 

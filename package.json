@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "dev:web": "vite --mode web --port 1490 --strictPort",
+    "build:web": "vite build --mode web --base ./ --outDir dist-web",
     "preview": "vite preview",
     "tauri": "tauri"
   },

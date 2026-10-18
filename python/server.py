@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import contextvars
 import functools
@@ -13,12 +14,14 @@ import logging
 import math
 import os
 import re
+import shutil
 import signal
 import sys
 import threading
 import time
 import traceback
 import uuid
+import weakref
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
@@ -43,7 +46,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, pipeline, plugins, varmap
+from engine import derived, mosaic, pipeline, plugins, varmap, web
 from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
@@ -52,7 +55,7 @@ from engine.cloud import (
     list_nexrad_stations,
 )
 from engine.dualpol import histogram_data, region_stats, scatter_data
-from engine.exporter import RadarExporter
+from engine.exporter import _FORMAT_EXT, RadarExporter
 from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
 from engine.qc import QC_REGISTRY, QCPipeline
 from engine.reader import (
@@ -61,6 +64,7 @@ from engine.reader import (
     max_open_bytes,
     preload_backends,
     sorted_sweep_names,
+    system_memory_bytes,
 )
 from engine.renderer import RadarRenderer, _palettes, _resolve_range
 from engine.retrievals import RETRIEVAL_REGISTRY, run_retrieval
@@ -97,6 +101,8 @@ CHUNK_SIZE = 900 * 1024
 NODATA_SENTINEL = -9999.0
 # Largest text file the UI may ask the engine to write (CSV / GeoJSON exports).
 SAVE_TEXT_MAX_BYTES = 20 * 1024 * 1024
+# ... and the (smaller) limit of the public web service.
+WEB_SAVE_TEXT_MAX_BYTES = 5 * 1024 * 1024
 
 
 # True while the current message task has announced progress < 100 without closing it.
@@ -150,14 +156,133 @@ _locks = _LoopLocks()
 _PIPELINE_CANCELS: dict[str, threading.Event] = {}
 
 
+class _ConnState:
+    """Engine state private to one connection (web mode).
+
+    Desktop mode shares the module-level objects above across reconnections. A public service
+    must not: every field here mirrors one of them, and the accessors below pick the calling
+    connection's copy (via ``_SESSION``) or, with web mode off, the module-level one.
+    """
+
+    def __init__(self) -> None:
+        self.renderer = RadarRenderer()
+        self.processor = RadarProcessor()
+        self.exporter = RadarExporter()
+        self.file_readers: dict[str, RadarReader] = {}
+        self.last_file_id: str | None = None
+        self.placeholder = RadarReader()
+        self.generations: dict[str, int] = {}
+        self.var_overrides = varmap.OverrideStore(persist=False)
+        self.pipeline_cancels: dict[str, threading.Event] = {}
+        self.multidoppler_runs: dict[str, threading.Event] = {}
+        self.locks = _LoopLocks()
+
+
+#: The web session of the message being handled (None in desktop mode). Set per message task;
+#: ``_ContextExecutor`` carries it into worker threads.
+_SESSION: contextvars.ContextVar[web.SessionContext | None] = contextvars.ContextVar(
+    "xradar_web_session", default=None
+)
+
+
+def _cs() -> _ConnState | None:
+    """Per-connection state in web mode, else None (use the module-level desktop state)."""
+    ctx = _SESSION.get()
+    if ctx is None:
+        if web.is_web_mode():
+            # Failing closed beats silently serving another visitor's data.
+            raise RuntimeError("web mode: request is not bound to a session")
+        return None
+    return ctx.state
+
+
+def _readers() -> dict[str, RadarReader]:
+    cs = _cs()
+    return _file_readers if cs is None else cs.file_readers
+
+
+def _generations_map() -> dict[str, int]:
+    cs = _cs()
+    return _generations if cs is None else cs.generations
+
+
+def _get_last_file_id() -> str | None:
+    cs = _cs()
+    return _last_file_id if cs is None else cs.last_file_id
+
+
+def _set_last_file_id(value: str | None) -> None:
+    global _last_file_id
+    cs = _cs()
+    if cs is None:
+        _last_file_id = value
+    else:
+        cs.last_file_id = value
+
+
+def _placeholder_reader() -> RadarReader:
+    cs = _cs()
+    return _shared_reader if cs is None else cs.placeholder
+
+
+def _overrides_store() -> varmap.OverrideStore:
+    cs = _cs()
+    return _var_overrides if cs is None else cs.var_overrides
+
+
+def _renderer() -> RadarRenderer:
+    cs = _cs()
+    return _shared_renderer if cs is None else cs.renderer
+
+
+def _processor() -> RadarProcessor:
+    cs = _cs()
+    return _shared_processor if cs is None else cs.processor
+
+
+def _exporter() -> RadarExporter:
+    cs = _cs()
+    return _shared_exporter if cs is None else cs.exporter
+
+
+def _pipeline_cancels() -> dict[str, threading.Event]:
+    cs = _cs()
+    return _PIPELINE_CANCELS if cs is None else cs.pipeline_cancels
+
+
+def _mdop_runs() -> dict[str, threading.Event]:
+    cs = _cs()
+    return _multidoppler_runs if cs is None else cs.multidoppler_runs
+
+
+class _ContextExecutor(concurrent.futures.ThreadPoolExecutor):
+    """Thread pool whose tasks run in the submitter's context (so ``_SESSION`` follows them)."""
+
+    def submit(self, fn, /, *args, **kwargs):  # type: ignore[override]
+        ctx = contextvars.copy_context()
+        return super().submit(ctx.run, fn, *args, **kwargs)
+
+
+_context_loops: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
+
+
+def _ensure_context_executor(loop: asyncio.AbstractEventLoop) -> None:
+    """Make ``loop.run_in_executor(None, ...)`` carry the web session into worker threads."""
+    if loop not in _context_loops:
+        loop.set_default_executor(_ContextExecutor(thread_name_prefix="xradar-web"))
+        _context_loops.add(loop)
+
+
 def _render_lock() -> asyncio.Lock:
     """Serialises access to the (non thread-safe) datashader renderer."""
-    return _locks.get("render")
+    cs = _cs()
+    return (_locks if cs is None else cs.locks).get("render")
 
 
 def _mutation_lock() -> asyncio.Lock:
     """Serialises operations that mutate/consume shared processor/exporter state."""
-    return _locks.get("mutation")
+    cs = _cs()
+    return (_locks if cs is None else cs.locks).get("mutation")
 
 
 class UnknownFileError(KeyError):
@@ -176,14 +301,16 @@ def _resolve_reader(file_id: str | None) -> tuple[str | None, RadarReader]:
     * With nothing open, the empty placeholder reader is returned so callers can
       report "no file is open".
     """
+    readers = _readers()
     if file_id:
-        reader = _file_readers.get(file_id)
+        reader = readers.get(file_id)
         if reader is None:
             raise UnknownFileError(f"Unknown or closed file_id '{file_id}'")
         return file_id, reader
-    if _last_file_id and _last_file_id in _file_readers:
-        return _last_file_id, _file_readers[_last_file_id]
-    return None, _shared_reader
+    last = _get_last_file_id()
+    if last and last in readers:
+        return last, readers[last]
+    return None, _placeholder_reader()
 
 
 def _get_reader(file_id: str | None) -> RadarReader:
@@ -197,23 +324,22 @@ def _get_datatree(file_id: str | None):
 def _overrides_for(file_id: str | None) -> dict[str, str]:
     """The user's variable mapping for a file (``{role: variable}``; empty when none)."""
     resolved_id, reader = _resolve_reader(file_id)
-    return _var_overrides.get(resolved_id, reader._path)
+    return _overrides_store().get(resolved_id, reader._path)
 
 
 def _register_reader(reader: RadarReader) -> str:
     """Store a freshly opened reader under a new file_id and make it the active one."""
-    global _last_file_id
     file_id = str(uuid.uuid4())
-    _file_readers[file_id] = reader
-    _generations[file_id] = 0
-    _last_file_id = file_id
+    _readers()[file_id] = reader
+    _generations_map()[file_id] = 0
+    _set_last_file_id(file_id)
     if not _RENDER_ACCEPTS_TOKEN:  # legacy renderer cache has no data identity
-        _shared_renderer.invalidate_cache()
+        _renderer().invalidate_cache()
     return file_id
 
 
 def _readers_snapshot() -> list[RadarReader]:
-    return list(_file_readers.values())
+    return list(_readers().values())
 
 
 def _open_usage_bytes(extra: RadarReader | None = None) -> int:
@@ -235,7 +361,7 @@ def _open_usage_bytes(extra: RadarReader | None = None) -> int:
 
 def _release_caches() -> None:
     """Drop every re-computable cache: rendered tiles, index maps, lazily fetched sweeps."""
-    _shared_renderer.release_memory()
+    _renderer().release_memory()
     for reader in _readers_snapshot():
         reader.release_caches()
     gc.collect()
@@ -263,7 +389,7 @@ def memory_status() -> dict[str, Any]:
     return {
         "open_mb": round(_open_usage_bytes() / (1024 * 1024), 1),
         "max_mb": round(budget / (1024 * 1024)) if budget else None,
-        "files": len(_file_readers),
+        "files": len(_readers()),
     }
 
 
@@ -304,7 +430,7 @@ def _cache_token(file_id: str | None) -> tuple[str, int] | None:
     """Identity of the data behind a reader: (file_id, generation)."""
     if file_id is None:
         return None
-    return file_id, _generations.get(file_id, 0)
+    return file_id, _generations_map().get(file_id, 0)
 
 
 def _spawn(coro: Any) -> asyncio.Task[Any]:
@@ -315,10 +441,18 @@ def _spawn(coro: Any) -> asyncio.Task[Any]:
 
 
 def _origin_allowed(ws: ServerConnection) -> bool:
-    if not EXPECTED_SESSION_TOKEN:
-        return True
     request = getattr(ws, "request", None)
     headers = getattr(request, "headers", None)
+    if web.is_web_mode():
+        # Public service: an explicit allow-list (or same-origin); browsers always send Origin.
+        return web.origin_allowed(
+            headers.get("Origin") if headers is not None else None,
+            headers.get("Host") if headers is not None else None,
+            web.settings(),
+            allow_missing=False,
+        )
+    if not EXPECTED_SESSION_TOKEN:
+        return True
     origin = headers.get("Origin") if headers is not None else None
     if not origin:
         return True
@@ -508,8 +642,10 @@ def _export_inputs(
 class ConnectionHandler:
     """Manages message routing for a single WebSocket connection, using shared state."""
 
-    def __init__(self, ws: ServerConnection) -> None:
+    def __init__(self, ws: ServerConnection, session: web.SessionContext | None = None) -> None:
         self.ws = ws
+        #: Web mode: this connection's private session (None = desktop mode).
+        self.session = session
         # Header + binary chunks of one response must reach the client contiguously
         # (it has a single "pending binary header" slot), so all sends share a lock.
         self._send_lock = asyncio.Lock()
@@ -531,6 +667,9 @@ class ConnectionHandler:
         await self.ws.send(payload)
 
     async def send(self, msg: dict[str, Any]) -> None:
+        if self.session is not None and isinstance(msg.get("message"), str):
+            # never show the server's folder layout to a visitor (progress texts name files too)
+            msg = {**msg, "message": self._scrub(msg["message"])}
         try:
             async with self._send_lock:
                 await self._send_text(msg)
@@ -570,6 +709,12 @@ class ConnectionHandler:
                     await self.ws.send(chunk)
         except websockets.exceptions.ConnectionClosed:
             logger.warning("Connection closed while sending binary data")
+
+    def _scrub(self, text: str) -> str:
+        assert self.session is not None
+        for folder in (str(self.session.dir), self.session.real_dir):
+            text = text.replace(folder, "<session>")
+        return text
 
     async def send_error(self, message: str) -> None:
         await self.send({"type": "error", "message": message})
@@ -625,6 +770,21 @@ class ConnectionHandler:
         return progress_sync
 
     async def handle_message(self, raw: str) -> None:
+        if self.session is None:
+            await self._handle_message(raw)
+            return
+        # Web mode: bind the session for this message (worker threads inherit it, see
+        # ``_ContextExecutor``) and point the recipe store at the session folder.
+        _ensure_context_executor(asyncio.get_running_loop())
+        token = _SESSION.set(self.session)
+        recipes_token = pipeline.SESSION_RECIPES_DIR.set(self.session.dir / "recipes")
+        try:
+            await self._handle_message(raw)
+        finally:
+            pipeline.SESSION_RECIPES_DIR.reset(recipes_token)
+            _SESSION.reset(token)
+
+    async def _handle_message(self, raw: str) -> None:
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -640,12 +800,17 @@ class ConnectionHandler:
             await self.send_error("Message missing 'type' field")
             return
 
-        if EXPECTED_SESSION_TOKEN and msg.get("token") != EXPECTED_SESSION_TOKEN:
+        # Web mode has no session token (a browser has none); the session itself is the boundary.
+        if (
+            EXPECTED_SESSION_TOKEN
+            and self.session is None
+            and msg.get("token") != EXPECTED_SESSION_TOKEN
+        ):
             logger.warning("Unauthorized message type=%s (token mismatch)", msg_type)
             await self.send_error("Unauthorized WebSocket message")
             return
 
-        handler = {
+        table: dict[str, Any] = {
             "open_file": self._handle_open_file,
             "close_file": self._handle_close_file,
             "render": self._handle_render,
@@ -701,7 +866,16 @@ class ConnectionHandler:
             "run_multidoppler": self._handle_run_multidoppler,
             "multidoppler_cancel": self._handle_multidoppler_cancel,
             "export_multidoppler": self._handle_export_multidoppler,
-        }.get(msg_type)
+            "get_web_info": self._handle_get_web_info,
+        }
+        if self.session is not None:
+            table.update(
+                upload_start=self._handle_upload_start,
+                upload_chunk=self._handle_upload_chunk,
+                upload_end=self._handle_upload_end,
+                upload_abort=self._handle_upload_abort,
+            )
+        handler = table.get(msg_type) if isinstance(msg_type, str) else None
 
         if handler is None:
             await self.send_error(f"Unknown message type: {msg_type}")
@@ -987,6 +1161,163 @@ class ConnectionHandler:
             length_key="byte_length",
         )
 
+    # ── Web mode: info, uploads, path/limit helpers ───────────────────────────
+
+    async def _handle_get_web_info(self, msg: dict[str, Any]) -> None:
+        """``{type: "get_web_info"}`` -> ``web_info`` (``web_mode: false`` on the desktop)."""
+        if self.session is None:
+            await self.send({"type": "web_info", "web_mode": False})
+        else:
+            await self.send(web.web_info())
+
+    async def _upload_error(self, upload_id: Any, exc: BaseException) -> None:
+        await self.send(
+            {
+                "type": "upload_error",
+                "upload_id": upload_id if isinstance(upload_id, str) else None,
+                "message": str(exc),
+            }
+        )
+
+    async def _handle_upload_start(self, msg: dict[str, Any]) -> None:
+        """``upload_start {upload_id, filename, size}`` -> ``upload_ready`` | ``upload_error``."""
+        assert self.session is not None
+        upload_id = msg.get("upload_id")
+        try:
+            self.session.upload_start(upload_id, msg.get("filename"), msg.get("size"))
+        except web.WebError as exc:
+            await self._upload_error(upload_id, exc)
+            return
+        await self.send({"type": "upload_ready", "upload_id": upload_id})
+
+    async def _handle_upload_chunk(self, msg: dict[str, Any]) -> None:
+        """``upload_chunk {upload_id, seq, data}`` -> ``upload_progress {upload_id, received}``.
+
+        No ``await`` happens before the chunk is stored, so chunks pipelined by the client are
+        applied in arrival order even though every message runs as its own task.
+        """
+        assert self.session is not None
+        upload_id = msg.get("upload_id")
+        try:
+            received = self.session.upload_chunk(upload_id, msg.get("seq"), msg.get("data"))
+        except web.WebError as exc:
+            await self._upload_error(upload_id, exc)
+            return
+        await self.send({"type": "upload_progress", "upload_id": upload_id, "received": received})
+
+    async def _handle_upload_end(self, msg: dict[str, Any]) -> None:
+        """``upload_end {upload_id}`` -> ``upload_complete {upload_id, path}`` or error"""
+        assert self.session is not None
+        upload_id = msg.get("upload_id")
+        try:
+            final = await asyncio.get_running_loop().run_in_executor(
+                None, self.session.upload_end, upload_id
+            )
+        except web.WebError as exc:
+            await self._upload_error(upload_id, exc)
+            return
+        await self.send(
+            {
+                "type": "upload_complete",
+                "upload_id": upload_id,
+                "path": str(final),
+                "size": final.stat().st_size,
+            }
+        )
+
+    async def _handle_upload_abort(self, msg: dict[str, Any]) -> None:
+        """``upload_abort {upload_id}``: discard a partial upload (no reply)."""
+        assert self.session is not None
+        upload_id = msg.get("upload_id")
+        if isinstance(upload_id, str):
+            self.session.upload_abort(upload_id)
+
+    def _web_prepare_reader(self, reader: RadarReader) -> None:
+        """Web mode: keep a reader's scratch files in the session folder and cap inflation."""
+        if self.session is None:
+            return
+        reader.tmp_dir = str(self.session.dir)
+        reader.max_decompressed_bytes = self.session.settings.max_session_bytes
+
+    def _web_export_target(
+        self, requested: Any, fmt: Any, dpi: Any, *, ext: str | None = None
+    ) -> Path:
+        """Web mode: the session-folder file an export is written to (bare names only)."""
+        assert self.session is not None
+        fmt_l = str(fmt).lower().strip()
+        if fmt_l == "zarr":
+            raise web.WebError("Zarr (a folder) cannot be downloaded; choose NetCDF instead")
+        if isinstance(dpi, int) and dpi > 300:
+            raise web.WebError("'dpi' is limited to 300 in the web service")
+        self.session.check_quota()
+        ext = ext or _FORMAT_EXT.get(fmt_l, "bin")
+        return self.session.export_target(requested, ext=ext)
+
+    def _web_batch_dir(
+        self, requested: Any, fmt: Any, dpi: Any, variables: list[Any], sweeps: list[Any]
+    ) -> Path:
+        """Web mode: a fresh folder under the session's exports for a batch export."""
+        assert self.session is not None
+        if str(fmt).lower().strip() == "zarr":
+            raise web.WebError("Zarr (a folder) cannot be downloaded; choose NetCDF instead")
+        if isinstance(dpi, int) and dpi > 300:
+            raise web.WebError("'dpi' is limited to 300 in the web service")
+        if len(variables) * len(sweeps) > 60:
+            raise web.WebError("A batch export can have at most 60 files here")
+        self.session.check_quota()
+        return self.session.export_subdir(requested)
+
+    def _web_discard(self, path: str | None) -> None:
+        """Web mode: remove a half-written export after a failure."""
+        if self.session is None or not path:
+            return
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+    def _web_check_can_open(self) -> None:
+        """Web mode: refuse a new file when the per-session open-file limit is reached."""
+        if self.session is None:
+            return
+        limit = self.session.settings.max_open_files
+        if len(_readers()) >= limit:
+            raise web.WebError(
+                f"At most {limit} files can be open at once in the web service; close one first"
+            )
+
+    async def _web_enforce_budget(self, reader: RadarReader) -> None:
+        """Web mode: refuse (instead of merely warning about) a file beyond the memory budget."""
+        if self.session is None:
+            return
+        loop = asyncio.get_running_loop()
+        over = await loop.run_in_executor(None, _evict_if_over_budget, 0, reader)
+        if over:
+            budget = (max_open_bytes() or 0) // (1024 * 1024)
+            used = await loop.run_in_executor(None, _open_usage_bytes, reader) // (1024 * 1024)
+            with contextlib.suppress(Exception):
+                reader.close()
+            raise web.WebError(
+                f"This file needs about {used} MB in memory, over the {budget} MB per-session "
+                "limit of this service; close other files or use a smaller file"
+            )
+
+    def _web_module_params(self, module_id: str, params: dict[str, Any]) -> dict[str, Any]:
+        """Web mode: file-valued module parameters may only name files inside the session."""
+        if self.session is None:
+            return params
+        checked = dict(params)
+        for key, value in params.items():
+            if not re.search(r"(?:^|_)(?:path|file|dir|folder)s?$", str(key)):
+                continue
+            if value in (None, ""):
+                continue
+            if key == "model_path":  # an ML model is code-like input; only the bundled one runs
+                raise plugins.ModuleError("Custom model files are not available in the web service")
+            try:
+                checked[key] = self.session.resolve_input_path(value)
+            except web.WebError as exc:
+                raise plugins.ModuleError(f"{module_id}: parameter '{key}': {exc}") from exc
+        return checked
+
     async def _handle_ping(self, msg: dict[str, Any]) -> None:
         """Health check handler — responds with pong and server status."""
         try:
@@ -1036,9 +1367,12 @@ class ConnectionHandler:
         keep their data and ``close_file`` on one never affects another.
         """
         loop = asyncio.get_running_loop()
+        self._web_check_can_open()
         reader = RadarReader()
+        self._web_prepare_reader(reader)
         job = loop.run_in_executor(None, opener, reader)
         schema = await (asyncio.wait_for(job, timeout) if timeout else job)
+        await self._web_enforce_budget(reader)
         await self._enforce_memory_budget(
             str(schema.get("source") or "cloud file").rsplit("/", 1)[-1], reader
         )
@@ -1052,6 +1386,12 @@ class ConnectionHandler:
         if not s3_path or not isinstance(s3_path, str):
             await self.send_error("open_nexrad_l2: 'path' required")
             return
+        if self.session is not None:  # no user-supplied buckets or keys in a public service
+            try:
+                s3_path = web.check_s3_path(s3_path)
+            except web.WebError as exc:
+                await self.send_error(f"open_nexrad_l2 failed: {exc}")
+                return
         await self.send_progress(5, "Connecting to S3...")
         try:
             await self.send_progress(15, f"Downloading {s3_path.split('/')[-1]}...")
@@ -1089,6 +1429,15 @@ class ConnectionHandler:
         if not station or not scan_key:
             await self.send_error("open_arco_scan: 'station' and 'scan_key' required")
             return
+        if self.session is not None and not (
+            isinstance(station, str)
+            and isinstance(scan_key, str)
+            and re.fullmatch(r"[A-Za-z0-9]{4}", station)
+            and re.fullmatch(r"[A-Za-z0-9_.\-]{1,40}", scan_key)
+            and ".." not in scan_key
+        ):
+            await self.send_error("open_arco_scan failed: invalid station or scan key")
+            return
         await self.send_progress(5, "Connecting to ARCO store (first open ~30s, cached after)…")
         try:
             await self._open_with_new_reader(
@@ -1110,10 +1459,20 @@ class ConnectionHandler:
             await self.send_error("open_file: 'path' must be a string")
             return
 
+        if self.session is not None:
+            # Web mode: only files this session uploaded (or downloaded from the cloud tab).
+            try:
+                path = self.session.resolve_input_path(path)
+                self._web_check_can_open()
+            except web.WebError as exc:
+                await self.send_error(f"open_file failed: {exc}")
+                return
+
         filename = Path(path).name
         await self.send_progress(5, f"Detecting format for {filename}...")
 
         reader = RadarReader()
+        self._web_prepare_reader(reader)
         loop = asyncio.get_running_loop()
 
         # Free re-computable caches before a big read if the budget is already tight.
@@ -1135,6 +1494,11 @@ class ConnectionHandler:
 
         await self.send_progress(80, f"Building metadata for {filename}...")
 
+        try:
+            await self._web_enforce_budget(reader)
+        except web.WebError as exc:
+            await self.send_error(f"open_file failed: {exc}")
+            return
         await self._enforce_memory_budget(filename, reader)
 
         # No renderer-cache flush needed: cache entries are keyed by (file_id, generation).
@@ -1151,31 +1515,29 @@ class ConnectionHandler:
 
     async def _handle_close_file(self, msg: dict[str, Any]) -> None:
         """Remove a file from the multi-file reader dict."""
-        global _last_file_id
-
         file_id = msg.get("file_id")
         if not file_id or not isinstance(file_id, str):
             await self.send_error("close_file: missing or invalid 'file_id'")
             return
 
-        removed = _file_readers.pop(file_id, None)
-        _generations.pop(file_id, None)
-        _var_overrides.drop(file_id)
+        removed = _readers().pop(file_id, None)
+        _generations_map().pop(file_id, None)
+        _overrides_store().drop(file_id)
         if removed is None:
             logger.debug("close_file: file_id %s not found (already closed?)", file_id)
         else:
             # Entries are token-keyed so they could never be served again; free the memory.
-            _shared_renderer.invalidate_cache()
+            _renderer().invalidate_cache()
             store = derived.store_for(removed, create=False)
             if store is not None:
                 store.drop()
 
         # If we closed the active file, fall back to the most recently opened remaining one.
-        if _last_file_id == file_id:
-            _last_file_id = next(reversed(_file_readers), None)
+        if _get_last_file_id() == file_id:
+            _set_last_file_id(next(reversed(_readers()), None))
 
         await self.send({"type": "file_closed", "file_id": file_id})
-        logger.info("Closed file %s (%d files still open)", file_id, len(_file_readers))
+        logger.info("Closed file %s (%d files still open)", file_id, len(_readers()))
 
     async def _prefetch(self, reader: RadarReader, sweep: int, variable: str) -> None:
         """Load a sweep's values in the background so the first get_sweep_data is instant.
@@ -1213,6 +1575,9 @@ class ConnectionHandler:
         if not isinstance(height, int) or height <= 0 or height > 10000:
             await self.send_error("render: 'height' must be an integer between 1 and 10000")
             return
+        if self.session is not None and (width > 4096 or height > 4096):
+            await self.send_error("render: 'width' and 'height' are limited to 4096 here")
+            return
         if bbox is not None:
             if not isinstance(bbox, list) or len(bbox) != 4:
                 await self.send_error("render: 'bbox' must be a list of 4 numbers")
@@ -1233,10 +1598,10 @@ class ConnectionHandler:
 
         def _render() -> dict[str, Any]:
             if _RENDER_ACCEPTS_TOKEN:
-                return _shared_renderer.render_sweep(
+                return _renderer().render_sweep(
                     data, variable, sweep, width, height, bbox, cache_token=token
                 )
-            return _shared_renderer.render_sweep(data, variable, sweep, width, height, bbox)
+            return _renderer().render_sweep(data, variable, sweep, width, height, bbox)
 
         async with _render_lock():
             result = await loop.run_in_executor(None, _render)
@@ -1303,7 +1668,7 @@ class ConnectionHandler:
         async with _mutation_lock():
             result_tree = await loop.run_in_executor(
                 None,
-                _shared_processor.process,
+                _processor().process,
                 datatree,
                 pipeline,
                 progress_sync,
@@ -1312,13 +1677,14 @@ class ConnectionHandler:
         # Swap the data and bump the generation together (no await in between) so
         # no render can pair the new generation with the old tree or vice versa.
         reader._dtree = result_tree
-        if resolved_id is not None and resolved_id in _generations:
-            _generations[resolved_id] += 1
+        generations = _generations_map()
+        if resolved_id is not None and resolved_id in generations:
+            generations[resolved_id] += 1
         # Derived variables were computed from the old tree: never serve them again.
         stale = derived.store_for(reader, create=False)
         dropped = stale.drop() if stale is not None else []
         if not _RENDER_ACCEPTS_TOKEN:
-            _shared_renderer.invalidate_cache()
+            _renderer().invalidate_cache()
 
         if dropped:
             await self._send_derived_list(resolved_id, reader, dropped=dropped)
@@ -1356,6 +1722,13 @@ class ConnectionHandler:
             await self.send_error("export: no file is open")
             return
 
+        if self.session is not None:
+            try:
+                output_path = str(self._web_export_target(output_path, fmt, dpi))
+            except web.WebError as exc:
+                await self.send_error(f"export: {exc}")
+                return
+
         await self.send_progress(10, f"Exporting as {fmt}...")
 
         loop = asyncio.get_running_loop()
@@ -1374,7 +1747,7 @@ class ConnectionHandler:
                 include_original=include_original,
                 options=options,
             )
-            path = _shared_exporter.export(
+            path = _exporter().export(
                 tree,
                 fmt=fmt,
                 dpi=dpi,
@@ -1387,10 +1760,22 @@ class ConnectionHandler:
             return path, names
 
         async with _mutation_lock():
-            saved_path, derived_names = await loop.run_in_executor(None, _do_export)
+            try:
+                saved_path, derived_names = await loop.run_in_executor(None, _do_export)
+            except BaseException:
+                self._web_discard(output_path)
+                raise
 
+        result_path: dict[str, Any] = {"path": saved_path}
+        if self.session is not None:
+            try:
+                self.session.check_export_quota([saved_path])
+                result_path = self.session.download_info(saved_path)
+            except web.WebError as exc:
+                await self.send_error(f"export: {exc}")
+                return
         await self.send(
-            {"type": "export_complete", "path": saved_path, "derived_exported": derived_names}
+            {"type": "export_complete", **result_path, "derived_exported": derived_names}
         )
 
     async def _handle_batch_export(self, msg: dict[str, Any]) -> None:
@@ -1425,6 +1810,13 @@ class ConnectionHandler:
             await self.send_error("batch_export: no file is open")
             return
 
+        if self.session is not None:
+            try:
+                output_dir = str(self._web_batch_dir(output_dir, fmt, dpi, variables, sweeps))
+            except web.WebError as exc:
+                await self.send_error(f"batch_export: {exc}")
+                return
+
         loop = asyncio.get_running_loop()
 
         progress_sync = self._progress_callback(loop)
@@ -1441,7 +1833,7 @@ class ConnectionHandler:
                     include_original=True,
                     options=options,
                 )
-                return _shared_exporter.batch_export(
+                return _exporter().batch_export(
                     tree,
                     variables=mapped,
                     sweeps=sweeps,
@@ -1452,8 +1844,30 @@ class ConnectionHandler:
                     options=opts,
                 )
 
-            saved_paths = await loop.run_in_executor(None, _do_batch)
+            try:
+                saved_paths = await loop.run_in_executor(None, _do_batch)
+            except BaseException:
+                if self.session is not None and output_dir:
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise
 
+        if self.session is not None:
+            try:
+                self.session.check_export_quota([output_dir])
+                downloads = [self.session.download_info(p) for p in saved_paths]
+            except web.WebError as exc:
+                await self.send_error(f"batch_export: {exc}")
+                return
+            await self.send(
+                {
+                    "type": "batch_export_complete",
+                    "paths": [d["path"] for d in downloads],
+                    "download_urls": [d["download_url"] for d in downloads],
+                    "count": len(saved_paths),
+                    "output_dir": os.path.basename(output_dir),
+                }
+            )
+            return
         await self.send(
             {
                 "type": "batch_export_complete",
@@ -1499,6 +1913,15 @@ class ConnectionHandler:
             await self.send_error("export_animation: no file is open")
             return
 
+        if self.session is not None:
+            try:
+                if len(sweeps) > 60:
+                    raise web.WebError("An animation can have at most 60 frames here")
+                output_path = str(self._web_export_target(output_path, "gif", dpi, ext="gif"))
+            except web.WebError as exc:
+                await self.send_error(f"export_animation: {exc}")
+                return
+
         loop = asyncio.get_running_loop()
 
         progress_sync = self._progress_callback(loop)
@@ -1514,7 +1937,7 @@ class ConnectionHandler:
                 include_original=True,
                 options=options,
             )
-            return _shared_exporter.export_animation(
+            return _exporter().export_animation(
                 tree,
                 variable=mapped[0],
                 sweeps=sweeps,
@@ -1526,9 +1949,21 @@ class ConnectionHandler:
             )
 
         async with _mutation_lock():
-            saved_path = await loop.run_in_executor(None, _do_animation)
+            try:
+                saved_path = await loop.run_in_executor(None, _do_animation)
+            except BaseException:
+                self._web_discard(output_path)
+                raise
 
-        await self.send({"type": "animation_export_complete", "path": saved_path})
+        result_path: dict[str, Any] = {"path": saved_path}
+        if self.session is not None:
+            try:
+                self.session.check_export_quota([saved_path])
+                result_path = self.session.download_info(saved_path)
+            except web.WebError as exc:
+                await self.send_error(f"export_animation: {exc}")
+                return
+        await self.send({"type": "animation_export_complete", **result_path})
 
     # ------------------------------------------------------------------
     # Retrieval handlers
@@ -1880,8 +2315,8 @@ class ConnectionHandler:
 
         readers: dict[str, RadarReader] = {}
         for fid in file_ids:
-            if fid in _file_readers:
-                readers[fid] = _file_readers[fid]
+            if fid in _readers():
+                readers[fid] = _readers()[fid]
 
         if not readers:
             await self.send_error("get_time_series: none of the specified file_ids are open")
@@ -1916,8 +2351,8 @@ class ConnectionHandler:
             await self.send_error("get_difference: 'file_id_1' and 'file_id_2' are required")
             return
 
-        reader1 = _file_readers.get(fid1)
-        reader2 = _file_readers.get(fid2)
+        reader1 = _readers().get(fid1)
+        reader2 = _readers().get(fid2)
         if not reader1:
             await self.send_error(f"get_difference: file_id_1 '{fid1}' not found")
             return
@@ -1967,8 +2402,8 @@ class ConnectionHandler:
 
         readers: dict[str, RadarReader] = {}
         for fid in file_ids:
-            if fid in _file_readers:
-                readers[fid] = _file_readers[fid]
+            if fid in _readers():
+                readers[fid] = _readers()[fid]
 
         if not readers:
             await self.send_error("get_accumulation: none of the specified file_ids are open")
@@ -2303,7 +2738,7 @@ class ConnectionHandler:
             await self.send_error("set_variable_mapping: no file is open")
             return
         try:
-            _var_overrides.update(
+            _overrides_store().update(
                 resolved_id, reader._path, mapping, replace=bool(msg.get("replace", False))
             )
         except varmap.VarMapError as exc:
@@ -2321,7 +2756,7 @@ class ConnectionHandler:
         if tree is None:
             await self.send_error("variable mapping: no file is open")
             return
-        overrides = _var_overrides.get(resolved_id, reader._path)
+        overrides = _overrides_store().get(resolved_id, reader._path)
         loop = asyncio.get_running_loop()
         report = await loop.run_in_executor(
             None, lambda: varmap.mapping_report(tree, sweep, overrides)
@@ -2469,16 +2904,21 @@ class ConnectionHandler:
     async def _handle_list_modules(self, msg: dict[str, Any]) -> None:
         """List discovered plugin modules (``reload: true`` re-scans the module dirs)."""
         loop = asyncio.get_running_loop()
-        if msg.get("reload"):
+        # Web mode: the module registry is shared by every visitor and never re-scanned.
+        if msg.get("reload") and self.session is None:
             async with _locks.get("modules"):
                 await loop.run_in_executor(None, plugins.discover_modules)
         listing = plugins.list_modules()
+        errors, dirs = listing["errors"], listing["dirs"]
+        if self.session is not None:  # no server paths for visitors
+            errors = [{**e, "file": os.path.basename(str(e.get("file", "")))} for e in errors]
+            dirs = []
         await self.send(
             {
                 "type": "modules_list",
                 "modules": listing["modules"],
-                "errors": listing["errors"],
-                "dirs": listing["dirs"],
+                "errors": errors,
+                "dirs": dirs,
             }
         )
 
@@ -2535,6 +2975,7 @@ class ConnectionHandler:
             raise plugins.ModuleError("run_module: 'params' must be an object")
         if module_id not in plugins.MODULES:
             raise plugins.ModuleError(f"Unknown module '{module_id}'")
+        params = self._web_module_params(module_id, params)
         all_sweeps = msg.get("all_sweeps", False)
         if all_sweeps is not None and not isinstance(all_sweeps, bool):
             raise plugins.ModuleError("run_module: 'all_sweeps' must be a boolean")
@@ -2548,7 +2989,7 @@ class ConnectionHandler:
             raise plugins.ModuleError("No file is open")
         overrides = _module_overrides(reader, msg)
 
-        var_overrides = _var_overrides.get(resolved_id, reader._path)
+        var_overrides = _overrides_store().get(resolved_id, reader._path)
         await self.send_progress(5, f"Running module {module_id}...")
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
@@ -2650,7 +3091,7 @@ class ConnectionHandler:
                 get_sweep_grid=_grid,
                 progress=progress_sync,
                 is_cancelled=cancel.is_set,
-                var_overrides=_var_overrides.get(resolved_id, reader._path),
+                var_overrides=_overrides_store().get(resolved_id, reader._path),
                 overrides=overrides,
             )
             return run, derived.build_variables(run)
@@ -2662,7 +3103,7 @@ class ConnectionHandler:
             raise
 
         # The file may have been closed or replaced (process, re-open) while we computed.
-        still_open = resolved_id is None or _file_readers.get(resolved_id) is reader
+        still_open = resolved_id is None or _readers().get(resolved_id) is reader
         if not still_open or reader.datatree is not datatree:
             raise plugins.ModuleError(
                 "The file was closed or changed while the module was running; result discarded"
@@ -2883,7 +3324,7 @@ class ConnectionHandler:
             progress_sync = self._progress_callback(loop)
             cancel = threading.Event()
             cancel_key = str(out_file_id)
-            _PIPELINE_CANCELS[cancel_key] = cancel
+            _pipeline_cancels()[cancel_key] = cancel
 
             def _sweep_moments(i: int) -> set[str]:
                 data_vars = reader.get_sweep_dataset(i, mask=False).data_vars
@@ -2908,10 +3349,11 @@ class ConnectionHandler:
                 cancel.set()  # the worker stops after the step it is on
                 raise
             finally:
-                if _PIPELINE_CANCELS.get(cancel_key) is cancel:
-                    del _PIPELINE_CANCELS[cancel_key]
+                cancels = _pipeline_cancels()
+                if cancels.get(cancel_key) is cancel:
+                    del cancels[cancel_key]
 
-            still_open = resolved_id is None or _file_readers.get(resolved_id) is reader
+            still_open = resolved_id is None or _readers().get(resolved_id) is reader
             if not still_open or reader.datatree is not datatree:
                 raise plugins.ModuleError(
                     "The file was closed or changed while the pipeline ran; result discarded"
@@ -2963,7 +3405,7 @@ class ConnectionHandler:
     async def _handle_cancel_pipeline(self, msg: dict[str, Any]) -> None:
         """``{type: "cancel_pipeline", file_id?}``: stop a running pipeline after its step."""
         resolved_id, _ = _resolve_reader(msg.get("file_id"))
-        event = _PIPELINE_CANCELS.get(str(resolved_id or msg.get("file_id")))
+        event = _pipeline_cancels().get(str(resolved_id or msg.get("file_id")))
         if event is not None:
             event.set()
 
@@ -2997,6 +3439,23 @@ class ConnectionHandler:
             await self.send_error(
                 f"save_text_file: content exceeds {SAVE_TEXT_MAX_BYTES // (1024 * 1024)} MB"
             )
+            return
+        if self.session is not None:
+            # Web mode: a bare file name inside the session; the reply carries a download URL.
+            try:
+                if len(data) > WEB_SAVE_TEXT_MAX_BYTES:
+                    raise web.WebError(
+                        f"content exceeds {WEB_SAVE_TEXT_MAX_BYTES // (1024 * 1024)} MB"
+                    )
+                self.session.check_quota(len(data))
+                web_target = self.session.export_target(path, ext="txt", prefix="xradar_file_")
+            except web.WebError as exc:
+                await self.send_error(f"save_text_file: {exc}")
+                return
+            await asyncio.get_running_loop().run_in_executor(
+                None, _atomic_write, web_target, lambda tmp: tmp.write_bytes(data)
+            )
+            await self.send({"type": "file_saved", **self.session.download_info(web_target)})
             return
         target = Path(path).expanduser()
         if not target.parent.is_dir():
@@ -3099,6 +3558,8 @@ class ConnectionHandler:
         t0 = time.perf_counter()
         async with _locks.get("mosaic"):  # one heavy build at a time (radarx uses every core)
             record = await loop.run_in_executor(None, _build)
+        if self.session is not None:  # only the creator may probe / export this mosaic
+            self.session.owned["mosaics"].add(record.mosaic_id)
         header = {
             "type": "mosaic_result",
             "request_id": request_id,
@@ -3113,6 +3574,7 @@ class ConnectionHandler:
         try:
             if not isinstance(mosaic_id, str) or not mosaic_id:
                 raise mosaic.MosaicError("mosaic_probe: missing 'mosaic_id'")
+            self._web_own_mosaic(mosaic_id)
             result = await asyncio.get_running_loop().run_in_executor(
                 None, mosaic.probe, mosaic_id, msg.get("lon"), msg.get("lat")
             )
@@ -3157,7 +3619,27 @@ class ConnectionHandler:
                 }
             )
             return
+        if self.session is not None:
+            await self.send({"type": "file_saved", **self.session.download_info(path)})
+            return
         await self.send({"type": "file_saved", "path": str(path)})
+
+    def _web_own_mosaic(self, mosaic_id: str) -> None:
+        if self.session is not None and mosaic_id not in self.session.owned["mosaics"]:
+            raise mosaic.MosaicError(f"Unknown or expired mosaic '{mosaic_id}'")
+
+    def _web_save_name(self, requested: Any, label: str, ext: str = "nc") -> str:
+        """Web mode: turn a requested bare file name into a path in the session folder."""
+        assert self.session is not None
+        try:
+            self.session.check_quota()
+            return str(self.session.export_target(requested, ext=ext))
+        except web.WebError as exc:
+            raise (
+                mosaic.MosaicError(f"{label}: {exc}")
+                if label == "export_mosaic"
+                else mdop.MultiDopplerError(f"{label}: {exc}")
+            ) from exc
 
     async def _export_mosaic(self, msg: dict[str, Any]) -> Path:
         mosaic_id = msg.get("mosaic_id")
@@ -3167,8 +3649,11 @@ class ConnectionHandler:
             raise mosaic.MosaicError("export_mosaic: missing 'mosaic_id'")
         if fmt not in ("netcdf", "png"):
             raise mosaic.MosaicError("export_mosaic: 'format' must be 'netcdf' or 'png'")
+        if self.session is not None:
+            path = self._web_save_name(path, "export_mosaic", "png" if fmt == "png" else "nc")
         if not isinstance(path, str) or not path.strip() or "\x00" in path:
             raise mosaic.MosaicError("export_mosaic: 'path' must be a non-empty string")
+        self._web_own_mosaic(mosaic_id)
         record = mosaic.MOSAICS.get(mosaic_id)
         target = Path(path).expanduser()
         if not target.parent.is_dir():
@@ -3176,7 +3661,7 @@ class ConnectionHandler:
         if target.is_dir():
             raise mosaic.MosaicError(f"export_mosaic: path is a folder: {target}")
         sidecars = [target.with_suffix(".pgw"), target.with_suffix(".prj")] if fmt == "png" else []
-        overwrite = msg.get("overwrite") is True
+        overwrite = msg.get("overwrite") is True or self.session is not None
         for existing in [target, *sidecars]:
             if existing.exists() and not overwrite:
                 raise mosaic.MosaicError(
@@ -3241,7 +3726,7 @@ class ConnectionHandler:
             await self._multidoppler_error(request_id, f"{type(exc).__name__}: {exc}")
         finally:
             if key is not None:
-                _multidoppler_runs.pop(key, None)
+                _mdop_runs().pop(key, None)
             await self.send_progress(100, "Wind retrieval finished")
 
     async def _multidoppler_error(self, request_id: Any, message: str, **extra: Any) -> None:
@@ -3294,6 +3779,8 @@ class ConnectionHandler:
         except BaseException:
             cancel.set()  # connection gone / task cancelled: the worker stops at its next check
             raise
+        if self.session is not None:  # only the creator may export this wind analysis
+            self.session.owned["winds"].add(record.wind_id)
         header = {
             "type": "multidoppler_result",
             "request_id": request_id,
@@ -3319,6 +3806,10 @@ class ConnectionHandler:
                 raise mdop.MultiDopplerError(
                     "export_multidoppler: 'path' must be a non-empty string"
                 )
+            if self.session is not None:
+                if wind_id not in self.session.owned["winds"]:
+                    raise mdop.MultiDopplerError(f"Unknown or expired wind analysis '{wind_id}'")
+                path = self._web_save_name(path, "export_multidoppler")
             record = mdop.WIND_RESULTS.get(wind_id)
             target = Path(path).expanduser()
             if not target.parent.is_dir():
@@ -3327,7 +3818,7 @@ class ConnectionHandler:
                 )
             if target.is_dir():
                 raise mdop.MultiDopplerError(f"export_multidoppler: path is a folder: {target}")
-            if target.exists() and msg.get("overwrite") is not True:
+            if target.exists() and msg.get("overwrite") is not True and self.session is None:
                 raise mdop.MultiDopplerError(
                     f"export_multidoppler: {target} already exists "
                     "(pass overwrite=true to replace it)"
@@ -3345,6 +3836,9 @@ class ConnectionHandler:
                 wind_id=wind_id,
             )
             return
+        if self.session is not None:
+            await self.send({"type": "file_saved", **self.session.download_info(target)})
+            return
         await self.send({"type": "file_saved", "path": str(target)})
 
     # ==================================================================
@@ -3361,11 +3855,12 @@ def _multidoppler_cancel_event(request_id: str | None) -> threading.Event:
     """The cancel flag of a request (created on demand, so a cancel may arrive first)."""
     if request_id is None:
         return threading.Event()
-    event = _multidoppler_runs.get(request_id)
+    runs = _mdop_runs()
+    event = runs.get(request_id)
     if event is None:
-        while len(_multidoppler_runs) >= _MULTIDOPPLER_MAX_PENDING:
-            _multidoppler_runs.pop(next(iter(_multidoppler_runs)))
-        event = _multidoppler_runs[request_id] = threading.Event()
+        while len(runs) >= _MULTIDOPPLER_MAX_PENDING:
+            runs.pop(next(iter(runs)))
+        event = runs[request_id] = threading.Event()
     return event
 
 
@@ -3545,7 +4040,134 @@ async def _dispatch(handler: ConnectionHandler, raw_message: str | bytes) -> Non
     await handler.handle_message(raw_message)
 
 
+#: Most message tasks one web connection may have in flight at once.
+WEB_MAX_INFLIGHT = 16
+
+
+def _web_message_type(raw_message: str | bytes) -> str | None:
+    """Cheap peek at a message's ``type`` (for idle accounting); None when not JSON."""
+    try:
+        text = (
+            raw_message.decode("utf-8", "replace")
+            if isinstance(raw_message, bytes)
+            else raw_message
+        )
+        if len(text) > 4096:
+            text = text[:4096]
+        match = re.search(r'"type"\s*:\s*"([^"]{1,64})"', text)
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
+async def _idle_watch(ws: ServerConnection, ctx: web.SessionContext, tasks: set[Any]) -> None:
+    """Close a web connection that has been idle (no real messages) for the idle timeout."""
+    limit = ctx.settings.idle_timeout_s
+    interval = max(0.05, min(30.0, limit / 4))
+    while True:
+        await asyncio.sleep(interval)
+        if tasks:  # a long request is still running: not idle
+            ctx.touch()
+        elif ctx.idle_seconds() >= limit:
+            logger.info("Closing idle web session %s", ctx.id)
+            with contextlib.suppress(Exception):
+                await ws.close(code=1000, reason="Idle timeout")
+            return
+
+
+def _end_web_session(ctx: web.SessionContext) -> None:
+    """Free everything a web session owns: readers, caches, shared-LRU entries, its folder."""
+    state: _ConnState | None = ctx.state
+    if state is not None:
+        for reader in list(state.file_readers.values()):
+            with contextlib.suppress(Exception):
+                store = derived.store_for(reader, create=False)
+                if store is not None:
+                    store.drop()
+                reader.close()
+        state.file_readers.clear()
+        state.generations.clear()
+        with contextlib.suppress(Exception):
+            state.renderer.release_memory()
+    for mosaic_id in ctx.owned["mosaics"]:
+        mosaic.MOSAICS.discard(mosaic_id)
+    for wind_id in ctx.owned["winds"]:
+        mdop.WIND_RESULTS.discard(wind_id)
+    ctx.close()
+    gc.collect()
+
+
+async def _handle_web_connection(ws: ServerConnection) -> None:
+    remote = ws.remote_address
+    if not _origin_allowed(ws):
+        request = getattr(ws, "request", None)
+        headers = getattr(request, "headers", None)
+        origin = headers.get("Origin") if headers is not None else None
+        logger.warning("Rejected WebSocket connection from %s with origin %s", remote, origin)
+        await ws.close(code=1008, reason="Origin not allowed")
+        return
+
+    _ensure_context_executor(asyncio.get_running_loop())
+    try:
+        ctx = web.manager().open_session()
+    except web.WebError as exc:
+        await ws.send(json.dumps({"type": "error", "code": "server_busy", "message": str(exc)}))
+        await ws.close(code=1013, reason="Server at capacity")
+        return
+    ctx.state = _ConnState()
+    logger.info("Web client connected from %s (session %s)", remote, ctx.id)
+    handler = ConnectionHandler(ws, session=ctx)
+    tasks: set[asyncio.Task[Any]] = set()
+    watcher = asyncio.get_running_loop().create_task(_idle_watch(ws, ctx, tasks))
+
+    try:
+        await handler.send(web.web_info())
+        async for raw_message in ws:
+            if _web_message_type(raw_message) != "ping":
+                ctx.touch()
+            if not ctx.limiter.allow():
+                await handler.send(
+                    {
+                        "type": "error",
+                        "code": "rate_limited",
+                        "message": "Too many requests; slow down",
+                    }
+                )
+                if ctx.limiter.consecutive_denied > 200:
+                    await ws.close(code=1008, reason="Rate limit exceeded")
+                    break
+                continue
+            if len(tasks) >= WEB_MAX_INFLIGHT:
+                await handler.send(
+                    {
+                        "type": "error",
+                        "code": "busy",
+                        "message": "Too many requests in flight; wait for them to finish",
+                    }
+                )
+                continue
+            task = asyncio.get_running_loop().create_task(_dispatch(handler, raw_message))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+    except websockets.exceptions.ConnectionClosed as exc:
+        logger.info("Web client %s disconnected: %s", remote, exc)
+    except Exception as exc:
+        logger.error("Unexpected error for %s: %s\n%s", remote, exc, traceback.format_exc())
+    finally:
+        watcher.cancel()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(watcher, return_exceptions=True)
+        _end_web_session(ctx)
+        logger.info("Web session %s from %s closed and cleaned up", ctx.id, remote)
+
+
 async def _handle_connection(ws: ServerConnection) -> None:
+    if web.is_web_mode():
+        await _handle_web_connection(ws)
+        return
     remote = ws.remote_address
     if not _origin_allowed(ws):
         request = getattr(ws, "request", None)
@@ -3588,7 +4210,16 @@ def _preload_heavy_imports() -> None:
         logger.debug("palette preload failed: %s", exc)
 
 
-async def _run_server(port: int) -> None:
+async def _run_server(port: int, host: str | None = None) -> None:
+    web_mode = web.is_web_mode()
+    if web_mode:
+        web.apply_web_defaults(
+            system_memory_mb=(lambda b: b // (1024 * 1024) if b else None)(system_memory_bytes())
+        )
+        removed = web.manager().purge_stale_dirs()
+        if removed:
+            logger.info("Removed %d stale web session folder(s)", removed)
+        _ensure_context_executor(asyncio.get_running_loop())
     try:
         plugins.discover_modules()
     except Exception:
@@ -3604,21 +4235,31 @@ async def _run_server(port: int) -> None:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, _signal_handler)
 
-    async with websockets.serve(
-        _handle_connection,
-        "localhost",
-        port,
+    serve_kwargs: dict[str, Any] = {
         # Incoming limit must admit the largest save_text_file payload (+ JSON overhead).
-        max_size=max(WS_MAX_SIZE, SAVE_TEXT_MAX_BYTES + 1024 * 1024),
-        ping_interval=30,
-        ping_timeout=60,
-    ):
-        logger.info("xradar-desktop engine listening on ws://localhost:%d", port)
+        "max_size": max(WS_MAX_SIZE, SAVE_TEXT_MAX_BYTES + 1024 * 1024),
+        "ping_interval": 30,
+        "ping_timeout": 60,
+    }
+    if web_mode:
+        serve_kwargs.update(
+            max_size=web.settings().max_ws_message_mb * 1024 * 1024,
+            process_request=web.process_request,  # /health, /download/..., Origin checks
+            compression=None,  # chunks are already compact; no CPU for inflate / deflate
+            server_header=None,
+            max_queue=8,
+        )
+    bind_host = host or ("127.0.0.1" if web_mode else "localhost")
+    async with websockets.serve(_handle_connection, bind_host, port, **serve_kwargs):
+        logger.info("xradar-desktop engine listening on ws://%s:%d", bind_host, port)
         print(f"READY:{port}", flush=True)
         # Import xradar while the user picks a file, so the first open does not pay for it.
         threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
         await stop_event.wait()
 
+    if web_mode:  # remove every session folder on shutdown
+        for ctx in list(web.manager().sessions.values()):
+            _end_web_session(ctx)
     logger.info("Server shut down cleanly")
 
 
@@ -3626,16 +4267,32 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="xradar-desktop engine server")
-    parser.add_argument("--port", type=int, required=True, help="WebSocket port")
+    parser.add_argument(
+        "--port", type=int, help="WebSocket port (web mode: defaults to the PORT environment)"
+    )
+    parser.add_argument(
+        "--host", help="interface to bind (default: localhost; 127.0.0.1 in web mode)"
+    )
+    parser.add_argument(
+        "--web", action="store_true", help="public web-service mode (same as XRADAR_WEB=1)"
+    )
     args = parser.parse_args()
+    if args.web:
+        os.environ["XRADAR_WEB"] = "1"
+        web.reload_settings()
     port = args.port
+    if port is None and web.is_web_mode() and os.environ.get("PORT", "").strip().isdigit():
+        port = int(os.environ["PORT"])
+    if port is None:
+        parser.error("--port is required (or set PORT in web mode)")
 
-    if not (1024 <= port <= 65535):
-        print(f"Port must be between 1024 and 65535, got {port}", file=sys.stderr)
+    low = 1 if web.is_web_mode() else 1024  # containers may bind low ports
+    if not (low <= port <= 65535):
+        print(f"Port must be between {low} and 65535, got {port}", file=sys.stderr)
         sys.exit(1)
 
     try:
-        asyncio.run(_run_server(port))
+        asyncio.run(_run_server(port, args.host))
     except KeyboardInterrupt:
         logger.info("Interrupted — exiting")
 

@@ -400,6 +400,11 @@ class WindCache:
         with self._lock:
             self._items.clear()
 
+    def discard(self, wind_id: str) -> None:
+        """Forget one record (no error when it is already gone)."""
+        with self._lock:
+            self._items.pop(wind_id, None)
+
     def __len__(self) -> int:
         return len(self._items)
 
