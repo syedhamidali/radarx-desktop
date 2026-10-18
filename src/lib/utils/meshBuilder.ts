@@ -12,6 +12,68 @@
 const NODATA_LIMIT = -9998;
 const DEG2RAD = Math.PI / 180;
 
+/** A step up to this many times the typical spacing counts as a normal, continuous step. */
+const BRIDGE_FACTOR = 1.5;
+/**
+ * Missing rays (a hole in the azimuth list) are filled by splitting the hole between the two
+ * neighbours, like a nearest-neighbour plot, up to this many typical steps (and at most 10 deg).
+ * Anything bigger stays empty instead of smearing a ray across a wide wedge.
+ */
+const MAX_FILL_STEPS = 8;
+const MAX_FILL_DEG = 10;
+
+/** Wrap an angle difference into (-180, 180]. */
+function wrap180(d: number): number {
+  return (((d % 360) + 540) % 360) - 180;
+}
+
+/**
+ * How the rays of a sweep are laid out: the typical spacing, the scan direction and whether the
+ * sweep closes into a full circle. A sector scan (e.g. 50 deg to 180 deg) is NOT closed: its last ray
+ * must not be stretched around to the first one, and a hole in the azimuth list (lost rays) must
+ * stay a hole instead of smearing the previous ray across it.
+ */
+interface RayLayout {
+  /** Typical angular step between rays, degrees (>0). */
+  step: number;
+  /** +1 when azimuth increases with the ray index, -1 when it decreases. */
+  dir: 1 | -1;
+  /** True when the last ray is followed by the first one (a full 360 deg sweep). */
+  closed: boolean;
+}
+
+export function rayLayout(azimuth: Float32Array, nAz: number): RayLayout {
+  if (nAz < 2) return { step: 1, dir: 1, closed: false };
+  const mags = new Float64Array(nAz - 1);
+  let signSum = 0;
+  for (let i = 0; i < nAz - 1; i++) {
+    const d = wrap180(azimuth[i + 1] - azimuth[i]);
+    mags[i] = Math.abs(d);
+    signSum += Math.sign(d);
+  }
+  const sorted = Float64Array.from(mags).sort();
+  let step = sorted[Math.floor((sorted.length - 1) / 2)];
+  if (!(step > 0)) step = sorted.find((m) => m > 0) ?? 1;
+  const dir: 1 | -1 = signSum >= 0 ? 1 : -1;
+  const back = wrap180(azimuth[0] - azimuth[nAz - 1]) * dir;
+  return { step, dir, closed: back > 0 && back <= BRIDGE_FACTOR * step };
+}
+
+/**
+ * Angular step (degrees, always >= 0) from ray `ai` to the next ray, or -1 when no cell should be
+ * drawn there (end of an open sector, or a hole too big to fill).
+ */
+function stepToNext(azimuth: Float32Array, nAz: number, ai: number, lay: RayLayout): number {
+  let next = ai + 1;
+  if (next >= nAz) {
+    if (!lay.closed) return -1;
+    next = 0;
+  }
+  const d = Math.abs(wrap180(azimuth[next] - azimuth[ai]));
+  const limit = Math.max(BRIDGE_FACTOR * lay.step, Math.min(MAX_FILL_DEG, MAX_FILL_STEPS * lay.step));
+  return d <= limit ? d : -1;
+}
+
 export interface SharpMesh {
   /** x,y per vertex (metres, radar-centred) */
   positions: Float32Array;
@@ -41,6 +103,7 @@ export function buildSharpMesh(
   if (nAz <= 0 || nCols <= 0) {
     return { positions: new Float32Array(0), vals: new Float32Array(0), vertexCount: 0 };
   }
+  const lay = rayLayout(azimuth, nAz);
 
   // Pass 1: count valid gates so the output arrays are allocated exactly once.
   let cells = 0;
@@ -58,8 +121,15 @@ export function buildSharpMesh(
   let p = 0; // write index into positions
   let q = 0; // write index into vals
   for (let ai = 0; ai < nAz; ai++) {
-    const az0 = azimuth[ai] * DEG2RAD;
-    const az1 = (ai + 1 < nAz ? azimuth[ai + 1] : azimuth[0] + 360) * DEG2RAD;
+    // The wedge is centred on the ray's azimuth and reaches half-way to each neighbour. Next to a
+    // hole, or at the end of a sector scan, it is only half a normal ray wide.
+    const toNext = stepToNext(azimuth, nAz, ai, lay);
+    const prevIdx = ai > 0 ? ai - 1 : nAz - 1;
+    const fromPrev = ai > 0 || lay.closed ? stepToNext(azimuth, nAz, prevIdx, lay) : -1;
+    const halfNext = (toNext >= 0 ? toNext : lay.step) / 2;
+    const halfPrev = (fromPrev >= 0 ? fromPrev : lay.step) / 2;
+    const az0 = (azimuth[ai] - lay.dir * halfPrev) * DEG2RAD;
+    const az1 = (azimuth[ai] + lay.dir * halfNext) * DEG2RAD;
     const s0 = Math.sin(az0), c0 = Math.cos(az0);
     const s1 = Math.sin(az1), c1 = Math.cos(az1);
     const base = ai * nRange;
@@ -115,8 +185,10 @@ export function buildSmoothMesh(
     };
   }
 
+  const lay = rayLayout(azimuth, nAz);
   let cells = 0;
   for (let ai = 0; ai < nAz; ai++) {
+    if (stepToNext(azimuth, nAz, ai, lay) < 0) continue;
     const b0 = ai * nRange;
     const b1 = ((ai + 1) % nAz) * nRange;
     for (let ri = 0; ri < nCols; ri++) {
@@ -135,10 +207,12 @@ export function buildSmoothMesh(
   let p = 0;
   let c = 0;
   for (let ai = 0; ai < nAz; ai++) {
+    const toNext = stepToNext(azimuth, nAz, ai, lay);
+    if (toNext < 0) continue; // end of a sector scan, or a hole in the rays: draw nothing
     const b0 = ai * nRange;
     const b1 = ((ai + 1) % nAz) * nRange;
     const az0 = azimuth[ai] * DEG2RAD;
-    const az1 = (ai + 1 < nAz ? azimuth[ai + 1] : azimuth[0] + 360) * DEG2RAD;
+    const az1 = (azimuth[ai] + lay.dir * toNext) * DEG2RAD;
     const s0 = Math.sin(az0), c0 = Math.cos(az0);
     const s1 = Math.sin(az1), c1 = Math.cos(az1);
 

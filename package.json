@@ -8,7 +8,8 @@
     "dev:web": "vite --mode web --port 1490 --strictPort",
     "build:web": "vite build --mode web --base ./ --outDir dist-web",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:unit": "node --test src/lib/utils/*.test.mjs"
   },
   "dependencies": {
     "@deck.gl/core": "^9.1.0",
