@@ -17,7 +17,7 @@ import matplotlib
 import numpy as np
 import xarray as xr
 
-from engine.reader import sorted_sweep_names
+from engine.reader import mask_variable, sorted_sweep_names
 
 matplotlib.use("Agg")  # Non-interactive backend
 
@@ -428,7 +428,9 @@ def render_publication_figure(
             raise ValueError(f"No data variables in sweep {sweep}")
         raise KeyError(f"Variable '{variable}' not found in sweep {sweep}. Available: {available}")
 
-    da = sweep_ds[variable]
+    # NaN-out reserved "no echo" / "range folded" codes (see reader.mask_variable) so the
+    # no-echo area is transparent instead of painting the colormap minimum (-33 dBZ etc.).
+    da = mask_variable(sweep_ds[variable])
     values = da.values
 
     # Polar coordinates
@@ -867,7 +869,7 @@ class RadarExporter:
                 sweep_ds = _extract_sweep_dataset(datatree, sw)
                 if variable not in sweep_ds.data_vars:
                     continue
-                vals = sweep_ds[variable].values
+                vals = mask_variable(sweep_ds[variable]).values
                 finite = vals[np.isfinite(vals)]
                 if finite.size:
                     lo, hi = min(lo, float(finite.min())), max(hi, float(finite.max()))
@@ -1013,7 +1015,7 @@ class RadarExporter:
         if variable not in sweep_ds.data_vars:
             raise KeyError(f"Variable '{variable}' not found in sweep {sweep}")
 
-        da = sweep_ds[variable]
+        da = mask_variable(sweep_ds[variable])  # no-echo / range-folded codes -> NaN -> no CSV row
         values = da.values
 
         azimuth = (

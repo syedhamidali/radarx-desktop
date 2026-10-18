@@ -35,6 +35,7 @@ import importlib.util
 import logging
 import math
 import os
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -78,6 +79,15 @@ VAR_ALIASES: dict[str, list[str]] = {
 
 class ModuleError(Exception):
     """Raised by a module to report a user-facing problem (bad data, missing field…)."""
+
+
+class ModuleTimeoutError(ModuleError):
+    """A module run exceeded the wall-clock limit (``XRADAR_MODULE_TIMEOUT_S``)."""
+
+
+class ModuleCancelled(Exception):  # noqa: N818 - control-flow signal, not an error condition
+    """Raised inside a module (by ``ctx.progress`` / ``ctx.check_cancelled``) once its run was
+    abandoned (timeout or the connection went away). Modules should let it propagate."""
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +213,21 @@ class ModuleContext:
             np.asarray(ds["range"].values, dtype=np.float64),
         )
 
+    # Set by run_module; a module that loops for a long time can poll ``ctx.cancelled``
+    # (or just call ``ctx.progress``, which raises ModuleCancelled) to stop early.
+    _cancel_event: threading.Event | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        """True once this run was abandoned (timed out / client gone); its result is discarded."""
+        return self._cancel_event is not None and self._cancel_event.is_set()
+
+    def check_cancelled(self) -> None:
+        if self.cancelled:
+            raise ModuleCancelled()
+
     def progress(self, percent: int, message: str) -> None:
+        self.check_cancelled()
         if self._progress is not None:
             self._progress(int(percent), message)
 
@@ -543,6 +567,165 @@ def list_modules() -> dict[str, Any]:
     }
 
 
+DEFAULT_MODULE_TIMEOUT_S = 300.0
+# Runs that timed out but whose thread has not returned yet. Threads cannot be killed, so a
+# module that ignores ctx.cancelled keeps running; cap how many we tolerate before refusing.
+_MAX_ABANDONED_RUNS = 3
+_abandoned_runs: list[threading.Thread] = []
+_abandoned_lock = threading.Lock()
+
+
+def module_timeout_s() -> float | None:
+    """Wall-clock limit of one module run in seconds (``XRADAR_MODULE_TIMEOUT_S``, default 300).
+
+    ``0`` or a negative value disables the limit; an unparsable value falls back to the default.
+    """
+    raw = os.environ.get("XRADAR_MODULE_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_MODULE_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_MODULE_TIMEOUT_S
+    if math.isnan(value):
+        return DEFAULT_MODULE_TIMEOUT_S
+    if value <= 0 or math.isinf(value):
+        return None
+    return value
+
+
+def _live_abandoned() -> int:
+    with _abandoned_lock:
+        _abandoned_runs[:] = [t for t in _abandoned_runs if t.is_alive()]
+        return len(_abandoned_runs)
+
+
+def _abandon(thread: threading.Thread, cancel: threading.Event) -> None:
+    cancel.set()
+    with _abandoned_lock:
+        _abandoned_runs.append(thread)
+
+
+def _call_module(
+    spec: ModuleSpec,
+    ctx: ModuleContext,
+    params: dict[str, Any],
+    timeout_s: float | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> Any:
+    """Run ``spec.func`` in a dedicated daemon thread and wait for it, at most *timeout_s*.
+
+    A Python thread cannot be killed, so on timeout (or caller cancellation) the cancel flag
+    is set -- the module stops at its next ``ctx.progress`` / ``ctx.cancelled`` check -- and the
+    caller is released at once; whatever the thread later returns is discarded. Running it in
+    its own daemon thread (not the shared executor) keeps a stuck module from exhausting the
+    pool or blocking interpreter exit.
+    """
+    if _live_abandoned() >= _MAX_ABANDONED_RUNS:
+        raise ModuleError(
+            f"{_MAX_ABANDONED_RUNS} earlier module runs timed out and are still busy in the "
+            "background. Restart xradar-desktop to free them, then try again."
+        )
+    cancel = threading.Event()
+    ctx._cancel_event = cancel
+    done = threading.Event()
+    box: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            box["result"] = spec.func(ctx, **params)
+        except BaseException as exc:  # handed back to (or dropped by) the waiting caller
+            box["exc"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=target, name=f"module-{spec.id}", daemon=True)
+    thread.start()
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    while not done.wait(0.1):
+        if is_cancelled is not None and is_cancelled():
+            _abandon(thread, cancel)
+            raise ModuleCancelled()
+        if deadline is not None and time.monotonic() >= deadline:
+            _abandon(thread, cancel)
+            logger.error("Module '%s' timed out after %g s", spec.id, timeout_s)
+            raise ModuleTimeoutError(
+                f"{spec.title} timed out after {timeout_s:g} s. Try a smaller or coarser input "
+                "(another sweep, looser parameters), or raise the limit with the "
+                "XRADAR_MODULE_TIMEOUT_S environment variable (seconds)."
+            )
+    if "exc" in box:
+        raise box["exc"]
+    return box["result"]
+
+
+def _friendly_failure(spec: ModuleSpec, sweep: int, exc: BaseException) -> str:
+    """Actionable one-line message for an unexpected exception inside a module."""
+    kind = type(exc).__name__
+    detail = str(exc).strip() or "no details"
+    if isinstance(exc, MemoryError):
+        hint = "It ran out of memory: close other open files, or choose a smaller sweep."
+    elif isinstance(exc, (KeyError, IndexError)):
+        hint = (
+            f"The data in sweep {sweep} may not have what it expects: try another sweep or "
+            "check that the required fields are present."
+        )
+    elif isinstance(exc, (ValueError, TypeError, ZeroDivisionError, FloatingPointError)):
+        hint = (
+            f"Check the parameter values and that sweep {sweep} holds valid data (not all "
+            "no-echo), then try again."
+        )
+    elif isinstance(exc, ImportError):
+        hint = "A Python package this module needs is missing or broken: reinstall it."
+    else:
+        hint = "Try another sweep or different parameters; the full traceback is in the log."
+    return f"{spec.title} failed ({kind}: {detail}). {hint}"
+
+
+def _validate_fields(spec: ModuleSpec, ctx: ModuleContext, result: Result) -> list[str]:
+    """Check module output arrays against the sweep grid; return non-fatal warnings.
+
+    Raises :class:`ModuleError` for a wrong shape/dtype or a field holding only infinities.
+    +/-inf become NaN (no data) so colour scales and statistics stay finite.
+    """
+    if not result.fields:
+        return []
+    ds = ctx.dataset
+    expected = (int(ds["azimuth"].size), int(ds["range"].size))
+    warnings: list[str] = []
+    for name, arr in list(result.fields.items()):
+        arr = np.asarray(arr)
+        if arr.shape != expected:
+            raise ModuleError(
+                f"Module '{spec.id}' produced field '{name}' with shape {tuple(arr.shape)}, but "
+                f"the sweep grid is (n_azimuth, n_range) = {expected}. The module must return one "
+                "value per gate; if this is a custom module, check its output shape."
+            )
+        if arr.dtype.kind not in "fiub":
+            raise ModuleError(
+                f"{spec.title} produced field '{name}' of non-numeric type {arr.dtype}; "
+                "fields must be numbers (NaN = no data)."
+            )
+        if arr.dtype.kind != "f":
+            continue
+        finite = np.isfinite(arr)
+        if not finite.all():
+            inf = np.isinf(arr)
+            if inf.any():
+                if not (finite | np.isnan(arr)).any():
+                    raise ModuleError(
+                        f"{spec.title} produced field '{name}' containing only infinite "
+                        "values, which usually means a division by zero. Check that the input "
+                        "fields have valid data on this sweep and try different parameters."
+                    )
+                arr = np.where(inf, np.float32(np.nan), arr).astype(arr.dtype, copy=False)
+                result.fields[name] = arr
+                warnings.append(f"'{name}': infinite values were treated as no data")
+            if not np.isfinite(arr).any():
+                warnings.append(f"'{name}' has no valid gates on this sweep")
+    return warnings
+
+
 def run_module(
     module_id: str,
     datatree: xr.DataTree,
@@ -552,11 +735,18 @@ def run_module(
     get_sweep_dataset: Callable[[int], xr.Dataset],
     progress: Callable[[int, str], None] | None = None,
     return_fields: bool = False,
+    timeout_s: float | None | str = "env",
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, np.ndarray]]:
     """Execute a module and return its JSON-safe result payload.
 
     With ``return_fields=True`` returns ``(payload, fields)`` where ``fields`` maps field
     names (see :meth:`Result.field`) to float32 arrays, for the caller to send as binary.
+
+    The run is bounded by *timeout_s* (default :func:`module_timeout_s`; ``None`` = no limit):
+    on expiry :class:`ModuleTimeoutError` is raised and the late result is discarded. If
+    *is_cancelled* turns true the run is abandoned with :class:`ModuleCancelled`. Every other
+    failure is a :class:`ModuleError` whose message says what to try.
     """
     spec = MODULES.get(module_id)
     if spec is None:
@@ -571,16 +761,21 @@ def run_module(
     ctx = ModuleContext(datatree, sweep, get_sweep_dataset=get_sweep_dataset, progress=progress)
     for req in spec.requires:
         ctx.field(req)  # raises a clear ModuleError up-front
+    limit = module_timeout_s() if timeout_s == "env" else timeout_s
     t0 = time.perf_counter()
     try:
-        result = spec.func(ctx, **params)
-    except ModuleError:
+        result = _call_module(spec, ctx, params, limit, is_cancelled)  # type: ignore[arg-type]
+    except (ModuleError, ModuleCancelled):
         raise
     except Exception as exc:
         logger.error("Module '%s' crashed:\n%s", module_id, traceback.format_exc())
-        raise ModuleError(f"{spec.title} failed: {type(exc).__name__}: {exc}") from exc
+        raise ModuleError(_friendly_failure(spec, sweep, exc)) from exc
     if not isinstance(result, Result):
-        raise ModuleError(f"{spec.title} must return a Result, got {type(result).__name__}")
+        raise ModuleError(
+            f"{spec.title} must return a Result, got {type(result).__name__}. "
+            "If this is a custom module, end its run() function with `return res`."
+        )
+    warnings = _validate_fields(spec, ctx, result)
     payload = result.to_dict()
     payload.update(
         module=module_id,
@@ -588,4 +783,6 @@ def run_module(
         params=params,
         elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 1),
     )
+    if warnings:
+        payload["warnings"] = warnings
     return (payload, result.fields) if return_fields else payload

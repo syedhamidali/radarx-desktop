@@ -379,6 +379,7 @@ def run_all_sweeps(
                 get_sweep_dataset=get_sweep_dataset,
                 progress=report,
                 return_fields=True,
+                is_cancelled=is_cancelled,
             )
             expected = tuple(get_sweep_grid(sweep))
             for name, arr in fields.items():
@@ -388,6 +389,10 @@ def run_all_sweeps(
                         f"Module '{module_id}' field '{name}' has shape {shape} but the sweep "
                         f"grid is (n_azimuth, n_range) = {expected}"
                     )
+        except plugins.ModuleCancelled:
+            raise RunCancelledError() from None
+        except plugins.ModuleTimeoutError:
+            raise  # a hung module would hang on every sweep: abort the run, tell the user
         except plugins.ModuleError as exc:
             run.skipped.append({"sweep": sweep, "reason": str(exc)})
             continue

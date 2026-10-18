@@ -642,6 +642,12 @@ class RadarRenderer:
         with self._lock:
             self._cache.clear()
 
+    def release_memory(self) -> None:
+        """Drop every re-computable cache (rendered tiles and pixel->gate index maps)."""
+        self.invalidate_cache()
+        with _INDEX_MAP_LOCK:
+            _INDEX_MAP_CACHE.clear()
+
     @staticmethod
     def _data_fingerprint(data: xr.DataArray) -> str:
         """Content hash used as the cache identity when no ``cache_token`` is given."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import gc
 import inspect
 import json
 import logging
@@ -52,7 +53,7 @@ from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.exporter import RadarExporter
 from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
 from engine.qc import QC_REGISTRY, QCPipeline
-from engine.reader import RadarReader, _serializable, sorted_sweep_names
+from engine.reader import RadarReader, _serializable, max_open_bytes, sorted_sweep_names
 from engine.renderer import RadarRenderer, _resolve_range
 from engine.retrievals import RETRIEVAL_REGISTRY, run_retrieval
 from engine.statistics import get_statistics
@@ -191,6 +192,94 @@ def _register_reader(reader: RadarReader) -> str:
     if not _RENDER_ACCEPTS_TOKEN:  # legacy renderer cache has no data identity
         _shared_renderer.invalidate_cache()
     return file_id
+
+
+def _readers_snapshot() -> list[RadarReader]:
+    return list(_file_readers.values())
+
+
+def _open_usage_bytes(extra: RadarReader | None = None) -> int:
+    """Decoded size of every open volume (plus *extra*, a reader not yet registered)."""
+    readers = _readers_snapshot()
+    if extra is not None and not any(r is extra for r in readers):
+        readers.append(extra)
+    total = 0
+    for reader in readers:
+        try:
+            total += reader.memory_bytes()
+            store = derived.store_for(reader, create=False)
+            if store is not None:
+                total += store.nbytes
+        except Exception as exc:  # accounting must never break a request
+            logger.debug("memory accounting failed for a reader: %s", exc)
+    return total
+
+
+def _release_caches() -> None:
+    """Drop every re-computable cache: rendered tiles, index maps, lazily fetched sweeps."""
+    _shared_renderer.release_memory()
+    for reader in _readers_snapshot():
+        reader.release_caches()
+    gc.collect()
+
+
+def _evict_if_over_budget(incoming_bytes: int = 0, extra: RadarReader | None = None) -> bool:
+    """Evict caches when open data (+ *incoming_bytes*) would exceed the budget.
+
+    Returns True if the budget is still exceeded afterwards. Derived variables are results the
+    user computed (already capped by their own LRU), so they are never evicted here.
+    """
+    budget = max_open_bytes()
+    if budget is None:
+        return False
+    if _open_usage_bytes(extra) + incoming_bytes <= budget:
+        return False
+    logger.info("Memory budget %d MB exceeded: releasing caches", budget // (1024 * 1024))
+    _release_caches()
+    return _open_usage_bytes(extra) + incoming_bytes > budget
+
+
+def memory_status() -> dict[str, Any]:
+    """Tracked memory for health checks: ``{open_mb, max_mb, files}`` (``max_mb`` None = no cap)."""
+    budget = max_open_bytes()
+    return {
+        "open_mb": round(_open_usage_bytes() / (1024 * 1024), 1),
+        "max_mb": round(budget / (1024 * 1024)) if budget else None,
+        "files": len(_file_readers),
+    }
+
+
+def _describe_open_error(path: str, exc: BaseException) -> str:
+    """Specific, actionable text for a failure to open *path* (no traceback, no jargon)."""
+    name = Path(path).name or path
+    if isinstance(exc, FileNotFoundError):
+        return (
+            f"File not found: {path}. It may have been moved, renamed or deleted, or its drive "
+            "is not connected."
+        )
+    if isinstance(exc, PermissionError):
+        text = str(exc)
+        if "Permission denied reading" in text:
+            return text
+        return (
+            f"Permission denied reading {name}. Check the file's permissions (on macOS, allow "
+            "xradar-desktop to access this folder under System Settings > Privacy & Security), "
+            "or copy the file to a folder you own."
+        )
+    if isinstance(exc, MemoryError):
+        return (
+            f"Not enough memory to open {name}. Close other open files (or other applications) "
+            "and try again."
+        )
+    if isinstance(exc, IsADirectoryError):
+        return f"{path} is a folder, not a radar file. Pick a file inside it."
+    if isinstance(exc, ValueError):
+        return str(exc)  # the reader's messages already name the file and the likely cause
+    if isinstance(exc, OSError):
+        return (
+            f"Could not read {name}: {exc.strerror or exc}. Check that the file is still available."
+        )
+    return f"Could not open {name} ({type(exc).__name__}: {exc}). The file may be damaged."
 
 
 def _cache_token(file_id: str | None) -> tuple[str, int] | None:
@@ -466,6 +555,40 @@ class ConnectionHandler:
 
     async def send_error(self, message: str) -> None:
         await self.send({"type": "error", "message": message})
+
+    async def send_warning(self, message: str, **extra: Any) -> None:
+        """Non-fatal notice (the request still succeeded); the UI shows it as a toast."""
+        await self.send({"type": "warning", "message": message, **extra})
+
+    async def _enforce_memory_budget(self, name: str, reader: RadarReader) -> None:
+        """After *reader* opened: evict caches if the open data exceeds the budget, else warn.
+
+        Never refuses or crashes: the file stays open, the user is told what to close.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            still_over = await loop.run_in_executor(None, _evict_if_over_budget, 0, reader)
+            if not still_over:
+                return
+            budget = max_open_bytes() or 0
+            used = await loop.run_in_executor(None, _open_usage_bytes, reader)
+        except Exception as exc:  # accounting must never fail an open
+            logger.debug("memory budget check failed: %s", exc)
+            return
+        mb = 1024 * 1024
+        logger.warning(
+            "Open data %d MB exceeds budget %d MB after opening %s", used // mb, budget // mb, name
+        )
+        await self.send_warning(
+            f"Opening {name} brings the loaded radar data to {used // mb} MB, above the "
+            f"{budget // mb} MB memory budget. Close files you no longer need to avoid "
+            "slowdowns or running out of memory (the budget is XRADAR_MAX_OPEN_MB, "
+            "default 60% of RAM).",
+            code="memory_budget",
+            file=name,
+            open_mb=used // mb,
+            max_mb=budget // mb,
+        )
 
     async def send_progress(self, percent: int, message: str) -> None:
         # Remember (per message task) whether a progress run is still open, so handle_message can
@@ -839,6 +962,7 @@ class ConnectionHandler:
                 "type": "pong",
                 "status": "ok",
                 "file_open": has_file,
+                "memory": memory_status(),
             }
         )
 
@@ -879,6 +1003,9 @@ class ConnectionHandler:
         reader = RadarReader()
         job = loop.run_in_executor(None, opener, reader)
         schema = await (asyncio.wait_for(job, timeout) if timeout else job)
+        await self._enforce_memory_budget(
+            str(schema.get("source") or "cloud file").rsplit("/", 1)[-1], reader
+        )
         file_id = _register_reader(reader)
         await self.send_progress(100, "Loaded")
         schema_serial = {k: _serializable(v) for k, v in schema.items()}
@@ -953,10 +1080,26 @@ class ConnectionHandler:
         reader = RadarReader()
         loop = asyncio.get_running_loop()
 
+        # Free re-computable caches before a big read if the budget is already tight.
+        try:
+            incoming_hint = os.path.getsize(path)
+        except OSError:
+            incoming_hint = 0
+        await loop.run_in_executor(None, _evict_if_over_budget, incoming_hint)
+
         await self.send_progress(15, f"Opening {filename}...")
-        schema = await loop.run_in_executor(None, reader.open_file, path)
+        try:
+            schema = await loop.run_in_executor(None, reader.open_file, path)
+        except Exception as exc:
+            # Prefixed "open_file failed:" so the UI attributes it to this open (see
+            # App.svelte isOpenFileError), and specific enough to act on.
+            logger.warning("open_file %s failed: %s", path, exc)
+            await self.send_error(f"open_file failed: {_describe_open_error(path, exc)}")
+            return
 
         await self.send_progress(80, f"Building metadata for {filename}...")
+
+        await self._enforce_memory_budget(filename, reader)
 
         # No renderer-cache flush needed: cache entries are keyed by (file_id, generation).
         file_id = _register_reader(reader)
@@ -2226,7 +2369,10 @@ class ConnectionHandler:
                 {
                     "type": "module_error",
                     "module": label,
-                    "message": f"{type(exc).__name__}: {exc}",
+                    "message": (
+                        f"Module '{label}' failed ({type(exc).__name__}: {exc}). Try another "
+                        "sweep or different parameters; the sidecar log has the full traceback."
+                    ),
                 }
             )
         finally:
@@ -2263,6 +2409,7 @@ class ConnectionHandler:
         await self.send_progress(5, f"Running module {module_id}...")
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
+        cancel = threading.Event()  # set when the connection (this task) goes away
 
         def _run() -> tuple[dict[str, Any], dict[str, Any], list[tuple[dict[str, Any], list]]]:
             payload, fields = plugins.run_module(
@@ -2273,11 +2420,16 @@ class ConnectionHandler:
                 get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
                 progress=progress_sync,
                 return_fields=True,
+                is_cancelled=cancel.is_set,
             )
             packed = _pack_module_fields(module_id, fields, _sweep_dataset(reader, sweep))
             return payload, fields, packed
 
-        payload, fields, packed = await loop.run_in_executor(None, _run)
+        try:
+            payload, fields, packed = await loop.run_in_executor(None, _run)
+        except BaseException:
+            cancel.set()  # a still-running module is abandoned; its late result is dropped
+            raise
         out_file_id = resolved_id or msg.get("file_id")
         await self.send({"type": "module_result", **payload, "file_id": out_file_id})
         blocks = {b.get("name"): b for b in payload.get("blocks", []) if b.get("type") == "field"}
