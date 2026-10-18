@@ -6,8 +6,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+from engine import cells as cell_engine
 from engine.plugins import ModuleError, Result, module, param, point, polygon
-from engine.tracking import identify_cells
 
 SORT_KEYS = ["area_km2", "max_dbz", "mean_dbz", "centroid_range"]
 SORT_LABELS = {
@@ -61,7 +61,8 @@ def run(ctx, threshold_dbz, min_size_km2, sort_by, descending, top_n):
         raise ModuleError(str(exc)) from exc
 
     ctx.progress(10, "Labelling cells")
-    cells = identify_cells(da, threshold_dbz=threshold_dbz, min_size_km2=min_size_km2)
+    scan = cell_engine.identify(da, threshold_dbz=threshold_dbz, min_size_km2=min_size_km2)
+    cells = list(scan)
     ranked = sorted(cells, key=lambda c: getattr(c, sort_by), reverse=bool(descending))
     top = ranked[:top_n]
 
@@ -72,6 +73,7 @@ def run(ctx, threshold_dbz, min_size_km2, sort_by, descending, top_n):
             {"label": "Shown", "value": len(top)},
             {"label": "Ranked by", "value": SORT_LABELS[sort_by]},
             {"label": "Total area", "value": sum(c.area_km2 for c in cells), "unit": "km²"},
+            {"label": "Algorithm", "value": scan.backend_label},
         ]
     )
 

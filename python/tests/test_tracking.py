@@ -8,9 +8,15 @@ import xarray as xr
 
 from engine.tracking import (
     CellInfo,
+    CellTrack,
     _compute_motion,
+    beam_height_km,
+    cells_from_labels,
     extrapolate_cell,
     identify_cells,
+    identify_cells_labelled,
+    match_nearest,
+    polar_to_latlon,
     track_cells,
 )
 
@@ -199,3 +205,79 @@ class TestTracking:
         # heading south (from north) 3 km from 1 km north of radar -> 2 km south
         assert az == pytest.approx(180.0, abs=1e-6)
         assert rng == pytest.approx(2_000.0, rel=1e-9)
+
+
+class TestSharedHelpers:
+    """The pieces engine.cells builds on (they must keep the numpy fallback working alone)."""
+
+    def test_labelled_identify_matches_plain_identify(self) -> None:
+        data = _field([(30.0, 50_000.0, 3.0, 4_000.0, 50.0), (200.0, 80_000.0, 3.0, 4_000.0, 65.0)])
+        cells, labels = identify_cells_labelled(data, 35.0, 5.0)
+        assert [c.to_dict() for c in cells] == [
+            c.to_dict() for c in identify_cells(data, 35.0, 5.0)
+        ]
+        assert labels.shape == data.shape and labels.dtype == np.int32
+        for k, c in enumerate(cells, start=1):  # label k <-> cells[k - 1]
+            assert float(data.values[labels == k].max()) == pytest.approx(c.max_dbz)
+        assert not (labels > 0).ravel()[np.isnan(data.values).ravel()].any()
+
+    def test_seam_cell_has_one_label(self) -> None:
+        field = _field([(0.0, 50_000.0, 4.0, 4_000.0, 55.0)])
+        cells, labels = identify_cells_labelled(field, 35.0, 5.0)
+        assert len(cells) == 1 and set(np.unique(labels)) == {0, 1}
+        assert labels[0].any() and labels[-1].any()
+
+    def test_cells_from_labels_filters_and_ranks(self) -> None:
+        data = _field([(30.0, 50_000.0, 3.0, 4_000.0, 50.0), (200.0, 80_000.0, 3.0, 4_000.0, 65.0)])
+        values = data.values
+        az = data.azimuth.values
+        labels = np.zeros(values.shape, dtype=np.int32)
+        labels[(values >= 35) & (az[:, None] < 100)] = 1  # the 50 dBZ cell
+        labels[(values >= 35) & (az[:, None] > 100)] = 2  # the 65 dBZ cell
+        labels[10:12, 5:7] = 3  # a 4-gate speck, far below the minimum area
+        cells, ranked = cells_from_labels(values, labels, az, data.range.values, 10.0)
+        assert [c.id for c in cells] == ["C001", "C002"]
+        assert cells[0].max_dbz > cells[1].max_dbz
+        assert set(np.unique(ranked)) == {0, 1, 2} and ranked[10, 5] == 0
+        empty = cells_from_labels(values, np.zeros_like(labels), az, data.range.values)
+        assert empty[0] == []
+
+    def test_optional_cell_fields_are_additive(self) -> None:
+        c = _cell("C001", 10.0, 20_000.0)
+        assert set(c.to_dict()) == {
+            "id",
+            "centroid_az",
+            "centroid_range",
+            "area_km2",
+            "max_dbz",
+            "mean_dbz",
+            "boundary_points",
+        }
+        c.lat, c.lon, c.speed_mps, c.direction_deg = 35.123456, -97.5, 12.34, 270.0
+        c.track_id, c.lifetime, c.extra = "T001", 3, {"vil_max": 40.0, "bad": float("nan")}
+        d = c.to_dict()
+        assert d["lat"] == 35.1235 and d["speed_mps"] == 12.34 and d["direction_deg"] == 270.0
+        assert d["track_id"] == "T001" and d["lifetime"] == 3 and d["extra"] == {"vil_max": 40.0}
+
+    def test_track_dict_has_new_fields_with_safe_defaults(self) -> None:
+        d = CellTrack("T001", [_cell("C001", 1, 1000)]).to_dict()
+        assert d["lifetime"] == 1 and d["split"] is False and d["merge"] is False
+        assert d["u_mps"] == 0.0 and "status" not in d and "split_from" not in d
+        t = CellTrack("T002", [], split_from="T001", merged_into="T003", status="ended")
+        d = t.to_dict()
+        assert d["split_from"] == "T001" and d["merged_into"] == "T003" and d["status"] == "ended"
+
+    def test_match_nearest_is_global_and_bounded(self) -> None:
+        t0 = [_cell("C001", 90.0, 60_000.0), _cell("C002", 90.0, 50_000.0)]
+        t1 = [_cell("C001", 90.0, 51_000.0), _cell("C002", 270.0, 50_000.0)]
+        assert match_nearest(t0, t1, 30.0) == {1: 0}
+        assert match_nearest(t0, t1, 0.5) == {}
+        assert match_nearest([], t1) == {}
+
+    def test_geo_helpers(self) -> None:
+        lat, lon = polar_to_latlon(35.0, -97.0, 0.0, 111_195.0)  # due north, one degree
+        assert lat == pytest.approx(36.0, abs=0.01) and lon == pytest.approx(-97.0, abs=1e-6)
+        lat, lon = polar_to_latlon(0.0, 179.9, 90.0, 50_000.0)  # across the date line
+        assert lon < -179.0 and lat == pytest.approx(0.0, abs=1e-3)
+        assert beam_height_km(100_000.0, 0.5) == pytest.approx(1.46, abs=0.05)
+        assert beam_height_km(0.0, 5.0) == pytest.approx(0.0, abs=1e-6)

@@ -1,7 +1,10 @@
-"""Storm cell identification and tracking for radar data.
+"""Storm cell identification and tracking for radar data (numpy/scipy implementation).
 
-Provides connected-component cell detection on reflectivity fields and
-simple nearest-neighbor tracking between consecutive scans.
+Connected-component cell detection on polar reflectivity sweeps and simple
+nearest-neighbour tracking between consecutive scans.  This is the dependency-free
+fallback of :mod:`engine.cells`, which prefers ``radarx`` when it is installed and
+adds the unified API (multi-scan tracking, statistics, overlays).  The dataclasses
+defined here are shared by both backends.
 """
 
 from __future__ import annotations
@@ -29,10 +32,19 @@ class CellInfo:
     max_dbz: float
     mean_dbz: float
     boundary_points: list[list[float]]  # [[az_deg, range_m], ...]
+    # Optional additions (None / empty until the producer knows them)
+    lat: float | None = None  # centroid latitude, needs the radar position
+    lon: float | None = None
+    echo_top_proxy_km: float | None = None  # highest sampled beam height in the cell (km)
+    speed_mps: float | None = None  # motion, set once the cell is part of a track
+    direction_deg: float | None = None  # meteorological "from" direction
+    track_id: str | None = None
+    lifetime: int | None = None  # scans the cell's track has been seen in
+    extra: dict[str, float] = field(default_factory=dict)  # e.g. vil_max, vil_mean
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialise to a JSON-friendly dictionary."""
-        return {
+        """Serialise to a JSON-friendly dictionary (optional fields only when known)."""
+        out: dict[str, Any] = {
             "id": self.id,
             "centroid_az": round(self.centroid_az, 2),
             "centroid_range": round(self.centroid_range, 2),
@@ -41,6 +53,24 @@ class CellInfo:
             "mean_dbz": round(self.mean_dbz, 1),
             "boundary_points": [[round(az, 2), round(rng, 2)] for az, rng in self.boundary_points],
         }
+        for key, val, nd in (
+            ("lat", self.lat, 4),
+            ("lon", self.lon, 4),
+            ("echo_top_proxy_km", self.echo_top_proxy_km, 2),
+            ("speed_mps", self.speed_mps, 2),
+            ("direction_deg", self.direction_deg, 1),
+        ):
+            if val is not None and math.isfinite(val):
+                out[key] = round(float(val), nd)
+        if self.track_id is not None:
+            out["track_id"] = self.track_id
+        if self.lifetime is not None:
+            out["lifetime"] = int(self.lifetime)
+        if self.extra:
+            out["extra"] = {
+                k: round(float(v), 3) for k, v in self.extra.items() if math.isfinite(v)
+            }
+        return out
 
 
 @dataclass
@@ -51,15 +81,34 @@ class CellTrack:
     cell_history: list[CellInfo] = field(default_factory=list)
     speed_mps: float = 0.0  # metres per second
     direction_deg: float = 0.0  # meteorological convention (from-direction)
+    # Optional additions (``cells.track`` fills them; the legacy pair tracker leaves defaults)
+    u_mps: float = 0.0  # eastward velocity
+    v_mps: float = 0.0  # northward velocity
+    lifetime: int = 0  # scans the track spans (0 = unknown)
+    split_from: str | None = None  # id of the track this one split off from
+    merged_into: str | None = None  # id of the track this one merged into when it ended
+    status: str = ""  # "new" | "continued" | "ended" ("" = unknown)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise to a JSON-friendly dictionary."""
-        return {
+        out: dict[str, Any] = {
             "track_id": self.track_id,
             "cell_history": [c.to_dict() for c in self.cell_history],
             "speed_mps": round(self.speed_mps, 2),
             "direction_deg": round(self.direction_deg, 1),
+            "u_mps": round(self.u_mps, 2),
+            "v_mps": round(self.v_mps, 2),
+            "lifetime": int(self.lifetime or len(self.cell_history)),
+            "split": self.split_from is not None,
+            "merge": self.merged_into is not None,
         }
+        if self.split_from is not None:
+            out["split_from"] = self.split_from
+        if self.merged_into is not None:
+            out["merged_into"] = self.merged_into
+        if self.status:
+            out["status"] = self.status
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +174,203 @@ def _polar_to_xy(az_deg: np.ndarray, rng_m: np.ndarray) -> tuple[np.ndarray, np.
     return rng_m * np.sin(az), rng_m * np.cos(az)
 
 
+def beam_height_km(range_m: np.ndarray | float, elevation_deg: float) -> np.ndarray | float:
+    """Beam-centre height (km above the radar) with the 4/3 effective Earth radius model."""
+    r = np.asarray(range_m, dtype=np.float64)
+    ke_r = 4.0 / 3.0 * 6371000.0
+    el = math.radians(elevation_deg)
+    h = np.sqrt(r**2 + ke_r**2 + 2.0 * r * ke_r * math.sin(el)) - ke_r
+    return h / 1000.0
+
+
+def polar_to_latlon(lat0: float, lon0: float, az_deg: float, range_m: float) -> tuple[float, float]:
+    """Spherical destination point ``range_m`` from (lat0, lon0) along bearing ``az_deg``."""
+    d = range_m / 6371000.0
+    br = math.radians(az_deg)
+    p1 = math.radians(lat0)
+    l1 = math.radians(lon0)
+    p2 = math.asin(math.sin(p1) * math.cos(d) + math.cos(p1) * math.sin(d) * math.cos(br))
+    l2 = l1 + math.atan2(
+        math.sin(br) * math.sin(d) * math.cos(p1), math.cos(d) - math.sin(p1) * math.sin(p2)
+    )
+    return math.degrees(p2), (math.degrees(l2) + 540.0) % 360.0 - 180.0
+
+
+def polar_geometry(
+    data: xr.DataArray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(values, azimuth_deg, range_m)`` of a 2-D ``(azimuth, range)`` reflectivity array."""
+    if "azimuth" in data.dims and "range" in data.dims and data.ndim == 2:
+        data = data.transpose("azimuth", "range")
+    values = np.asarray(data.values)
+    if not np.issubdtype(values.dtype, np.floating):
+        values = values.astype(np.float32)
+    azimuth = np.asarray(data.coords["azimuth"].values, dtype=np.float64)
+    range_m = np.asarray(data.coords["range"].values, dtype=np.float64)
+    if values.shape != (azimuth.size, range_m.size):
+        raise ValueError(
+            f"data shape {values.shape} does not match azimuth/range "
+            f"({azimuth.size}, {range_m.size})"
+        )
+    return values, azimuth, range_m
+
+
+def cells_from_labels(
+    values: np.ndarray,
+    labels: np.ndarray,
+    azimuth: np.ndarray,
+    range_m: np.ndarray,
+    min_size_km2: float = 10.0,
+    *,
+    elevation_deg: float | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> tuple[list[CellInfo], np.ndarray]:
+    """Per-cell statistics of a polar label image (0 = no cell), shared by every backend.
+
+    *labels* has the shape of *values* (``azimuth`` x ``range``); regions that touch across
+    the 0/360 seam of a full-circle sweep must already carry one label.  Cells smaller than
+    *min_size_km2* are dropped, the rest are ranked by descending peak reflectivity (ties:
+    larger first) and numbered ``C001``, ``C002``...
+
+    Returns the cells and a relabelled int32 image in which value ``k`` is ``cells[k - 1]``.
+    """
+    n_az = len(azimuth)
+    labels = np.asarray(labels)
+    n_features = int(labels.max()) if labels.size else 0
+    ranked = np.zeros(labels.shape, dtype=np.int32)
+    if n_features == 0:
+        return [], ranked
+
+    if len(range_m) >= 2:
+        gate_spacing_m = float(np.median(np.abs(np.diff(range_m))))
+    else:
+        gate_spacing_m = float(range_m[0]) if len(range_m) == 1 else 250.0
+    if n_az >= 2:
+        az_spacing_deg = float(np.median(np.abs(_circ_diff_deg(azimuth[:-1], azimuth[1:]))))
+    else:
+        az_spacing_deg = 1.0
+    az_spacing_rad = math.radians(az_spacing_deg)
+    wrap = _covers_full_circle(azimuth)
+
+    # ---- vectorised per-label statistics (single pass over the masked gates) ----
+    az_idx, rng_idx = np.nonzero(labels)
+    lab = labels[az_idx, rng_idx].astype(np.intp)
+    gate_area = np.abs(range_m[rng_idx]) * az_spacing_rad * gate_spacing_m  # m^2
+    vals = values[az_idx, rng_idx].astype(np.float64)
+    minlen = n_features + 1
+
+    count = np.bincount(lab, minlength=minlen)
+    area_m2 = np.bincount(lab, weights=gate_area, minlength=minlen)
+    val_sum = np.bincount(lab, weights=vals, minlength=minlen)
+
+    # Weights for centroids: area, falling back to unit weights if a cell has zero area.
+    w = np.where(area_m2[lab] > 0.0, gate_area, 1.0)
+    wsum = np.bincount(lab, weights=w, minlength=minlen)
+    rad = np.radians(azimuth[az_idx])
+    sin_sum = np.bincount(lab, weights=w * np.sin(rad), minlength=minlen)
+    cos_sum = np.bincount(lab, weights=w * np.cos(rad), minlength=minlen)
+    rng_sum = np.bincount(lab, weights=w * range_m[rng_idx], minlength=minlen)
+
+    present = np.nonzero(count)[0]
+    keep = present[area_m2[present] / 1e6 >= min_size_km2]
+    if keep.size == 0:
+        return [], ranked
+
+    # Bounding boxes of the (possibly seam-merged) components
+    objects = ndimage.find_objects(labels.astype(np.int32))
+
+    entries: list[tuple[CellInfo, int]] = []
+    for label_id in keep.tolist():
+        sl = objects[label_id - 1]
+        if sl is None:
+            continue
+        component_mask = labels[sl] == label_id
+        centroid_az = math.degrees(math.atan2(sin_sum[label_id], cos_sum[label_id])) % 360.0
+        centroid_range = float(rng_sum[label_id] / wsum[label_id])
+        boundary_points = _extract_boundary(
+            component_mask,
+            azimuth[sl[0]],
+            range_m[sl[1]],
+            max_points=120,
+            wrap_az=wrap and sl[0].start == 0 and sl[0].stop == n_az,
+        )
+        cell = CellInfo(
+            id=f"C{label_id:03d}",
+            centroid_az=centroid_az,
+            centroid_range=centroid_range,
+            area_km2=float(area_m2[label_id]) / 1e6,
+            max_dbz=float(np.nanmax(values[sl][component_mask])),
+            mean_dbz=float(val_sum[label_id] / count[label_id]),
+            boundary_points=boundary_points,
+        )
+        if lat is not None and lon is not None:
+            cell.lat, cell.lon = polar_to_latlon(lat, lon, centroid_az, centroid_range)
+        if elevation_deg is not None:
+            cell.echo_top_proxy_km = float(
+                beam_height_km(range_m[sl[1]][np.nonzero(component_mask)[1]].max(), elevation_deg)
+            )
+        entries.append((cell, label_id))
+
+    # Sort by descending max dBZ (ties: larger cell first), then re-label by rank
+    entries.sort(key=lambda e: (-e[0].max_dbz, -e[0].area_km2))
+    lut = np.zeros(minlen, dtype=np.int32)
+    cells: list[CellInfo] = []
+    for i, (cell, label_id) in enumerate(entries):
+        cell.id = f"C{i + 1:03d}"
+        lut[label_id] = i + 1
+        cells.append(cell)
+    return cells, lut[labels]
+
+
+def identify_cells_labelled(
+    data: xr.DataArray,
+    threshold_dbz: float = 35.0,
+    min_size_km2: float = 10.0,
+    *,
+    elevation_deg: float | None = None,
+    lat: float | None = None,
+    lon: float | None = None,
+) -> tuple[list[CellInfo], np.ndarray]:
+    """Like :func:`identify_cells` but also returns the ranked polar label image."""
+    values, azimuth, range_m = polar_geometry(data)
+    if values.size == 0:
+        return [], np.zeros(values.shape, dtype=np.int32)
+
+    # Binary mask: above threshold (NaN compares False)
+    with np.errstate(invalid="ignore"):
+        mask = values >= threshold_dbz
+
+    # Connected-component labelling (8-connectivity)
+    structure = ndimage.generate_binary_structure(2, 2)
+    labels, n_features = ndimage.label(mask, structure=structure)
+
+    if n_features == 0:
+        logger.info("No cells found above %.1f dBZ", threshold_dbz)
+        return [], np.zeros(values.shape, dtype=np.int32)
+
+    if _covers_full_circle(azimuth):
+        labels = _merge_seam_labels(labels, n_features)
+
+    cells, ranked = cells_from_labels(
+        values,
+        labels,
+        azimuth,
+        range_m,
+        min_size_km2,
+        elevation_deg=elevation_deg,
+        lat=lat,
+        lon=lon,
+    )
+    logger.info(
+        "Identified %d cells above %.1f dBZ (min area %.1f km2)",
+        len(cells),
+        threshold_dbz,
+        min_size_km2,
+    )
+    return cells, ranked
+
+
 def identify_cells(
     data: xr.DataArray,
     threshold_dbz: float = 35.0,
@@ -149,116 +395,7 @@ def identify_cells(
         covers a full circle, cells touching the 0/360 seam are merged into
         one cell and their azimuth centroid is a circular mean.
     """
-    if "azimuth" in data.dims and "range" in data.dims and data.ndim == 2:
-        data = data.transpose("azimuth", "range")
-    values = np.asarray(data.values)
-    if not np.issubdtype(values.dtype, np.floating):
-        values = values.astype(np.float32)
-    azimuth = np.asarray(data.coords["azimuth"].values, dtype=np.float64)
-    range_m = np.asarray(data.coords["range"].values, dtype=np.float64)
-    if values.shape != (azimuth.size, range_m.size):
-        raise ValueError(
-            f"data shape {values.shape} does not match azimuth/range "
-            f"({azimuth.size}, {range_m.size})"
-        )
-    if values.size == 0:
-        return []
-
-    # Compute gate spacing for area estimation
-    if len(range_m) >= 2:
-        gate_spacing_m = float(np.median(np.abs(np.diff(range_m))))
-    else:
-        gate_spacing_m = float(range_m[0]) if len(range_m) == 1 else 250.0
-
-    n_az = len(azimuth)
-    if n_az >= 2:
-        az_spacing_deg = float(np.median(np.abs(_circ_diff_deg(azimuth[:-1], azimuth[1:]))))
-    else:
-        az_spacing_deg = 1.0
-    az_spacing_rad = math.radians(az_spacing_deg)
-
-    # Binary mask: above threshold (NaN compares False)
-    with np.errstate(invalid="ignore"):
-        mask = values >= threshold_dbz
-
-    # Connected-component labelling (8-connectivity)
-    structure = ndimage.generate_binary_structure(2, 2)
-    labels, n_features = ndimage.label(mask, structure=structure)
-
-    if n_features == 0:
-        logger.info("No cells found above %.1f dBZ", threshold_dbz)
-        return []
-
-    wrap = _covers_full_circle(azimuth)
-    if wrap:
-        labels = _merge_seam_labels(labels, n_features)
-
-    # ---- vectorised per-label statistics (single pass over the masked gates) ----
-    az_idx, rng_idx = np.nonzero(labels)
-    lab = labels[az_idx, rng_idx]
-    gate_area = np.abs(range_m[rng_idx]) * az_spacing_rad * gate_spacing_m  # m^2
-    vals = values[az_idx, rng_idx].astype(np.float64)
-    minlen = n_features + 1
-
-    count = np.bincount(lab, minlength=minlen)
-    area_m2 = np.bincount(lab, weights=gate_area, minlength=minlen)
-    val_sum = np.bincount(lab, weights=vals, minlength=minlen)
-
-    # Weights for centroids: area, falling back to unit weights if a cell has zero area.
-    w = np.where(area_m2[lab] > 0.0, gate_area, 1.0)
-    wsum = np.bincount(lab, weights=w, minlength=minlen)
-    rad = np.radians(azimuth[az_idx])
-    sin_sum = np.bincount(lab, weights=w * np.sin(rad), minlength=minlen)
-    cos_sum = np.bincount(lab, weights=w * np.cos(rad), minlength=minlen)
-    rng_sum = np.bincount(lab, weights=w * range_m[rng_idx], minlength=minlen)
-
-    present = np.nonzero(count)[0]
-    keep = present[area_m2[present] / 1e6 >= min_size_km2]
-    if keep.size == 0:
-        return []
-
-    # Bounding boxes of the (possibly seam-merged) components
-    objects = ndimage.find_objects(labels)
-
-    cells: list[CellInfo] = []
-    for label_id in keep.tolist():
-        sl = objects[label_id - 1]
-        if sl is None:
-            continue
-        component_mask = labels[sl] == label_id
-        centroid_az = math.degrees(math.atan2(sin_sum[label_id], cos_sum[label_id])) % 360.0
-        centroid_range = float(rng_sum[label_id] / wsum[label_id])
-        boundary_points = _extract_boundary(
-            component_mask,
-            azimuth[sl[0]],
-            range_m[sl[1]],
-            max_points=120,
-            wrap_az=wrap and sl[0].start == 0 and sl[0].stop == n_az,
-        )
-        cells.append(
-            CellInfo(
-                id=f"C{label_id:03d}",
-                centroid_az=centroid_az,
-                centroid_range=centroid_range,
-                area_km2=float(area_m2[label_id]) / 1e6,
-                max_dbz=float(values[sl][component_mask].max()),
-                mean_dbz=float(val_sum[label_id] / count[label_id]),
-                boundary_points=boundary_points,
-            )
-        )
-
-    # Sort by descending max dBZ (ties: larger cell first), then re-label by rank
-    cells.sort(key=lambda c: (-c.max_dbz, -c.area_km2))
-    for i, cell in enumerate(cells):
-        cell.id = f"C{i + 1:03d}"
-
-    logger.info(
-        "Identified %d cells above %.1f dBZ (min area %.1f km2)",
-        len(cells),
-        threshold_dbz,
-        min_size_km2,
-    )
-    return cells
+    return identify_cells_labelled(data, threshold_dbz, min_size_km2)[0]
 
 
 def _extract_boundary(
@@ -318,6 +455,34 @@ def _cell_distance_km(a: CellInfo, b: CellInfo) -> float:
     return dist_m / 1000.0
 
 
+def match_nearest(
+    cells_t0: list[CellInfo],
+    cells_t1: list[CellInfo],
+    max_distance_km: float = 30.0,
+) -> dict[int, int]:
+    """Global greedy nearest-neighbour assignment ``index in t0 -> index in t1``.
+
+    Candidate pairs are taken in order of increasing distance, so a cell is never stolen
+    from its true nearest neighbour just because it appears earlier in the (max-dBZ
+    ordered) list.
+    """
+    candidates: list[tuple[float, int, int]] = []
+    for i, c0 in enumerate(cells_t0):
+        for j, c1 in enumerate(cells_t1):
+            dist = _cell_distance_km(c0, c1)
+            if dist < max_distance_km:
+                candidates.append((dist, i, j))
+    candidates.sort()
+    match: dict[int, int] = {}
+    used_t1: set[int] = set()
+    for _dist, i, j in candidates:
+        if i in match or j in used_t1:
+            continue
+        match[i] = j
+        used_t1.add(j)
+    return match
+
+
 def track_cells(
     cells_t0: list[CellInfo],
     cells_t1: list[CellInfo],
@@ -343,24 +508,8 @@ def track_cells(
         One track per matched pair, plus new tracks for unmatched t1 cells.
     """
     tracks: list[CellTrack] = []
-    used_t1: set[int] = set()
-
-    # Global greedy assignment: take candidate pairs in order of increasing
-    # distance, so a cell is never stolen from its true nearest neighbour just
-    # because it appears earlier in the (max-dBZ ordered) list.
-    candidates: list[tuple[float, int, int]] = []
-    for i, c0 in enumerate(cells_t0):
-        for j, c1 in enumerate(cells_t1):
-            dist = _cell_distance_km(c0, c1)
-            if dist < max_distance_km:
-                candidates.append((dist, i, j))
-    candidates.sort()
-    match: dict[int, int] = {}
-    for _dist, i, j in candidates:
-        if i in match or j in used_t1:
-            continue
-        match[i] = j
-        used_t1.add(j)
+    match = match_nearest(cells_t0, cells_t1, max_distance_km)
+    used_t1: set[int] = set(match.values())
 
     for i, c0 in enumerate(cells_t0):
         best_idx = match.get(i)
