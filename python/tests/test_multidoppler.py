@@ -842,6 +842,7 @@ class TestServerProtocol:
         msg = await self._run(handler, ids)
         assert msg["type"] == "multidoppler_error" and "pip install radarx" in msg["message"]
 
+    @needs_radarx
     @pytest.mark.asyncio
     async def test_cancel_before_start_and_unknown(self, shear_readers) -> None:
         handler, _ = _make_handler()
