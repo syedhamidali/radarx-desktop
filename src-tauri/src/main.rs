@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use rand::RngCore;
-use tauri::{Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// How long to wait for the sidecar's `READY:<port>` line. Generous because the very first start
 /// of an installed app is slow (the OS scans the freshly installed libraries, caches get built).
@@ -546,6 +546,52 @@ fn start_sidecar_monitor(state: Arc<SidecarState>) {
     });
 }
 
+/// Files the OS asked the app to open ("Open with", double click, drop on the Dock icon, command
+/// line) before the window's UI was ready. The UI drains them once at startup; after that they are
+/// delivered as `open-files` events.
+struct PendingOpen {
+    files: Mutex<Vec<String>>,
+    ui_ready: AtomicBool,
+}
+
+/// Existing files among command-line arguments (flags such as `-psn_0_1234` are ignored).
+fn paths_from_args<I: IntoIterator<Item = String>>(args: I) -> Vec<String> {
+    args.into_iter()
+        .filter(|a| !a.starts_with('-'))
+        .filter(|a| std::path::Path::new(a).is_file())
+        .collect()
+}
+
+/// Hand files to the UI: as an event if it is ready, otherwise queued until it asks.
+fn deliver_open_files(app: &AppHandle, paths: Vec<String>) {
+    if paths.is_empty() {
+        return;
+    }
+    let state = app.state::<PendingOpen>();
+    if state.ui_ready.load(Ordering::SeqCst) {
+        if let Err(e) = app.emit("open-files", paths) {
+            eprintln!("Failed to emit open-files: {}", e);
+        }
+    } else if let Ok(mut q) = state.files.lock() {
+        q.extend(paths);
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// Called once by the UI at startup: returns the files queued so far and switches to events.
+#[tauri::command]
+fn take_pending_open_files(state: State<'_, PendingOpen>) -> Vec<String> {
+    state.ui_ready.store(true, Ordering::SeqCst);
+    state
+        .files
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default()
+}
+
 fn main() {
     install_panic_hook();
 
@@ -563,9 +609,17 @@ fn main() {
     let exit_handle = Arc::clone(&shared);
 
     let app = tauri::Builder::default()
+        // A second launch (e.g. "Open with" while the app runs) hands its files to the running app.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            deliver_open_files(app, paths_from_args(args.into_iter().skip(1)));
+        }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(SharedSidecar(Arc::clone(&shared)))
+        .manage(PendingOpen {
+            files: Mutex::new(paths_from_args(std::env::args().skip(1))),
+            ui_ready: AtomicBool::new(false),
+        })
         .setup(move |app| {
             // Installed app: the packaged engine ships in the resource directory.
             if let Ok(resources) = app.path().resource_dir() {
@@ -630,11 +684,24 @@ fn main() {
             get_sidecar_token,
             open_file_dialog,
             sidecar_health_check,
+            take_pending_open_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(move |_app_handle, event| {
+    app.run(move |app_handle, event| {
+        // macOS: "Open with", double click and drops on the Dock icon arrive as Opened events.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        if let tauri::RunEvent::Opened { urls } = &event {
+            let paths = urls
+                .iter()
+                .filter_map(|u| u.to_file_path().ok())
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect();
+            deliver_open_files(app_handle, paths);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+        let _ = app_handle;
         // Window close -> last window gone -> Exit: stop the Python sidecar with it.
         if let tauri::RunEvent::Exit = event {
             shutdown_sidecar(&exit_handle);

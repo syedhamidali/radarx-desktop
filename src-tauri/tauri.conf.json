@@ -34,6 +34,110 @@
     ],
     "category": "Utility",
     "shortDescription": "Radar data research tool",
-    "longDescription": "Open, process, visualise and export weather radar data (NEXRAD, ODIM, CfRadial and more)."
+    "longDescription": "Open, process, visualise and export weather radar data (NEXRAD, ODIM, CfRadial and more).",
+    "fileAssociations": [
+      {
+        "ext": [
+          "nc",
+          "ncf",
+          "cdf"
+        ],
+        "name": "Radar volume (NetCDF / CfRadial)",
+        "description": "NetCDF / CfRadial radar volume",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/x-netcdf"
+      },
+      {
+        "ext": [
+          "h5",
+          "hdf5",
+          "hdf"
+        ],
+        "name": "Radar volume (ODIM / HDF5)",
+        "description": "ODIM / HDF5 radar volume",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/x-hdf5"
+      },
+      {
+        "ext": [
+          "gz"
+        ],
+        "name": "Radar volume (compressed NEXRAD Level II)",
+        "description": "Compressed NEXRAD Level II volume",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/gzip"
+      },
+      {
+        "ext": [
+          "bz2"
+        ],
+        "name": "Radar volume (compressed)",
+        "description": "Compressed radar volume",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/x-bzip2"
+      },
+      {
+        "ext": [
+          "raw",
+          "RAW",
+          "vol",
+          "azi",
+          "scn",
+          "scnx",
+          "uf"
+        ],
+        "name": "Radar volume",
+        "description": "Radar volume (IRIS, Rainbow, Furuno, UF)",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/octet-stream"
+      },
+      {
+        "ext": [
+          "ar2v",
+          "nexrad"
+        ],
+        "name": "Radar file (any format xradar reads)",
+        "description": "Radar file",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "contentTypes": [
+          "public.data"
+        ]
+      },
+      {
+        "ext": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6",
+          "7",
+          "8",
+          "9",
+          "10",
+          "11",
+          "12",
+          "13",
+          "14",
+          "15",
+          "16",
+          "17",
+          "18",
+          "19",
+          "20"
+        ],
+        "name": "Radar volume (numbered copy, e.g. file.nc.1)",
+        "description": "Numbered radar volume (file.nc.1, file.h5.2 ...)",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "application/octet-stream"
+      }
+    ]
   }
 }

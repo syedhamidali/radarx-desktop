@@ -86,6 +86,7 @@
   // --- Non-reactive locals ---
   let unlistenDragDrop: (() => void) | null = null;
   let unlistenSidecarError: (() => void) | null = null;
+  let unlistenOpenFiles: (() => void) | null = null;
   let lastSidecarError = '';
   let destroyed = false;
   let unsubFileOpened: (() => void) | null = null;
@@ -184,6 +185,19 @@
       } catch (err) {
         console.warn('[App] sidecar error channel unavailable:', err);
       }
+      // Files the OS asked us to open ("Open with", double click): the ones that arrived while the
+      // window was loading, then any later ones as events.
+      try {
+        const { listen } = await import('@tauri-apps/api/event');
+        const { invoke } = await import('@tauri-apps/api/core');
+        const unlistenOpen = await listen<string[]>('open-files', (e) => openWhenConnected(e.payload));
+        if (destroyed) unlistenOpen();
+        else unlistenOpenFiles = unlistenOpen;
+        const queued = await invoke<string[]>('take_pending_open_files');
+        if (queued.length > 0) openWhenConnected(queued);
+      } catch (err) {
+        console.warn('[App] open-with channel unavailable:', err);
+      }
     }
     if (isWebMode()) {
       window.addEventListener('dragenter', onDomDragEnter);
@@ -229,6 +243,7 @@
     stopAnimation();
     if (unlistenDragDrop) unlistenDragDrop();
     unlistenSidecarError?.();
+    unlistenOpenFiles?.();
     unsubFileOpened?.();
     unsubOpenError?.();
     unsubConn?.();
@@ -420,6 +435,29 @@
   async function openLatestFromCloud() {
     await showPanel('cloud');
     window.dispatchEvent(new CustomEvent('xradar:cloud-open-latest'));
+  }
+
+  /** Open files handed over by the OS, waiting (up to a minute) for the engine to be connected. */
+  function openWhenConnected(paths: string[]) {
+    const list = paths.filter(Boolean);
+    if (list.length === 0) return;
+    if (get(connectionStatus) === 'connected') {
+      openPaths(list);
+      return;
+    }
+    let done = false;
+    let unsub: () => void = () => {};
+    const finish = (open: boolean) => {
+      if (done) return;
+      done = true;
+      unsub();
+      clearTimeout(timer);
+      if (open) openPaths(list);
+    };
+    const timer = setTimeout(() => finish(false), 60_000);
+    unsub = connectionStatus.subscribe((s) => {
+      if (s === 'connected') queueMicrotask(() => finish(true));
+    });
   }
 
   /** Open one or more files; the first immediately, the rest one after the other. */
