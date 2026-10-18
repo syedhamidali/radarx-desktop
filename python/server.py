@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import functools
 import inspect
 import json
 import logging
@@ -61,7 +62,6 @@ from engine.temporal import (
     compute_difference,
     compute_time_series,
 )
-from engine.tracking import identify_cells, track_cells
 from engine.volume import extract_cross_section_3d, extract_volume
 
 logging.basicConfig(
@@ -1853,6 +1853,13 @@ class ConnectionHandler:
 
         threshold_dbz = float(params.get("threshold_dbz", 35.0))
         min_size_km2 = float(params.get("min_size_km2", 10.0))
+        from engine import cells as cell_engine
+
+        try:
+            opts = cell_engine.options_from_params(params)
+        except ValueError as exc:
+            await self.send_error(f"identify_cells: {exc}")
+            return
 
         await self.send_progress(10, f"Identifying cells in {variable} sweep {sweep_idx}...")
 
@@ -1865,18 +1872,17 @@ class ConnectionHandler:
             variable,
         )
 
-        cells = await loop.run_in_executor(
+        scan = await loop.run_in_executor(
             None,
-            identify_cells,
-            data,
-            threshold_dbz,
-            min_size_km2,
+            functools.partial(
+                cell_engine.identify_sweep, datatree, data, threshold_dbz, min_size_km2, **opts
+            ),
         )
 
         # Store for subsequent tracking
-        self._previous_cells = cells
+        self._previous_cells = scan
 
-        await self.send_progress(100, f"Found {len(cells)} cells")
+        await self.send_progress(100, f"Found {len(scan)} cells")
         await self.send(
             {
                 "type": "cells_identified",
@@ -1884,7 +1890,10 @@ class ConnectionHandler:
                 "sweep": sweep_idx,
                 "threshold_dbz": threshold_dbz,
                 "min_size_km2": min_size_km2,
-                "cells": [c.to_dict() for c in cells],
+                "cells": [c.to_dict() for c in scan],
+                "backend": scan.backend,
+                "backend_label": scan.backend_label,
+                "note": scan.note,
             }
         )
 
@@ -1928,7 +1937,13 @@ class ConnectionHandler:
         threshold_dbz = float(params.get("threshold_dbz", 35.0))
         min_size_km2 = float(params.get("min_size_km2", 10.0))
         max_distance_km = float(params.get("max_distance_km", 30.0))
-        dt_seconds = float(params.get("dt_seconds", 300.0))
+        from engine import cells as cell_engine
+
+        try:
+            opts = cell_engine.options_from_params(params)
+        except ValueError as exc:
+            await self.send_error(f"track_cells: {exc}")
+            return
 
         await self.send_progress(10, f"Tracking cells in {variable} sweep {sweep_idx}...")
 
@@ -1941,33 +1956,64 @@ class ConnectionHandler:
             variable,
         )
 
-        new_cells = await loop.run_in_executor(
+        new_scan = await loop.run_in_executor(
             None,
-            identify_cells,
-            data,
-            threshold_dbz,
-            min_size_km2,
+            functools.partial(
+                cell_engine.identify_sweep, datatree, data, threshold_dbz, min_size_km2, **opts
+            ),
         )
+
+        # Time step: explicit dt_seconds wins, then the scan times, then 5 minutes.
+        previous = self._previous_cells
+        scan_dt = None
+        t_prev, t_new = getattr(previous, "time_s", None), new_scan.time_s
+        if t_prev is not None and t_new is not None and t_new > t_prev:
+            scan_dt = float(t_new - t_prev)
+        if "dt_seconds" in params:
+            dt_seconds, dt_source = float(params["dt_seconds"]), "request"
+        elif scan_dt is not None:
+            dt_seconds, dt_source = scan_dt, "scan times"
+        else:
+            dt_seconds, dt_source = 300.0, "default"
 
         tracks = await loop.run_in_executor(
             None,
-            track_cells,
-            self._previous_cells,
-            new_cells,
-            max_distance_km,
-            dt_seconds,
+            functools.partial(
+                cell_engine.track_pair,
+                previous,
+                new_scan,
+                max_distance_km=max_distance_km,
+                dt_seconds=dt_seconds,
+                backend=opts["backend"],
+                min_overlap=float(params.get("min_overlap", 0.3)),
+            ),
         )
 
-        self._previous_cells = new_cells
+        self._previous_cells = new_scan
 
         await self.send_progress(100, f"Tracked {len(tracks)} cells")
+        motion = None
+        if tracks.motion is not None:
+            speed, from_deg = cell_engine.uv_to_speed_dir(*tracks.motion)
+            motion = {
+                "u_mps": round(tracks.motion[0], 2),
+                "v_mps": round(tracks.motion[1], 2),
+                "speed_mps": round(speed, 2),
+                "direction_deg": round(from_deg, 1),
+            }
         await self.send(
             {
                 "type": "cells_tracked",
                 "variable": variable,
                 "sweep": sweep_idx,
-                "cells": [c.to_dict() for c in new_cells],
+                "cells": [c.to_dict() for c in new_scan],
                 "tracks": [t.to_dict() for t in tracks],
+                "backend": tracks.backend,
+                "backend_label": tracks.backend_label,
+                "note": tracks.note or new_scan.note,
+                "dt_seconds": dt_seconds,
+                "dt_source": dt_source,
+                "motion": motion,
             }
         )
 
