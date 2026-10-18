@@ -41,7 +41,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine.plugins import VAR_ALIASES
+from engine import varmap
 
 logger = logging.getLogger(__name__)
 
@@ -375,21 +375,14 @@ class _Volume:
 
 
 def _canonical(variable: str) -> str:
-    for canon, aliases in VAR_ALIASES.items():
-        if variable == canon or variable in aliases:
-            return canon
-    return variable
+    role = varmap.role_for_name(variable)
+    return role.legacy if role is not None else variable
 
 
 def _find_name(ds: xr.Dataset, variable: str) -> str | None:
-    """Name of ``variable`` (or one of its aliases) in a sweep dataset."""
-    if variable in ds.data_vars:
-        return variable
-    canon = _canonical(variable)
-    for alias in VAR_ALIASES.get(canon, [variable]):
-        if alias in ds.data_vars:
-            return alias
-    return None
+    """Name of ``variable`` (or the variable playing its role) in a sweep dataset."""
+    match = varmap.resolve(ds, variable)
+    return match.variable if match is not None else None
 
 
 def _site(tree: xr.DataTree, ds0: xr.Dataset) -> tuple[float, float, float]:

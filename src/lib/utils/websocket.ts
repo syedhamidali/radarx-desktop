@@ -626,7 +626,8 @@ class WebSocketManager {
 
       case 'data_table_result':
       case 'metadata_tree_result':
-        // Handled by custom handlers registered in DataTable / MetadataViewer
+      case 'variable_mapping':
+        // Handled by custom handlers registered in DataTable / MetadataViewer / variableMapping
         break;
 
       case 'error': {

@@ -14,6 +14,7 @@ import numpy as np
 import xarray as xr
 from scipy import ndimage
 
+from engine import varmap
 from engine.reader import mask_below_threshold, sorted_sweep_names
 
 logger = logging.getLogger(__name__)
@@ -583,6 +584,7 @@ def run_retrieval(
     name: str,
     sweep: int = 0,
     params: dict[str, Any] | None = None,
+    var_overrides: dict[str, str] | None = None,
 ) -> xr.DataArray:
     """Run a named retrieval on a specific sweep of a DataTree.
 
@@ -596,6 +598,8 @@ def run_retrieval(
         Sweep index.
     params : dict, optional
         Override default parameters.
+    var_overrides : dict, optional
+        User variable mapping ``{role: variable}`` (see :mod:`engine.varmap`).
 
     Returns
     -------
@@ -623,32 +627,24 @@ def run_retrieval(
 
     ds = mask_below_threshold(datatree[sweep_nodes[sweep]].to_dataset())
 
-    # Flexible variable name matching (e.g. DBZH, DBZ, reflectivity, Z)
-    var_aliases: dict[str, list[str]] = {
-        "DBZH": ["DBZH", "DBZ", "reflectivity", "Z", "corrected_reflectivity_horizontal"],
-        "ZDR": ["ZDR", "differential_reflectivity", "Zdr"],
-        "PHIDP": ["PHIDP", "differential_phase", "PhiDP", "UPHIDP"],
-        "KDP": ["KDP", "specific_differential_phase"],
-        "RHOHV": ["RHOHV", "cross_correlation_ratio", "RhoHV", "CCORH"],
-        "VRADH": ["VRADH", "velocity", "V", "radial_velocity"],
-    }
-
+    # Flexible variable lookup (roles, CF standard names, aliases, patterns, user overrides)
     def _find_var(canonical: str) -> xr.DataArray | None:
-        aliases = var_aliases.get(canonical, [canonical])
-        for alias in aliases:
-            if alias in ds.data_vars:
-                return ds[alias]
-        return None
+        return varmap.find_in(ds, canonical, overrides=var_overrides)
 
     # Collect required data arrays
     data_args: list[xr.DataArray] = []
     for var_name in required_vars:
         da = _find_var(var_name)
         if da is None:
-            available = sorted(str(v) for v in ds.data_vars if ds[v].ndim == 2)
             raise ValueError(
-                f"Retrieval '{name}' requires '{var_name}' but it was not found. "
-                f"Available 2D variables: {available}"
+                f"Retrieval '{name}' cannot run. "
+                + varmap.explain_missing(
+                    var_name,
+                    ds,
+                    sweep=sweep,
+                    tree=datatree,
+                    overrides=var_overrides,
+                )
             )
         data_args.append(da)
 

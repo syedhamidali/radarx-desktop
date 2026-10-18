@@ -16,7 +16,7 @@ import re
 import numpy as np
 from scipy import ndimage
 
-from engine.plugins import VAR_ALIASES
+from engine import varmap
 
 
 def covers_full_circle(azimuth_deg: np.ndarray) -> bool:
@@ -90,12 +90,9 @@ def main_field_names(dataset) -> set[str]:
     """Names in *dataset* that stand for the four main fields (canonical name or first alias)."""
     names = set()
     for canon in MAIN_FIELDS:
-        pick = canon if canon in dataset.data_vars else None
-        for alias in VAR_ALIASES.get(canon, []):
-            if pick is None and alias in dataset.data_vars:
-                pick = alias
-        if pick is not None:
-            names.add(pick)
+        match = varmap.resolve(dataset, canon)
+        if match is not None:
+            names.add(match.variable)
     return names
 
 

@@ -56,6 +56,7 @@
     type VolumeRunResult,
   } from '../stores/modules';
   import { activeDerived, type DerivedVariable } from '../stores/derived';
+  import { roleAvailability, missingRequirementsMapped, pairedHint } from '../stores/variableMapping';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
 
   const SEARCH_THRESHOLD = 6;
@@ -120,9 +121,9 @@
     if (!m.available) return m.unavailable_reason ?? 'Module unavailable (missing Python package)';
     if (!isConnected) return 'Sidecar not connected';
     if (!hasData) return 'Open a radar file first';
-    const missing = missingRequirements(m, available);
+    const missing = missingRequirementsMapped(m, available, $roleAvailability);
     if (missing.length > 0) {
-      return `Missing required variable${missing.length > 1 ? 's' : ''} in sweep ${$selectedSweep}: ${missing.join(', ')}`;
+      return `Missing required variable${missing.length > 1 ? 's' : ''} in sweep ${$selectedSweep}: ${missing.join(', ')}${pairedHint(missing, $roleAvailability)}`;
     }
     return null;
   }

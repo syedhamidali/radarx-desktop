@@ -46,6 +46,8 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import varmap
+
 logger = logging.getLogger(__name__)
 
 PARAM_TYPES = ("number", "int", "bool", "select", "string")
@@ -54,27 +56,9 @@ PARAM_TYPES = ("number", "int", "bool", "select", "string")
 # sweep's grid, so running it per sweep makes no sense.
 MODULE_SCOPES = ("sweep", "volume")
 
-# Canonical variable aliases — a module asking for "ZDR" also matches
-# "differential_reflectivity" etc. (same table the dual-pol tools use).
-VAR_ALIASES: dict[str, list[str]] = {
-    "DBZH": [
-        "DBZH",
-        "DBZ",
-        "reflectivity",
-        "Z",
-        "corrected_reflectivity_horizontal",
-        "DBZHCC",
-        "DBZHC",  # NCAR/CSU-style clutter-corrected reflectivity
-    ],
-    "ZDR": ["ZDR", "differential_reflectivity", "Zdr", "ZDRC"],
-    "PHIDP": ["PHIDP", "differential_phase", "PhiDP", "UPHIDP"],
-    "KDP": ["KDP", "specific_differential_phase"],
-    "RHOHV": ["RHOHV", "cross_correlation_ratio", "RhoHV", "CCORH"],
-    "VRADH": ["VRADH", "velocity", "V", "radial_velocity", "VEL"],
-    "SNR": ["SNR", "SNRH", "SNRHC", "SNRV", "SNRVC", "snr"],
-    "NCP": ["NCP", "normalized_coherent_power", "SQI", "SQIH"],
-    "WRADH": ["WRADH", "WIDTH", "spectrum_width"],
-}
+# Deprecated shim: the single source of truth is ``engine.varmap`` (roles, CF names, aliases,
+# patterns, user overrides). Kept so old ``from engine.plugins import VAR_ALIASES`` still works.
+VAR_ALIASES: dict[str, list[str]] = varmap.legacy_alias_table()
 
 
 class ModuleError(Exception):
@@ -172,12 +156,24 @@ class ModuleContext:
         *,
         get_sweep_dataset: Callable[[int], xr.Dataset],
         progress: Callable[[int, str], None] | None = None,
+        var_overrides: dict[str, str] | None = None,
+        paired_roles: list[str] | None = None,
+        pair_tolerance: float = varmap.DEFAULT_TOLERANCE_DEG,
     ) -> None:
         self.datatree = datatree
         self.sweep = sweep
         self._get_ds = get_sweep_dataset
         self._progress = progress
         self._ds: xr.Dataset | None = None
+        self.var_overrides: dict[str, str] = varmap.normalize_overrides(var_overrides)
+        self._paired_roles = {
+            r.key for n in (paired_roles or []) if (r := varmap.role_for_name(n)) is not None
+        }
+        self._pair_tolerance = pair_tolerance
+        self._sweep_dss: list[xr.Dataset] | None = None
+        self._aligned: dict[tuple[int, str], xr.DataArray] = {}
+        # Human-readable notes ("velocity taken from sweep 1") shown with the module result.
+        self.notes: list[str] = []
 
     @property
     def dataset(self) -> xr.Dataset:
@@ -186,23 +182,101 @@ class ModuleContext:
             self._ds = self._get_ds(self.sweep)
         return self._ds
 
-    def find(self, name: str) -> xr.DataArray | None:
-        """Look up a variable by canonical name or alias; ``None`` if absent."""
-        ds = self.dataset
-        for alias in VAR_ALIASES.get(name, [name]):
-            if alias in ds.data_vars:
-                return ds[alias]
-        return None
+    @property
+    def paired_roles(self) -> list[str]:
+        """Role keys this module may take from the paired sweep (``@module(paired=[...])``)."""
+        return sorted(self._paired_roles)
 
-    def has(self, name: str) -> bool:
-        return self.find(name) is not None
+    def _sweep_datasets(self) -> list[xr.Dataset]:
+        if self._sweep_dss is None:
+            self._sweep_dss = varmap.sweep_datasets(self.datatree)
+        return self._sweep_dss
 
-    def field(self, name: str) -> xr.DataArray:
-        """Like :meth:`find` but raises :class:`ModuleError` if the variable is missing."""
-        da = self.find(name)
+    def _pairing_ok(self, name: str, allow_paired_sweep: bool) -> bool:
+        role = varmap.role_for_name(name)
+        return role is not None and (allow_paired_sweep or role.key in self._paired_roles)
+
+    def match(
+        self, name: str, *, allow_paired_sweep: bool = False, prefer_corrected: bool = False
+    ) -> varmap.Match | None:
+        """How *name* (role, legacy name such as ``VRADH``, or alias) resolves; ``None`` if absent.
+
+        With ``allow_paired_sweep=True`` a role missing on this sweep is looked up on the sweep
+        with the nearest fixed angle (see :mod:`engine.varmap`); ``match.sweep`` then names it.
+        """
+        m = varmap.resolve(
+            self.dataset,
+            name,
+            overrides=self.var_overrides,
+            prefer_corrected=prefer_corrected,
+        )
+        if m is not None or not self._pairing_ok(name, allow_paired_sweep):
+            return m
+        try:
+            return varmap.find_paired_sweep(
+                self.datatree,
+                self.sweep,
+                name,
+                overrides=self.var_overrides,
+                prefer_corrected=prefer_corrected,
+                tolerance=self._pair_tolerance,
+                datasets=self._sweep_datasets(),
+            )
+        except Exception:  # a malformed tree must not turn "not found" into a crash
+            logger.debug("paired-sweep lookup failed", exc_info=True)
+            return None
+
+    def find(
+        self, name: str, *, allow_paired_sweep: bool = False, prefer_corrected: bool = False
+    ) -> xr.DataArray | None:
+        """Look up a variable by role / canonical name / alias; ``None`` if absent.
+
+        A paired-sweep hit is returned already aligned to this sweep's azimuth/range grid and
+        recorded in :attr:`notes`.
+        """
+        m = self.match(
+            name, allow_paired_sweep=allow_paired_sweep, prefer_corrected=prefer_corrected
+        )
+        if m is None:
+            return None
+        if m.sweep is None:
+            return self.dataset[m.variable]
+        cache_key = (m.sweep, m.variable)
+        da = self._aligned.get(cache_key)
         if da is None:
-            avail = sorted(str(v) for v in self.dataset.data_vars)
-            raise ModuleError(f"Sweep {self.sweep} has no '{name}' field (available: {avail})")
+            src = self._get_ds(m.sweep)
+            da = varmap.align_to_sweep(src[m.variable], src, self.dataset)
+            self._aligned[cache_key] = da
+            role = varmap.role_for_name(name)
+            label = role.label if role else name
+            self.notes.append(
+                f"{label} taken from sweep {m.sweep} ({m.variable}, "
+                f"{m.angle_diff or 0.0:.2f} deg from this sweep's elevation)"
+            )
+        return da
+
+    def has(self, name: str, *, allow_paired_sweep: bool = False) -> bool:
+        return self.match(name, allow_paired_sweep=allow_paired_sweep) is not None
+
+    def field(
+        self, name: str, *, allow_paired_sweep: bool = False, prefer_corrected: bool = False
+    ) -> xr.DataArray:
+        """Like :meth:`find` but raises :class:`ModuleError` if the variable is missing."""
+        da = self.find(
+            name, allow_paired_sweep=allow_paired_sweep, prefer_corrected=prefer_corrected
+        )
+        if da is None:
+            raise ModuleError(
+                varmap.explain_missing(
+                    name,
+                    self.dataset,
+                    sweep=self.sweep,
+                    tree=self.datatree,
+                    overrides=self.var_overrides,
+                    tolerance=self._pair_tolerance,
+                    datasets=self._sweep_datasets(),
+                )
+            )
         return da
 
     def polar_coords(self) -> tuple[np.ndarray, np.ndarray]:
@@ -427,6 +501,8 @@ class ModuleSpec:
     optional: list[str] = field(default_factory=list)
     needs: list[str] = field(default_factory=list)
     scope: str = "sweep"
+    # roles this module accepts from the paired (same-elevation) sweep, e.g. ["VRADH"]
+    paired: list[str] = field(default_factory=list)
 
     @property
     def per_sweep(self) -> bool:
@@ -451,6 +527,7 @@ class ModuleSpec:
             "version": self.version,
             "needs": self.needs,
             "scope": self.scope,
+            "paired": self.paired,
             "per_sweep": self.per_sweep,
             "available": not missing,
             "unavailable_reason": (
@@ -479,6 +556,7 @@ def module(
     version: str = "1.0",
     needs: list[str] | None = None,
     scope: str = "sweep",
+    paired: list[str] | None = None,
 ) -> Callable[[Callable[..., Result]], Callable[..., Result]]:
     """Register ``func(ctx, **params) -> Result`` as a module.
 
@@ -489,6 +567,10 @@ def module(
     ``scope`` is ``"sweep"`` (default: the module works on the selected sweep alone, so it can
     also be run on all sweeps to build a derived variable) or ``"volume"`` (it uses the whole
     volume and returns one product on a single sweep's grid).
+
+    ``paired`` lists roles (e.g. ``["VRADH"]``) the module can take from the paired sweep at
+    the same elevation when the selected sweep lacks them (NEXRAD split cuts keep velocity on
+    the Doppler cut). ``ctx.field`` then falls back automatically and the result carries a note.
     """
 
     def decorator(func: Callable[..., Result]) -> Callable[..., Result]:
@@ -514,6 +596,7 @@ def module(
             version=version,
             needs=list(needs or []),
             scope=scope,
+            paired=list(paired or []),
         )
         return func
 
@@ -737,6 +820,7 @@ def run_module(
     return_fields: bool = False,
     timeout_s: float | None | str = "env",
     is_cancelled: Callable[[], bool] | None = None,
+    var_overrides: dict[str, str] | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, np.ndarray]]:
     """Execute a module and return its JSON-safe result payload.
 
@@ -758,7 +842,14 @@ def run_module(
             f"(pip install {' '.join(missing)})"
         )
     params = _coerce_params(spec.params, raw_params or {})
-    ctx = ModuleContext(datatree, sweep, get_sweep_dataset=get_sweep_dataset, progress=progress)
+    ctx = ModuleContext(
+        datatree,
+        sweep,
+        get_sweep_dataset=get_sweep_dataset,
+        progress=progress,
+        var_overrides=var_overrides,
+        paired_roles=spec.paired,
+    )
     for req in spec.requires:
         ctx.field(req)  # raises a clear ModuleError up-front
     limit = module_timeout_s() if timeout_s == "env" else timeout_s
@@ -776,7 +867,11 @@ def run_module(
             "If this is a custom module, end its run() function with `return res`."
         )
     warnings = _validate_fields(spec, ctx, result)
+    if ctx.notes:  # e.g. "velocity taken from sweep 1": keep the user informed
+        result.text("\n".join(ctx.notes), title="Data sources")
     payload = result.to_dict()
+    if ctx.notes:
+        payload["notes"] = list(ctx.notes)
     payload.update(
         module=module_id,
         sweep=sweep,

@@ -3,6 +3,7 @@
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import DataTable from './DataTable.svelte';
   import MetadataViewer from './MetadataViewer.svelte';
+  import VariableMapping from './VariableMapping.svelte';
 
   const data = $derived($radarData);
   const hasData = $derived(data.variables.length > 0);
@@ -70,6 +71,10 @@
           {/if}
         </tbody>
       </table>
+    </CollapsiblePanel>
+
+    <CollapsiblePanel title="Variable mapping" collapsed={true}>
+      <VariableMapping />
     </CollapsiblePanel>
 
     <CollapsiblePanel title="Attributes" badge={Object.keys(data.attributes).length} collapsed={true}>

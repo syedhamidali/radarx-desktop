@@ -30,7 +30,9 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine.plugins import VAR_ALIASES, ModuleError
+from engine import varmap
+from engine.plugins import ModuleError
+from engine.varmap import nearest_ray
 
 
 def _load_utils():
@@ -145,21 +147,14 @@ def site_coords(tree: xr.DataTree) -> dict[str, Any]:
     return out
 
 
-def standardize(ds: xr.Dataset) -> xr.Dataset:
-    """Rename alias variables (``DBZ``, ``differential_reflectivity``, ...) to canonical names.
+def standardize(ds: xr.Dataset, overrides: dict[str, str] | None = None) -> xr.Dataset:
+    """Rename role variables (``DBZ``, ``differential_reflectivity``, ...) to canonical names.
 
-    radarx looks fields up by a fixed list of names; the desktop SDK accepts more aliases.
-    Only data variables whose canonical name is absent are renamed; the input is not changed.
+    radarx looks fields up by a fixed list of names; the desktop SDK resolves more (CF names,
+    patterns, user mappings - see :mod:`engine.varmap`). Only roles whose canonical name is
+    absent are renamed; the input is not changed.
     """
-    rename = {}
-    for canon, aliases in VAR_ALIASES.items():
-        if canon in ds.data_vars:
-            continue
-        for alias in aliases:
-            if alias in ds.data_vars:
-                rename[alias] = canon
-                break
-    return ds.rename(rename) if rename else ds
+    return varmap.standardize_dataset(ds, overrides)
 
 
 def prepare_sweep(ctx, *, georeference: bool = False) -> xr.Dataset:
@@ -171,7 +166,13 @@ def prepare_sweep(ctx, *, georeference: bool = False) -> xr.Dataset:
     ds = ctx.dataset
     if "azimuth" not in ds.coords or "range" not in ds.coords:
         raise ModuleError("This sweep has no azimuth/range coordinates (not a polar PPI)")
-    ds = standardize(ds)
+    ds = standardize(ds, getattr(ctx, "var_overrides", None))
+    for role in sorted(getattr(ctx, "paired_roles", ())):  # e.g. velocity from the Doppler cut
+        legacy = varmap.ROLES[role].legacy
+        if legacy not in ds.data_vars:
+            da = ctx.find(role)  # paired roles fall back to the paired sweep, aligned
+            if da is not None and da.shape == (ds.sizes["azimuth"], ds.sizes["range"]):
+                ds = ds.assign({legacy: (("azimuth", "range"), da.values)})
     site = site_coords(ctx.datatree)
     missing = {k: v for k, v in site.items() if k not in ds.coords}
     if missing:
@@ -299,21 +300,6 @@ def meteo_mask(rt, ds: xr.Dataset) -> xr.DataArray:
 # ---------------------------------------------------------------------------
 # polar <-> polar / cartesian mapping
 # ---------------------------------------------------------------------------
-
-
-def nearest_ray(src_az: np.ndarray, query_az: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Index of the closest ray of ``src_az`` for each ``query_az`` (circular) and the gap (deg)."""
-    src = np.mod(np.asarray(src_az, dtype=np.float64), 360.0)
-    order = np.argsort(src)
-    s = src[order]
-    q = np.mod(np.asarray(query_az, dtype=np.float64), 360.0)
-    hi = np.searchsorted(s, q) % s.size
-    lo = (hi - 1) % s.size
-    d_lo = np.abs((q - s[lo] + 180.0) % 360.0 - 180.0)
-    d_hi = np.abs((q - s[hi] + 180.0) % 360.0 - 180.0)
-    pick_hi = d_hi < d_lo
-    idx = np.where(pick_hi, hi, lo)
-    return order[idx], np.where(pick_hi, d_hi, d_lo)
 
 
 def ground_range_m(range_m: np.ndarray, elevation_deg: float, altitude_m: float = 0.0):

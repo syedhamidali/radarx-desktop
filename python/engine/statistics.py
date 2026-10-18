@@ -12,12 +12,13 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import varmap
 from engine.reader import mask_below_threshold, sorted_sweep_names
 
 logger = logging.getLogger(__name__)
 
 
-_REFLECTIVITY_ALIASES = ("DBZH", "DBZ", "reflectivity", "Z")
+_REFLECTIVITY_ALIASES = tuple(varmap.ROLES["reflectivity"].aliases)
 
 
 def _is_reflectivity_name(name: str) -> bool:
@@ -218,13 +219,10 @@ def compute_cell_stats(
         # Only honour the requested name if it is a reflectivity field; asking
         # for cell stats while a velocity / ZDR field is selected must not
         # report that field's maximum as "max_reflectivity".
-        candidates = list(_REFLECTIVITY_ALIASES)
-        if _is_reflectivity_name(dbz_variable):
-            candidates.insert(0, dbz_variable)
-        for alias in candidates:
-            if alias in ds.data_vars:
-                dbz_da = ds[alias]
-                break
+        if _is_reflectivity_name(dbz_variable) and dbz_variable in ds.data_vars:
+            dbz_da = ds[dbz_variable]
+        else:
+            dbz_da = varmap.find_in(ds, "reflectivity")
         if dbz_da is None:
             continue
 
