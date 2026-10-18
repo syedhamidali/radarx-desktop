@@ -14,6 +14,8 @@
   import { getActiveFile } from '../stores/fileManager';
   import { activeDerived } from '../stores/derived';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+  import { webUi } from '../stores/webInfo';
+  import { inTauri } from '../utils/env';
 
   // --- Where the file goes -------------------------------------------------
   // The desktop app asks (native Save / Choose-folder dialog, starting in the folder used last).
@@ -22,9 +24,6 @@
   const LAST_DIR_KEY = 'xradar.export.lastDir.v1';
   const DEFAULT_FOLDER_HINT = '~/Downloads/xradar-exports';
 
-  function inTauri(): boolean {
-    return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-  }
   function lastDir(): string | undefined {
     try {
       return localStorage.getItem(LAST_DIR_KEY) || undefined;
@@ -301,7 +300,7 @@
       addToast('error', 'Select at least one sweep for batch export');
       return;
     }
-    if (!batchOutputDir) {
+    if (!batchOutputDir && !$webUi) {
       // No folder chosen yet: ask (desktop) instead of silently writing somewhere the user cannot find.
       const dir = await chooseFolder();
       if (dir === null) return; // cancelled
@@ -468,11 +467,15 @@
           <input id="batch-dpi" type="range" min="72" max="600" step="1" bind:value={batchDpi} disabled={!canExport} />
           <span class="range-value">{batchDpi}</span>
         </div>
+        {#if $webUi}
+          <p class="section-desc">Each image is downloaded by your browser when it is ready.</p>
+        {:else}
         <div class="field inline">
           <label for="batch-dir">Output Dir</label>
           <input id="batch-dir" type="text" bind:value={batchOutputDir} placeholder={DEFAULT_FOLDER_HINT} disabled={!canExport} />
           <button type="button" class="browse-btn" on:click={browseBatchFolder} disabled={!canExport}>Choose…</button>
         </div>
+        {/if}
       </div>
 
       <button class="primary action-btn" on:click={doBatchExport} disabled={!canExport}>

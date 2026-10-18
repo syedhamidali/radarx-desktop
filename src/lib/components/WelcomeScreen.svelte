@@ -3,9 +3,11 @@
   import { recentFiles } from '../stores/recentFiles';
   import type { RecentFile } from '../stores/settings';
   import { workspaceStore, PRESET_WORKSPACES } from '../stores/workspace';
+  import { webUi } from '../stores/webInfo';
 
   const dispatch = createEventDispatcher<{
     'open-file': void;
+    'open-cloud': void;
     'open-recent': { path: string };
     'load-workspace': { name: string };
   }>();
@@ -25,6 +27,13 @@
     { keys: 'Ctrl/\u2318 + B', desc: 'Toggle left sidebar' },
     { keys: 'Ctrl/\u2318 + E', desc: 'Toggle right sidebar' },
     { keys: 'Space', desc: 'Play/Pause animation' },
+  ];
+
+  const webTips = [
+    'Open the latest scan from the cloud: no file needed',
+    'Or upload your own radar file (any extension, e.g. NEXRAD Level II)',
+    'Drag & drop files anywhere on the page to upload them',
+    'Exports are downloaded by your browser',
   ];
 
   const tips = [
@@ -62,13 +71,26 @@
         <span class="logo-x">x</span><span class="logo-rest">radar</span>
         <span class="logo-desktop">desktop</span>
       </div>
-      <p class="welcome-subtitle">Open-source radar data visualization</p>
+      <p class="welcome-subtitle">Open-source radar data visualization{$webUi ? ' in your browser' : ''}</p>
       <span class="welcome-version">v{APP_VERSION}</span>
     </div>
 
     <!-- Quick actions -->
     <div class="welcome-actions">
-      <button class="action-card" on:click={() => dispatch('open-file')}>
+      {#if $webUi}
+        <button class="action-card" on:click={() => dispatch('open-cloud')} data-testid="welcome-open-cloud">
+          <div class="action-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z" />
+            </svg>
+          </div>
+          <div class="action-text">
+            <span class="action-title">Open latest from the cloud</span>
+            <span class="action-desc">Most recent NEXRAD scan, e.g. KTLX</span>
+          </div>
+        </button>
+      {/if}
+      <button class="action-card" on:click={() => dispatch('open-file')} data-testid="welcome-open-file">
         <div class="action-icon">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -77,10 +99,10 @@
           </svg>
         </div>
         <div class="action-text">
-          <span class="action-title">Open File</span>
-          <span class="action-desc">Browse for a radar data file</span>
+          <span class="action-title">{$webUi ? 'Upload a file' : 'Open File'}</span>
+          <span class="action-desc">{$webUi ? 'Choose a radar file from your computer' : 'Browse for a radar data file'}</span>
         </div>
-        <kbd>Ctrl+O</kbd>
+        {#if !$webUi}<kbd>Ctrl+O</kbd>{/if}
       </button>
 
       {#if savedWorkspaces.length > 0}
@@ -101,8 +123,9 @@
       {/if}
     </div>
 
-    <div class="welcome-grid">
-      <!-- Recent files -->
+    <div class="welcome-grid" class:single={$webUi}>
+      <!-- Recent files (local paths: desktop only) -->
+      {#if !$webUi}
       <div class="welcome-card">
         <div class="card-header">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -138,6 +161,8 @@
         </div>
       </div>
 
+      {/if}
+
       <!-- Right column -->
       <div class="welcome-right-col">
         <!-- Getting started -->
@@ -150,7 +175,7 @@
           </div>
           <div class="card-body">
             <ul class="tips-list">
-              {#each tips as tip}
+              {#each ($webUi ? webTips : tips) as tip}
                 <li class="tip-item">{tip}</li>
               {/each}
             </ul>
@@ -324,6 +349,11 @@
   }
 
   /* Grid */
+  .welcome-grid.single {
+    grid-template-columns: minmax(0, 560px);
+    justify-content: center;
+  }
+
   .welcome-grid {
     display: grid;
     grid-template-columns: 1.2fr 1fr;

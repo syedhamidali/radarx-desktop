@@ -2,6 +2,7 @@
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { settings, DEFAULT_SETTINGS, type AppSettings } from '../stores/settings';
   import { recentFiles } from '../stores/recentFiles';
+  import { webUi } from '../stores/webInfo';
   import { focusTrap } from '../utils/focusTrap';
   import {
     SHORTCUT_REGISTRY,
@@ -382,6 +383,15 @@
 
           <!-- ═══ Data ═══ -->
           {:else if activeTab === 'data'}
+            {#if $webUi}
+            <div class="settings-section">
+              <h3>File Handling</h3>
+              <p class="empty-message">
+                Files you upload are processed on a shared server and deleted when you close the tab.
+                The default directory, auto-load and recent-files settings only apply to the desktop app.
+              </p>
+            </div>
+            {:else}
             <div class="settings-section">
               <h3>File Handling</h3>
               <div class="form-row">
@@ -439,6 +449,8 @@
                 </div>
               {/if}
             </div>
+
+            {/if}
 
             <div class="section-footer">
               <button class="reset-btn" on:click={() => settings.resetSection('data')}>
