@@ -315,6 +315,7 @@ class WebSocketManager {
     'volume_data',
     'cross_section_3d_data',
     'mosaic_result',
+    'multidoppler_result',
   ]);
 
   /** Start tracking a binary payload announced by `header`. */
@@ -449,6 +450,18 @@ class WebSocketManager {
     } else if (type === 'mosaic_result') {
       // PNG bytes + the JSON header; the mosaic store builds the object URL.
       this._dispatchHandlers('mosaic_result_ready', { header, png: new Uint8Array(buffer) });
+    } else if (type === 'multidoppler_result') {
+      // One float32 block [n_fields, nz, ny, nx]; the wind store decodes it.
+      if (buffer.byteLength % 4 !== 0) {
+        console.error(`[WS] 'multidoppler_result' payload is not float32-aligned (${buffer.byteLength} bytes)`);
+        this._dispatchHandlers('multidoppler_error', {
+          type: 'multidoppler_error',
+          request_id: header.request_id,
+          message: 'The wind result arrived corrupted',
+        });
+        return;
+      }
+      this._dispatchHandlers('multidoppler_result_ready', { header, data: new Float32Array(buffer) });
     } else {
       this.handleBinarySweepData(header, buffer);
     }
@@ -566,6 +579,7 @@ class WebSocketManager {
       case 'volume_data':
       case 'cross_section_3d_data':
       case 'mosaic_result':
+      case 'multidoppler_result':
         // JSON header for incoming binary data — wait for the chunk frames
         this.beginBinary(msg);
         break;
@@ -607,6 +621,11 @@ class WebSocketManager {
 
       case 'animation_export_complete':
         this.showExportNotification(msg.path ?? 'Animation export complete');
+        break;
+
+      case 'multidoppler_error':
+      case 'multidoppler_cancelled':
+        // Handled by custom handlers registered in the wind store
         break;
 
       case 'mosaic_error':

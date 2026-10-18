@@ -44,6 +44,7 @@ import websockets
 from websockets.asyncio.server import ServerConnection
 
 from engine import derived, mosaic, pipeline, plugins, varmap
+from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -697,6 +698,9 @@ class ConnectionHandler:
             "create_mosaic": self._handle_create_mosaic,
             "mosaic_probe": self._handle_mosaic_probe,
             "export_mosaic": self._handle_export_mosaic,
+            "run_multidoppler": self._handle_run_multidoppler,
+            "multidoppler_cancel": self._handle_multidoppler_cancel,
+            "export_multidoppler": self._handle_export_multidoppler,
         }.get(msg_type)
 
         if handler is None:
@@ -3200,6 +3204,169 @@ class ConnectionHandler:
                 lambda tmp: tmp.write_text(mosaic.projection_wkt(), encoding="ascii"),
             )
         return target
+
+    # ==================================================================
+    # BEGIN multi-Doppler wind retrieval (engine/multidoppler.py, needs radarx)
+    # ==================================================================
+
+    async def _handle_run_multidoppler(self, msg: dict[str, Any]) -> None:
+        """Retrieve u / v / w from two or more open radar files and stream the grids back.
+
+        ``{type: "run_multidoppler", request_id, file_ids: [...], grid: {...}, options: {...}}``
+        -> progress messages, then ``{type: "multidoppler_result", request_id, wind_id, fields,
+        shape, grid, radars, coverage_pct, crossing_angle, background, ..., byte_length, chunks}``
+        followed by ``chunks`` binary frames holding a float32 array of ``shape`` =
+        ``[n_fields, nz, ny, nx]`` (C order). Failure: ``{type: "multidoppler_error",
+        request_id, message}``; ``multidoppler_cancel`` -> ``{type: "multidoppler_cancelled"}``.
+        Progress always closes at 100.
+        """
+        request_id = msg.get("request_id")
+        key = request_id if isinstance(request_id, str) and request_id else None
+        cancel = _multidoppler_cancel_event(key)
+        try:
+            await self._run_multidoppler(msg, request_id, cancel)
+        except mdop.MultiDopplerCancelledError:
+            await self.send({"type": "multidoppler_cancelled", "request_id": request_id})
+        except (mdop.MultiDopplerError, UnknownFileError) as exc:
+            logger.warning("Multi-Doppler error: %s", exc)
+            await self._multidoppler_error(request_id, str(exc))
+        except ImportError as exc:
+            await self._multidoppler_error(
+                request_id,
+                f"Multi-Doppler wind retrieval needs the Python package radarx: {exc} "
+                "(pip install radarx)",
+            )
+        except Exception as exc:
+            logger.error("Multi-Doppler failed: %s\n%s", exc, traceback.format_exc())
+            await self._multidoppler_error(request_id, f"{type(exc).__name__}: {exc}")
+        finally:
+            if key is not None:
+                _multidoppler_runs.pop(key, None)
+            await self.send_progress(100, "Wind retrieval finished")
+
+    async def _multidoppler_error(self, request_id: Any, message: str, **extra: Any) -> None:
+        await self.send(
+            {"type": "multidoppler_error", "request_id": request_id, "message": message, **extra}
+        )
+
+    async def _run_multidoppler(
+        self, msg: dict[str, Any], request_id: Any, cancel: threading.Event
+    ) -> None:
+        file_ids = msg.get("file_ids")
+        if (
+            not isinstance(file_ids, list)
+            or not file_ids
+            or not all(isinstance(f, str) and f for f in file_ids)
+        ):
+            raise mdop.MultiDopplerError("run_multidoppler: 'file_ids' must be a non-empty list")
+        if len(set(file_ids)) != len(file_ids):
+            raise mdop.MultiDopplerError("run_multidoppler: 'file_ids' contains duplicates")
+        for key in ("grid", "options"):
+            if msg.get(key) is not None and not isinstance(msg[key], dict):
+                raise mdop.MultiDopplerError(f"run_multidoppler: '{key}' must be an object")
+        pairs = []
+        for fid in file_ids:
+            _, reader = _resolve_reader(fid)  # UnknownFileError for closed files
+            if reader.datatree is None:
+                raise mdop.MultiDopplerError(f"File {fid} is not open")
+            pairs.append((fid, reader))
+        # Fail early (before any heavy work) on bad parameters or a missing radarx.
+        grid = mdop.GridSpec.from_dict(msg.get("grid"))
+        options = mdop.Options.from_dict(msg.get("options"))
+        if len(pairs) >= 2:
+            mdop._radarx_mod()
+
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        await self.send_progress(3, "Starting wind retrieval...")
+
+        def _build() -> mdop.WindRecord:
+            return mdop.run_multidoppler(
+                pairs, grid, options, progress=progress_sync, cancel=cancel.is_set
+            )
+
+        t0 = time.perf_counter()
+        try:
+            async with _locks.get("multidoppler"):  # one heavy run at a time (radarx is threaded)
+                if cancel.is_set():
+                    raise mdop.MultiDopplerCancelledError("cancelled")
+                record = await loop.run_in_executor(None, _build)
+        except BaseException:
+            cancel.set()  # connection gone / task cancelled: the worker stops at its next check
+            raise
+        header = {
+            "type": "multidoppler_result",
+            "request_id": request_id,
+            **record.header(),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+        }
+        await self._send_binary_chunks([record.fields], header, length_key="byte_length")
+
+    async def _handle_multidoppler_cancel(self, msg: dict[str, Any]) -> None:
+        """``{type: "multidoppler_cancel", request_id}``: stop that run at its next stage."""
+        request_id = msg.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            _multidoppler_cancel_event(request_id).set()
+
+    async def _handle_export_multidoppler(self, msg: dict[str, Any]) -> None:
+        """``{type: "export_multidoppler", wind_id, path, overwrite?}`` -> ``file_saved``."""
+        wind_id = msg.get("wind_id")
+        path = msg.get("path")
+        try:
+            if not isinstance(wind_id, str) or not wind_id:
+                raise mdop.MultiDopplerError("export_multidoppler: missing 'wind_id'")
+            if not isinstance(path, str) or not path.strip() or "\x00" in path:
+                raise mdop.MultiDopplerError(
+                    "export_multidoppler: 'path' must be a non-empty string"
+                )
+            record = mdop.WIND_RESULTS.get(wind_id)
+            target = Path(path).expanduser()
+            if not target.parent.is_dir():
+                raise mdop.MultiDopplerError(
+                    f"export_multidoppler: folder does not exist: {target.parent}"
+                )
+            if target.is_dir():
+                raise mdop.MultiDopplerError(f"export_multidoppler: path is a folder: {target}")
+            if target.exists() and msg.get("overwrite") is not True:
+                raise mdop.MultiDopplerError(
+                    f"export_multidoppler: {target} already exists "
+                    "(pass overwrite=true to replace it)"
+                )
+            await asyncio.get_running_loop().run_in_executor(
+                None, _atomic_write, target, lambda tmp: mdop.write_netcdf(record, tmp)
+            )
+        except mdop.MultiDopplerError as exc:
+            await self._multidoppler_error(msg.get("request_id"), str(exc), wind_id=wind_id)
+            return
+        except OSError as exc:
+            await self._multidoppler_error(
+                msg.get("request_id"),
+                f"export_multidoppler: could not write the file: {exc}",
+                wind_id=wind_id,
+            )
+            return
+        await self.send({"type": "file_saved", "path": str(target)})
+
+    # ==================================================================
+    # END multi-Doppler wind retrieval
+    # ==================================================================
+
+
+#: Cancel flags of running / about-to-run ``run_multidoppler`` requests, by request_id.
+_multidoppler_runs: dict[str, threading.Event] = {}
+_MULTIDOPPLER_MAX_PENDING = 64
+
+
+def _multidoppler_cancel_event(request_id: str | None) -> threading.Event:
+    """The cancel flag of a request (created on demand, so a cancel may arrive first)."""
+    if request_id is None:
+        return threading.Event()
+    event = _multidoppler_runs.get(request_id)
+    if event is None:
+        while len(_multidoppler_runs) >= _MULTIDOPPLER_MAX_PENDING:
+            _multidoppler_runs.pop(next(iter(_multidoppler_runs)))
+        event = _multidoppler_runs[request_id] = threading.Event()
+    return event
 
 
 def _atomic_write(target: Path, write: Callable[[Path], Any]) -> None:
