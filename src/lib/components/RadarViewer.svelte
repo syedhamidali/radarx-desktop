@@ -25,6 +25,7 @@
   import BoxSelectTool from './BoxSelectTool.svelte';
   import { boxSelectActive, selectedBox } from '../stores/volumeSelect';
   import { mosaicLayer, mosaicDisplay, registerViewBoundsProvider, type GeoBounds } from '../stores/mosaic';
+  import { windLayer } from '../stores/wind';
   import { dataSpaceToLatLon, latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
   import type { SweepInfo } from '../stores/radarData';
 
@@ -123,6 +124,9 @@
   const zoomLabel = $derived(Math.round(scale * 100) + '%');
   // Mosaic: show the map with the mosaic instead of the PPI canvas
   const mosaicViewOn = $derived(!!$mosaicLayer && $mosaicLayer.visible && $mosaicLayer.view);
+  // Multi-Doppler wind analysis drawn on the map (optionally instead of the PPI canvas)
+  const windViewOn = $derived(!!$windLayer && $windLayer.visible);
+  const windHidesPpi = $derived(windViewOn && !!$windLayer?.hidePpi);
 
   // Radar site location from file attributes
   const radarLat = $derived(parseFloat($radarData.attributes?.latitude ?? $radarData.attributes?.origin_latitude ?? '0') || 0);
@@ -754,7 +758,7 @@
          role="application" tabindex="0"
          aria-label="Radar PPI — scroll to zoom, drag to pan, double-click to reset, right-click to probe">
 
-      {#if (showMap || mosaicViewOn || !!$mosaicLayer?.visible) && hasRendered && (radarLat !== 0 || radarLon !== 0)}
+      {#if (showMap || mosaicViewOn || windViewOn || !!$mosaicLayer?.visible) && hasRendered && (radarLat !== 0 || radarLon !== 0)}
         <MapBackground
           showTiles={showMap}
           {radarLat}
@@ -769,7 +773,7 @@
         />
       {/if}
 
-      <canvas bind:this={webglCanvas} class="webgl-canvas" class:has-map={showMap} class:mosaic-hidden={mosaicViewOn}></canvas>
+      <canvas bind:this={webglCanvas} class="webgl-canvas" class:has-map={showMap} class:mosaic-hidden={mosaicViewOn || windHidesPpi}></canvas>
 
       {#if showGeoOverlay && hasRendered && (radarLat !== 0 || radarLon !== 0)}
         <GeoOverlay

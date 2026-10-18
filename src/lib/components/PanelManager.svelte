@@ -11,12 +11,14 @@
   import CloudDataPanel from './CloudDataPanel.svelte';
   import ModulesPanel from './ModulesPanel.svelte';
   import MosaicPanel from './MosaicPanel.svelte';
+  import WindPanel from './WindPanel.svelte';
 
   setContext('embedded-panel', true); // panels below draw only their body; this component owns the header
 
   const PANEL_MAP: Record<string, { component: any; label: string; icon: string }> = {
     cloud: { component: CloudDataPanel, label: 'Cloud Data', icon: '☁' },
     mosaic: { component: MosaicPanel, label: 'Mosaic', icon: '\u{1F5FA}' },
+    wind: { component: WindPanel, label: 'Wind (Multi-Doppler)', icon: '\u{1F32C}' },
     volume: { component: VolumePanel, label: '3D Volume', icon: '\u{1F4E6}' },
     timeseries: { component: TimeSeriesChart, label: 'Time Series', icon: '\u{1F4C8}' },
     crosssection: { component: CrossSectionPanel, label: 'Cross-Section', icon: '///' },
