@@ -190,4 +190,20 @@ some rays. They are exported as the single valid value, since a radar site has o
 * Heavy math should be vectorized NumPy/SciPy. If a kernel is still slow after that, it is
   the right candidate for a native (Rust/PyO3) implementation behind the same module API.
 
+## More radarx modules
+
+| Module | Category | Product | Needs |
+|---|---|---|---|
+| `radarx_kdp_column` | Storm | KDP columns above the freezing level (van Lier-Walqui et al. 2016): field, object table, outlines; KDP estimated from PHIDP if absent | `radarx.retrieve.kdp_column` (newer than 0.5.1) |
+| `radarx_vvp_winds` | Kinematics | Wind speed/direction/divergence by height from Doppler velocity (VAD or VVP), bulk shear, text summary | VAD: 0.5.1; VVP: newer radarx |
+| `radarx_beam_blockage` | QC | Partial / cumulative beam blockage, terrain height, terrain clutter; blocked-sector table | a local DEM file (NetCDF, `.asc`, GeoTIFF with rioxarray/rasterio); never downloads |
+| `radarx_tornado_prob` | Hazards | TorNet CNN tornado probability; otherwise a labelled rotation-score heuristic (LLSD shear + couplets) | ML: `onnxruntime` + a local TorNet ONNX model |
+| `radarx_melting_layer` | Dual-pol | Melting layer top/bottom (PPI, RD-QVP profile or gradient method); below/in/above field | gradient method: newer radarx |
+| `radarx_qvp` | Dual-pol | Quasi-vertical profile (QVP or RD-QVP) of Z, ZDR, RhoHV, KDP: table, bright-band scalars | - |
+| `radarx_zdr_calibration` | QC | ZDR bias from light rain, dry snow or vertical pointing, with the bias-corrected ZDR field | - |
+
+Volume-scope modules (everything above except beam blockage and ZDR calibration) use the whole
+volume and show their product on the selected sweep. A module whose radarx function is missing
+from the installed version stays listed and explains which function it needs.
+
 See also: [Variable mapping](VARMAP.md) - how field names, CF names, overrides and paired sweeps resolve for `ctx.field()`.
