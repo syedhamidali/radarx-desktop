@@ -39,6 +39,11 @@ The builds are not code-signed, so the first launch shows a warning:
 
 The first launch can take up to a minute while the OS scans the app; after that it starts in about a second.
 
+**Open files from the file manager:** right-click a radar file and choose **Open With → xradar-desktop**, or double-click it
+once you have chosen the app (Get Info → Open with → Change All on macOS). NetCDF/CfRadial, HDF5/ODIM and gzip files are
+registered by extension. On macOS the app is also offered for files with no extension, like NEXRAD Level II
+(`KTLX20130520_201643_V06`). On Windows, files without an extension need **Open with → Choose another app** once.
+
 ## What it does
 
 ### See it in 2D and 3D
