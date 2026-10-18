@@ -23,6 +23,8 @@
   } from '../utils/geoProjection';
   import { resolveBasemap, basemapTileUrl } from '../utils/basemaps';
   import { mosaicLayer, mosaicProbe, probeMosaic, clearMosaicProbe, type MosaicLayer } from '../stores/mosaic';
+  import { windLayer } from '../stores/wind';
+  import { drawWindLayer, type WindLayer } from '../utils/wind';
 
   export let radarLat: number;
   export let radarLon: number;
@@ -45,6 +47,8 @@
   let rootEl: HTMLDivElement;
   let layer: MosaicLayer | null = null;
   $: layer = $mosaicLayer;
+  let wlayer: WindLayer | null = null;
+  $: wlayer = $windLayer;
   $: mosaicShown = !!layer && layer.visible;
   $: probing = mosaicShown && !!layer?.view;
 
@@ -86,7 +90,7 @@
 
   // Re-render whenever view params change
   $: if (ctx && mctx && radarLat != null && radarLon != null) {
-    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer);
+    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer, wlayer);
     scheduleRender();
   }
 
@@ -224,6 +228,8 @@
       drawMosaic(mctx, lyr, dpr, project);
       drawSites(mctx, lyr, project);
     }
+    // Multi-Doppler wind analysis (speed raster, arrows, radar sites)
+    if (wlayer && wlayer.visible) drawWindLayer(mctx, wlayer, project, dpr, cw, ch);
   }
 
   function drawBasemap(

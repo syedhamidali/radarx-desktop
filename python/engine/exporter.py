@@ -11,19 +11,28 @@ import shutil
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import matplotlib
 import numpy as np
 import xarray as xr
 
-from engine.reader import sorted_sweep_names
+from engine.reader import collapse_site_position, mask_variable, sorted_sweep_names
 
-matplotlib.use("Agg")  # Non-interactive backend
-
-import matplotlib.pyplot as plt
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
+
+
+def _pyplot() -> Any:
+    """Import matplotlib.pyplot on first use (~0.2 s: keeps it out of sidecar start-up)."""
+    import matplotlib
+
+    matplotlib.use("Agg")  # Non-interactive backend
+    import matplotlib.pyplot as _plt
+
+    return _plt
+
 
 # --- Export constraints ---
 MIN_DPI = 72
@@ -117,7 +126,7 @@ _VARIABLE_UNITS: dict[str, str] = {
 def _get_cmap(variable: str) -> str:
     """Return a matplotlib colormap name for the variable."""
     cmap_name = _VARIABLE_CMAPS.get(variable)
-    if cmap_name and cmap_name in plt.colormaps():
+    if cmap_name and cmap_name in _pyplot().colormaps():
         return cmap_name
     # Fallback colormaps
     vlow = variable.lower()
@@ -256,28 +265,7 @@ def _netcdf_attr(value: Any) -> Any:
     return value
 
 
-_SITE_POSITION_VARS = ("latitude", "longitude", "altitude", "altitude_agl")
-
-
-def _collapse_site_position(ds: xr.Dataset) -> xr.Dataset:
-    """Turn a per-ray site position into the single value CfRadial1 expects.
-
-    A radar site has one latitude/longitude/altitude, but some files store them along ``time`` with
-    fill values (NaN, ``-9999``) on some rays; ``to_cfradial1`` then fails with "conflicting sizes
-    for dimension 'time'". Fill values are ignored and the most common valid value is kept. A
-    variable with no valid value at all is dropped.
-    """
-    for name in _SITE_POSITION_VARS:
-        var = ds.variables.get(name)
-        if var is None or "time" not in var.dims:
-            continue
-        values = np.asarray(var.values, dtype="float64")
-        valid = values[np.isfinite(values) & (values > -9990.0)]
-        ds = ds.drop_vars(name)
-        if valid.size:
-            uniq, counts = np.unique(valid, return_counts=True)
-            ds = ds.assign({name: ((), float(uniq[np.argmax(counts)]), var.attrs)})
-    return ds
+_collapse_site_position = collapse_site_position  # the reader does this on open; kept for safety
 
 
 def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
@@ -420,6 +408,7 @@ def render_publication_figure(
     or the data range is used).  Returns the Figure object (caller is
     responsible for saving/closing).
     """
+    plt = _pyplot()
     sweep_ds = _extract_sweep_dataset(datatree, sweep)
 
     if variable not in sweep_ds.data_vars:
@@ -428,7 +417,9 @@ def render_publication_figure(
             raise ValueError(f"No data variables in sweep {sweep}")
         raise KeyError(f"Variable '{variable}' not found in sweep {sweep}. Available: {available}")
 
-    da = sweep_ds[variable]
+    # NaN-out reserved "no echo" / "range folded" codes (see reader.mask_variable) so the
+    # no-echo area is transparent instead of painting the colormap minimum (-33 dBZ etc.).
+    da = mask_variable(sweep_ds[variable])
     values = da.values
 
     # Polar coordinates
@@ -733,7 +724,7 @@ class RadarExporter:
                     edgecolor="none",
                 )
         finally:
-            plt.close(fig)
+            _pyplot().close(fig)
 
         output_path = str(Path(target).resolve())
         progress(100, f"Export complete: {output_path}")
@@ -867,7 +858,7 @@ class RadarExporter:
                 sweep_ds = _extract_sweep_dataset(datatree, sw)
                 if variable not in sweep_ds.data_vars:
                     continue
-                vals = sweep_ds[variable].values
+                vals = mask_variable(sweep_ds[variable]).values
                 finite = vals[np.isfinite(vals)]
                 if finite.size:
                     lo, hi = min(lo, float(finite.min())), max(hi, float(finite.max()))
@@ -903,7 +894,7 @@ class RadarExporter:
                     with PILImage.open(buf) as png:
                         rgba = png.convert("RGBA")
             finally:
-                plt.close(fig)
+                _pyplot().close(fig)
             rgb = PILImage.new("RGB", rgba.size, (255, 255, 255))
             rgb.paste(rgba, mask=rgba.getchannel("A"))
             rgba.close()
@@ -1013,7 +1004,7 @@ class RadarExporter:
         if variable not in sweep_ds.data_vars:
             raise KeyError(f"Variable '{variable}' not found in sweep {sweep}")
 
-        da = sweep_ds[variable]
+        da = mask_variable(sweep_ds[variable])  # no-echo / range-folded codes -> NaN -> no CSV row
         values = da.values
 
         azimuth = (

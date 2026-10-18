@@ -35,6 +35,7 @@ import importlib.util
 import logging
 import math
 import os
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -45,6 +46,8 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import varmap
+
 logger = logging.getLogger(__name__)
 
 PARAM_TYPES = ("number", "int", "bool", "select", "string")
@@ -53,31 +56,22 @@ PARAM_TYPES = ("number", "int", "bool", "select", "string")
 # sweep's grid, so running it per sweep makes no sense.
 MODULE_SCOPES = ("sweep", "volume")
 
-# Canonical variable aliases — a module asking for "ZDR" also matches
-# "differential_reflectivity" etc. (same table the dual-pol tools use).
-VAR_ALIASES: dict[str, list[str]] = {
-    "DBZH": [
-        "DBZH",
-        "DBZ",
-        "reflectivity",
-        "Z",
-        "corrected_reflectivity_horizontal",
-        "DBZHCC",
-        "DBZHC",  # NCAR/CSU-style clutter-corrected reflectivity
-    ],
-    "ZDR": ["ZDR", "differential_reflectivity", "Zdr", "ZDRC"],
-    "PHIDP": ["PHIDP", "differential_phase", "PhiDP", "UPHIDP"],
-    "KDP": ["KDP", "specific_differential_phase"],
-    "RHOHV": ["RHOHV", "cross_correlation_ratio", "RhoHV", "CCORH"],
-    "VRADH": ["VRADH", "velocity", "V", "radial_velocity", "VEL"],
-    "SNR": ["SNR", "SNRH", "SNRHC", "SNRV", "SNRVC", "snr"],
-    "NCP": ["NCP", "normalized_coherent_power", "SQI", "SQIH"],
-    "WRADH": ["WRADH", "WIDTH", "spectrum_width"],
-}
+# Deprecated shim: the single source of truth is ``engine.varmap`` (roles, CF names, aliases,
+# patterns, user overrides). Kept so old ``from engine.plugins import VAR_ALIASES`` still works.
+VAR_ALIASES: dict[str, list[str]] = varmap.legacy_alias_table()
 
 
 class ModuleError(Exception):
     """Raised by a module to report a user-facing problem (bad data, missing field…)."""
+
+
+class ModuleTimeoutError(ModuleError):
+    """A module run exceeded the wall-clock limit (``XRADAR_MODULE_TIMEOUT_S``)."""
+
+
+class ModuleCancelled(Exception):  # noqa: N818 - control-flow signal, not an error condition
+    """Raised inside a module (by ``ctx.progress`` / ``ctx.check_cancelled``) once its run was
+    abandoned (timeout or the connection went away). Modules should let it propagate."""
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +146,45 @@ def _coerce_params(specs: list[dict[str, Any]], raw: dict[str, Any]) -> dict[str
 # ---------------------------------------------------------------------------
 
 
+def _apply_overrides(
+    ds: xr.Dataset, sweep: int, overrides: dict[str, Callable[[int], np.ndarray]]
+) -> xr.Dataset:
+    """*ds* with some roles replaced by other (derived) arrays, e.g. a pipeline result.
+
+    ``overrides`` maps a canonical role (``"VRADH"``) to ``fn(sweep) -> 2-D array`` on the sweep
+    grid. The replacement keeps the name the file uses for that role (so ``find``/``field`` and
+    modules reading the dataset directly both see it); a role the file lacks is added under its
+    canonical name. See docs/PIPELINES.md.
+    """
+    shape = (ds.sizes["azimuth"], ds.sizes["range"])
+    new = {}
+    for role, lookup in overrides.items():
+        arr = np.asarray(lookup(sweep))
+        if arr.shape != shape:
+            raise ModuleError(
+                f"Substitute for '{role}' has shape {arr.shape}, the sweep grid is {shape}"
+            )
+        name = next((a for a in VAR_ALIASES.get(role, [role]) if a in ds.data_vars), role)
+        attrs = dict(ds[name].attrs) if name in ds.data_vars else {}
+        new[name] = xr.DataArray(arr.astype(np.float32), dims=("azimuth", "range"), attrs=attrs)
+    return ds.assign(new)
+
+
+def _masked_copy(tree: xr.DataTree) -> xr.DataTree:
+    """Shallow copy of *tree* whose 2-D moments have the no-echo codes masked (see reader)."""
+    from engine.reader import mask_below_threshold
+
+    try:
+        out = tree.copy(deep=False)
+        for node in out.subtree:
+            if any(v.ndim >= 2 for v in node.to_dataset().data_vars.values()):
+                node.dataset = mask_below_threshold(node.to_dataset())
+        return out
+    except Exception as exc:  # pragma: no cover - never block a module on masking
+        logger.debug("could not mask the volume: %s", exc)
+        return tree
+
+
 class ModuleContext:
     """Everything a module needs to read data. Instances are created per run."""
 
@@ -162,37 +195,148 @@ class ModuleContext:
         *,
         get_sweep_dataset: Callable[[int], xr.Dataset],
         progress: Callable[[int, str], None] | None = None,
+        var_overrides: dict[str, str] | None = None,
+        paired_roles: list[str] | None = None,
+        pair_tolerance: float = varmap.DEFAULT_TOLERANCE_DEG,
+        overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
     ) -> None:
-        self.datatree = datatree
+        self._raw_datatree = datatree
+        self._masked_datatree: xr.DataTree | None = None
         self.sweep = sweep
         self._get_ds = get_sweep_dataset
         self._progress = progress
+        self._overrides = overrides or {}
         self._ds: xr.Dataset | None = None
+        self.var_overrides: dict[str, str] = varmap.normalize_overrides(var_overrides)
+        self._paired_roles = {
+            r.key for n in (paired_roles or []) if (r := varmap.role_for_name(n)) is not None
+        }
+        self._pair_tolerance = pair_tolerance
+        self._sweep_dss: list[xr.Dataset] | None = None
+        self._aligned: dict[tuple[int, str], xr.DataArray] = {}
+        # Human-readable notes ("velocity taken from sweep 1") shown with the module result.
+        self.notes: list[str] = []
+
+    @property
+    def datatree(self) -> xr.DataTree:
+        """The whole volume with "no echo" / "range folded" codes already NaN.
+
+        Level-II style files decode those codes to real numbers (-33 dBZ, -64.5 m/s ...) that a
+        module would otherwise treat as echo. Built lazily (volume modules only) and cached; the
+        reader's own tree is never modified. Use ``ctx.raw_datatree`` for the untouched data.
+        """
+        if self._masked_datatree is None:
+            self._masked_datatree = _masked_copy(self._raw_datatree)
+        return self._masked_datatree
+
+    @property
+    def raw_datatree(self) -> xr.DataTree:
+        """The reader's tree exactly as opened (encoded no-echo codes decoded as numbers)."""
+        return self._raw_datatree
 
     @property
     def dataset(self) -> xr.Dataset:
         """The current sweep as an ``xr.Dataset`` (loaded once, then cached)."""
         if self._ds is None:
-            self._ds = self._get_ds(self.sweep)
+            ds = self._get_ds(self.sweep)
+            self._ds = _apply_overrides(ds, self.sweep, self._overrides) if self._overrides else ds
         return self._ds
 
-    def find(self, name: str) -> xr.DataArray | None:
-        """Look up a variable by canonical name or alias; ``None`` if absent."""
-        ds = self.dataset
-        for alias in VAR_ALIASES.get(name, [name]):
-            if alias in ds.data_vars:
-                return ds[alias]
-        return None
+    @property
+    def paired_roles(self) -> list[str]:
+        """Role keys this module may take from the paired sweep (``@module(paired=[...])``)."""
+        return sorted(self._paired_roles)
 
-    def has(self, name: str) -> bool:
-        return self.find(name) is not None
+    def _sweep_datasets(self) -> list[xr.Dataset]:
+        if self._sweep_dss is None:
+            self._sweep_dss = varmap.sweep_datasets(self.datatree)
+        return self._sweep_dss
 
-    def field(self, name: str) -> xr.DataArray:
-        """Like :meth:`find` but raises :class:`ModuleError` if the variable is missing."""
-        da = self.find(name)
+    def _pairing_ok(self, name: str, allow_paired_sweep: bool) -> bool:
+        role = varmap.role_for_name(name)
+        return role is not None and (allow_paired_sweep or role.key in self._paired_roles)
+
+    def match(
+        self, name: str, *, allow_paired_sweep: bool = False, prefer_corrected: bool = False
+    ) -> varmap.Match | None:
+        """How *name* (role, legacy name such as ``VRADH``, or alias) resolves; ``None`` if absent.
+
+        With ``allow_paired_sweep=True`` a role missing on this sweep is looked up on the sweep
+        with the nearest fixed angle (see :mod:`engine.varmap`); ``match.sweep`` then names it.
+        """
+        m = varmap.resolve(
+            self.dataset,
+            name,
+            overrides=self.var_overrides,
+            prefer_corrected=prefer_corrected,
+        )
+        if m is not None or not self._pairing_ok(name, allow_paired_sweep):
+            return m
+        try:
+            return varmap.find_paired_sweep(
+                self.datatree,
+                self.sweep,
+                name,
+                overrides=self.var_overrides,
+                prefer_corrected=prefer_corrected,
+                tolerance=self._pair_tolerance,
+                datasets=self._sweep_datasets(),
+            )
+        except Exception:  # a malformed tree must not turn "not found" into a crash
+            logger.debug("paired-sweep lookup failed", exc_info=True)
+            return None
+
+    def find(
+        self, name: str, *, allow_paired_sweep: bool = False, prefer_corrected: bool = False
+    ) -> xr.DataArray | None:
+        """Look up a variable by role / canonical name / alias; ``None`` if absent.
+
+        A paired-sweep hit is returned already aligned to this sweep's azimuth/range grid and
+        recorded in :attr:`notes`.
+        """
+        m = self.match(
+            name, allow_paired_sweep=allow_paired_sweep, prefer_corrected=prefer_corrected
+        )
+        if m is None:
+            return None
+        if m.sweep is None:
+            return self.dataset[m.variable]
+        cache_key = (m.sweep, m.variable)
+        da = self._aligned.get(cache_key)
         if da is None:
-            avail = sorted(str(v) for v in self.dataset.data_vars)
-            raise ModuleError(f"Sweep {self.sweep} has no '{name}' field (available: {avail})")
+            src = self._get_ds(m.sweep)
+            da = varmap.align_to_sweep(src[m.variable], src, self.dataset)
+            self._aligned[cache_key] = da
+            role = varmap.role_for_name(name)
+            label = role.label if role else name
+            self.notes.append(
+                f"{label} taken from sweep {m.sweep} ({m.variable}, "
+                f"{m.angle_diff or 0.0:.2f} deg from this sweep's elevation)"
+            )
+        return da
+
+    def has(self, name: str, *, allow_paired_sweep: bool = False) -> bool:
+        return self.match(name, allow_paired_sweep=allow_paired_sweep) is not None
+
+    def field(
+        self, name: str, *, allow_paired_sweep: bool = False, prefer_corrected: bool = False
+    ) -> xr.DataArray:
+        """Like :meth:`find` but raises :class:`ModuleError` if the variable is missing."""
+        da = self.find(
+            name, allow_paired_sweep=allow_paired_sweep, prefer_corrected=prefer_corrected
+        )
+        if da is None:
+            raise ModuleError(
+                varmap.explain_missing(
+                    name,
+                    self.dataset,
+                    sweep=self.sweep,
+                    tree=self.datatree,
+                    overrides=self.var_overrides,
+                    tolerance=self._pair_tolerance,
+                    datasets=self._sweep_datasets(),
+                )
+            )
         return da
 
     def polar_coords(self) -> tuple[np.ndarray, np.ndarray]:
@@ -203,7 +347,21 @@ class ModuleContext:
             np.asarray(ds["range"].values, dtype=np.float64),
         )
 
+    # Set by run_module; a module that loops for a long time can poll ``ctx.cancelled``
+    # (or just call ``ctx.progress``, which raises ModuleCancelled) to stop early.
+    _cancel_event: threading.Event | None = None
+
+    @property
+    def cancelled(self) -> bool:
+        """True once this run was abandoned (timed out / client gone); its result is discarded."""
+        return self._cancel_event is not None and self._cancel_event.is_set()
+
+    def check_cancelled(self) -> None:
+        if self.cancelled:
+            raise ModuleCancelled()
+
     def progress(self, percent: int, message: str) -> None:
+        self.check_cancelled()
         if self._progress is not None:
             self._progress(int(percent), message)
 
@@ -403,6 +561,8 @@ class ModuleSpec:
     optional: list[str] = field(default_factory=list)
     needs: list[str] = field(default_factory=list)
     scope: str = "sweep"
+    # roles this module accepts from the paired (same-elevation) sweep, e.g. ["VRADH"]
+    paired: list[str] = field(default_factory=list)
 
     @property
     def per_sweep(self) -> bool:
@@ -427,6 +587,7 @@ class ModuleSpec:
             "version": self.version,
             "needs": self.needs,
             "scope": self.scope,
+            "paired": self.paired,
             "per_sweep": self.per_sweep,
             "available": not missing,
             "unavailable_reason": (
@@ -455,6 +616,7 @@ def module(
     version: str = "1.0",
     needs: list[str] | None = None,
     scope: str = "sweep",
+    paired: list[str] | None = None,
 ) -> Callable[[Callable[..., Result]], Callable[..., Result]]:
     """Register ``func(ctx, **params) -> Result`` as a module.
 
@@ -465,6 +627,10 @@ def module(
     ``scope`` is ``"sweep"`` (default: the module works on the selected sweep alone, so it can
     also be run on all sweeps to build a derived variable) or ``"volume"`` (it uses the whole
     volume and returns one product on a single sweep's grid).
+
+    ``paired`` lists roles (e.g. ``["VRADH"]``) the module can take from the paired sweep at
+    the same elevation when the selected sweep lacks them (NEXRAD split cuts keep velocity on
+    the Doppler cut). ``ctx.field`` then falls back automatically and the result carries a note.
     """
 
     def decorator(func: Callable[..., Result]) -> Callable[..., Result]:
@@ -490,6 +656,7 @@ def module(
             version=version,
             needs=list(needs or []),
             scope=scope,
+            paired=list(paired or []),
         )
         return func
 
@@ -543,6 +710,165 @@ def list_modules() -> dict[str, Any]:
     }
 
 
+DEFAULT_MODULE_TIMEOUT_S = 300.0
+# Runs that timed out but whose thread has not returned yet. Threads cannot be killed, so a
+# module that ignores ctx.cancelled keeps running; cap how many we tolerate before refusing.
+_MAX_ABANDONED_RUNS = 3
+_abandoned_runs: list[threading.Thread] = []
+_abandoned_lock = threading.Lock()
+
+
+def module_timeout_s() -> float | None:
+    """Wall-clock limit of one module run in seconds (``XRADAR_MODULE_TIMEOUT_S``, default 300).
+
+    ``0`` or a negative value disables the limit; an unparsable value falls back to the default.
+    """
+    raw = os.environ.get("XRADAR_MODULE_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_MODULE_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_MODULE_TIMEOUT_S
+    if math.isnan(value):
+        return DEFAULT_MODULE_TIMEOUT_S
+    if value <= 0 or math.isinf(value):
+        return None
+    return value
+
+
+def _live_abandoned() -> int:
+    with _abandoned_lock:
+        _abandoned_runs[:] = [t for t in _abandoned_runs if t.is_alive()]
+        return len(_abandoned_runs)
+
+
+def _abandon(thread: threading.Thread, cancel: threading.Event) -> None:
+    cancel.set()
+    with _abandoned_lock:
+        _abandoned_runs.append(thread)
+
+
+def _call_module(
+    spec: ModuleSpec,
+    ctx: ModuleContext,
+    params: dict[str, Any],
+    timeout_s: float | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> Any:
+    """Run ``spec.func`` in a dedicated daemon thread and wait for it, at most *timeout_s*.
+
+    A Python thread cannot be killed, so on timeout (or caller cancellation) the cancel flag
+    is set -- the module stops at its next ``ctx.progress`` / ``ctx.cancelled`` check -- and the
+    caller is released at once; whatever the thread later returns is discarded. Running it in
+    its own daemon thread (not the shared executor) keeps a stuck module from exhausting the
+    pool or blocking interpreter exit.
+    """
+    if _live_abandoned() >= _MAX_ABANDONED_RUNS:
+        raise ModuleError(
+            f"{_MAX_ABANDONED_RUNS} earlier module runs timed out and are still busy in the "
+            "background. Restart xradar-desktop to free them, then try again."
+        )
+    cancel = threading.Event()
+    ctx._cancel_event = cancel
+    done = threading.Event()
+    box: dict[str, Any] = {}
+
+    def target() -> None:
+        try:
+            box["result"] = spec.func(ctx, **params)
+        except BaseException as exc:  # handed back to (or dropped by) the waiting caller
+            box["exc"] = exc
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=target, name=f"module-{spec.id}", daemon=True)
+    thread.start()
+    deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    while not done.wait(0.1):
+        if is_cancelled is not None and is_cancelled():
+            _abandon(thread, cancel)
+            raise ModuleCancelled()
+        if deadline is not None and time.monotonic() >= deadline:
+            _abandon(thread, cancel)
+            logger.error("Module '%s' timed out after %g s", spec.id, timeout_s)
+            raise ModuleTimeoutError(
+                f"{spec.title} timed out after {timeout_s:g} s. Try a smaller or coarser input "
+                "(another sweep, looser parameters), or raise the limit with the "
+                "XRADAR_MODULE_TIMEOUT_S environment variable (seconds)."
+            )
+    if "exc" in box:
+        raise box["exc"]
+    return box["result"]
+
+
+def _friendly_failure(spec: ModuleSpec, sweep: int, exc: BaseException) -> str:
+    """Actionable one-line message for an unexpected exception inside a module."""
+    kind = type(exc).__name__
+    detail = str(exc).strip() or "no details"
+    if isinstance(exc, MemoryError):
+        hint = "It ran out of memory: close other open files, or choose a smaller sweep."
+    elif isinstance(exc, (KeyError, IndexError)):
+        hint = (
+            f"The data in sweep {sweep} may not have what it expects: try another sweep or "
+            "check that the required fields are present."
+        )
+    elif isinstance(exc, (ValueError, TypeError, ZeroDivisionError, FloatingPointError)):
+        hint = (
+            f"Check the parameter values and that sweep {sweep} holds valid data (not all "
+            "no-echo), then try again."
+        )
+    elif isinstance(exc, ImportError):
+        hint = "A Python package this module needs is missing or broken: reinstall it."
+    else:
+        hint = "Try another sweep or different parameters; the full traceback is in the log."
+    return f"{spec.title} failed ({kind}: {detail}). {hint}"
+
+
+def _validate_fields(spec: ModuleSpec, ctx: ModuleContext, result: Result) -> list[str]:
+    """Check module output arrays against the sweep grid; return non-fatal warnings.
+
+    Raises :class:`ModuleError` for a wrong shape/dtype or a field holding only infinities.
+    +/-inf become NaN (no data) so colour scales and statistics stay finite.
+    """
+    if not result.fields:
+        return []
+    ds = ctx.dataset
+    expected = (int(ds["azimuth"].size), int(ds["range"].size))
+    warnings: list[str] = []
+    for name, arr in list(result.fields.items()):
+        arr = np.asarray(arr)
+        if arr.shape != expected:
+            raise ModuleError(
+                f"Module '{spec.id}' produced field '{name}' with shape {tuple(arr.shape)}, but "
+                f"the sweep grid is (n_azimuth, n_range) = {expected}. The module must return one "
+                "value per gate; if this is a custom module, check its output shape."
+            )
+        if arr.dtype.kind not in "fiub":
+            raise ModuleError(
+                f"{spec.title} produced field '{name}' of non-numeric type {arr.dtype}; "
+                "fields must be numbers (NaN = no data)."
+            )
+        if arr.dtype.kind != "f":
+            continue
+        finite = np.isfinite(arr)
+        if not finite.all():
+            inf = np.isinf(arr)
+            if inf.any():
+                if not (finite | np.isnan(arr)).any():
+                    raise ModuleError(
+                        f"{spec.title} produced field '{name}' containing only infinite "
+                        "values, which usually means a division by zero. Check that the input "
+                        "fields have valid data on this sweep and try different parameters."
+                    )
+                arr = np.where(inf, np.float32(np.nan), arr).astype(arr.dtype, copy=False)
+                result.fields[name] = arr
+                warnings.append(f"'{name}': infinite values were treated as no data")
+            if not np.isfinite(arr).any():
+                warnings.append(f"'{name}' has no valid gates on this sweep")
+    return warnings
+
+
 def run_module(
     module_id: str,
     datatree: xr.DataTree,
@@ -552,11 +878,21 @@ def run_module(
     get_sweep_dataset: Callable[[int], xr.Dataset],
     progress: Callable[[int, str], None] | None = None,
     return_fields: bool = False,
+    timeout_s: float | str | None = "env",
+    is_cancelled: Callable[[], bool] | None = None,
+    var_overrides: dict[str, str] | None = None,
+    overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, np.ndarray]]:
     """Execute a module and return its JSON-safe result payload.
 
     With ``return_fields=True`` returns ``(payload, fields)`` where ``fields`` maps field
     names (see :meth:`Result.field`) to float32 arrays, for the caller to send as binary.
+
+    The run is bounded by *timeout_s* (default :func:`module_timeout_s`; ``None`` = no limit):
+    on expiry :class:`ModuleTimeoutError` is raised and the late result is discarded. If
+    *is_cancelled* turns true the run is abandoned with :class:`ModuleCancelled`. Every other
+    failure is a :class:`ModuleError` whose message says what to try.
+    ``overrides`` substitutes roles by other arrays (see :func:`_apply_overrides`).
     """
     spec = MODULES.get(module_id)
     if spec is None:
@@ -568,24 +904,43 @@ def run_module(
             f"(pip install {' '.join(missing)})"
         )
     params = _coerce_params(spec.params, raw_params or {})
-    ctx = ModuleContext(datatree, sweep, get_sweep_dataset=get_sweep_dataset, progress=progress)
+    ctx = ModuleContext(
+        datatree,
+        sweep,
+        get_sweep_dataset=get_sweep_dataset,
+        progress=progress,
+        var_overrides=var_overrides,
+        paired_roles=spec.paired,
+        overrides=overrides,
+    )
     for req in spec.requires:
         ctx.field(req)  # raises a clear ModuleError up-front
+    limit = module_timeout_s() if timeout_s == "env" else timeout_s
     t0 = time.perf_counter()
     try:
-        result = spec.func(ctx, **params)
-    except ModuleError:
+        result = _call_module(spec, ctx, params, limit, is_cancelled)  # type: ignore[arg-type]
+    except (ModuleError, ModuleCancelled):
         raise
     except Exception as exc:
         logger.error("Module '%s' crashed:\n%s", module_id, traceback.format_exc())
-        raise ModuleError(f"{spec.title} failed: {type(exc).__name__}: {exc}") from exc
+        raise ModuleError(_friendly_failure(spec, sweep, exc)) from exc
     if not isinstance(result, Result):
-        raise ModuleError(f"{spec.title} must return a Result, got {type(result).__name__}")
+        raise ModuleError(
+            f"{spec.title} must return a Result, got {type(result).__name__}. "
+            "If this is a custom module, end its run() function with `return res`."
+        )
+    warnings = _validate_fields(spec, ctx, result)
+    if ctx.notes:  # e.g. "velocity taken from sweep 1": keep the user informed
+        result.text("\n".join(ctx.notes), title="Data sources")
     payload = result.to_dict()
+    if ctx.notes:
+        payload["notes"] = list(ctx.notes)
     payload.update(
         module=module_id,
         sweep=sweep,
         params=params,
         elapsed_ms=round((time.perf_counter() - t0) * 1000.0, 1),
     )
+    if warnings:
+        payload["warnings"] = warnings
     return (payload, result.fields) if return_fields else payload

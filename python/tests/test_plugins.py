@@ -546,7 +546,17 @@ def test_invalid_scope_is_rejected():
 
 
 def test_builtin_volume_modules_are_marked_volume(registry):
-    volume = {"radarx_vil", "radarx_hail", "radarx_zdr_column", "radarx_zdr_arc"}
+    volume = {
+        "radarx_vil",
+        "radarx_hail",
+        "radarx_zdr_column",
+        "radarx_zdr_arc",
+        "radarx_kdp_column",
+        "radarx_vvp_winds",
+        "radarx_tornado_prob",
+        "radarx_melting_layer",
+        "radarx_qvp",
+    }
     for mid, spec in registry.MODULES.items():
         if mid in volume:
             assert spec.scope == "volume" and not spec.per_sweep, mid

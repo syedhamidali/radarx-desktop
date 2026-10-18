@@ -117,6 +117,109 @@ def mask_below_threshold(ds: xr.Dataset) -> xr.Dataset:
     return ds.assign(changed) if changed else ds
 
 
+DEFAULT_OPEN_FRACTION = 0.6
+
+
+def system_memory_bytes() -> int | None:
+    """Physical RAM in bytes (``os.sysconf`` on POSIX, ``GlobalMemoryStatusEx`` on Windows)."""
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE")) * int(os.sysconf("SC_PHYS_PAGES"))
+    except (AttributeError, ValueError, OSError):
+        pass
+    try:  # Windows has no sysconf
+        import ctypes
+
+        class _MemStatus(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        status = _MemStatus()
+        status.dwLength = ctypes.sizeof(_MemStatus)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+            return int(status.ullTotalPhys)
+    except Exception:  # pragma: no cover - platform specific
+        pass
+    return None
+
+
+def max_open_bytes() -> int | None:
+    """Budget for the decoded size of all open volumes, or ``None`` for "no limit".
+
+    ``XRADAR_MAX_OPEN_MB`` (a value <= 0 disables the budget); otherwise 60 % of physical RAM.
+    """
+    raw = os.environ.get("XRADAR_MAX_OPEN_MB", "").strip()
+    if raw:
+        try:
+            mb = float(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid XRADAR_MAX_OPEN_MB=%r", raw)
+        else:
+            if math.isfinite(mb):
+                return int(mb * 1024 * 1024) if mb > 0 else None
+    total = system_memory_bytes()
+    return int(total * DEFAULT_OPEN_FRACTION) if total else None
+
+
+def tree_memory_bytes(dtree: xr.DataTree) -> int:
+    """Decoded size of every array of *dtree* (what a full read would hold in RAM).
+
+    Backend-lazy arrays count at their decoded size (an upper bound for netCDF/HDF5 files that
+    stay on disk until read; NEXRAD Level II volumes really are ~this big once touched).
+    Dask-backed arrays are chunked/out-of-core and count as zero. Reads metadata only.
+    """
+    total = 0
+    for node in dtree.subtree:
+        for var in node.to_dataset().variables.values():
+            if var.chunks is None:
+                total += int(var.nbytes)
+    return total
+
+
+_SITE_POSITION_VARS = ("latitude", "longitude", "altitude", "altitude_agl")
+
+
+def collapse_site_position(ds: xr.Dataset) -> xr.Dataset:
+    """Turn a per-ray site position into the single value a radar site really has.
+
+    Some files store ``latitude``/``longitude``/``altitude`` along ``time`` with fill values (NaN,
+    ``-9999``) on some rays. Everything downstream (maps, 3D, modules, NetCDF export) wants one
+    scalar, so fill values are ignored and the most common valid value is kept. A variable with no
+    valid value at all is dropped.
+    """
+    for name in _SITE_POSITION_VARS:
+        var = ds.variables.get(name)
+        if var is None or "time" not in var.dims:
+            continue
+        values = np.asarray(var.values, dtype="float64")
+        valid = values[np.isfinite(values) & (values > -9990.0)]
+        ds = ds.drop_vars(name)
+        if valid.size:
+            uniq, counts = np.unique(valid, return_counts=True)
+            ds = ds.assign({name: ((), float(uniq[np.argmax(counts)]), var.attrs)})
+    return ds
+
+
+def _with_scalar_site(dtree: xr.DataTree) -> xr.DataTree:
+    """*dtree* with the root's per-ray site position collapsed to scalars (no-op if scalar)."""
+    try:
+        root = dtree.to_dataset()
+        if not any(n in root.variables and "time" in root[n].dims for n in _SITE_POSITION_VARS):
+            return dtree
+        dtree.dataset = collapse_site_position(root)
+    except Exception as exc:  # never fail an open over cosmetics
+        logger.debug("could not collapse per-ray site position: %s", exc)
+    return dtree
+
+
 def sorted_sweep_names(dtree: xr.DataTree) -> list[str]:
     """Names of ``sweep_N`` children in numeric order (``sweep_2`` before ``sweep_10``).
 
@@ -152,6 +255,19 @@ def _xradar_engines() -> set[str] | None:
     except Exception as exc:
         logger.debug("list_xradar_engines failed: %s", exc)
         return set()
+
+
+def preload_backends() -> None:
+    """Import xradar and its readers ahead of the first ``open_file`` (call from a thread).
+
+    The first open otherwise pays ~0.6-0.9 s of imports on top of reading the file.
+    """
+    try:
+        import xradar  # noqa: F401
+
+        _xradar_engines()
+    except Exception as exc:  # opening a file reports the real problem later
+        logger.debug("xradar preload failed: %s", exc)
 
 
 @cache
@@ -212,6 +328,7 @@ def _decompress_if_needed(path: str) -> tuple[str, bool]:
     """If *path* is gzip-compressed, decompress to a temp file and return (tmp_path, True).
     Otherwise return (path, False). Caller is responsible for unlinking the temp file."""
     import gzip
+    import zlib
 
     try:
         with open(path, "rb") as f:
@@ -230,6 +347,21 @@ def _decompress_if_needed(path: str) -> tuple[str, bool]:
             shutil.copyfileobj(gz, out, length=1 << 20)
         logger.info("Decompressed %s → %s", path, tmp_path)
         return tmp_path, True
+    except (EOFError, gzip.BadGzipFile, zlib.error) as exc:  # BadGzipFile is an OSError
+        if tmp_path is not None:
+            _unlink_quietly(tmp_path)
+        raise ValueError(
+            f"Could not open {Path(path).name}: the gzip archive is truncated or corrupt "
+            f"({exc}). Re-download or re-copy the file (if it was still downloading, wait "
+            "for it to finish)."
+        ) from exc
+    except OSError as exc:
+        if tmp_path is not None:
+            _unlink_quietly(tmp_path)
+        raise OSError(
+            f"Could not decompress {Path(path).name} into {tempfile.gettempdir()}: {exc}. "
+            "Check the free disk space of that folder."
+        ) from exc
     except Exception as exc:
         logger.warning("Failed to decompress %s: %s", path, exc)
         if tmp_path is not None:
@@ -281,6 +413,50 @@ def _sniff_magic(path: str) -> str | None:
         return "nexrad_level2"
 
     return None
+
+
+_FORMAT_LABELS = {
+    "nexrad_level2": "NEXRAD Level II",
+    "cfradial1": "CfRadial / NetCDF",
+    "odim": "ODIM_H5 / HDF5",
+}
+SUPPORTED_FORMATS_TEXT = (
+    "NEXRAD Level II, CfRadial1/2 (.nc), ODIM_H5 (.h5), GAMIC, IRIS/Sigmet, Furuno, "
+    "Rainbow, UF, IMD"
+)
+
+
+def _diagnose_unreadable(open_path: str, original_path: str) -> str:
+    """One actionable sentence on why *open_path* is not a readable radar file."""
+    try:
+        with open(open_path, "rb") as f:
+            head = f.read(512)
+    except OSError:
+        head = b""
+    stripped = head.lstrip().lower()
+    if stripped.startswith((b"<!doctype", b"<html", b"<?xml", b"<head", b"<body")):
+        return (
+            "it is a web page / XML document, not radar data. The download probably failed "
+            "(login or error page saved instead of the file); download it again."
+        )
+    if head and all(b in b"\t\r\n" or 32 <= b < 127 for b in head):
+        return (
+            "it is a plain-text file, not a radar volume. Open the radar data file itself "
+            f"({SUPPORTED_FORMATS_TEXT})."
+        )
+    sniffed = _sniff_magic(open_path)
+    if sniffed:
+        label = _FORMAT_LABELS.get(sniffed, sniffed)
+        return (
+            f"it looks like a {label} file but could not be read: it is probably truncated or "
+            "corrupt (re-download or re-copy it), or a variant xradar does not support."
+        )
+    ext = Path(original_path).suffix.lower()
+    ext_note = f" ('{ext}')" if ext else ""
+    return (
+        f"the file type{ext_note} is not recognised as radar data. Supported: "
+        f"{SUPPORTED_FORMATS_TEXT}. If it should work, it may be damaged."
+    )
 
 
 def _guess_formats_by_extension(path: str) -> list[str]:
@@ -430,6 +606,42 @@ class RadarReader:
         self._arco_loaded_sweeps: dict[int, xr.Dataset] = {}
         self._lock = threading.RLock()
         self._sweep_locks: dict[int, threading.Lock] = {}
+        # (tree, decoded bytes) -- the tree walk is cheap but this is polled by health checks
+        self._mem_cache: tuple[xr.DataTree, int] | None = None
+
+    # ------------------------------------------------------------------
+    # Memory accounting
+    # ------------------------------------------------------------------
+
+    def memory_bytes(self) -> int:
+        """Decoded size of the open volume plus loaded ARCO sweeps (:func:`tree_memory_bytes`)."""
+        tree = self._dtree
+        if tree is None:
+            return 0
+        cached = self._mem_cache
+        if cached is None or cached[0] is not tree:
+            cached = self._mem_cache = (tree, tree_memory_bytes(tree))
+        loaded = sum(
+            int(v.nbytes)
+            for ds in list(self._arco_loaded_sweeps.values())
+            for v in ds.variables.values()
+            if v.chunks is None
+        )
+        return cached[1] + loaded
+
+    def release_caches(self) -> int:
+        """Drop re-loadable per-sweep arrays (ARCO sweeps are re-fetched on demand).
+
+        Returns the approximate number of bytes released. The open tree itself is untouched.
+        """
+        with self._lock:
+            loaded, self._arco_loaded_sweeps = self._arco_loaded_sweeps, {}
+        return sum(
+            int(v.nbytes)
+            for ds in loaded.values()
+            for v in ds.variables.values()
+            if v.chunks is None
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -465,6 +677,20 @@ class RadarReader:
             raise FileNotFoundError(f"File not found: {path}")
         if p.is_dir():
             raise ValueError(f"Path is a directory, not a radar file: {path}")
+        if not os.access(path, os.R_OK):
+            raise PermissionError(
+                f"Permission denied reading {p.name}. Check the file's permissions (on macOS, "
+                "allow xradar-desktop to access this folder under System Settings > Privacy & "
+                "Security), or copy the file to a folder you own."
+            )
+        try:
+            if p.stat().st_size == 0:
+                raise ValueError(
+                    f"Could not open {p.name}: the file is empty (0 bytes). A download or copy "
+                    "probably failed; fetch it again."
+                )
+        except OSError:
+            pass  # unreadable stat: the openers below report the real problem
 
         # Transparently decompress gzip files — xradar can't handle the gzip wrapper directly.
         open_path, is_tmp = _decompress_if_needed(path)
@@ -535,8 +761,8 @@ class RadarReader:
             # Report the most informative failures (the sniffed/preferred formats come first).
             detail = "; ".join(f"{fmt}: {exc}" for fmt, exc in errors[:3])
             raise ValueError(
-                f"Could not open {path} with any supported format ({len(errors)} tried). "
-                f"First errors: {detail}"
+                f"Could not open {p.name}: {_diagnose_unreadable(open_path, path)} "
+                f"({len(errors)} formats tried; first errors: {detail})"
             ) from (errors[0][1] if errors else None)
         finally:
             if is_tmp:
@@ -817,6 +1043,7 @@ class RadarReader:
 
     def _commit(self, dtree: xr.DataTree, path: str, fmt: str) -> None:
         """Atomically make *dtree* the open file and drop everything derived from the old one."""
+        dtree = _with_scalar_site(dtree)
         with self._lock:
             self._reset_caches()
             self._dtree = dtree

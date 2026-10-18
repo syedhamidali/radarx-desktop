@@ -76,6 +76,8 @@ export interface ModuleSpec {
   scope: 'sweep' | 'volume';
   /** True when the module can be run on every sweep and its fields registered as derived variables. */
   per_sweep: boolean;
+  /** Roles it can take from the paired same-elevation sweep (NEXRAD split cuts), e.g. ['VRADH']. */
+  paired: string[];
 }
 
 export interface ModuleLoadError {
@@ -385,7 +387,8 @@ export function resetParams(moduleId: string): void {
 // ── Variable availability ──────────────────────────────────────────────────
 
 const ALIAS_GROUPS: string[][] = [
-  // Keep in sync with VAR_ALIASES in python/engine/plugins.py
+  // Client-side fallback only. The sidecar (python/engine/varmap.py) is the source of truth;
+  // stores/variableMapping.ts adds what it resolves (CF names, patterns, overrides, paired sweeps).
   ['DBZH', 'DBZ', 'REFLECTIVITY', 'Z', 'CORRECTED_REFLECTIVITY_HORIZONTAL', 'DBZHCC', 'DBZHC'],
   ['ZDR', 'DIFFERENTIAL_REFLECTIVITY', 'ZDRC'],
   ['PHIDP', 'DIFFERENTIAL_PHASE', 'UPHIDP'],
@@ -1053,6 +1056,7 @@ function handleModulesList(msg: any): void {
     unavailable_reason: typeof m.unavailable_reason === 'string' ? m.unavailable_reason : null,
     scope: m.scope === 'volume' ? 'volume' : 'sweep',
     per_sweep: m.per_sweep === true,
+    paired: Array.isArray(m.paired) ? m.paired.map(String) : [],
   }));
 
   // Merge parameter values: declared defaults < saved < current session.

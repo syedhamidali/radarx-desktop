@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import functools
+import gc
 import inspect
 import json
 import logging
@@ -41,7 +43,8 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, plugins
+from engine import derived, mosaic, pipeline, plugins, varmap
+from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -52,8 +55,14 @@ from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.exporter import RadarExporter
 from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
 from engine.qc import QC_REGISTRY, QCPipeline
-from engine.reader import RadarReader, _serializable, sorted_sweep_names
-from engine.renderer import RadarRenderer, _resolve_range
+from engine.reader import (
+    RadarReader,
+    _serializable,
+    max_open_bytes,
+    preload_backends,
+    sorted_sweep_names,
+)
+from engine.renderer import RadarRenderer, _palettes, _resolve_range
 from engine.retrievals import RETRIEVAL_REGISTRY, run_retrieval
 from engine.statistics import get_statistics
 from engine.temporal import (
@@ -61,7 +70,6 @@ from engine.temporal import (
     compute_difference,
     compute_time_series,
 )
-from engine.tracking import identify_cells, track_cells
 from engine.volume import extract_cross_section_3d, extract_volume
 
 logging.basicConfig(
@@ -109,6 +117,8 @@ _shared_reader = RadarReader()
 # Bumped whenever a reader's datatree is replaced (e.g. by ``process``) so the
 # renderer cache never serves stale pixels for a previous incarnation of the data.
 _generations: dict[str, int] = {}
+# User variable mappings ({role: variable}) per file_id; persisted per file path (engine.varmap).
+_var_overrides = varmap.OverrideStore()
 # Strong refs to fire-and-forget tasks so they are not garbage collected mid-run.
 _background_tasks: set[asyncio.Task[Any]] = set()
 
@@ -135,6 +145,9 @@ class _LoopLocks:
 
 
 _locks = _LoopLocks()
+
+# file_id -> cancel flag of the pipeline currently running on that file (see _handle_run_pipeline)
+_PIPELINE_CANCELS: dict[str, threading.Event] = {}
 
 
 def _render_lock() -> asyncio.Lock:
@@ -181,6 +194,12 @@ def _get_datatree(file_id: str | None):
     return _get_reader(file_id).datatree
 
 
+def _overrides_for(file_id: str | None) -> dict[str, str]:
+    """The user's variable mapping for a file (``{role: variable}``; empty when none)."""
+    resolved_id, reader = _resolve_reader(file_id)
+    return _var_overrides.get(resolved_id, reader._path)
+
+
 def _register_reader(reader: RadarReader) -> str:
     """Store a freshly opened reader under a new file_id and make it the active one."""
     global _last_file_id
@@ -191,6 +210,94 @@ def _register_reader(reader: RadarReader) -> str:
     if not _RENDER_ACCEPTS_TOKEN:  # legacy renderer cache has no data identity
         _shared_renderer.invalidate_cache()
     return file_id
+
+
+def _readers_snapshot() -> list[RadarReader]:
+    return list(_file_readers.values())
+
+
+def _open_usage_bytes(extra: RadarReader | None = None) -> int:
+    """Decoded size of every open volume (plus *extra*, a reader not yet registered)."""
+    readers = _readers_snapshot()
+    if extra is not None and not any(r is extra for r in readers):
+        readers.append(extra)
+    total = 0
+    for reader in readers:
+        try:
+            total += reader.memory_bytes()
+            store = derived.store_for(reader, create=False)
+            if store is not None:
+                total += store.nbytes
+        except Exception as exc:  # accounting must never break a request
+            logger.debug("memory accounting failed for a reader: %s", exc)
+    return total
+
+
+def _release_caches() -> None:
+    """Drop every re-computable cache: rendered tiles, index maps, lazily fetched sweeps."""
+    _shared_renderer.release_memory()
+    for reader in _readers_snapshot():
+        reader.release_caches()
+    gc.collect()
+
+
+def _evict_if_over_budget(incoming_bytes: int = 0, extra: RadarReader | None = None) -> bool:
+    """Evict caches when open data (+ *incoming_bytes*) would exceed the budget.
+
+    Returns True if the budget is still exceeded afterwards. Derived variables are results the
+    user computed (already capped by their own LRU), so they are never evicted here.
+    """
+    budget = max_open_bytes()
+    if budget is None:
+        return False
+    if _open_usage_bytes(extra) + incoming_bytes <= budget:
+        return False
+    logger.info("Memory budget %d MB exceeded: releasing caches", budget // (1024 * 1024))
+    _release_caches()
+    return _open_usage_bytes(extra) + incoming_bytes > budget
+
+
+def memory_status() -> dict[str, Any]:
+    """Tracked memory for health checks: ``{open_mb, max_mb, files}`` (``max_mb`` None = no cap)."""
+    budget = max_open_bytes()
+    return {
+        "open_mb": round(_open_usage_bytes() / (1024 * 1024), 1),
+        "max_mb": round(budget / (1024 * 1024)) if budget else None,
+        "files": len(_file_readers),
+    }
+
+
+def _describe_open_error(path: str, exc: BaseException) -> str:
+    """Specific, actionable text for a failure to open *path* (no traceback, no jargon)."""
+    name = Path(path).name or path
+    if isinstance(exc, FileNotFoundError):
+        return (
+            f"File not found: {path}. It may have been moved, renamed or deleted, or its drive "
+            "is not connected."
+        )
+    if isinstance(exc, PermissionError):
+        text = str(exc)
+        if "Permission denied reading" in text:
+            return text
+        return (
+            f"Permission denied reading {name}. Check the file's permissions (on macOS, allow "
+            "xradar-desktop to access this folder under System Settings > Privacy & Security), "
+            "or copy the file to a folder you own."
+        )
+    if isinstance(exc, MemoryError):
+        return (
+            f"Not enough memory to open {name}. Close other open files (or other applications) "
+            "and try again."
+        )
+    if isinstance(exc, IsADirectoryError):
+        return f"{path} is a folder, not a radar file. Pick a file inside it."
+    if isinstance(exc, ValueError):
+        return str(exc)  # the reader's messages already name the file and the likely cause
+    if isinstance(exc, OSError):
+        return (
+            f"Could not read {name}: {exc.strerror or exc}. Check that the file is still available."
+        )
+    return f"Could not open {name} ({type(exc).__name__}: {exc}). The file may be damaged."
 
 
 def _cache_token(file_id: str | None) -> tuple[str, int] | None:
@@ -467,6 +574,40 @@ class ConnectionHandler:
     async def send_error(self, message: str) -> None:
         await self.send({"type": "error", "message": message})
 
+    async def send_warning(self, message: str, **extra: Any) -> None:
+        """Non-fatal notice (the request still succeeded); the UI shows it as a toast."""
+        await self.send({"type": "warning", "message": message, **extra})
+
+    async def _enforce_memory_budget(self, name: str, reader: RadarReader) -> None:
+        """After *reader* opened: evict caches if the open data exceeds the budget, else warn.
+
+        Never refuses or crashes: the file stays open, the user is told what to close.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            still_over = await loop.run_in_executor(None, _evict_if_over_budget, 0, reader)
+            if not still_over:
+                return
+            budget = max_open_bytes() or 0
+            used = await loop.run_in_executor(None, _open_usage_bytes, reader)
+        except Exception as exc:  # accounting must never fail an open
+            logger.debug("memory budget check failed: %s", exc)
+            return
+        mb = 1024 * 1024
+        logger.warning(
+            "Open data %d MB exceeds budget %d MB after opening %s", used // mb, budget // mb, name
+        )
+        await self.send_warning(
+            f"Opening {name} brings the loaded radar data to {used // mb} MB, above the "
+            f"{budget // mb} MB memory budget. Close files you no longer need to avoid "
+            "slowdowns or running out of memory (the budget is XRADAR_MAX_OPEN_MB, "
+            "default 60% of RAM).",
+            code="memory_budget",
+            file=name,
+            open_mb=used // mb,
+            max_mb=budget // mb,
+        )
+
     async def send_progress(self, percent: int, message: str) -> None:
         # Remember (per message task) whether a progress run is still open, so handle_message can
         # close it: many handlers announce "10 %" and then simply finish.
@@ -527,6 +668,8 @@ class ConnectionHandler:
             "list_qc_algorithms": self._handle_list_qc_algorithms,
             "get_data_table": self._handle_get_data_table,
             "get_metadata_tree": self._handle_get_metadata_tree,
+            "get_variable_mapping": self._handle_get_variable_mapping,
+            "set_variable_mapping": self._handle_set_variable_mapping,
             "ping": self._handle_ping,
             "list_nexrad_stations": self._handle_list_nexrad_stations,
             "list_nexrad_l2_files": self._handle_list_nexrad_l2_files,
@@ -543,10 +686,21 @@ class ConnectionHandler:
             "run_module": self._handle_run_module,
             "list_derived": self._handle_list_derived,
             "clear_derived": self._handle_clear_derived,
+            "list_pipeline_steps": self._handle_list_pipeline_steps,
+            "list_recipes": self._handle_list_recipes,
+            "save_recipe": self._handle_save_recipe,
+            "delete_recipe": self._handle_delete_recipe,
+            "export_recipe_script": self._handle_export_recipe_script,
+            "preview_pipeline": self._handle_preview_pipeline,
+            "run_pipeline": self._handle_run_pipeline,
+            "cancel_pipeline": self._handle_cancel_pipeline,
             "save_text_file": self._handle_save_text_file,
             "create_mosaic": self._handle_create_mosaic,
             "mosaic_probe": self._handle_mosaic_probe,
             "export_mosaic": self._handle_export_mosaic,
+            "run_multidoppler": self._handle_run_multidoppler,
+            "multidoppler_cancel": self._handle_multidoppler_cancel,
+            "export_multidoppler": self._handle_export_multidoppler,
         }.get(msg_type)
 
         if handler is None:
@@ -610,6 +764,7 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("get_scatter_data: no file is open")
             return
+        overrides = _overrides_for(msg.get("file_id"))
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -621,6 +776,7 @@ class ConnectionHandler:
                 sweep,
                 subsample=int(subsample),
                 color_var=color_var,
+                overrides=overrides,
             ),
         )
 
@@ -643,11 +799,12 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("get_histogram: no file is open")
             return
+        overrides = _overrides_for(msg.get("file_id"))
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: histogram_data(datatree, variable, sweep, bins=int(bins)),
+            lambda: histogram_data(datatree, variable, sweep, bins=int(bins), overrides=overrides),
         )
 
         await self.send({"type": "histogram_result", "sweep": sweep, **result})
@@ -672,6 +829,7 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("get_region_stats: no file is open")
             return
+        overrides = _overrides_for(msg.get("file_id"))
 
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -684,6 +842,7 @@ class ConnectionHandler:
                 az_max=float(az_max),
                 range_min=float(range_min),
                 range_max=float(range_max),
+                overrides=overrides,
             ),
         )
 
@@ -839,6 +998,7 @@ class ConnectionHandler:
                 "type": "pong",
                 "status": "ok",
                 "file_open": has_file,
+                "memory": memory_status(),
             }
         )
 
@@ -879,6 +1039,9 @@ class ConnectionHandler:
         reader = RadarReader()
         job = loop.run_in_executor(None, opener, reader)
         schema = await (asyncio.wait_for(job, timeout) if timeout else job)
+        await self._enforce_memory_budget(
+            str(schema.get("source") or "cloud file").rsplit("/", 1)[-1], reader
+        )
         file_id = _register_reader(reader)
         await self.send_progress(100, "Loaded")
         schema_serial = {k: _serializable(v) for k, v in schema.items()}
@@ -953,10 +1116,26 @@ class ConnectionHandler:
         reader = RadarReader()
         loop = asyncio.get_running_loop()
 
+        # Free re-computable caches before a big read if the budget is already tight.
+        try:
+            incoming_hint = os.path.getsize(path)
+        except OSError:
+            incoming_hint = 0
+        await loop.run_in_executor(None, _evict_if_over_budget, incoming_hint)
+
         await self.send_progress(15, f"Opening {filename}...")
-        schema = await loop.run_in_executor(None, reader.open_file, path)
+        try:
+            schema = await loop.run_in_executor(None, reader.open_file, path)
+        except Exception as exc:
+            # Prefixed "open_file failed:" so the UI attributes it to this open (see
+            # App.svelte isOpenFileError), and specific enough to act on.
+            logger.warning("open_file %s failed: %s", path, exc)
+            await self.send_error(f"open_file failed: {_describe_open_error(path, exc)}")
+            return
 
         await self.send_progress(80, f"Building metadata for {filename}...")
+
+        await self._enforce_memory_budget(filename, reader)
 
         # No renderer-cache flush needed: cache entries are keyed by (file_id, generation).
         file_id = _register_reader(reader)
@@ -981,6 +1160,7 @@ class ConnectionHandler:
 
         removed = _file_readers.pop(file_id, None)
         _generations.pop(file_id, None)
+        _var_overrides.drop(file_id)
         if removed is None:
             logger.debug("close_file: file_id %s not found (already closed?)", file_id)
         else:
@@ -1374,13 +1554,14 @@ class ConnectionHandler:
         if datatree is None:
             await self.send_error("run_retrieval: no file is open")
             return
+        var_overrides = _overrides_for(msg.get("file_id"))
 
         await self.send_progress(10, f"Running retrieval: {name}...")
 
         loop = asyncio.get_running_loop()
 
         def _compute() -> tuple[dict[str, Any], np.ndarray]:
-            result_da = run_retrieval(datatree, name, sweep, params)
+            result_da = run_retrieval(datatree, name, sweep, params, var_overrides=var_overrides)
             values = np.array(result_da.values, dtype=np.float32, copy=True)
             observed = _finite_range(values)
             stats: dict[str, Any] = {}
@@ -1853,6 +2034,13 @@ class ConnectionHandler:
 
         threshold_dbz = float(params.get("threshold_dbz", 35.0))
         min_size_km2 = float(params.get("min_size_km2", 10.0))
+        from engine import cells as cell_engine
+
+        try:
+            opts = cell_engine.options_from_params(params)
+        except ValueError as exc:
+            await self.send_error(f"identify_cells: {exc}")
+            return
 
         await self.send_progress(10, f"Identifying cells in {variable} sweep {sweep_idx}...")
 
@@ -1865,18 +2053,17 @@ class ConnectionHandler:
             variable,
         )
 
-        cells = await loop.run_in_executor(
+        scan = await loop.run_in_executor(
             None,
-            identify_cells,
-            data,
-            threshold_dbz,
-            min_size_km2,
+            functools.partial(
+                cell_engine.identify_sweep, datatree, data, threshold_dbz, min_size_km2, **opts
+            ),
         )
 
         # Store for subsequent tracking
-        self._previous_cells = cells
+        self._previous_cells = scan
 
-        await self.send_progress(100, f"Found {len(cells)} cells")
+        await self.send_progress(100, f"Found {len(scan)} cells")
         await self.send(
             {
                 "type": "cells_identified",
@@ -1884,7 +2071,10 @@ class ConnectionHandler:
                 "sweep": sweep_idx,
                 "threshold_dbz": threshold_dbz,
                 "min_size_km2": min_size_km2,
-                "cells": [c.to_dict() for c in cells],
+                "cells": [c.to_dict() for c in scan],
+                "backend": scan.backend,
+                "backend_label": scan.backend_label,
+                "note": scan.note,
             }
         )
 
@@ -1928,7 +2118,13 @@ class ConnectionHandler:
         threshold_dbz = float(params.get("threshold_dbz", 35.0))
         min_size_km2 = float(params.get("min_size_km2", 10.0))
         max_distance_km = float(params.get("max_distance_km", 30.0))
-        dt_seconds = float(params.get("dt_seconds", 300.0))
+        from engine import cells as cell_engine
+
+        try:
+            opts = cell_engine.options_from_params(params)
+        except ValueError as exc:
+            await self.send_error(f"track_cells: {exc}")
+            return
 
         await self.send_progress(10, f"Tracking cells in {variable} sweep {sweep_idx}...")
 
@@ -1941,33 +2137,64 @@ class ConnectionHandler:
             variable,
         )
 
-        new_cells = await loop.run_in_executor(
+        new_scan = await loop.run_in_executor(
             None,
-            identify_cells,
-            data,
-            threshold_dbz,
-            min_size_km2,
+            functools.partial(
+                cell_engine.identify_sweep, datatree, data, threshold_dbz, min_size_km2, **opts
+            ),
         )
+
+        # Time step: explicit dt_seconds wins, then the scan times, then 5 minutes.
+        previous = self._previous_cells
+        scan_dt = None
+        t_prev, t_new = getattr(previous, "time_s", None), new_scan.time_s
+        if t_prev is not None and t_new is not None and t_new > t_prev:
+            scan_dt = float(t_new - t_prev)
+        if "dt_seconds" in params:
+            dt_seconds, dt_source = float(params["dt_seconds"]), "request"
+        elif scan_dt is not None:
+            dt_seconds, dt_source = scan_dt, "scan times"
+        else:
+            dt_seconds, dt_source = 300.0, "default"
 
         tracks = await loop.run_in_executor(
             None,
-            track_cells,
-            self._previous_cells,
-            new_cells,
-            max_distance_km,
-            dt_seconds,
+            functools.partial(
+                cell_engine.track_pair,
+                previous,
+                new_scan,
+                max_distance_km=max_distance_km,
+                dt_seconds=dt_seconds,
+                backend=opts["backend"],
+                min_overlap=float(params.get("min_overlap", 0.3)),
+            ),
         )
 
-        self._previous_cells = new_cells
+        self._previous_cells = new_scan
 
         await self.send_progress(100, f"Tracked {len(tracks)} cells")
+        motion = None
+        if tracks.motion is not None:
+            speed, from_deg = cell_engine.uv_to_speed_dir(*tracks.motion)
+            motion = {
+                "u_mps": round(tracks.motion[0], 2),
+                "v_mps": round(tracks.motion[1], 2),
+                "speed_mps": round(speed, 2),
+                "direction_deg": round(from_deg, 1),
+            }
         await self.send(
             {
                 "type": "cells_tracked",
                 "variable": variable,
                 "sweep": sweep_idx,
-                "cells": [c.to_dict() for c in new_cells],
+                "cells": [c.to_dict() for c in new_scan],
                 "tracks": [t.to_dict() for t in tracks],
+                "backend": tracks.backend,
+                "backend_label": tracks.backend_label,
+                "note": tracks.note or new_scan.note,
+                "dt_seconds": dt_seconds,
+                "dt_source": dt_source,
+                "motion": motion,
             }
         )
 
@@ -2050,6 +2277,63 @@ class ConnectionHandler:
     # ------------------------------------------------------------------
     # Metadata tree handler — full DataTree structure as nested dict
     # ------------------------------------------------------------------
+
+    async def _handle_get_variable_mapping(self, msg: dict[str, Any]) -> None:
+        """Resolved role -> variable map of a file, with how each role matched.
+
+        Request ``{type: "get_variable_mapping", file_id?, sweep?}``; reply
+        ``{type: "variable_mapping", file_id, sweep, overrides, roles: [{role, label, override,
+        variable, kind, confidence, sweep, corrected}], variables: [...]}``. ``kind`` is one of
+        override / cf / alias / pattern; ``sweep`` is set when the field lives on the paired sweep.
+        """
+        await self._send_variable_mapping(msg)
+
+    async def _handle_set_variable_mapping(self, msg: dict[str, Any]) -> None:
+        """Set (merge) user overrides ``{role: variable_name}`` for a file; a blank value clears.
+
+        Stored per open file and persisted per file path (``~/.xradar-desktop/variable_maps.json``).
+        ``replace: true`` replaces the whole mapping. Replies like ``get_variable_mapping``.
+        """
+        mapping = msg.get("mapping")
+        if not isinstance(mapping, dict):
+            await self.send_error("set_variable_mapping: 'mapping' must be an object")
+            return
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        if reader.datatree is None:
+            await self.send_error("set_variable_mapping: no file is open")
+            return
+        try:
+            _var_overrides.update(
+                resolved_id, reader._path, mapping, replace=bool(msg.get("replace", False))
+            )
+        except varmap.VarMapError as exc:
+            await self.send_error(f"set_variable_mapping: {exc}")
+            return
+        await self._send_variable_mapping(msg)
+
+    async def _send_variable_mapping(self, msg: dict[str, Any]) -> None:
+        sweep = msg.get("sweep", 0)
+        if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+            await self.send_error("variable mapping: 'sweep' must be a non-negative integer")
+            return
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        tree = reader.datatree
+        if tree is None:
+            await self.send_error("variable mapping: no file is open")
+            return
+        overrides = _var_overrides.get(resolved_id, reader._path)
+        loop = asyncio.get_running_loop()
+        report = await loop.run_in_executor(
+            None, lambda: varmap.mapping_report(tree, sweep, overrides)
+        )
+        await self.send(
+            {
+                "type": "variable_mapping",
+                "file_id": resolved_id or msg.get("file_id"),
+                "overrides": overrides,
+                **report,
+            }
+        )
 
     async def _handle_get_metadata_tree(self, msg: dict[str, Any]) -> None:
         """Return the full DataTree structure as a nested metadata tree.
@@ -2226,7 +2510,10 @@ class ConnectionHandler:
                 {
                     "type": "module_error",
                     "module": label,
-                    "message": f"{type(exc).__name__}: {exc}",
+                    "message": (
+                        f"Module '{label}' failed ({type(exc).__name__}: {exc}). Try another "
+                        "sweep or different parameters; the sidecar log has the full traceback."
+                    ),
                 }
             )
         finally:
@@ -2259,10 +2546,13 @@ class ConnectionHandler:
             return
         if datatree is None:
             raise plugins.ModuleError("No file is open")
+        overrides = _module_overrides(reader, msg)
 
+        var_overrides = _var_overrides.get(resolved_id, reader._path)
         await self.send_progress(5, f"Running module {module_id}...")
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
+        cancel = threading.Event()  # set when the connection (this task) goes away
 
         def _run() -> tuple[dict[str, Any], dict[str, Any], list[tuple[dict[str, Any], list]]]:
             payload, fields = plugins.run_module(
@@ -2273,11 +2563,18 @@ class ConnectionHandler:
                 get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
                 progress=progress_sync,
                 return_fields=True,
+                is_cancelled=cancel.is_set,
+                var_overrides=var_overrides,
+                overrides=overrides,
             )
             packed = _pack_module_fields(module_id, fields, _sweep_dataset(reader, sweep))
             return payload, fields, packed
 
-        payload, fields, packed = await loop.run_in_executor(None, _run)
+        try:
+            payload, fields, packed = await loop.run_in_executor(None, _run)
+        except BaseException:
+            cancel.set()  # a still-running module is abandoned; its late result is dropped
+            raise
         out_file_id = resolved_id or msg.get("file_id")
         await self.send({"type": "module_result", **payload, "file_id": out_file_id})
         blocks = {b.get("name"): b for b in payload.get("blocks", []) if b.get("type") == "field"}
@@ -2327,6 +2624,7 @@ class ConnectionHandler:
             raise plugins.ModuleError("No file is open")
         n_sweeps = len(sorted_sweep_names(datatree))
         out_file_id = resolved_id or msg.get("file_id")
+        overrides = _module_overrides(reader, msg)
 
         await self.send_progress(2, f"{spec.title}: starting on {n_sweeps} sweeps")
         loop = asyncio.get_running_loop()
@@ -2352,6 +2650,8 @@ class ConnectionHandler:
                 get_sweep_grid=_grid,
                 progress=progress_sync,
                 is_cancelled=cancel.is_set,
+                var_overrides=_var_overrides.get(resolved_id, reader._path),
+                overrides=overrides,
             )
             return run, derived.build_variables(run)
 
@@ -2415,6 +2715,257 @@ class ConnectionHandler:
         store = derived.store_for(reader, create=False)
         dropped = store.drop(name) if store is not None else []
         await self._send_derived_list(resolved_id or msg.get("file_id"), reader, dropped=dropped)
+
+    # ------------------------------------------------------------------
+    # Processing pipelines ("recipes") -- see engine/pipeline.py, docs/PIPELINES.md
+    # ------------------------------------------------------------------
+
+    async def _handle_list_pipeline_steps(self, msg: dict[str, Any]) -> None:
+        """``{type: "list_pipeline_steps"}`` -> ``{type: "pipeline_steps", steps}``."""
+        await self.send({"type": "pipeline_steps", "steps": pipeline.list_steps()})
+
+    async def _send_recipes(self) -> None:
+        listing = pipeline.list_recipes()
+        await self.send({"type": "recipes_list", **listing})
+
+    async def _handle_list_recipes(self, msg: dict[str, Any]) -> None:
+        """``{type: "list_recipes"}`` -> ``{type: "recipes_list", recipes, errors, dir}``."""
+        await self._send_recipes()
+
+    async def _pipeline_guard(self, label: str, coro: Any, *, progress: bool = False) -> None:
+        """Run a pipeline handler body; any failure becomes ``pipeline_error`` (UI leaves busy)."""
+        try:
+            await coro
+        except (plugins.ModuleError, derived.DerivedError) as exc:
+            logger.warning("Pipeline '%s' error: %s", label, exc)
+            await self.send({"type": "pipeline_error", "action": label, "message": str(exc)})
+        except derived.RunCancelledError:
+            cancelled = {"type": "pipeline_error", "action": label, "cancelled": True}
+            await self.send({**cancelled, "message": "Cancelled"})
+        except (KeyError, IndexError) as exc:
+            message = str(exc.args[0]) if exc.args else "not found"
+            await self.send({"type": "pipeline_error", "action": label, "message": message})
+        except Exception as exc:
+            logger.error("Pipeline '%s' failed: %s\n%s", label, exc, traceback.format_exc())
+            msg = f"{type(exc).__name__}: {exc}"
+            await self.send({"type": "pipeline_error", "action": label, "message": msg})
+        finally:
+            if progress:  # long-running handlers: always close the status-bar progress
+                await self.send_progress(100, "Pipeline finished")
+
+    async def _handle_save_recipe(self, msg: dict[str, Any]) -> None:
+        """``{type: "save_recipe", recipe}`` -> ``recipe_saved`` then ``recipes_list``."""
+
+        async def body() -> None:
+            recipe = pipeline.save_recipe(msg.get("recipe"))
+            await self.send({"type": "recipe_saved", "recipe": recipe.to_dict()})
+            await self._send_recipes()
+
+        await self._pipeline_guard("save_recipe", body())
+
+    async def _handle_delete_recipe(self, msg: dict[str, Any]) -> None:
+        """``{type: "delete_recipe", name}`` -> ``recipe_deleted`` then ``recipes_list``."""
+
+        async def body() -> None:
+            name = msg.get("name")
+            gone = pipeline.delete_recipe(name)
+            await self.send({"type": "recipe_deleted", "name": name, "existed": gone})
+            await self._send_recipes()
+
+        await self._pipeline_guard("delete_recipe", body())
+
+    async def _handle_export_recipe_script(self, msg: dict[str, Any]) -> None:
+        """``{type: "export_recipe_script", recipe}`` -> ``recipe_script`` (filename, script)."""
+
+        async def body() -> None:
+            recipe = pipeline.parse_recipe(msg.get("recipe"), strict_name=False)
+            await self.send(
+                {
+                    "type": "recipe_script",
+                    "name": recipe.name,
+                    "filename": f"{recipe.slug}.py",
+                    "script": pipeline.recipe_to_script(recipe),
+                }
+            )
+
+        await self._pipeline_guard("export_recipe_script", body())
+
+    async def _handle_preview_pipeline(self, msg: dict[str, Any]) -> None:
+        """Run a recipe on ONE sweep without storing anything.
+
+        ``{type: "preview_pipeline", file_id?, sweep, recipe}`` -> ``pipeline_preview`` (per-step
+        stats + the ``Before`` / ``After`` / ``Removed by step`` field blocks) followed by one
+        ``module_field`` binary payload per field (module ``"pipeline"``), the format the UI
+        already shows on the PPI for module results.
+        """
+
+        async def body() -> None:
+            sweep = msg.get("sweep", 0)
+            if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+                raise plugins.ModuleError("preview_pipeline: 'sweep' must be a non-negative int")
+            recipe = pipeline.parse_recipe(msg.get("recipe"), strict_name=False)
+            resolved_id, reader = _resolve_reader(msg.get("file_id"))
+            datatree = reader.datatree
+            if datatree is None:
+                raise plugins.ModuleError("No file is open")
+            await self.send_progress(5, f"Previewing {recipe.name}...")
+            loop = asyncio.get_running_loop()
+            progress_sync = self._progress_callback(loop)
+
+            def _run() -> tuple[Any, list[dict[str, Any]], list[tuple[dict[str, Any], list]]]:
+                ctx = plugins.ModuleContext(
+                    datatree, sweep, get_sweep_dataset=lambda i: _sweep_dataset(reader, i)
+                )
+                run = pipeline.run_recipe_on_sweep(recipe, ctx, progress=progress_sync)
+                blocks, fields = pipeline.preview_fields(run, recipe)
+                packed = _pack_module_fields("pipeline", fields, _sweep_dataset(reader, sweep))
+                return run, blocks, packed
+
+            run, blocks, packed = await loop.run_in_executor(None, _run)
+            out_file_id = resolved_id or msg.get("file_id")
+            await self.send(
+                {
+                    "type": "pipeline_preview",
+                    "file_id": out_file_id,
+                    "sweep": sweep,
+                    "recipe": recipe.name,
+                    "target": recipe.target,
+                    "steps": run.steps,
+                    "valid_before": run.n_valid_before,
+                    "valid_after": run.n_valid_after,
+                    "notes": run.notes,
+                    "elapsed_ms": run.elapsed_ms,
+                    "blocks": blocks,
+                }
+            )
+            by_name = {b["name"]: b for b in blocks}
+            for name, (hdr, arrays) in zip(by_name, packed, strict=True):
+                await self._send_binary_chunks(
+                    arrays,
+                    {
+                        "type": "module_field",
+                        "module": "pipeline",
+                        "name": name,
+                        "sweep": sweep,
+                        "units": str(by_name[name].get("units") or ""),
+                        "file_id": out_file_id,
+                        **hdr,
+                        **_field_range(by_name[name], arrays[2]),
+                    },
+                )
+
+        await self._pipeline_guard("preview_pipeline", body(), progress=True)
+
+    async def _handle_run_pipeline(self, msg: dict[str, Any]) -> None:
+        """Run a recipe and store ONE derived variable.
+
+        ``{type: "run_pipeline", file_id?, recipe, all_sweeps?: true, sweep?}`` -> progress, then
+        ``pipeline_result`` (stats, skipped sweeps, the derived entry) and ``derived_variables``.
+        Sweeps lacking a role the recipe needs are skipped with a reason, as for modules.
+        """
+
+        async def body() -> None:
+            all_sweeps = msg.get("all_sweeps", True)
+            sweep = msg.get("sweep", 0)
+            if not isinstance(all_sweeps, bool):
+                raise plugins.ModuleError("run_pipeline: 'all_sweeps' must be a boolean")
+            if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+                raise plugins.ModuleError("run_pipeline: 'sweep' must be a non-negative integer")
+            recipe = pipeline.parse_recipe(msg.get("recipe"), strict_name=True)
+            resolved_id, reader = _resolve_reader(msg.get("file_id"))
+            datatree = reader.datatree
+            if datatree is None:
+                raise plugins.ModuleError("No file is open")
+            n_sweeps = len(sorted_sweep_names(datatree))
+            out_file_id = resolved_id or msg.get("file_id")
+            await self.send_progress(2, f"{recipe.name}: starting")
+            loop = asyncio.get_running_loop()
+            progress_sync = self._progress_callback(loop)
+            cancel = threading.Event()
+            cancel_key = str(out_file_id)
+            _PIPELINE_CANCELS[cancel_key] = cancel
+
+            def _sweep_moments(i: int) -> set[str]:
+                data_vars = reader.get_sweep_dataset(i, mask=False).data_vars
+                return {str(k) for k, v in data_vars.items() if v.ndim >= 2}
+
+            def _run() -> tuple[Any, list[tuple[str, dict[int, np.ndarray], dict]]]:
+                run = pipeline.run_recipe_all_sweeps(
+                    recipe,
+                    datatree,
+                    n_sweeps,
+                    get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
+                    get_sweep_variables=_sweep_moments,
+                    progress=progress_sync,
+                    is_cancelled=cancel.is_set,
+                    sweeps=None if all_sweeps else [sweep],
+                )
+                return run, pipeline.build_variables(run)
+
+            try:
+                run, built = await loop.run_in_executor(None, _run)
+            except BaseException:
+                cancel.set()  # the worker stops after the step it is on
+                raise
+            finally:
+                if _PIPELINE_CANCELS.get(cancel_key) is cancel:
+                    del _PIPELINE_CANCELS[cancel_key]
+
+            still_open = resolved_id is None or _file_readers.get(resolved_id) is reader
+            if not still_open or reader.datatree is not datatree:
+                raise plugins.ModuleError(
+                    "The file was closed or changed while the pipeline ran; result discarded"
+                )
+            store = derived.store_for(reader)
+            assert store is not None
+            evicted: list[str] = []
+            for name, arrays, meta in built:
+                evicted.extend(store.put_variable(name, arrays, meta))
+            names = {name for name, _, _ in built}
+            evicted = [n for n in dict.fromkeys(evicted) if n not in names or not store.has(n)]
+            listing = {v["name"]: v for v in store.variables()}
+            entries = [
+                {
+                    "name": name,
+                    "label": meta["label"],
+                    "field": meta["field"],
+                    "units": meta["units"],
+                    "vmin": meta["vmin"],
+                    "vmax": meta["vmax"],
+                    "cmap": meta["cmap"],
+                    "categories": None,
+                    "sweeps": sorted(arrays),
+                    "skipped": run.skipped,
+                }
+                for name, arrays, meta in built
+                if name in listing
+            ]
+            await self.send(
+                {
+                    "type": "pipeline_result",
+                    "file_id": out_file_id,
+                    "recipe": recipe.name,
+                    "target": recipe.target,
+                    "name": built[0][0] if built else None,
+                    "derived": entries,
+                    "steps": run.steps,
+                    "per_sweep": run.per_sweep,
+                    "skipped": run.skipped,
+                    "elapsed_ms": run.elapsed_ms,
+                    "evicted": evicted,
+                    "params": built[0][2]["params"] if built else None,
+                }
+            )
+            await self._send_derived_list(out_file_id, reader, evicted=evicted)
+
+        await self._pipeline_guard("run_pipeline", body(), progress=True)
+
+    async def _handle_cancel_pipeline(self, msg: dict[str, Any]) -> None:
+        """``{type: "cancel_pipeline", file_id?}``: stop a running pipeline after its step."""
+        resolved_id, _ = _resolve_reader(msg.get("file_id"))
+        event = _PIPELINE_CANCELS.get(str(resolved_id or msg.get("file_id")))
+        if event is not None:
+            event.set()
 
     # ------------------------------------------------------------------
     # Text export (CSV / GeoJSON written by the UI)
@@ -2654,6 +3205,169 @@ class ConnectionHandler:
             )
         return target
 
+    # ==================================================================
+    # BEGIN multi-Doppler wind retrieval (engine/multidoppler.py, needs radarx)
+    # ==================================================================
+
+    async def _handle_run_multidoppler(self, msg: dict[str, Any]) -> None:
+        """Retrieve u / v / w from two or more open radar files and stream the grids back.
+
+        ``{type: "run_multidoppler", request_id, file_ids: [...], grid: {...}, options: {...}}``
+        -> progress messages, then ``{type: "multidoppler_result", request_id, wind_id, fields,
+        shape, grid, radars, coverage_pct, crossing_angle, background, ..., byte_length, chunks}``
+        followed by ``chunks`` binary frames holding a float32 array of ``shape`` =
+        ``[n_fields, nz, ny, nx]`` (C order). Failure: ``{type: "multidoppler_error",
+        request_id, message}``; ``multidoppler_cancel`` -> ``{type: "multidoppler_cancelled"}``.
+        Progress always closes at 100.
+        """
+        request_id = msg.get("request_id")
+        key = request_id if isinstance(request_id, str) and request_id else None
+        cancel = _multidoppler_cancel_event(key)
+        try:
+            await self._run_multidoppler(msg, request_id, cancel)
+        except mdop.MultiDopplerCancelledError:
+            await self.send({"type": "multidoppler_cancelled", "request_id": request_id})
+        except (mdop.MultiDopplerError, UnknownFileError) as exc:
+            logger.warning("Multi-Doppler error: %s", exc)
+            await self._multidoppler_error(request_id, str(exc))
+        except ImportError as exc:
+            await self._multidoppler_error(
+                request_id,
+                f"Multi-Doppler wind retrieval needs the Python package radarx: {exc} "
+                "(pip install radarx)",
+            )
+        except Exception as exc:
+            logger.error("Multi-Doppler failed: %s\n%s", exc, traceback.format_exc())
+            await self._multidoppler_error(request_id, f"{type(exc).__name__}: {exc}")
+        finally:
+            if key is not None:
+                _multidoppler_runs.pop(key, None)
+            await self.send_progress(100, "Wind retrieval finished")
+
+    async def _multidoppler_error(self, request_id: Any, message: str, **extra: Any) -> None:
+        await self.send(
+            {"type": "multidoppler_error", "request_id": request_id, "message": message, **extra}
+        )
+
+    async def _run_multidoppler(
+        self, msg: dict[str, Any], request_id: Any, cancel: threading.Event
+    ) -> None:
+        file_ids = msg.get("file_ids")
+        if (
+            not isinstance(file_ids, list)
+            or not file_ids
+            or not all(isinstance(f, str) and f for f in file_ids)
+        ):
+            raise mdop.MultiDopplerError("run_multidoppler: 'file_ids' must be a non-empty list")
+        if len(set(file_ids)) != len(file_ids):
+            raise mdop.MultiDopplerError("run_multidoppler: 'file_ids' contains duplicates")
+        for key in ("grid", "options"):
+            if msg.get(key) is not None and not isinstance(msg[key], dict):
+                raise mdop.MultiDopplerError(f"run_multidoppler: '{key}' must be an object")
+        pairs = []
+        for fid in file_ids:
+            _, reader = _resolve_reader(fid)  # UnknownFileError for closed files
+            if reader.datatree is None:
+                raise mdop.MultiDopplerError(f"File {fid} is not open")
+            pairs.append((fid, reader))
+        # Fail early (before any heavy work) on bad parameters or a missing radarx.
+        grid = mdop.GridSpec.from_dict(msg.get("grid"))
+        options = mdop.Options.from_dict(msg.get("options"))
+        if len(pairs) >= 2:
+            mdop._radarx_mod()
+
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        await self.send_progress(3, "Starting wind retrieval...")
+
+        def _build() -> mdop.WindRecord:
+            return mdop.run_multidoppler(
+                pairs, grid, options, progress=progress_sync, cancel=cancel.is_set
+            )
+
+        t0 = time.perf_counter()
+        try:
+            async with _locks.get("multidoppler"):  # one heavy run at a time (radarx is threaded)
+                if cancel.is_set():
+                    raise mdop.MultiDopplerCancelledError("cancelled")
+                record = await loop.run_in_executor(None, _build)
+        except BaseException:
+            cancel.set()  # connection gone / task cancelled: the worker stops at its next check
+            raise
+        header = {
+            "type": "multidoppler_result",
+            "request_id": request_id,
+            **record.header(),
+            "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+        }
+        await self._send_binary_chunks([record.fields], header, length_key="byte_length")
+
+    async def _handle_multidoppler_cancel(self, msg: dict[str, Any]) -> None:
+        """``{type: "multidoppler_cancel", request_id}``: stop that run at its next stage."""
+        request_id = msg.get("request_id")
+        if isinstance(request_id, str) and request_id:
+            _multidoppler_cancel_event(request_id).set()
+
+    async def _handle_export_multidoppler(self, msg: dict[str, Any]) -> None:
+        """``{type: "export_multidoppler", wind_id, path, overwrite?}`` -> ``file_saved``."""
+        wind_id = msg.get("wind_id")
+        path = msg.get("path")
+        try:
+            if not isinstance(wind_id, str) or not wind_id:
+                raise mdop.MultiDopplerError("export_multidoppler: missing 'wind_id'")
+            if not isinstance(path, str) or not path.strip() or "\x00" in path:
+                raise mdop.MultiDopplerError(
+                    "export_multidoppler: 'path' must be a non-empty string"
+                )
+            record = mdop.WIND_RESULTS.get(wind_id)
+            target = Path(path).expanduser()
+            if not target.parent.is_dir():
+                raise mdop.MultiDopplerError(
+                    f"export_multidoppler: folder does not exist: {target.parent}"
+                )
+            if target.is_dir():
+                raise mdop.MultiDopplerError(f"export_multidoppler: path is a folder: {target}")
+            if target.exists() and msg.get("overwrite") is not True:
+                raise mdop.MultiDopplerError(
+                    f"export_multidoppler: {target} already exists "
+                    "(pass overwrite=true to replace it)"
+                )
+            await asyncio.get_running_loop().run_in_executor(
+                None, _atomic_write, target, lambda tmp: mdop.write_netcdf(record, tmp)
+            )
+        except mdop.MultiDopplerError as exc:
+            await self._multidoppler_error(msg.get("request_id"), str(exc), wind_id=wind_id)
+            return
+        except OSError as exc:
+            await self._multidoppler_error(
+                msg.get("request_id"),
+                f"export_multidoppler: could not write the file: {exc}",
+                wind_id=wind_id,
+            )
+            return
+        await self.send({"type": "file_saved", "path": str(target)})
+
+    # ==================================================================
+    # END multi-Doppler wind retrieval
+    # ==================================================================
+
+
+#: Cancel flags of running / about-to-run ``run_multidoppler`` requests, by request_id.
+_multidoppler_runs: dict[str, threading.Event] = {}
+_MULTIDOPPLER_MAX_PENDING = 64
+
+
+def _multidoppler_cancel_event(request_id: str | None) -> threading.Event:
+    """The cancel flag of a request (created on demand, so a cancel may arrive first)."""
+    if request_id is None:
+        return threading.Event()
+    event = _multidoppler_runs.get(request_id)
+    if event is None:
+        while len(_multidoppler_runs) >= _MULTIDOPPLER_MAX_PENDING:
+            _multidoppler_runs.pop(next(iter(_multidoppler_runs)))
+        event = _multidoppler_runs[request_id] = threading.Event()
+    return event
+
 
 def _atomic_write(target: Path, write: Callable[[Path], Any]) -> None:
     """Write ``target`` atomically: ``write(tmp)`` fills a sibling temp file that replaces it."""
@@ -2664,6 +3378,15 @@ def _atomic_write(target: Path, write: Callable[[Path], Any]) -> None:
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
+
+
+def _module_overrides(reader: RadarReader, msg: dict[str, Any]):
+    """Roles a module run should read from derived variables (``inputs`` of ``run_module``).
+
+    ``{"inputs": {"velocity": "pipeline:my_recipe_vradh"}}`` makes the module see that derived
+    variable wherever it asks for the velocity. See docs/PIPELINES.md.
+    """
+    return pipeline.module_overrides(derived.store_for(reader, create=False), msg.get("inputs"))
 
 
 def _pack_module_fields(
@@ -2856,6 +3579,15 @@ async def _handle_connection(ws: ServerConnection) -> None:
         logger.info("Connection from %s closed", remote)
 
 
+def _preload_heavy_imports() -> None:
+    """Warm the imports the first open + first render need (xradar, colorcet/matplotlib)."""
+    preload_backends()
+    try:
+        _palettes()
+    except Exception as exc:  # the render reports the real problem later
+        logger.debug("palette preload failed: %s", exc)
+
+
 async def _run_server(port: int) -> None:
     try:
         plugins.discover_modules()
@@ -2883,6 +3615,8 @@ async def _run_server(port: int) -> None:
     ):
         logger.info("xradar-desktop engine listening on ws://localhost:%d", port)
         print(f"READY:{port}", flush=True)
+        # Import xradar while the user picks a file, so the first open does not pay for it.
+        threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
         await stop_event.wait()
 
     logger.info("Server shut down cleanly")

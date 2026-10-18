@@ -231,7 +231,7 @@ def _volume_couplets(ctx, rt, kwargs, min_tilts, dealias_first, nyquist, notes):
     for i, name in enumerate(A.sweep_names(tree)):
         ctx.progress(10 + 40 * i // max(len(tree.children), 1), f"Preparing {name}")
         node = tree[name].to_dataset()
-        node = A.standardize(node)
+        node = A.standardize(node, ctx.var_overrides)
         if "VRADH" not in node.data_vars:
             continue
         node = node.assign_coords(**{k: v for k, v in site.items() if k not in node.coords})
