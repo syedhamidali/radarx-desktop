@@ -53,8 +53,14 @@ from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.exporter import RadarExporter
 from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
 from engine.qc import QC_REGISTRY, QCPipeline
-from engine.reader import RadarReader, _serializable, max_open_bytes, sorted_sweep_names
-from engine.renderer import RadarRenderer, _resolve_range
+from engine.reader import (
+    RadarReader,
+    _serializable,
+    max_open_bytes,
+    preload_backends,
+    sorted_sweep_names,
+)
+from engine.renderer import RadarRenderer, _palettes, _resolve_range
 from engine.retrievals import RETRIEVAL_REGISTRY, run_retrieval
 from engine.statistics import get_statistics
 from engine.temporal import (
@@ -3008,6 +3014,15 @@ async def _handle_connection(ws: ServerConnection) -> None:
         logger.info("Connection from %s closed", remote)
 
 
+def _preload_heavy_imports() -> None:
+    """Warm the imports the first open + first render need (xradar, colorcet/matplotlib)."""
+    preload_backends()
+    try:
+        _palettes()
+    except Exception as exc:  # the render reports the real problem later
+        logger.debug("palette preload failed: %s", exc)
+
+
 async def _run_server(port: int) -> None:
     try:
         plugins.discover_modules()
@@ -3035,6 +3050,8 @@ async def _run_server(port: int) -> None:
     ):
         logger.info("xradar-desktop engine listening on ws://localhost:%d", port)
         print(f"READY:{port}", flush=True)
+        # Import xradar while the user picks a file, so the first open does not pay for it.
+        threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
         await stop_event.wait()
 
     logger.info("Server shut down cleanly")

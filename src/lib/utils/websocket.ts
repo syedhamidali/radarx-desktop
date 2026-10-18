@@ -653,6 +653,14 @@ class WebSocketManager {
         break;
       }
 
+      case 'warning': {
+        // Non-fatal notice from the engine (e.g. memory budget exceeded): the request succeeded.
+        const text: string = typeof msg.message === 'string' ? msg.message : 'Warning from engine';
+        console.warn('[WS] Engine warning:', text);
+        addToast('warning', text, 12000);
+        break;
+      }
+
       default:
         console.log('[WS] Unhandled message type:', type, msg);
     }

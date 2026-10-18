@@ -11,19 +11,28 @@ import shutil
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import matplotlib
 import numpy as np
 import xarray as xr
 
 from engine.reader import mask_variable, sorted_sweep_names
 
-matplotlib.use("Agg")  # Non-interactive backend
-
-import matplotlib.pyplot as plt
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 logger = logging.getLogger(__name__)
+
+
+def _pyplot() -> Any:
+    """Import matplotlib.pyplot on first use (~0.2 s: keeps it out of sidecar start-up)."""
+    import matplotlib
+
+    matplotlib.use("Agg")  # Non-interactive backend
+    import matplotlib.pyplot as _plt
+
+    return _plt
+
 
 # --- Export constraints ---
 MIN_DPI = 72
@@ -117,7 +126,7 @@ _VARIABLE_UNITS: dict[str, str] = {
 def _get_cmap(variable: str) -> str:
     """Return a matplotlib colormap name for the variable."""
     cmap_name = _VARIABLE_CMAPS.get(variable)
-    if cmap_name and cmap_name in plt.colormaps():
+    if cmap_name and cmap_name in _pyplot().colormaps():
         return cmap_name
     # Fallback colormaps
     vlow = variable.lower()
@@ -420,6 +429,7 @@ def render_publication_figure(
     or the data range is used).  Returns the Figure object (caller is
     responsible for saving/closing).
     """
+    plt = _pyplot()
     sweep_ds = _extract_sweep_dataset(datatree, sweep)
 
     if variable not in sweep_ds.data_vars:
@@ -735,7 +745,7 @@ class RadarExporter:
                     edgecolor="none",
                 )
         finally:
-            plt.close(fig)
+            _pyplot().close(fig)
 
         output_path = str(Path(target).resolve())
         progress(100, f"Export complete: {output_path}")
@@ -905,7 +915,7 @@ class RadarExporter:
                     with PILImage.open(buf) as png:
                         rgba = png.convert("RGBA")
             finally:
-                plt.close(fig)
+                _pyplot().close(fig)
             rgb = PILImage.new("RGB", rgba.size, (255, 255, 255))
             rgb.paste(rgba, mask=rgba.getchannel("A"))
             rgba.close()

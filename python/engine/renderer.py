@@ -12,7 +12,6 @@ import threading
 from collections import OrderedDict
 from typing import Any
 
-import colorcet as cc
 import numpy as np
 import xarray as xr
 from PIL import Image, ImageDraw, ImageFont
@@ -31,14 +30,21 @@ PNG_FORMAT = "PNG"
 # (6) for a modest size increase.
 PNG_COMPRESS_LEVEL = 1
 
-_PALETTES: dict[str, list[str]] = {
-    "rainbow": cc.rainbow,
-    "coolwarm": cc.coolwarm,
-    "fire": cc.fire,
-    "blues": cc.blues,
-    "bgy": cc.bgy,
-    "kr": cc.kr,
-}
+
+@functools.cache
+def _palettes() -> dict[str, list[str]]:
+    """colorcet palettes, imported on first render (colorcet pulls in matplotlib: ~0.15 s)."""
+    import colorcet as cc
+
+    return {
+        "rainbow": cc.rainbow,
+        "coolwarm": cc.coolwarm,
+        "fire": cc.fire,
+        "blues": cc.blues,
+        "bgy": cc.bgy,
+        "kr": cc.kr,
+    }
+
 
 _VARIABLE_CMAPS: dict[str, str] = {
     "DBZH": "rainbow",
@@ -244,15 +250,16 @@ def _composite_colorbar(
 
 
 def _resolve_cmap(variable: str) -> list[str]:
+    palettes = _palettes()
     name = _VARIABLE_CMAPS.get(variable)
     if name is not None:
-        return _PALETTES.get(name, cc.rainbow)
+        return palettes.get(name, palettes["rainbow"])
     vlow = variable.lower()
     if any(tok in vlow for tok in ("dbz", "reflectivity", "power")):
-        return cc.rainbow
+        return palettes["rainbow"]
     if any(tok in vlow for tok in ("vel", "vrad")):
-        return cc.coolwarm
-    return cc.fire
+        return palettes["coolwarm"]
+    return palettes["fire"]
 
 
 def _resolve_range(variable: str) -> tuple[float | None, float | None]:

@@ -221,6 +221,19 @@ def _xradar_engines() -> set[str] | None:
         return set()
 
 
+def preload_backends() -> None:
+    """Import xradar and its readers ahead of the first ``open_file`` (call from a thread).
+
+    The first open otherwise pays ~0.6-0.9 s of imports on top of reading the file.
+    """
+    try:
+        import xradar  # noqa: F401
+
+        _xradar_engines()
+    except Exception as exc:  # opening a file reports the real problem later
+        logger.debug("xradar preload failed: %s", exc)
+
+
 @cache
 def _get_opener(format_name: str):
     """Return ``opener(path) -> DataTree`` for *format_name* (raises if unavailable).
