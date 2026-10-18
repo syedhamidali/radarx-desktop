@@ -878,7 +878,7 @@ def run_module(
     get_sweep_dataset: Callable[[int], xr.Dataset],
     progress: Callable[[int, str], None] | None = None,
     return_fields: bool = False,
-    timeout_s: float | None | str = "env",
+    timeout_s: float | str | None = "env",
     is_cancelled: Callable[[], bool] | None = None,
     var_overrides: dict[str, str] | None = None,
     overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
