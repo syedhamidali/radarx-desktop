@@ -146,6 +146,30 @@ def _coerce_params(specs: list[dict[str, Any]], raw: dict[str, Any]) -> dict[str
 # ---------------------------------------------------------------------------
 
 
+def _apply_overrides(
+    ds: xr.Dataset, sweep: int, overrides: dict[str, Callable[[int], np.ndarray]]
+) -> xr.Dataset:
+    """*ds* with some roles replaced by other (derived) arrays, e.g. a pipeline result.
+
+    ``overrides`` maps a canonical role (``"VRADH"``) to ``fn(sweep) -> 2-D array`` on the sweep
+    grid. The replacement keeps the name the file uses for that role (so ``find``/``field`` and
+    modules reading the dataset directly both see it); a role the file lacks is added under its
+    canonical name. See docs/PIPELINES.md.
+    """
+    shape = (ds.sizes["azimuth"], ds.sizes["range"])
+    new = {}
+    for role, lookup in overrides.items():
+        arr = np.asarray(lookup(sweep))
+        if arr.shape != shape:
+            raise ModuleError(
+                f"Substitute for '{role}' has shape {arr.shape}, the sweep grid is {shape}"
+            )
+        name = next((a for a in VAR_ALIASES.get(role, [role]) if a in ds.data_vars), role)
+        attrs = dict(ds[name].attrs) if name in ds.data_vars else {}
+        new[name] = xr.DataArray(arr.astype(np.float32), dims=("azimuth", "range"), attrs=attrs)
+    return ds.assign(new)
+
+
 class ModuleContext:
     """Everything a module needs to read data. Instances are created per run."""
 
@@ -159,11 +183,13 @@ class ModuleContext:
         var_overrides: dict[str, str] | None = None,
         paired_roles: list[str] | None = None,
         pair_tolerance: float = varmap.DEFAULT_TOLERANCE_DEG,
+        overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
     ) -> None:
         self.datatree = datatree
         self.sweep = sweep
         self._get_ds = get_sweep_dataset
         self._progress = progress
+        self._overrides = overrides or {}
         self._ds: xr.Dataset | None = None
         self.var_overrides: dict[str, str] = varmap.normalize_overrides(var_overrides)
         self._paired_roles = {
@@ -179,7 +205,8 @@ class ModuleContext:
     def dataset(self) -> xr.Dataset:
         """The current sweep as an ``xr.Dataset`` (loaded once, then cached)."""
         if self._ds is None:
-            self._ds = self._get_ds(self.sweep)
+            ds = self._get_ds(self.sweep)
+            self._ds = _apply_overrides(ds, self.sweep, self._overrides) if self._overrides else ds
         return self._ds
 
     @property
@@ -821,6 +848,7 @@ def run_module(
     timeout_s: float | None | str = "env",
     is_cancelled: Callable[[], bool] | None = None,
     var_overrides: dict[str, str] | None = None,
+    overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, np.ndarray]]:
     """Execute a module and return its JSON-safe result payload.
 
@@ -831,6 +859,7 @@ def run_module(
     on expiry :class:`ModuleTimeoutError` is raised and the late result is discarded. If
     *is_cancelled* turns true the run is abandoned with :class:`ModuleCancelled`. Every other
     failure is a :class:`ModuleError` whose message says what to try.
+    ``overrides`` substitutes roles by other arrays (see :func:`_apply_overrides`).
     """
     spec = MODULES.get(module_id)
     if spec is None:
@@ -849,6 +878,7 @@ def run_module(
         progress=progress,
         var_overrides=var_overrides,
         paired_roles=spec.paired,
+        overrides=overrides,
     )
     for req in spec.requires:
         ctx.field(req)  # raises a clear ModuleError up-front

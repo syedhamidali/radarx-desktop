@@ -11,6 +11,7 @@
   import CloudDataPanel from './CloudDataPanel.svelte';
   import ModulesPanel from './ModulesPanel.svelte';
   import MosaicPanel from './MosaicPanel.svelte';
+  import PipelinePanel from './PipelinePanel.svelte';
 
   setContext('embedded-panel', true); // panels below draw only their body; this component owns the header
 
@@ -23,6 +24,7 @@
     qc: { component: QCPanel, label: 'Quality Control', icon: '\u2714' },
     storm: { component: StormPanel, label: 'Storm Cells', icon: '\u26C8' },
     modules: { component: ModulesPanel, label: 'Modules', icon: '\u{1F9E9}' },
+    pipeline: { component: PipelinePanel, label: 'Pipelines', icon: '\u26D3' },
     processing: { component: ProcessingPanel, label: 'Processing', icon: '\u2699' },
     export: { component: ExportPanel, label: 'Export', icon: '\u21E9' },
   };

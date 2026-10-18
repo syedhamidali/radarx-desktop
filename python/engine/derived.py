@@ -365,6 +365,7 @@ def run_all_sweeps(
     progress: Callable[[int, str], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
     var_overrides: dict[str, str] | None = None,
+    overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
 ) -> VolumeRun:
     """Run a per-sweep module on sweeps ``0..n_sweeps-1``, one at a time.
 
@@ -426,6 +427,7 @@ def run_all_sweeps(
                 return_fields=True,
                 is_cancelled=is_cancelled,
                 var_overrides=var_overrides,
+                overrides=overrides,
             )
             expected = tuple(get_sweep_grid(sweep))
             for name, arr in fields.items():
