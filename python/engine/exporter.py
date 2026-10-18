@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import xarray as xr
 
-from engine.reader import mask_variable, sorted_sweep_names
+from engine.reader import collapse_site_position, mask_variable, sorted_sweep_names
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -265,28 +265,7 @@ def _netcdf_attr(value: Any) -> Any:
     return value
 
 
-_SITE_POSITION_VARS = ("latitude", "longitude", "altitude", "altitude_agl")
-
-
-def _collapse_site_position(ds: xr.Dataset) -> xr.Dataset:
-    """Turn a per-ray site position into the single value CfRadial1 expects.
-
-    A radar site has one latitude/longitude/altitude, but some files store them along ``time`` with
-    fill values (NaN, ``-9999``) on some rays; ``to_cfradial1`` then fails with "conflicting sizes
-    for dimension 'time'". Fill values are ignored and the most common valid value is kept. A
-    variable with no valid value at all is dropped.
-    """
-    for name in _SITE_POSITION_VARS:
-        var = ds.variables.get(name)
-        if var is None or "time" not in var.dims:
-            continue
-        values = np.asarray(var.values, dtype="float64")
-        valid = values[np.isfinite(values) & (values > -9990.0)]
-        ds = ds.drop_vars(name)
-        if valid.size:
-            uniq, counts = np.unique(valid, return_counts=True)
-            ds = ds.assign({name: ((), float(uniq[np.argmax(counts)]), var.attrs)})
-    return ds
+_collapse_site_position = collapse_site_position  # the reader does this on open; kept for safety
 
 
 def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:

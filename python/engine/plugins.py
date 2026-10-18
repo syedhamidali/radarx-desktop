@@ -170,6 +170,21 @@ def _apply_overrides(
     return ds.assign(new)
 
 
+def _masked_copy(tree: xr.DataTree) -> xr.DataTree:
+    """Shallow copy of *tree* whose 2-D moments have the no-echo codes masked (see reader)."""
+    from engine.reader import mask_below_threshold
+
+    try:
+        out = tree.copy(deep=False)
+        for node in out.subtree:
+            if any(v.ndim >= 2 for v in node.to_dataset().data_vars.values()):
+                node.dataset = mask_below_threshold(node.to_dataset())
+        return out
+    except Exception as exc:  # pragma: no cover - never block a module on masking
+        logger.debug("could not mask the volume: %s", exc)
+        return tree
+
+
 class ModuleContext:
     """Everything a module needs to read data. Instances are created per run."""
 
@@ -185,7 +200,8 @@ class ModuleContext:
         pair_tolerance: float = varmap.DEFAULT_TOLERANCE_DEG,
         overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
     ) -> None:
-        self.datatree = datatree
+        self._raw_datatree = datatree
+        self._masked_datatree: xr.DataTree | None = None
         self.sweep = sweep
         self._get_ds = get_sweep_dataset
         self._progress = progress
@@ -200,6 +216,23 @@ class ModuleContext:
         self._aligned: dict[tuple[int, str], xr.DataArray] = {}
         # Human-readable notes ("velocity taken from sweep 1") shown with the module result.
         self.notes: list[str] = []
+
+    @property
+    def datatree(self) -> xr.DataTree:
+        """The whole volume with "no echo" / "range folded" codes already NaN.
+
+        Level-II style files decode those codes to real numbers (-33 dBZ, -64.5 m/s ...) that a
+        module would otherwise treat as echo. Built lazily (volume modules only) and cached; the
+        reader's own tree is never modified. Use ``ctx.raw_datatree`` for the untouched data.
+        """
+        if self._masked_datatree is None:
+            self._masked_datatree = _masked_copy(self._raw_datatree)
+        return self._masked_datatree
+
+    @property
+    def raw_datatree(self) -> xr.DataTree:
+        """The reader's tree exactly as opened (encoded no-echo codes decoded as numbers)."""
+        return self._raw_datatree
 
     @property
     def dataset(self) -> xr.Dataset:

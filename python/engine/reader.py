@@ -184,6 +184,42 @@ def tree_memory_bytes(dtree: xr.DataTree) -> int:
     return total
 
 
+_SITE_POSITION_VARS = ("latitude", "longitude", "altitude", "altitude_agl")
+
+
+def collapse_site_position(ds: xr.Dataset) -> xr.Dataset:
+    """Turn a per-ray site position into the single value a radar site really has.
+
+    Some files store ``latitude``/``longitude``/``altitude`` along ``time`` with fill values (NaN,
+    ``-9999``) on some rays. Everything downstream (maps, 3D, modules, NetCDF export) wants one
+    scalar, so fill values are ignored and the most common valid value is kept. A variable with no
+    valid value at all is dropped.
+    """
+    for name in _SITE_POSITION_VARS:
+        var = ds.variables.get(name)
+        if var is None or "time" not in var.dims:
+            continue
+        values = np.asarray(var.values, dtype="float64")
+        valid = values[np.isfinite(values) & (values > -9990.0)]
+        ds = ds.drop_vars(name)
+        if valid.size:
+            uniq, counts = np.unique(valid, return_counts=True)
+            ds = ds.assign({name: ((), float(uniq[np.argmax(counts)]), var.attrs)})
+    return ds
+
+
+def _with_scalar_site(dtree: xr.DataTree) -> xr.DataTree:
+    """*dtree* with the root's per-ray site position collapsed to scalars (no-op if scalar)."""
+    try:
+        root = dtree.to_dataset()
+        if not any(n in root.variables and "time" in root[n].dims for n in _SITE_POSITION_VARS):
+            return dtree
+        dtree.dataset = collapse_site_position(root)
+    except Exception as exc:  # never fail an open over cosmetics
+        logger.debug("could not collapse per-ray site position: %s", exc)
+    return dtree
+
+
 def sorted_sweep_names(dtree: xr.DataTree) -> list[str]:
     """Names of ``sweep_N`` children in numeric order (``sweep_2`` before ``sweep_10``).
 
@@ -1007,6 +1043,7 @@ class RadarReader:
 
     def _commit(self, dtree: xr.DataTree, path: str, fmt: str) -> None:
         """Atomically make *dtree* the open file and drop everything derived from the old one."""
+        dtree = _with_scalar_site(dtree)
         with self._lock:
             self._reset_caches()
             self._dtree = dtree
