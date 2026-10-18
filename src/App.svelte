@@ -325,21 +325,9 @@
         multiple: true,
         title: 'Open Radar File',
         ...(dir ? { defaultPath: dir } : {}),
-        filters: [
-          {
-            name: 'Radar Files',
-            extensions: [
-              'nc', 'ncf', 'cdf', 'h5', 'hdf5', 'hdf',
-              'gz', 'bz2', 'vol', 'azi', 'raw', 'RAW',
-              'scn', 'scnx', 'sigmet', 'iris',
-              'ar2v', 'nexrad', 'zarr',
-              'nc.1', 'nc.2', 'nc.3', 'nc.4', 'nc.5',
-              'nc.6', 'nc.7', 'nc.8', 'nc.9',
-              'h5.1', 'h5.2', 'h5.3', 'h5.4', 'h5.5',
-            ],
-          },
-          { name: 'All Files', extensions: ['*'] },
-        ],
+        // No file-type filter on purpose: NEXRAD Level II files usually have no extension
+        // (KTLX20130520_201643_V06), and macOS greys out everything that is not on the allowed list
+        // — an "All Files" entry does not lift that. The reader detects the format from the content.
       });
       if (!selected) return;
       const picked: unknown[] = Array.isArray(selected) ? selected : [selected];
