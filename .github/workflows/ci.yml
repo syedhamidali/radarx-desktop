@@ -130,3 +130,43 @@ jobs:
 
       - name: Cargo clippy
         run: cargo clippy -- -D warnings
+
+  # ---------------------------------------------------------------
+  # Engine Docker image (the web deployment): builds, starts, answers /health and web_info
+  # ---------------------------------------------------------------
+  docker:
+    name: Engine image (web)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t xradar-engine python/
+
+      - name: Start it and check it answers
+        run: |
+          docker run -d --name engine -p 10000:10000 -e XRADAR_ALLOWED_ORIGINS=http://localhost:3000 xradar-engine
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:10000/health && break
+            sleep 2
+          done
+          curl -fsS http://localhost:10000/health
+          pip install websockets
+          python - <<'PY'
+          import asyncio, json
+          import websockets
+
+          async def main():
+              async with websockets.connect(
+                  "ws://localhost:10000", additional_headers={"Origin": "http://localhost:3000"}
+              ) as ws:
+                  info = json.loads(await asyncio.wait_for(ws.recv(), 20))
+                  assert info["type"] == "web_info" and info["web_mode"] is True, info
+                  print("web_info ok:", info["limits"])
+
+          asyncio.run(main())
+          PY
+
+      - name: Engine log (on failure)
+        if: failure()
+        run: docker logs engine
