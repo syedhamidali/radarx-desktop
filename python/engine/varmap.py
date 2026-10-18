@@ -724,7 +724,15 @@ def store_path() -> Path:
     return Path(env).expanduser() if env else Path.home() / ".xradar-desktop" / "variable_maps.json"
 
 
+def _web_mode() -> bool:
+    from engine import web
+
+    return web.is_web_mode()
+
+
 def _read_store() -> dict[str, dict[str, str]]:
+    if _web_mode():  # a public service never reads or writes ~/.xradar-desktop
+        return {}
     try:
         raw = json.loads(store_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -750,7 +758,7 @@ def load_saved(path: str | None) -> dict[str, str]:
 
 def save_persisted(path: str | None, mapping: Mapping[str, str]) -> None:
     """Persist overrides for a file path; an empty mapping removes the entry. Never raises."""
-    if not path:
+    if not path or _web_mode():
         return
     key = os.path.abspath(path)
     try:
@@ -774,12 +782,14 @@ class OverrideStore:
 
     _maps: dict[str, dict[str, str]] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    #: False (web mode): mappings live in memory only; nothing is read from or written to the store.
+    persist: bool = True
 
     def get(self, file_id: str | None, path: str | None = None) -> dict[str, str]:
         key = file_id or ""
         with self._lock:
             if key not in self._maps:
-                self._maps[key] = load_saved(path)
+                self._maps[key] = load_saved(path) if self.persist else {}
             return dict(self._maps[key])
 
     def update(
@@ -802,7 +812,8 @@ class OverrideStore:
         current.update(new)
         with self._lock:
             self._maps[file_id or ""] = current
-        save_persisted(path, current)
+        if self.persist:
+            save_persisted(path, current)
         return dict(current)
 
     def drop(self, file_id: str | None) -> None:

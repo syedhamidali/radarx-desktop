@@ -324,9 +324,18 @@ def _discover_format(path: str) -> str | None:
     return _FORMAT_BY_ENGINE.get(engine, engine)
 
 
-def _decompress_if_needed(path: str) -> tuple[str, bool]:
+class _TooLargeError(Exception):
+    """A gzip archive inflated past the configured limit."""
+
+
+def _decompress_if_needed(
+    path: str, tmp_dir: str | None = None, max_bytes: int | None = None
+) -> tuple[str, bool]:
     """If *path* is gzip-compressed, decompress to a temp file and return (tmp_path, True).
-    Otherwise return (path, False). Caller is responsible for unlinking the temp file."""
+    Otherwise return (path, False). Caller is responsible for unlinking the temp file.
+
+    *tmp_dir* places the temp file in a given folder (web mode: the session folder) and
+    *max_bytes* refuses archives that inflate beyond it (a decompression bomb)."""
     import gzip
     import zlib
 
@@ -340,13 +349,28 @@ def _decompress_if_needed(path: str) -> tuple[str, bool]:
     tmp_path: str | None = None
     try:
         suffix = Path(path).stem  # strip .gz → use inner name as suffix hint
-        fd, tmp_path = tempfile.mkstemp(suffix=f"_{suffix}")
+        fd, tmp_path = tempfile.mkstemp(suffix=f"_{suffix}", dir=tmp_dir)
         os.close(fd)
         # Stream: never hold a whole decompressed volume in memory.
         with gzip.open(path, "rb") as gz, open(tmp_path, "wb") as out:
-            shutil.copyfileobj(gz, out, length=1 << 20)
+            if max_bytes is None:
+                shutil.copyfileobj(gz, out, length=1 << 20)
+            else:
+                written = 0
+                while block := gz.read(1 << 20):
+                    written += len(block)
+                    if written > max_bytes:
+                        raise _TooLargeError(
+                            f"Could not open {Path(path).name}: it expands to more than "
+                            f"{max_bytes // (1024 * 1024)} MB when decompressed"
+                        )
+                    out.write(block)
         logger.info("Decompressed %s → %s", path, tmp_path)
         return tmp_path, True
+    except _TooLargeError as exc:
+        if tmp_path is not None:
+            _unlink_quietly(tmp_path)
+        raise ValueError(str(exc)) from exc
     except (EOFError, gzip.BadGzipFile, zlib.error) as exc:  # BadGzipFile is an OSError
         if tmp_path is not None:
             _unlink_quietly(tmp_path)
@@ -608,6 +632,10 @@ class RadarReader:
         self._sweep_locks: dict[int, threading.Lock] = {}
         # (tree, decoded bytes) -- the tree walk is cheap but this is polled by health checks
         self._mem_cache: tuple[xr.DataTree, int] | None = None
+        # Web mode: scratch files (decompression, S3 downloads) go here, not the system temp dir,
+        # and a gzip file may not inflate beyond ``max_decompressed_bytes``.
+        self.tmp_dir: str | None = None
+        self.max_decompressed_bytes: int | None = None
 
     # ------------------------------------------------------------------
     # Memory accounting
@@ -693,7 +721,7 @@ class RadarReader:
             pass  # unreadable stat: the openers below report the real problem
 
         # Transparently decompress gzip files — xradar can't handle the gzip wrapper directly.
-        open_path, is_tmp = _decompress_if_needed(path)
+        open_path, is_tmp = _decompress_if_needed(path, self.tmp_dir, self.max_decompressed_bytes)
 
         errors: list[tuple[str, Exception]] = []
         tried: set[str] = set()
@@ -784,7 +812,7 @@ class RadarReader:
             raise ValueError(f"Invalid S3 path (expected s3://bucket/key): {s3_path}")
         filename = obj_key.split("/")[-1]
 
-        fd, tmp_path = tempfile.mkstemp(suffix=f"_{filename}")
+        fd, tmp_path = tempfile.mkstemp(suffix=f"_{filename}", dir=self.tmp_dir)
         os.close(fd)
         try:
             logger.info("Downloading s3://%s/%s -> %s", bucket, obj_key, tmp_path)

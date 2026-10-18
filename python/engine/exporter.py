@@ -298,6 +298,10 @@ def default_export_dir() -> Path:
     A normal, visible folder (``~/Downloads/xradar-exports``, or ``$XRADAR_EXPORT_DIR``), never a
     hidden system temp directory that the user cannot find.
     """
+    from engine import web
+
+    if web.is_web_mode():  # the server always passes a session path; never fall back to ~
+        raise ValueError("Exports must be written to the session folder in web mode")
     env = os.environ.get("XRADAR_EXPORT_DIR", "").strip()
     if env:
         return Path(env).expanduser()
