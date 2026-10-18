@@ -384,9 +384,18 @@
     gap: 4px;
     padding: 4px 6px;
   }
+  .step-head input[type='checkbox'] {
+    flex: none;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+  }
   .title {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    justify-content: flex-start;
     text-align: left;
     background: none;
     border: none;
@@ -397,10 +406,16 @@
     gap: 6px;
   }
   .num {
+    flex: none;
+    min-width: 12px;
     color: var(--text-muted, #5c6088);
     font-variant-numeric: tabular-nums;
   }
   .kind {
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
     font-size: 9px;
     padding: 0 4px;
     border-radius: 3px;
@@ -411,6 +426,7 @@
     color: var(--accent, #4f6bed);
   }
   .mini {
+    flex: none;
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     color: var(--text-muted, #5c6088);
