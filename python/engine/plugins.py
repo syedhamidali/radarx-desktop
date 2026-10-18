@@ -152,6 +152,30 @@ def _coerce_params(specs: list[dict[str, Any]], raw: dict[str, Any]) -> dict[str
 # ---------------------------------------------------------------------------
 
 
+def _apply_overrides(
+    ds: xr.Dataset, sweep: int, overrides: dict[str, Callable[[int], np.ndarray]]
+) -> xr.Dataset:
+    """*ds* with some roles replaced by other (derived) arrays, e.g. a pipeline result.
+
+    ``overrides`` maps a canonical role (``"VRADH"``) to ``fn(sweep) -> 2-D array`` on the sweep
+    grid. The replacement keeps the name the file uses for that role (so ``find``/``field`` and
+    modules reading the dataset directly both see it); a role the file lacks is added under its
+    canonical name. See docs/PIPELINES.md.
+    """
+    shape = (ds.sizes["azimuth"], ds.sizes["range"])
+    new = {}
+    for role, lookup in overrides.items():
+        arr = np.asarray(lookup(sweep))
+        if arr.shape != shape:
+            raise ModuleError(
+                f"Substitute for '{role}' has shape {arr.shape}, the sweep grid is {shape}"
+            )
+        name = next((a for a in VAR_ALIASES.get(role, [role]) if a in ds.data_vars), role)
+        attrs = dict(ds[name].attrs) if name in ds.data_vars else {}
+        new[name] = xr.DataArray(arr.astype(np.float32), dims=("azimuth", "range"), attrs=attrs)
+    return ds.assign(new)
+
+
 class ModuleContext:
     """Everything a module needs to read data. Instances are created per run."""
 
@@ -162,18 +186,21 @@ class ModuleContext:
         *,
         get_sweep_dataset: Callable[[int], xr.Dataset],
         progress: Callable[[int, str], None] | None = None,
+        overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
     ) -> None:
         self.datatree = datatree
         self.sweep = sweep
         self._get_ds = get_sweep_dataset
         self._progress = progress
+        self._overrides = overrides or {}
         self._ds: xr.Dataset | None = None
 
     @property
     def dataset(self) -> xr.Dataset:
         """The current sweep as an ``xr.Dataset`` (loaded once, then cached)."""
         if self._ds is None:
-            self._ds = self._get_ds(self.sweep)
+            ds = self._get_ds(self.sweep)
+            self._ds = _apply_overrides(ds, self.sweep, self._overrides) if self._overrides else ds
         return self._ds
 
     def find(self, name: str) -> xr.DataArray | None:
@@ -552,11 +579,13 @@ def run_module(
     get_sweep_dataset: Callable[[int], xr.Dataset],
     progress: Callable[[int, str], None] | None = None,
     return_fields: bool = False,
+    overrides: dict[str, Callable[[int], np.ndarray]] | None = None,
 ) -> dict[str, Any] | tuple[dict[str, Any], dict[str, np.ndarray]]:
     """Execute a module and return its JSON-safe result payload.
 
     With ``return_fields=True`` returns ``(payload, fields)`` where ``fields`` maps field
     names (see :meth:`Result.field`) to float32 arrays, for the caller to send as binary.
+    ``overrides`` substitutes roles by other arrays (see :func:`_apply_overrides`).
     """
     spec = MODULES.get(module_id)
     if spec is None:
@@ -568,7 +597,9 @@ def run_module(
             f"(pip install {' '.join(missing)})"
         )
     params = _coerce_params(spec.params, raw_params or {})
-    ctx = ModuleContext(datatree, sweep, get_sweep_dataset=get_sweep_dataset, progress=progress)
+    ctx = ModuleContext(
+        datatree, sweep, get_sweep_dataset=get_sweep_dataset, progress=progress, overrides=overrides
+    )
     for req in spec.requires:
         ctx.field(req)  # raises a clear ModuleError up-front
     t0 = time.perf_counter()

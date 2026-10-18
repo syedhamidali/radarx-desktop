@@ -41,7 +41,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, plugins
+from engine import derived, mosaic, pipeline, plugins
 from engine.cloud import (
     get_latest_nexrad_l2,
     list_arco_scans,
@@ -135,6 +135,9 @@ class _LoopLocks:
 
 
 _locks = _LoopLocks()
+
+# file_id -> cancel flag of the pipeline currently running on that file (see _handle_run_pipeline)
+_PIPELINE_CANCELS: dict[str, threading.Event] = {}
 
 
 def _render_lock() -> asyncio.Lock:
@@ -543,6 +546,14 @@ class ConnectionHandler:
             "run_module": self._handle_run_module,
             "list_derived": self._handle_list_derived,
             "clear_derived": self._handle_clear_derived,
+            "list_pipeline_steps": self._handle_list_pipeline_steps,
+            "list_recipes": self._handle_list_recipes,
+            "save_recipe": self._handle_save_recipe,
+            "delete_recipe": self._handle_delete_recipe,
+            "export_recipe_script": self._handle_export_recipe_script,
+            "preview_pipeline": self._handle_preview_pipeline,
+            "run_pipeline": self._handle_run_pipeline,
+            "cancel_pipeline": self._handle_cancel_pipeline,
             "save_text_file": self._handle_save_text_file,
             "create_mosaic": self._handle_create_mosaic,
             "mosaic_probe": self._handle_mosaic_probe,
@@ -2259,6 +2270,7 @@ class ConnectionHandler:
             return
         if datatree is None:
             raise plugins.ModuleError("No file is open")
+        overrides = _module_overrides(reader, msg)
 
         await self.send_progress(5, f"Running module {module_id}...")
         loop = asyncio.get_running_loop()
@@ -2273,6 +2285,7 @@ class ConnectionHandler:
                 get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
                 progress=progress_sync,
                 return_fields=True,
+                overrides=overrides,
             )
             packed = _pack_module_fields(module_id, fields, _sweep_dataset(reader, sweep))
             return payload, fields, packed
@@ -2327,6 +2340,7 @@ class ConnectionHandler:
             raise plugins.ModuleError("No file is open")
         n_sweeps = len(sorted_sweep_names(datatree))
         out_file_id = resolved_id or msg.get("file_id")
+        overrides = _module_overrides(reader, msg)
 
         await self.send_progress(2, f"{spec.title}: starting on {n_sweeps} sweeps")
         loop = asyncio.get_running_loop()
@@ -2352,6 +2366,7 @@ class ConnectionHandler:
                 get_sweep_grid=_grid,
                 progress=progress_sync,
                 is_cancelled=cancel.is_set,
+                overrides=overrides,
             )
             return run, derived.build_variables(run)
 
@@ -2415,6 +2430,257 @@ class ConnectionHandler:
         store = derived.store_for(reader, create=False)
         dropped = store.drop(name) if store is not None else []
         await self._send_derived_list(resolved_id or msg.get("file_id"), reader, dropped=dropped)
+
+    # ------------------------------------------------------------------
+    # Processing pipelines ("recipes") -- see engine/pipeline.py, docs/PIPELINES.md
+    # ------------------------------------------------------------------
+
+    async def _handle_list_pipeline_steps(self, msg: dict[str, Any]) -> None:
+        """``{type: "list_pipeline_steps"}`` -> ``{type: "pipeline_steps", steps}``."""
+        await self.send({"type": "pipeline_steps", "steps": pipeline.list_steps()})
+
+    async def _send_recipes(self) -> None:
+        listing = pipeline.list_recipes()
+        await self.send({"type": "recipes_list", **listing})
+
+    async def _handle_list_recipes(self, msg: dict[str, Any]) -> None:
+        """``{type: "list_recipes"}`` -> ``{type: "recipes_list", recipes, errors, dir}``."""
+        await self._send_recipes()
+
+    async def _pipeline_guard(self, label: str, coro: Any, *, progress: bool = False) -> None:
+        """Run a pipeline handler body; any failure becomes ``pipeline_error`` (UI leaves busy)."""
+        try:
+            await coro
+        except (plugins.ModuleError, derived.DerivedError) as exc:
+            logger.warning("Pipeline '%s' error: %s", label, exc)
+            await self.send({"type": "pipeline_error", "action": label, "message": str(exc)})
+        except derived.RunCancelledError:
+            cancelled = {"type": "pipeline_error", "action": label, "cancelled": True}
+            await self.send({**cancelled, "message": "Cancelled"})
+        except (KeyError, IndexError) as exc:
+            message = str(exc.args[0]) if exc.args else "not found"
+            await self.send({"type": "pipeline_error", "action": label, "message": message})
+        except Exception as exc:
+            logger.error("Pipeline '%s' failed: %s\n%s", label, exc, traceback.format_exc())
+            msg = f"{type(exc).__name__}: {exc}"
+            await self.send({"type": "pipeline_error", "action": label, "message": msg})
+        finally:
+            if progress:  # long-running handlers: always close the status-bar progress
+                await self.send_progress(100, "Pipeline finished")
+
+    async def _handle_save_recipe(self, msg: dict[str, Any]) -> None:
+        """``{type: "save_recipe", recipe}`` -> ``recipe_saved`` then ``recipes_list``."""
+
+        async def body() -> None:
+            recipe = pipeline.save_recipe(msg.get("recipe"))
+            await self.send({"type": "recipe_saved", "recipe": recipe.to_dict()})
+            await self._send_recipes()
+
+        await self._pipeline_guard("save_recipe", body())
+
+    async def _handle_delete_recipe(self, msg: dict[str, Any]) -> None:
+        """``{type: "delete_recipe", name}`` -> ``recipe_deleted`` then ``recipes_list``."""
+
+        async def body() -> None:
+            name = msg.get("name")
+            gone = pipeline.delete_recipe(name)
+            await self.send({"type": "recipe_deleted", "name": name, "existed": gone})
+            await self._send_recipes()
+
+        await self._pipeline_guard("delete_recipe", body())
+
+    async def _handle_export_recipe_script(self, msg: dict[str, Any]) -> None:
+        """``{type: "export_recipe_script", recipe}`` -> ``recipe_script`` (filename, script)."""
+
+        async def body() -> None:
+            recipe = pipeline.parse_recipe(msg.get("recipe"), strict_name=False)
+            await self.send(
+                {
+                    "type": "recipe_script",
+                    "name": recipe.name,
+                    "filename": f"{recipe.slug}.py",
+                    "script": pipeline.recipe_to_script(recipe),
+                }
+            )
+
+        await self._pipeline_guard("export_recipe_script", body())
+
+    async def _handle_preview_pipeline(self, msg: dict[str, Any]) -> None:
+        """Run a recipe on ONE sweep without storing anything.
+
+        ``{type: "preview_pipeline", file_id?, sweep, recipe}`` -> ``pipeline_preview`` (per-step
+        stats + the ``Before`` / ``After`` / ``Removed by step`` field blocks) followed by one
+        ``module_field`` binary payload per field (module ``"pipeline"``), the format the UI
+        already shows on the PPI for module results.
+        """
+
+        async def body() -> None:
+            sweep = msg.get("sweep", 0)
+            if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+                raise plugins.ModuleError("preview_pipeline: 'sweep' must be a non-negative int")
+            recipe = pipeline.parse_recipe(msg.get("recipe"), strict_name=False)
+            resolved_id, reader = _resolve_reader(msg.get("file_id"))
+            datatree = reader.datatree
+            if datatree is None:
+                raise plugins.ModuleError("No file is open")
+            await self.send_progress(5, f"Previewing {recipe.name}...")
+            loop = asyncio.get_running_loop()
+            progress_sync = self._progress_callback(loop)
+
+            def _run() -> tuple[Any, list[dict[str, Any]], list[tuple[dict[str, Any], list]]]:
+                ctx = plugins.ModuleContext(
+                    datatree, sweep, get_sweep_dataset=lambda i: _sweep_dataset(reader, i)
+                )
+                run = pipeline.run_recipe_on_sweep(recipe, ctx, progress=progress_sync)
+                blocks, fields = pipeline.preview_fields(run, recipe)
+                packed = _pack_module_fields("pipeline", fields, _sweep_dataset(reader, sweep))
+                return run, blocks, packed
+
+            run, blocks, packed = await loop.run_in_executor(None, _run)
+            out_file_id = resolved_id or msg.get("file_id")
+            await self.send(
+                {
+                    "type": "pipeline_preview",
+                    "file_id": out_file_id,
+                    "sweep": sweep,
+                    "recipe": recipe.name,
+                    "target": recipe.target,
+                    "steps": run.steps,
+                    "valid_before": run.n_valid_before,
+                    "valid_after": run.n_valid_after,
+                    "notes": run.notes,
+                    "elapsed_ms": run.elapsed_ms,
+                    "blocks": blocks,
+                }
+            )
+            by_name = {b["name"]: b for b in blocks}
+            for name, (hdr, arrays) in zip(by_name, packed, strict=True):
+                await self._send_binary_chunks(
+                    arrays,
+                    {
+                        "type": "module_field",
+                        "module": "pipeline",
+                        "name": name,
+                        "sweep": sweep,
+                        "units": str(by_name[name].get("units") or ""),
+                        "file_id": out_file_id,
+                        **hdr,
+                        **_field_range(by_name[name], arrays[2]),
+                    },
+                )
+
+        await self._pipeline_guard("preview_pipeline", body(), progress=True)
+
+    async def _handle_run_pipeline(self, msg: dict[str, Any]) -> None:
+        """Run a recipe and store ONE derived variable.
+
+        ``{type: "run_pipeline", file_id?, recipe, all_sweeps?: true, sweep?}`` -> progress, then
+        ``pipeline_result`` (stats, skipped sweeps, the derived entry) and ``derived_variables``.
+        Sweeps lacking a role the recipe needs are skipped with a reason, as for modules.
+        """
+
+        async def body() -> None:
+            all_sweeps = msg.get("all_sweeps", True)
+            sweep = msg.get("sweep", 0)
+            if not isinstance(all_sweeps, bool):
+                raise plugins.ModuleError("run_pipeline: 'all_sweeps' must be a boolean")
+            if isinstance(sweep, bool) or not isinstance(sweep, int) or sweep < 0:
+                raise plugins.ModuleError("run_pipeline: 'sweep' must be a non-negative integer")
+            recipe = pipeline.parse_recipe(msg.get("recipe"), strict_name=True)
+            resolved_id, reader = _resolve_reader(msg.get("file_id"))
+            datatree = reader.datatree
+            if datatree is None:
+                raise plugins.ModuleError("No file is open")
+            n_sweeps = len(sorted_sweep_names(datatree))
+            out_file_id = resolved_id or msg.get("file_id")
+            await self.send_progress(2, f"{recipe.name}: starting")
+            loop = asyncio.get_running_loop()
+            progress_sync = self._progress_callback(loop)
+            cancel = threading.Event()
+            cancel_key = str(out_file_id)
+            _PIPELINE_CANCELS[cancel_key] = cancel
+
+            def _sweep_moments(i: int) -> set[str]:
+                data_vars = reader.get_sweep_dataset(i, mask=False).data_vars
+                return {str(k) for k, v in data_vars.items() if v.ndim >= 2}
+
+            def _run() -> tuple[Any, list[tuple[str, dict[int, np.ndarray], dict]]]:
+                run = pipeline.run_recipe_all_sweeps(
+                    recipe,
+                    datatree,
+                    n_sweeps,
+                    get_sweep_dataset=lambda i: _sweep_dataset(reader, i),
+                    get_sweep_variables=_sweep_moments,
+                    progress=progress_sync,
+                    is_cancelled=cancel.is_set,
+                    sweeps=None if all_sweeps else [sweep],
+                )
+                return run, pipeline.build_variables(run)
+
+            try:
+                run, built = await loop.run_in_executor(None, _run)
+            except BaseException:
+                cancel.set()  # the worker stops after the step it is on
+                raise
+            finally:
+                if _PIPELINE_CANCELS.get(cancel_key) is cancel:
+                    del _PIPELINE_CANCELS[cancel_key]
+
+            still_open = resolved_id is None or _file_readers.get(resolved_id) is reader
+            if not still_open or reader.datatree is not datatree:
+                raise plugins.ModuleError(
+                    "The file was closed or changed while the pipeline ran; result discarded"
+                )
+            store = derived.store_for(reader)
+            assert store is not None
+            evicted: list[str] = []
+            for name, arrays, meta in built:
+                evicted.extend(store.put_variable(name, arrays, meta))
+            names = {name for name, _, _ in built}
+            evicted = [n for n in dict.fromkeys(evicted) if n not in names or not store.has(n)]
+            listing = {v["name"]: v for v in store.variables()}
+            entries = [
+                {
+                    "name": name,
+                    "label": meta["label"],
+                    "field": meta["field"],
+                    "units": meta["units"],
+                    "vmin": meta["vmin"],
+                    "vmax": meta["vmax"],
+                    "cmap": meta["cmap"],
+                    "categories": None,
+                    "sweeps": sorted(arrays),
+                    "skipped": run.skipped,
+                }
+                for name, arrays, meta in built
+                if name in listing
+            ]
+            await self.send(
+                {
+                    "type": "pipeline_result",
+                    "file_id": out_file_id,
+                    "recipe": recipe.name,
+                    "target": recipe.target,
+                    "name": built[0][0] if built else None,
+                    "derived": entries,
+                    "steps": run.steps,
+                    "per_sweep": run.per_sweep,
+                    "skipped": run.skipped,
+                    "elapsed_ms": run.elapsed_ms,
+                    "evicted": evicted,
+                    "params": built[0][2]["params"] if built else None,
+                }
+            )
+            await self._send_derived_list(out_file_id, reader, evicted=evicted)
+
+        await self._pipeline_guard("run_pipeline", body(), progress=True)
+
+    async def _handle_cancel_pipeline(self, msg: dict[str, Any]) -> None:
+        """``{type: "cancel_pipeline", file_id?}``: stop a running pipeline after its step."""
+        resolved_id, _ = _resolve_reader(msg.get("file_id"))
+        event = _PIPELINE_CANCELS.get(str(resolved_id or msg.get("file_id")))
+        if event is not None:
+            event.set()
 
     # ------------------------------------------------------------------
     # Text export (CSV / GeoJSON written by the UI)
@@ -2664,6 +2930,15 @@ def _atomic_write(target: Path, write: Callable[[Path], Any]) -> None:
     finally:
         with contextlib.suppress(OSError):
             tmp.unlink()
+
+
+def _module_overrides(reader: RadarReader, msg: dict[str, Any]):
+    """Roles a module run should read from derived variables (``inputs`` of ``run_module``).
+
+    ``{"inputs": {"velocity": "pipeline:my_recipe_vradh"}}`` makes the module see that derived
+    variable wherever it asks for the velocity. See docs/PIPELINES.md.
+    """
+    return pipeline.module_overrides(derived.store_for(reader, create=False), msg.get("inputs"))
 
 
 def _pack_module_fields(
