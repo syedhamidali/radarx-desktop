@@ -235,7 +235,7 @@ class TestExportRobustness:
         RadarExporter().export(
             tree, fmt="csv", dpi=100, output_path=str(out), variable="DBZH", sweep=0
         )
-        df = pd.read_csv(out)
+        df = pd.read_csv(out, comment="#")  # the file starts with a "# key: value" metadata block
         assert len(df) == int(np.isfinite(vals).sum())
         row = df.iloc[0]
         i = int(np.argmin(np.abs(sweep_ds.azimuth.values - row["azimuth_deg"])))

@@ -1197,6 +1197,16 @@ def run_multidoppler(
         "z_min_auto": spec.z_min_m is None,
         "analysis_time": _iso(analysis_time) if analysis_time is not None else None,
         "radarx": rx_version,
+        "options": {
+            "obs_error": opts.obs_error,
+            "w_bottom": opts.w_bottom,
+            "melting_depth_m": opts.melting_depth_m,
+            "storm_motion": list(opts.storm_motion) if opts.storm_motion else None,
+            "uncertainty": opts.uncertainty,
+            "dx_m": spec.dx_m,
+            "dz_m": spec.dz_m,
+            "max_range_km": spec.max_range_km,
+        },
         "timing": {k: round(v, 1) for k, v in timing.items()},
     }
     summary["timing"]["total_ms"] = round((time.perf_counter() - t_start) * 1000.0, 1)
@@ -1330,40 +1340,339 @@ def _assemble_fields(
 # ---------------------------------------------------------------------------
 
 
+#: CF names of the exported fields: ``name -> (standard_name or None, units, long_name, scale)``.
+#: ``scale`` converts the in-memory value (the app shows divergence/vorticity in 1e-3 s-1) to SI.
+_CF_FIELDS: dict[str, tuple[str | None, str, str, float]] = {
+    "u": ("x_wind", "m s-1", "wind component along the grid x axis", 1.0),
+    "v": ("y_wind", "m s-1", "wind component along the grid y axis", 1.0),
+    "w": ("upward_air_velocity", "m s-1", "vertical air velocity (positive up)", 1.0),
+    "speed": ("wind_speed", "m s-1", "horizontal wind speed", 1.0),
+    "divergence": (
+        "divergence_of_wind",
+        "s-1",
+        "horizontal divergence of the wind du/dx + dv/dy",
+        1e-3,
+    ),
+    "vorticity": (
+        "atmosphere_upward_relative_vorticity",
+        "s-1",
+        "vertical relative vorticity dv/dx - du/dy",
+        1e-3,
+    ),
+    "uncertainty": (None, "m s-1", "horizontal wind error sqrt(u_error^2 + v_error^2)", 1.0),
+    "crossing_angle": (
+        None,
+        "degrees",
+        "largest horizontal beam-crossing angle of the radars at the cell",
+        1.0,
+    ),
+    "n_radars": (None, "1", "number of radars observing the cell", 1.0),
+    "dbz": ("equivalent_reflectivity_factor", "dBZ", "mean reflectivity of the radars", 1.0),
+}
+
+
+def _true_north_vectors(
+    proj: Any, lon: np.ndarray, lat: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Unit vector of true north in grid (x, y) at every cell: the meridian convergence.
+
+    The retrieval works along the axes of the azimuthal-equidistant grid, whose y axis points to
+    true north only on the origin's meridian. Differentiating the projection along a meridian
+    gives the exact direction (no sign conventions to get wrong).
+    """
+    eps = 1e-4
+    x0, y0 = proj(lon, lat)
+    x1, y1 = proj(lon, np.clip(lat + eps, -89.999, 89.999))
+    nx, ny = x1 - x0, y1 - y0
+    norm = np.hypot(nx, ny)
+    norm = np.where(norm > 0, norm, 1.0)
+    return nx / norm, ny / norm
+
+
+def _wind_attrs(rec: WindRecord) -> dict[str, Any]:
+    """Global attributes: method, options, background, QC thresholds/counts, radars, versions."""
+    from engine import provenance
+
+    s = rec.summary
+    o = s.get("options") or {}
+    bg = s.get("background") or {}
+    cross = s.get("crossing_angle") or {}
+    radars = rec.radars
+    names = [r["name"] for r in radars]
+    method = str(s.get("method", ""))
+    params = {
+        "method": method,
+        "boundary": s.get("boundary"),
+        "min_crossing_angle_deg": s.get("min_crossing_angle"),
+        "radars": names,
+    }
+    attrs = provenance.standard_global_attrs(
+        title="Multi-Doppler wind analysis",
+        action=f"multi-Doppler {method} wind retrieval",
+        params=params,
+        source="radarx.retrieve multi-Doppler "
+        + ("analytic dual-Doppler" if method == "analytic" else "variational")
+        + " retrieval from radial velocities of "
+        + ", ".join(names),
+        references=(
+            "CF Conventions 1.8 https://cfconventions.org/; "
+            "radarx https://github.com/syedhamidali/radarx"
+        ),
+        comment=(
+            "Winds on an azimuthal-equidistant grid (x, y metres from the origin, z metres above "
+            "mean sea level). u, v are along the grid axes (x_wind, y_wind); eastward_wind / "
+            "northward_wind are the same vector rotated to true east / north. Cells seen by fewer "
+            "than two radars, or at a beam-crossing angle below the minimum, are _FillValue (NaN). "
+            "Input radial velocities are used as stored in the volumes: apply de-aliasing and QC "
+            "(modules / pipelines) before the analysis; none is applied here. "
+            "Divergence and vorticity are in s-1 (the app shows them in 1e-3 s-1)."
+        ),
+        conventions="CF-1.8",
+    )
+    attrs.update(
+        method=method,
+        boundary_condition=str(s.get("boundary", "")),
+        min_crossing_angle_deg=float(s.get("min_crossing_angle") or 0.0),
+        fall_speed_correction="true" if s.get("fall_speed_correction") else "false",
+        freezing_level=str(s.get("freezing_level", "")),
+        observation_error_ms=float(o.get("obs_error", 1.0)),
+        w_bottom_ms=float(o.get("w_bottom", 0.0)),
+        melting_depth_m=float(o.get("melting_depth_m", 0.0)),
+        grid_dx_m=float(rec.x[1] - rec.x[0]) if rec.x.size > 1 else 0.0,
+        grid_dz_m=float(rec.z[1] - rec.z[0]) if rec.z.size > 1 else 0.0,
+        max_range_km=float(o.get("max_range_km", 0.0) or 0.0),
+        uncertainty_estimated="true" if s.get("has_uncertainty") else "false",
+        background_wind=provenance.format_params(bg, limit=1500),
+        coverage_pct=float(s.get("coverage_pct") or 0.0),
+        dual_coverage_pct=float(s.get("dual_coverage_pct") or 0.0),
+        valid_cells=int(s.get("valid_cells") or 0),
+        total_cells=int(s.get("total_cells") or 0),
+        w_valid_pct=float(s.get("w_valid_pct") or 0.0),
+        crossing_angle_mean_deg=float(cross.get("mean") or 0.0),
+        origin_latitude=float(rec.origin[0]),
+        origin_longitude=float(rec.origin[1]),
+        radars=", ".join(names),
+    )
+    if o.get("storm_motion"):
+        attrs["storm_motion_ms"] = [float(c) for c in o["storm_motion"]]
+    if s.get("radarx"):
+        attrs["radarx_version"] = str(s["radarx"])
+    if s.get("analysis_time"):
+        attrs["analysis_time"] = s["analysis_time"]
+        stamps = [r["volume_time"] for r in radars if r.get("volume_time")]
+        attrs["time_coverage_start"] = min(stamps or [s["analysis_time"]])
+        attrs["time_coverage_end"] = max(stamps or [s["analysis_time"]])
+    return attrs
+
+
 def to_dataset(rec: WindRecord) -> xr.Dataset:
-    """CF-flavoured Dataset of a result: ``(z, y, x)`` fields with 2-D ``lon`` / ``lat``."""
+    """CF-1.8 dataset of a wind analysis: ``(z, y, x)`` fields with CF standard names.
+
+    Wind components with ``x_wind``/``y_wind`` (grid axes) and ``eastward_wind``/``northward_wind``
+    (true directions), ``upward_air_velocity``, ``wind_speed``, ``divergence_of_wind`` and
+    ``atmosphere_upward_relative_vorticity`` in SI units; ``crs`` is the azimuthal-equidistant
+    grid mapping; 2-D ``lat``/``lon`` auxiliary coordinates; scalar ``time`` with bounds; a
+    ``radar`` dimension listing the sites and volume times. Global attributes record the method,
+    options, background wind, QC threshold and counts, software and radarx versions.
+    """
+    import pyproj
+
+    from engine import cfwrite
+
     proj = _aeqd(*rec.origin)
     xx, yy = np.meshgrid(rec.x, rec.y)
     lon, lat = proj(xx, yy, inverse=True)
-    data = {
-        name: (
-            ("z", "y", "x"),
-            rec.fields[i],
-            {"units": FIELD_INFO[name][0], "long_name": FIELD_INFO[name][1]},
-        )
-        for i, name in enumerate(FIELD_ORDER)
-    }
-    return xr.Dataset(
-        data,
-        coords={
-            "x": ("x", rec.x, {"units": "m", "long_name": "distance east of the grid origin"}),
-            "y": ("y", rec.y, {"units": "m", "long_name": "distance north of the grid origin"}),
-            "z": ("z", rec.z, {"units": "m", "long_name": "height above sea level"}),
-            "lon": (("y", "x"), lon, {"units": "degrees_east"}),
-            "lat": (("y", "x"), lat, {"units": "degrees_north"}),
-        },
-        attrs={
-            "title": "Multi-Doppler wind analysis (xradar-desktop, radarx)",
-            "method": rec.summary.get("method", ""),
-            "origin_latitude": rec.origin[0],
-            "origin_longitude": rec.origin[1],
-            "radars": ", ".join(r["name"] for r in rec.radars),
-            "Conventions": "CF-1.8",
+    nz, ny, nx = rec.fields.shape[1:]
+    data: dict[str, tuple[Any, ...]] = {}
+    for i, name in enumerate(FIELD_ORDER):
+        std, units, long_name, scale = _CF_FIELDS[name]
+        arr = rec.fields[i] if scale == 1.0 else (rec.fields[i] * np.float32(scale))
+        attrs: dict[str, Any] = {"long_name": long_name, "units": units, "grid_mapping": "crs"}
+        if std:
+            attrs["standard_name"] = std
+        if name == "uncertainty" and not np.isfinite(arr).any():
+            attrs["comment"] = "not estimated in this analysis (all missing)"
+        data[name] = (("z", "y", "x"), arr.astype(np.float32), attrs)
+    # true east / north components -----------------------------------------------------------
+    n_x, n_y = _true_north_vectors(proj, lon, lat)
+    u, v = rec.fields[FIELD_ORDER.index("u")], rec.fields[FIELD_ORDER.index("v")]
+    data["eastward_wind"] = (
+        ("z", "y", "x"),
+        (u * n_y + v * -n_x).astype(np.float32),
+        {
+            "standard_name": "eastward_wind",
+            "long_name": "eastward wind component (true east)",
+            "units": "m s-1",
+            "grid_mapping": "crs",
         },
     )
+    data["northward_wind"] = (
+        ("z", "y", "x"),
+        (u * n_x + v * n_y).astype(np.float32),
+        {
+            "standard_name": "northward_wind",
+            "long_name": "northward wind component (true north)",
+            "units": "m s-1",
+            "grid_mapping": "crs",
+        },
+    )
+    wkt = pyproj.CRS.from_proj4(
+        f"+proj=aeqd +lat_0={rec.origin[0]} +lon_0={rec.origin[1]} +datum=WGS84 +units=m +no_defs"
+    ).to_wkt()
+    crs_attrs = {
+        "grid_mapping_name": "azimuthal_equidistant",
+        "latitude_of_projection_origin": float(rec.origin[0]),
+        "longitude_of_projection_origin": float(rec.origin[1]),
+        "false_easting": 0.0,
+        "false_northing": 0.0,
+        "semi_major_axis": 6378137.0,
+        "inverse_flattening": 298.257223563,
+        "long_name": "azimuthal-equidistant grid centred on the analysis origin (WGS 84)",
+        "crs_wkt": wkt,
+        "spatial_ref": wkt,
+    }
+    ds = xr.Dataset(
+        {**data, "crs": ((), 0, crs_attrs)},
+        coords={
+            "x": (
+                "x",
+                rec.x,
+                {
+                    "standard_name": "projection_x_coordinate",
+                    "long_name": "distance east of the grid origin",
+                    "units": "m",
+                    "axis": "X",
+                },
+            ),
+            "y": (
+                "y",
+                rec.y,
+                {
+                    "standard_name": "projection_y_coordinate",
+                    "long_name": "distance north of the grid origin",
+                    "units": "m",
+                    "axis": "Y",
+                },
+            ),
+            "z": (
+                "z",
+                rec.z,
+                {
+                    "standard_name": "altitude",
+                    "long_name": "height above mean sea level",
+                    "units": "m",
+                    "positive": "up",
+                    "axis": "Z",
+                },
+            ),
+            "lon": (
+                ("y", "x"),
+                lon,
+                {
+                    "standard_name": "longitude",
+                    "long_name": "longitude of cell centre",
+                    "units": "degrees_east",
+                },
+            ),
+            "lat": (
+                ("y", "x"),
+                lat,
+                {
+                    "standard_name": "latitude",
+                    "long_name": "latitude of cell centre",
+                    "units": "degrees_north",
+                },
+            ),
+        },
+    )
+    # radar sources + analysis time ------------------------------------------------------------
+    stamps = []
+    for r in rec.radars:
+        try:
+            stamps.append(np.datetime64(str(r["volume_time"]).rstrip("Z"), "ns"))
+        except (TypeError, ValueError):
+            stamps.append(np.datetime64("NaT", "ns"))
+    valid = [t for t in stamps if not np.isnat(t)]
+    ds = cfwrite.set_char_coord(
+        ds, "radar_name", "radar", [r["name"] for r in rec.radars], "radar (site) name"
+    )
+    ds["radar_latitude"] = (
+        ("radar",),
+        np.array([r["latitude"] for r in rec.radars], dtype=np.float64),
+        {"standard_name": "latitude", "long_name": "radar latitude", "units": "degrees_north"},
+    )
+    ds["radar_longitude"] = (
+        ("radar",),
+        np.array([r["longitude"] for r in rec.radars], dtype=np.float64),
+        {"standard_name": "longitude", "long_name": "radar longitude", "units": "degrees_east"},
+    )
+    ds["radar_altitude"] = (
+        ("radar",),
+        np.array([r["altitude_m"] for r in rec.radars], dtype=np.float64),
+        {
+            "standard_name": "altitude",
+            "long_name": "radar antenna altitude above mean sea level",
+            "units": "m",
+            "positive": "up",
+        },
+    )
+    ds["radar_volume_time"] = (
+        ("radar",),
+        np.array(stamps, dtype="datetime64[ns]"),
+        {"long_name": "start time of the radar volume used (UTC)"},
+    )
+    ref = min(valid) if valid else None
+    analysis = rec.summary.get("analysis_time")
+    try:
+        t_analysis = np.datetime64(str(analysis).rstrip("Z"), "ns") if analysis else None
+    except ValueError:
+        t_analysis = None
+    if t_analysis is None and valid:
+        t_analysis = min(valid)
+    epoch = "seconds since 1970-01-01T00:00:00Z"
+    if t_analysis is not None:
+        ds = ds.assign_coords(
+            time=(
+                (),
+                t_analysis,
+                {
+                    "standard_name": "time",
+                    "long_name": "analysis time (UTC)",
+                    "bounds": "time_bounds",
+                },
+            )
+        )
+        lo, hi = (min(valid), max(valid)) if valid else (t_analysis, t_analysis)
+        ds["time_bounds"] = (
+            ("bnds",),
+            np.array([lo, hi], dtype="datetime64[ns]"),
+            {"long_name": "first and last radar volume time (UTC)"},
+        )
+        time_enc = {"units": epoch, "calendar": "standard", "dtype": "float64", "_FillValue": None}
+        ds["time"].encoding = dict(time_enc)
+        ds["time_bounds"].encoding = dict(time_enc)
+    ds.attrs = _wind_attrs(rec)
+    # --- encodings
+    for name in data:
+        ds[name].encoding = cfwrite.field_encoding((nz, ny, nx))
+    for name in ("x", "y", "z"):
+        ds[name].encoding = {"_FillValue": None}
+    for name in ("lat", "lon"):
+        ds[name].encoding = {**cfwrite.compression_encoding((ny, nx)), "_FillValue": None}
+    ds["radar_volume_time"].encoding = {
+        "units": f"seconds since {_wind_iso(ref) if ref is not None else '1970-01-01T00:00:00Z'}",
+        "calendar": "standard",
+        "dtype": "float64",
+        "_FillValue": np.float64(np.nan),
+    }
+    return ds
+
+
+def _wind_iso(t: np.datetime64) -> str:
+    return str(np.datetime_as_string(t.astype("datetime64[s]"), unit="s")) + "Z"
 
 
 def write_netcdf(rec: WindRecord, path: str | Path) -> None:
+    """Write the wind analysis as a CF-1.8 NetCDF4 file (see :func:`to_dataset`)."""
     ds = to_dataset(rec)
-    enc = {n: {"zlib": True, "complevel": 1, "_FillValue": np.float32(np.nan)} for n in FIELD_ORDER}
-    ds.to_netcdf(path, engine="netcdf4", format="NETCDF4", encoding=enc)
+    ds.to_netcdf(path, engine="netcdf4", format="NETCDF4")

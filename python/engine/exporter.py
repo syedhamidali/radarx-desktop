@@ -16,7 +16,13 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import xarray as xr
 
-from engine.reader import collapse_site_position, mask_variable, sorted_sweep_names
+from engine import cfwrite, provenance
+from engine.reader import (
+    collapse_site_position,
+    mask_below_threshold,
+    mask_variable,
+    sorted_sweep_names,
+)
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -186,6 +192,62 @@ def _extract_datetime(datatree: xr.DataTree, sweep_ds: xr.Dataset) -> str:
     return ""
 
 
+def _csv_header(
+    datatree: xr.DataTree,
+    sweep_ds: xr.Dataset,
+    da: xr.DataArray,
+    variable: str,
+    sweep: int,
+    options: dict[str, Any],
+    n_rows: int,
+) -> str:
+    """``# key: value`` metadata block placed above the column row of a CSV export.
+
+    Read it with ``pandas.read_csv(path, comment="#")`` / R ``read.csv(comment.char = "#")``.
+    """
+    from engine.cfwrite import normalize_units
+
+    units = normalize_units(_get_units(variable, dict(da.attrs))) or "1"
+    root = datatree.to_dataset()
+    site = {
+        k: float(np.asarray(root[k].values).ravel()[0])
+        for k in ("latitude", "longitude", "altitude")
+        if k in root.variables and np.asarray(root[k].values).size
+    }
+    sources = options.get("source_files") or (getattr(datatree, "encoding", {}) or {}).get(
+        "source_path"
+    )
+    t = _extract_datetime(datatree, sweep_ds)
+    extra = {
+        "radar": root.attrs.get("instrument_name") or root.attrs.get("site_name"),
+        "radar_position": ", ".join(
+            f"{k}={site[k]:.5f}" for k in ("latitude", "longitude", "altitude") if k in site
+        )
+        + " (degrees_north, degrees_east, m)"
+        if site
+        else None,
+        "data_time": provenance.iso_utc(t) if t else None,
+        "sweep": sweep,
+        "fixed_angle_deg": None
+        if _extract_elevation(sweep_ds) == "?"
+        else _extract_elevation(sweep_ds),
+        "rows": n_rows,
+    }
+    return provenance.csv_comment_block(
+        title=f"Radar sweep {sweep}: {variable} (one row per gate with an echo)",
+        columns={"azimuth_deg": "degrees clockwise from north", "range_m": "m", variable: units},
+        source_files=sources,
+        fill="gates without an echo (below threshold / range folded / no data) are omitted",
+        params={"variable": variable, "sweep": sweep, "mask_no_echo": True},
+        extra=extra,
+    )
+
+
+def _with_utc(text: str) -> str:
+    """*text* (a radar time) labelled as UTC unless it already says so."""
+    return text if text.rstrip().endswith(("Z", "UTC")) else f"{text} UTC"
+
+
 def _extract_elevation(sweep_ds: xr.Dataset) -> str:
     """Best-effort elevation extraction."""
     if "sweep_fixed_angle" in sweep_ds.attrs:
@@ -268,17 +330,21 @@ def _netcdf_attr(value: Any) -> Any:
 _collapse_site_position = collapse_site_position  # the reader does this on open; kept for safety
 
 
-def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
+def _netcdf_safe_tree(datatree: xr.DataTree, *, mask: bool = False) -> xr.DataTree:
     """A shallow copy of *datatree* that NetCDF can store.
 
     Attributes are coerced to serialisable values and per-ray site position is collapsed to a
-    scalar. The original (the reader's live tree) is never modified.
+    scalar. With ``mask=True`` the "no echo" / "range folded" codes of integer-encoded moments are
+    set to NaN (they would otherwise be written as real measurements such as -33 dBZ). The
+    original (the reader's live tree) is never modified.
     """
     safe = datatree.copy(deep=False)
     for node in safe.subtree:
         ds = node.to_dataset().copy(deep=False)
         if node is safe:
             ds = _collapse_site_position(ds)
+        if mask and node is not safe:
+            ds = mask_below_threshold(ds)
         ds.attrs = {k: _netcdf_attr(v) for k, v in ds.attrs.items()}
         for var in ds.variables.values():
             var.attrs = {k: _netcdf_attr(v) for k, v in var.attrs.items()}
@@ -411,6 +477,85 @@ def _expand_title(
     for key, value in values.items():
         template = template.replace(key, value)
     return template.strip()
+
+
+def figure_file_metadata(
+    fmt: str,
+    datatree: xr.DataTree,
+    variable: str,
+    sweep: int,
+    *,
+    title: str = "",
+    source_files: Any = None,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The ``metadata=`` dict for ``savefig`` of a PNG / PDF / SVG figure.
+
+    PNG gets tEXt chunks (Title, Software, Source, Description, Creation Time, Comment), PDF the
+    document-info entries, SVG a Dublin-Core ``<metadata>`` block. Only file *names* are recorded
+    (never folders), so a shared figure does not reveal the author's directory layout.
+    """
+    try:
+        data_time = _extract_datetime(datatree, _extract_sweep_dataset(datatree, sweep))
+    except (IndexError, KeyError, ValueError):
+        data_time = ""
+    sources = source_files
+    if not sources:
+        enc = getattr(datatree, "encoding", {}) or {}
+        sources = enc.get("source_path") or enc.get("source")
+    meta = provenance.figure_metadata(
+        title=title,
+        source_files=sources,
+        variable=variable,
+        sweep=sweep,
+        data_time=_with_utc(data_time) if data_time else "",
+        params=params,
+    )
+    if fmt == "pdf":
+        from datetime import datetime, timezone
+
+        out = {
+            "Creator": meta["Software"],
+            "Subject": meta.get("Description", ""),
+            "Keywords": ", ".join(
+                x for x in ("radar", variable, f"sweep {sweep}", meta.get("Source", "")) if x
+            ),
+            "CreationDate": datetime.now(timezone.utc),
+        }
+        if meta.get("Title"):
+            out["Title"] = meta["Title"]
+        return out
+    if fmt == "svg":
+        out = {
+            "Creator": meta["Software"],
+            "Date": meta["Creation Time"],
+            "Description": " ".join(x for x in (meta.get("Description"), meta.get("Comment")) if x),
+        }
+        if meta.get("Title"):
+            out["Title"] = meta["Title"]
+        if meta.get("Source"):
+            out["Source"] = meta["Source"]
+        return out
+    return meta  # png
+
+
+def _gif_comment(
+    datatree: xr.DataTree, variable: str, sweeps: list[int], options: dict[str, Any]
+) -> bytes:
+    """GIF comment extension: software, source file names, variable, sweeps, creation time."""
+    sources = options.get("source_files") or (getattr(datatree, "encoding", {}) or {}).get(
+        "source_path"
+    )
+    names = provenance.source_names(sources)
+    parts = [
+        provenance.software_string(),
+        provenance.utc_stamp(),
+        f"{variable} sweeps {','.join(str(s) for s in sweeps)}",
+    ]
+    if names:
+        parts.append("source " + ", ".join(names))
+    # a GIF comment block holds at most 255 bytes (longer ones are silently dropped by Pillow)
+    return "; ".join(parts).encode("utf-8", "replace")[:255]
 
 
 def render_publication_figure(
@@ -603,7 +748,7 @@ def render_publication_figure(
                     parts.append(f"Elev: {elev} deg")
                 parts.append(f"Sweep {sweep}")
                 if dt_str:
-                    parts.append(dt_str)
+                    parts.append(_with_utc(dt_str))
                 title = " | ".join(parts)
             ax.set_title(title, pad=12)
 
@@ -741,6 +886,21 @@ class RadarExporter:
 
         try:
             progress(70, "Saving file")
+            meta = figure_file_metadata(
+                fmt,
+                datatree,
+                variable,
+                sweep,
+                title=fig.axes[0].get_title() if fig.axes else "",
+                source_files=options.get("source_files"),
+                params={
+                    "dpi": dpi,
+                    "colormap": _get_cmap(variable),
+                    "vmin": vmin,
+                    "vmax": vmax,
+                    "mask_no_echo": True,
+                },
+            )
             with _output_target(output_path, suffix=f".{fmt}", prefix="xradar_export_") as target:
                 fig.savefig(
                     target,
@@ -749,6 +909,7 @@ class RadarExporter:
                     bbox_inches="tight",
                     facecolor=fig.get_facecolor(),
                     edgecolor="none",
+                    metadata=meta,
                 )
         finally:
             _pyplot().close(fig)
@@ -953,6 +1114,7 @@ class RadarExporter:
                     loop=0,
                     optimize=True,
                     disposal=1,
+                    comment=_gif_comment(datatree, variable, sweeps, options),
                 )
         finally:
             n_frames = len(frames)
@@ -980,11 +1142,16 @@ class RadarExporter:
         progress: ProgressCallback,
         options: dict[str, Any],
     ) -> str:
-        from xradar.io.export.cfradial1 import to_cfradial1
-
         progress(10, "Preparing CfRadial1 NetCDF export")
+        mask = bool(options.get("mask_no_echo", True))
         with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
-            to_cfradial1(dtree=_netcdf_safe_tree(datatree), filename=target)
+            cfwrite.write_cfradial1(
+                _netcdf_safe_tree(datatree, mask=mask),
+                target,
+                source_files=options.get("source_files"),
+                params={"format": "cfradial1", "mask_no_echo": mask},
+                masked=mask,
+            )
 
         progress(100, f"CfRadial1 export complete: {target}")
         return str(Path(target).resolve())
@@ -1001,11 +1168,16 @@ class RadarExporter:
         progress: ProgressCallback,
         options: dict[str, Any],
     ) -> str:
-        from xradar.io.export.cfradial2 import to_cfradial2
-
         progress(10, "Preparing CfRadial2 export")
+        mask = bool(options.get("mask_no_echo", True))
         with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
-            to_cfradial2(_netcdf_safe_tree(datatree), target)
+            cfwrite.write_cfradial2(
+                _netcdf_safe_tree(datatree, mask=mask),
+                target,
+                source_files=options.get("source_files"),
+                params={"format": "cfradial2", "mask_no_echo": mask},
+                masked=mask,
+            )
 
         progress(100, f"CfRadial2 export complete: {target}")
         return str(Path(target).resolve())
@@ -1061,8 +1233,13 @@ class RadarExporter:
 
         progress(70, "Writing CSV")
 
-        with _output_target(output_path, suffix=".csv", prefix="xradar_export_") as target:
-            df.to_csv(target, index=False, float_format="%.4f")
+        header = _csv_header(datatree, sweep_ds, da, variable, sweep, options, len(df))
+        with (
+            _output_target(output_path, suffix=".csv", prefix="xradar_export_") as target,
+            open(target, "w", encoding="utf-8", newline="") as fh,
+        ):
+            fh.write(header)
+            df.to_csv(fh, index=False, float_format="%.4f", lineterminator="\n")
 
         output_path = str(Path(target).resolve())
         progress(100, f"CSV export complete: {output_path}")
@@ -1092,7 +1269,15 @@ class RadarExporter:
         with _output_target(
             output_path, suffix=".zarr", prefix="xradar_export_", directory=True
         ) as target:
-            datatree.to_zarr(target, mode="w")
+            mask = bool(options.get("mask_no_echo", True))
+            cfwrite.write_zarr(
+                _netcdf_safe_tree(datatree, mask=mask),
+                target,
+                source_files=options.get("source_files"),
+                params={"format": "zarr", "mask_no_echo": mask},
+                masked=mask,
+                zarr_format=3 if options.get("zarr_format") == 3 else 2,
+            )
 
         progress(100, f"Zarr export complete: {target}")
         return str(Path(target).resolve())

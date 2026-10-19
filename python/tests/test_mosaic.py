@@ -623,15 +623,16 @@ class TestProbeAndExport:
         mosaic.write_netcdf(rec, path)
         with xr.open_dataset(path) as ds:
             name = "DBZH_cappi"
-            assert ds[name].dims == ("lat", "lon")
+            assert ds[name].dims == ("y", "x")  # Web-Mercator metres, 2-D lat/lon alongside
             assert ds.attrs["Conventions"].startswith("CF-")
             assert ds[name].attrs["units"] == "dBZ" and ds[name].attrs["height_m"] == 2000.0
-            assert float(ds.lat[0]) < float(ds.lat[-1])  # ascending
-            assert float(ds.lon[0]) == pytest.approx(rec.bbox[0], abs=0.05)
+            assert float(ds.y[0]) < float(ds.y[-1])  # south -> north
+            assert ds.lat.dims == ("y", "x") and float(ds.lat[0, 0]) < float(ds.lat[-1, 0])
+            assert float(ds.lon[0, 0]) == pytest.approx(rec.bbox[0], abs=0.05)
             np.testing.assert_allclose(ds[name].values[::-1], rec.image, equal_nan=True)
-            assert list(ds.radar.values) == ["LOW", "HIGH"]
+            assert list(ds.radar_name.values) == ["LOW", "HIGH"]
             assert ds.radar_share.sum() == pytest.approx(1.0)
-            assert "crs" in ds
+            assert ds.crs.attrs["grid_mapping_name"] == "mercator"
 
     def test_png_export_helpers(self, rec):
         assert len(mosaic.world_file(rec).split()) == 6

@@ -34,7 +34,6 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1435,119 +1434,359 @@ def probe(mosaic_id: str, lon: float, lat: float, cache: MosaicCache = MOSAICS) 
 # ---------------------------------------------------------------------------
 
 
-def to_dataset(rec: MosaicRecord) -> xr.Dataset:
-    """CF-style ``(lat, lon)`` dataset of the cached mosaic (lat ascending)."""
-    lon, lat = _image_axes(rec.bbox, rec.image.shape[1], rec.image.shape[0])
-    data = rec.image[::-1].astype(np.float32)
-    name = f"{rec.variable}_{rec.product}"
-    long_names = {
-        "cappi": f"{rec.variable} constant-altitude PPI at {rec.height_m:g} m"
-        if rec.height_m is not None
-        else "",
-        "composite": f"{rec.variable} column maximum",
-        "echo_top": f"echo-top height of {rec.threshold_dbz} dBZ"
-        if rec.threshold_dbz is not None
-        else "",
-    }
-    var_attrs = {
-        "long_name": long_names.get(rec.product, name),
-        "units": rec.units,
-        "grid_mapping": "crs",
-        "coordinates": "lat lon",
+def _mosaic_axes(rec: MosaicRecord) -> tuple[np.ndarray, np.ndarray]:
+    """Pixel-centre Web-Mercator ``x`` (west -> east) and ``y`` (south -> north), in metres."""
+    west, south, east, north = rec.bbox
+    ny, nx = rec.image.shape
+    xw, xe = MERC_R * math.radians(west), MERC_R * math.radians(east)
+    yt, yb = float(_merc_y(north)), float(_merc_y(south))
+    dx, dy = (xe - xw) / nx, (yt - yb) / ny
+    return xw + (np.arange(nx) + 0.5) * dx, yb + (np.arange(ny) + 0.5) * dy
+
+
+def _iso_to_dt64(text: str | None) -> np.datetime64:
+    if not text:
+        return np.datetime64("NaT", "ns")
+    try:
+        return np.datetime64(str(text).rstrip("Z"), "ns")
+    except ValueError:
+        return np.datetime64("NaT", "ns")
+
+
+def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
+    """Global attributes: CF, ACDD and a full description of how the mosaic was made."""
+    from engine import provenance
+
+    west, south, east, north = rec.bbox
+    names = [r.name for r in rec.radars]
+    m = rec.merge or {}
+    params = {
+        "variable": rec.variable,
         "product": rec.product,
-        "comment": "heights are above mean sea level",
+        "height_m": rec.height_m,
+        "threshold_dbz": rec.threshold_dbz,
+        "grid_resolution_m": rec.resolution_m,
+        "merge": bool(m.get("applied")),
+        "average": m.get("average"),
+        "range_scale_km": m.get("range_scale_km"),
+        "time_scale_s": m.get("time_scale_s"),
+        "beamwidth_deg": m.get("beamwidth_deg"),
+        "calibrate": m.get("calibrate"),
+        "advect": m.get("advect"),
+        "radars": names,
     }
+    attrs = provenance.standard_global_attrs(
+        title=f"Multi-radar mosaic: {rec.product} of {rec.variable}",
+        action="create mosaic",
+        params=params,
+        source="radarx.grid.grid_radars cone-grid + multi-radar merge of " + ", ".join(names),
+        references=(
+            "CF Conventions 1.10 https://cfconventions.org/; "
+            "radarx https://github.com/syedhamidali/radarx"
+        ),
+        comment=(
+            "Product grid in Web-Mercator (EPSG:3857) metres, cells uniform in x and y; 2-D "
+            "latitude/longitude give each cell centre. Cells where no radar measured an echo are "
+            "_FillValue (NaN). Heights are above mean sea level."
+        ),
+        conventions="CF-1.10",
+    )
+    attrs.update(
+        product=rec.product,
+        variable=rec.variable,
+        grid_resolution_m=float(rec.resolution_m),
+        merge_applied="true" if m.get("applied") else "false",
+        merge_average=str(m.get("average", "")),
+        merge_range_scale_km=float(m.get("range_scale_km", 0.0) or 0.0),
+        merge_time_scale_s=float(m.get("time_scale_s", 0.0) or 0.0),
+        merge_beamwidth_deg=float(m.get("beamwidth_deg", 0.0) or 0.0),
+        merge_calibrated="true" if m.get("calibrate") else "false",
+        merge_advected="true" if m.get("advect") else "false",
+        radars=", ".join(names),
+        geospatial_lat_min=float(south),
+        geospatial_lat_max=float(north),
+        geospatial_lon_min=float(west),
+        geospatial_lon_max=float(east),
+    )
+    if rec.height_m is not None:
+        attrs["height_m"] = float(rec.height_m)
+    if rec.threshold_dbz is not None:
+        attrs["threshold_dbz"] = float(rec.threshold_dbz)
+    if m.get("radarx"):
+        attrs["radarx_version"] = str(m["radarx"])
+    if rec.analysis_time:
+        attrs["analysis_time"] = rec.analysis_time
+        attrs["time_coverage_start"] = min(
+            [r.volume_time for r in rec.radars if r.volume_time] or [rec.analysis_time]
+        )
+        attrs["time_coverage_end"] = max(
+            [r.volume_time for r in rec.radars if r.volume_time] or [rec.analysis_time]
+        )
+    return attrs
+
+
+def to_dataset(rec: MosaicRecord) -> xr.Dataset:
+    """CF-1.10 grid dataset of a cached mosaic.
+
+    * ``y``/``x``: Web-Mercator metres (``projection_y/x_coordinate``), south -> north, with 2-D
+      auxiliary ``lat``/``lon`` and a ``crs`` grid-mapping variable (``mercator``, EPSG:3857 as
+      ``crs_wkt`` too); ``crs_working_grid`` documents the azimuthal-equidistant grid the radars
+      were merged on;
+    * scalar ``time`` (analysis time) with ``time_bounds`` = first/last radar volume, scalar ``z``
+      (CAPPI height, ``positive = "up"``);
+    * ``radar`` dimension: site position, volume time (``seconds since``), coverage, merge share,
+      calibration bias.
+    """
+    import pyproj
+
+    from engine import cfwrite, provenance
+
+    ny, nx = rec.image.shape
+    x, y = _mosaic_axes(rec)
+    lon = np.degrees(x / MERC_R)
+    lat = _merc_lat(y)
+    data = rec.image[::-1].astype(np.float32)  # south -> north
+    name = f"{rec.variable}_{rec.product}"
+    units = cfwrite.normalize_units(rec.units) or "1"
+
+    long_names = {
+        "cappi": f"{rec.variable} constant-altitude PPI"
+        + (f" at {rec.height_m:g} m above mean sea level" if rec.height_m is not None else ""),
+        "composite": f"{rec.variable} column maximum",
+        "echo_top": "echo-top height"
+        + (f" of the {rec.threshold_dbz:g} dBZ contour" if rec.threshold_dbz is not None else ""),
+    }
+    var_attrs: dict[str, Any] = {
+        "long_name": long_names.get(rec.product, name),
+        "units": units,
+        "grid_mapping": "crs",
+        "product": rec.product,
+        "comment": (
+            "Heights are above mean sea level. "
+            + (
+                "Maximum over all grid heights."
+                if rec.product == "composite"
+                else "Lowest height of the threshold crossing, from the merged volume."
+                if rec.product == "echo_top"
+                else ""
+            )
+        ).strip(),
+    }
+    role = varmap.role_for_name(rec.variable)
+    if (
+        role is not None
+        and role.key == "reflectivity"
+        and units == "dBZ"
+        and rec.product != "echo_top"
+    ):
+        var_attrs["standard_name"] = "equivalent_reflectivity_factor"
     if rec.height_m is not None:
         var_attrs["height_m"] = float(rec.height_m)
     if rec.threshold_dbz is not None:
         var_attrs["threshold_dbz"] = float(rec.threshold_dbz)
+
+    wkt = pyproj.CRS.from_epsg(3857).to_wkt()
+    crs_attrs = {
+        "grid_mapping_name": "mercator",
+        "longitude_of_projection_origin": 0.0,
+        "standard_parallel": 0.0,
+        "false_easting": 0.0,
+        "false_northing": 0.0,
+        "semi_major_axis": 6378137.0,
+        "semi_minor_axis": 6378137.0,
+        "long_name": "WGS 84 / Pseudo-Mercator (Web Mercator, EPSG:3857)",
+        "epsg_code": "EPSG:3857",
+        "crs_wkt": wkt,
+        "spatial_ref": wkt,
+    }
+    working_attrs = {
+        "grid_mapping_name": "azimuthal_equidistant",
+        "latitude_of_projection_origin": float(rec.origin[0]),
+        "longitude_of_projection_origin": float(rec.origin[1]),
+        "false_easting": 0.0,
+        "false_northing": 0.0,
+        "semi_major_axis": 6378137.0,
+        "inverse_flattening": 298.257223563,
+        "long_name": "azimuthal-equidistant grid the radars were merged on (not used by the data)",
+        "cell_size_m": float(rec.cell_m),
+        "x_first_cell_m": float(rec.x0),
+        "y_first_cell_m": float(rec.y0),
+        "comment": (
+            "The radars were gridded and merged on this grid, then resampled to the "
+            "Web-Mercator grid of the data variables."
+        ),
+    }
     ds = xr.Dataset(
         {
-            name: (("lat", "lon"), data, var_attrs),
-            "crs": (
-                (),
-                0,
-                {
-                    "grid_mapping_name": "latitude_longitude",
-                    "semi_major_axis": 6378137.0,
-                    "inverse_flattening": 298.257223563,
-                    "long_name": "WGS84",
-                },
+            name: (("y", "x"), data, var_attrs),
+            "crs": ((), 0, crs_attrs),
+            "crs_working_grid": ((), 0, working_attrs),
+            "lat": (
+                ("y", "x"),
+                np.broadcast_to(lat[:, None], (ny, nx)).astype(np.float64),
+                {"standard_name": "latitude", "long_name": "latitude of cell centre"},
             ),
-            "radar_latitude": (
-                ("radar",),
-                np.array([r.latitude for r in rec.radars]),
-                {"units": "degrees_north"},
-            ),
-            "radar_longitude": (
-                ("radar",),
-                np.array([r.longitude for r in rec.radars]),
-                {"units": "degrees_east"},
-            ),
-            "radar_altitude": (
-                ("radar",),
-                np.array([r.altitude_m for r in rec.radars]),
-                {"units": "m"},
-            ),
-            "radar_coverage_fraction": (
-                ("radar",),
-                np.array([r.coverage_fraction for r in rec.radars]),
-                {"units": "1"},
-            ),
-            "radar_share": (
-                ("radar",),
-                np.array([r.share for r in rec.radars]),
-                {
-                    "units": "1",
-                    "long_name": "fraction of valid cells where the radar has the top merge weight",
-                },
-            ),
-            "radar_bias": (
-                ("radar",),
-                np.array([np.nan if r.bias_db is None else r.bias_db for r in rec.radars]),
-                {"units": "dB"},
+            "lon": (
+                ("y", "x"),
+                np.broadcast_to(lon[None, :], (ny, nx)).astype(np.float64),
+                {"standard_name": "longitude", "long_name": "longitude of cell centre"},
             ),
         },
         coords={
-            "lat": (
-                "lat",
-                lat[::-1],
-                {"units": "degrees_north", "standard_name": "latitude", "axis": "Y"},
+            "y": (
+                "y",
+                y,
+                {
+                    "standard_name": "projection_y_coordinate",
+                    "long_name": "y coordinate of projection (Web Mercator)",
+                    "units": "m",
+                    "axis": "Y",
+                },
             ),
-            "lon": (
-                "lon",
-                lon,
-                {"units": "degrees_east", "standard_name": "longitude", "axis": "X"},
+            "x": (
+                "x",
+                x,
+                {
+                    "standard_name": "projection_x_coordinate",
+                    "long_name": "x coordinate of projection (Web Mercator)",
+                    "units": "m",
+                    "axis": "X",
+                },
             ),
-            "radar": ("radar", [r.name for r in rec.radars], {"long_name": "radar name"}),
+        },
+    )
+    ds["lat"].attrs["units"] = "degrees_north"
+    ds["lon"].attrs["units"] = "degrees_east"
+    if rec.product == "cappi" and rec.height_m is not None:
+        ds = ds.assign_coords(
+            z=(
+                (),
+                float(rec.height_m),
+                {
+                    "standard_name": "altitude",
+                    "long_name": "height above mean sea level",
+                    "units": "m",
+                    "positive": "up",
+                    "axis": "Z",
+                },
+            )
+        )
+
+    # time: analysis time, bounds = first/last radar volume --------------------------------
+    stamps = [_iso_to_dt64(r.volume_time) for r in rec.radars]
+    valid = [t for t in stamps if not np.isnat(t)]
+    analysis = _iso_to_dt64(rec.analysis_time)
+    if np.isnat(analysis) and valid:
+        analysis = min(valid)
+    if not np.isnat(analysis):
+        lo = min(valid) if valid else analysis
+        hi = max(valid) if valid else analysis
+        ds = ds.assign_coords(
+            time=(
+                (),
+                analysis,
+                {
+                    "standard_name": "time",
+                    "long_name": "analysis time (UTC)",
+                    "bounds": "time_bounds",
+                },
+            )
+        )
+        ds["time_bounds"] = (
+            ("bnds",),
+            np.array([lo, hi], dtype="datetime64[ns]"),
+            {"long_name": "first and last radar volume time (UTC)"},
+        )
+
+    # radar sources --------------------------------------------------------------------------
+    ref = min(valid) if valid else None
+    ds = cfwrite.set_char_coord(
+        ds, "radar_name", "radar", [r.name for r in rec.radars], "radar (site) name"
+    )
+    ds["radar_latitude"] = (
+        ("radar",),
+        np.array([r.latitude for r in rec.radars], dtype=np.float64),
+        {"standard_name": "latitude", "long_name": "radar latitude", "units": "degrees_north"},
+    )
+    ds["radar_longitude"] = (
+        ("radar",),
+        np.array([r.longitude for r in rec.radars], dtype=np.float64),
+        {"standard_name": "longitude", "long_name": "radar longitude", "units": "degrees_east"},
+    )
+    ds["radar_altitude"] = (
+        ("radar",),
+        np.array([r.altitude_m for r in rec.radars], dtype=np.float64),
+        {
+            "standard_name": "altitude",
+            "long_name": "radar antenna altitude above mean sea level",
+            "units": "m",
+            "positive": "up",
         },
     )
     ds["radar_volume_time"] = (
         ("radar",),
-        [r.volume_time or "" for r in rec.radars],
-        {"long_name": "volume time (UTC)"},
+        np.array(stamps, dtype="datetime64[ns]"),
+        {"long_name": "start time of the radar volume used (UTC)"},
     )
-    ds.attrs = {
-        "Conventions": "CF-1.8",
-        "title": f"Multi-radar mosaic ({rec.product} of {rec.variable})",
-        "institution": "xradar-desktop",
-        "source": "radarx.grid.grid_radars multi-radar merge",
-        "history": f"{datetime.now(timezone.utc):%Y-%m-%dT%H:%M:%SZ} created by xradar-desktop",
-        "grid_resolution_m": float(rec.resolution_m),
-        "comment": "Latitudes are spaced uniformly in Web-Mercator y (not uniformly in degrees).",
-        "merge_average": str(rec.merge.get("average", "")),
-        "radarx_version": str(rec.merge.get("radarx", "")),
+    ds["radar_coverage_fraction"] = (
+        ("radar",),
+        np.array([r.coverage_fraction for r in rec.radars], dtype=np.float32),
+        {"long_name": "fraction of the mosaic area covered by the radar", "units": "1"},
+    )
+    ds["radar_share"] = (
+        ("radar",),
+        np.array([r.share for r in rec.radars], dtype=np.float32),
+        {
+            "long_name": "fraction of valid cells where the radar has the top merge weight",
+            "units": "1",
+        },
+    )
+    ds["radar_bias"] = (
+        ("radar",),
+        np.array(
+            [np.nan if r.bias_db is None else r.bias_db for r in rec.radars], dtype=np.float32
+        ),
+        {
+            "long_name": "reflectivity bias removed from the radar before merging (NaN: none)",
+            "units": "dB",
+        },
+    )
+    ds.attrs = _mosaic_attrs(rec)
+    # --- encodings
+    ds[name].encoding = cfwrite.field_encoding((ny, nx))
+    for v in ("lat", "lon"):
+        ds[v].encoding = {**cfwrite.compression_encoding((ny, nx)), "_FillValue": None}
+    for v in ("x", "y"):
+        ds[v].encoding = {"_FillValue": None}
+    if "z" in ds.coords:
+        ds["z"].encoding = {"_FillValue": None}
+    if "time" in ds.coords:
+        ds["time"].encoding = {
+            "units": "seconds since 1970-01-01T00:00:00Z",
+            "calendar": "standard",
+            "dtype": "float64",
+            "_FillValue": None,
+        }
+        ds["time_bounds"].encoding = {
+            "units": "seconds since 1970-01-01T00:00:00Z",
+            "calendar": "standard",
+            "dtype": "float64",
+            "_FillValue": None,
+        }
+    epoch = provenance.iso_utc(ref) if ref is not None else "1970-01-01T00:00:00Z"
+    ds["radar_volume_time"].encoding = {
+        "units": f"seconds since {epoch}",
+        "calendar": "standard",
+        "dtype": "float64",
+        "_FillValue": np.float64(np.nan),
     }
-    if rec.analysis_time:
-        ds.attrs["analysis_time"] = rec.analysis_time
     return ds
 
 
 def write_netcdf(rec: MosaicRecord, path: str | os.PathLike[str]) -> None:
+    """Write the mosaic as a CF-1.10 NetCDF4 file (see :func:`to_dataset`)."""
     ds = to_dataset(rec)
-    name = f"{rec.variable}_{rec.product}"
-    enc = {name: {"zlib": True, "complevel": 1, "_FillValue": np.float32(np.nan)}}
-    ds.to_netcdf(path, engine="netcdf4", format="NETCDF4", encoding=enc)
+    ds.to_netcdf(path, engine="netcdf4", format="NETCDF4")
 
 
 def world_file(rec: MosaicRecord) -> str:
@@ -1561,6 +1800,45 @@ def world_file(rec: MosaicRecord) -> str:
 
 
 def projection_wkt() -> str:
+    """ESRI ``.prj`` text (WKT1) of EPSG:3857; ``pyproj.CRS.from_wkt`` reads it back exactly."""
     import pyproj
 
     return pyproj.CRS.from_epsg(3857).to_wkt(version="WKT1_ESRI")
+
+
+def png_bytes(rec: MosaicRecord) -> bytes:
+    """The mosaic PNG with descriptive ``tEXt`` chunks (title, software, radars, CRS, bounds).
+
+    The pixels are those of ``rec.png``; the file is accompanied by ``.pgw`` / ``.prj`` sidecars
+    (:func:`world_file`, :func:`projection_wkt`) for GIS use. Only radar names are recorded.
+    """
+    from PIL import Image
+    from PIL.PngImagePlugin import PngInfo
+
+    from engine import provenance
+
+    west, south, east, north = rec.bbox
+    meta = provenance.figure_metadata(
+        title=f"Radar mosaic: {rec.variable} {rec.product}",
+        description=(
+            f"{rec.variable} {rec.product}"
+            + (f" at {rec.height_m:g} m" if rec.height_m is not None else "")
+            + f" ({rec.units}); colour range {rec.vmin:g}..{rec.vmax:g}; "
+            f"analysis time {rec.analysis_time or 'unknown'}"
+        ),
+        params={
+            "radars": [r.name for r in rec.radars],
+            "crs": "EPSG:3857 (see .prj/.pgw)",
+            "bbox_wsen_deg": [west, south, east, north],
+            "resolution_m": rec.resolution_m,
+            "colormap": rec.cmap,
+        },
+    )
+    info = PngInfo()
+    for key, value in meta.items():
+        info.add_text(key, value)
+    with Image.open(io.BytesIO(rec.png)) as im:
+        im.load()
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", pnginfo=info, compress_level=6)
+    return buf.getvalue()

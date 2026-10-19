@@ -28,7 +28,7 @@ the files of at least two radars that scan the same weather.
    default) with wind arrows. A height slider, field selector, opacity, a *minimum crossing angle*
    filter (and, with uncertainty, a *maximum error* filter) change the map instantly, without
    re-running. A vertical cross-section (default `w`, W-E or S-N slice) is drawn in the panel.
-4. **NetCDF** export (desktop app) writes all fields on `(z, y, x)` with 2-D `lon`/`lat`.
+4. **NetCDF** export (desktop app) writes all fields on `(z, y, x)` with CF standard names (`x_wind`, `eastward_wind`, `upward_air_velocity`, `divergence_of_wind` ...), a grid mapping, 2-D `lon`/`lat` and the method, options, background wind and radars as attributes ({doc}`OUTPUT_STANDARDS`).
 
 ## Options
 | Option | Meaning |

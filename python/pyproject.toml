@@ -1,6 +1,6 @@
 [project]
 name = "xradar-desktop-engine"
-version = "0.1.0"
+version = "0.2.1"
 description = "Python sidecar engine for xradar-desktop"
 requires-python = ">=3.10"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
@@ -28,6 +28,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
+# The real CF Checker used by tests/test_output_standards.py (the tests skip without it). Needs the
+# UDUNITS-2 library (brew install udunits / apt install libudunits2-dev) and the CF standard-name
+# table (see docs/OUTPUT_STANDARDS.md), so it is not part of the lightweight dev extra.
+cfcheck = ["cfchecker>=4.1", "cfunits>=3.3"]
 # Building the self-contained engine shipped inside the installers (python/packaging/).
 bundle = ["pyinstaller>=6.16"]
 # Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
