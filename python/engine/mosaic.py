@@ -15,7 +15,9 @@ on a Web-Mercator-uniform grid, ready to be draped on a map as one image:
    are exact for a Mapbox/MapLibre ``image`` source.
 
 The float grids are kept in a small LRU (:data:`MOSAICS`) so the UI can probe and export a
-mosaic without recomputing it.
+mosaic without recomputing it. The merged 3-D field itself (every level, not only the reduced
+product) is also kept, quantised to 8 bits against the colour range, so the 3-D view can draw
+the mosaic as a volume (:func:`volume_message`); ``keep_volume`` turns that off.
 
 ``radarx`` is imported lazily: without it every entry point raises :class:`MosaicError` with a
 ``pip install radarx`` hint.
@@ -56,6 +58,9 @@ BAND_BUDGET_BYTES = 450 * 1024 * 1024
 # Memory the mosaic cache may hold (float grids only; the PNG is small).
 CACHE_MAX_BYTES = 600 * 1024 * 1024
 CACHE_MAX_ITEMS = 4
+# Largest merged 3-D field kept for the 3-D view (voxels = nz * ny * nx; 1 byte each once
+# quantised, 2 while the bands are being collected).
+VOLUME_MAX_VOXELS = 64_000_000
 EARTH_RADIUS = 6371000.0
 K_E = 4.0 / 3.0
 
@@ -249,11 +254,21 @@ class MosaicRecord:
     z_ref_m: float = 0.0
     k_e: float = K_E
     created: float = field(default_factory=time.time)
+    # Merged 3-D field on the AEQD working grid for the 3-D view: uint8 (nz, ny, nx), x fastest,
+    # y south -> north, z upwards. code 0 = no echo / not measured, 1..255 map linearly onto
+    # [volume_range[0], volume_range[1]] (the same packing the polar 3-D view uses).
+    volume: np.ndarray | None = None
+    volume_z_m: np.ndarray | None = None  # level heights (m ASL)
+    volume_range: tuple[float, float] | None = None
+    volume_note: str | None = None  # why there is no volume (when volume is None)
 
     @property
     def nbytes(self) -> int:
-        return int(self.image.nbytes + self.radar_values.nbytes + self.level_m.nbytes) + len(
-            self.png
+        vol = 0 if self.volume is None else int(self.volume.nbytes)
+        return (
+            int(self.image.nbytes + self.radar_values.nbytes + self.level_m.nbytes)
+            + vol
+            + len(self.png)
         )
 
     @property
@@ -282,6 +297,9 @@ class MosaicRecord:
             "analysis_time": self.analysis_time,
             "merge": self.merge,
             "warnings": self.warnings,
+            "has_volume": self.volume is not None,
+            "volume_shape": list(self.volume.shape) if self.volume is not None else None,
+            "volume_note": self.volume_note,
         }
 
 
@@ -808,6 +826,46 @@ class _Bands:
         self.share_count = np.zeros(self.nr, dtype=np.int64)
 
 
+@dataclass
+class _VolumeAcc:
+    """Collects the merged 3-D field band by band (float16), quantised once the range is known."""
+
+    keep: np.ndarray  # indices (into the gridding z axis) of the levels that are kept
+    buf: np.ndarray  # (len(keep), ny, nx) float16, NaN = no echo
+
+    @classmethod
+    def create(cls, keep: np.ndarray, ny: int, nx: int) -> _VolumeAcc:
+        return cls(keep, np.full((keep.size, ny, nx), np.nan, dtype=np.float16))
+
+
+def _quantise_volume(buf: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """float (nz, ny, nx) -> uint8: 0 = no data (NaN or below ``lo``), 1..255 over ``[lo, hi]``."""
+    out = np.zeros(buf.shape, dtype=np.uint8)
+    scale = 254.0 / (hi - lo)
+    for k in range(buf.shape[0]):  # one level at a time keeps the float32 temporary small
+        v = buf[k].astype(np.float32)
+        ok = np.isfinite(v) & (v >= lo)
+        code = np.clip(np.rint((np.where(ok, v, lo) - lo) * scale) + 1.0, 1.0, 255.0)
+        out[k] = np.where(ok, code, 0.0).astype(np.uint8)
+    return out
+
+
+def _volume_range(
+    variable: str, product: str, buf: np.ndarray, vmin: float | None, vmax: float | None
+) -> tuple[float, float]:
+    """Value range the 8-bit codes of the 3-D field span."""
+    if product != "echo_top" and vmin is not None and vmax is not None:
+        return float(vmin), float(vmax)
+    known = _known_range(variable)
+    if known is not None:
+        return known
+    finite = buf[np.isfinite(buf)][:: max(1, buf.size // 2_000_000)].astype(np.float32)
+    if finite.size == 0:
+        return 0.0, 1.0
+    lo, hi = np.percentile(finite, [2.0, 98.0])
+    return (float(lo), float(hi if hi > lo else lo + 1.0))
+
+
 def build_mosaic(
     readers: Sequence[tuple[str | None, Any]],
     variable: str = "DBZH",
@@ -824,6 +882,7 @@ def build_mosaic(
     n_threads: int | None = None,
     engine: str = "auto",
     cache: MosaicCache | None = MOSAICS,
+    keep_volume: bool | None = None,
 ) -> MosaicRecord:
     """Build a mosaic of the volumes behind ``readers`` (``[(file_id, RadarReader), ...]``).
 
@@ -831,6 +890,10 @@ def build_mosaic(
     the ``create_mosaic`` message. ``height_m`` (metres above sea level) is used by ``cappi``,
     ``threshold_dbz`` by ``echo_top``. The result (also stored in ``cache``) carries the PNG, the
     corner coordinates and the statistics; see :meth:`MosaicRecord.header`.
+
+    ``keep_volume`` keeps the merged 3-D field (all levels) for the 3-D view: ``None`` (default)
+    keeps it when it fits :data:`VOLUME_MAX_VOXELS`, ``False`` never, ``True`` whenever it fits.
+    A ``cappi`` normally grids a single level; keeping the volume grids every level as well.
     """
     t_start = time.perf_counter()
     report = progress or (lambda _p, _m: None)
@@ -881,10 +944,31 @@ def build_mosaic(
     )
     layout = _layout(bbox, gspec.resolution_m)
     x, y = layout.x, layout.y
-    if product == "cappi":
+    levels = np.arange(gspec.z_step_m, gspec.z_max_m + 0.5 * gspec.z_step_m, gspec.z_step_m)
+    voxels = int(levels.size) * int(y.size) * int(x.size)
+    keep_vol = keep_volume is not False and voxels <= VOLUME_MAX_VOXELS
+    volume_note: str | None = None
+    if keep_volume is False:
+        volume_note = "The 3-D volume was not kept (keep_volume is off)."
+    elif not keep_vol:
+        volume_note = (
+            f"The 3-D volume was not kept: {voxels / 1e6:.0f} million voxels is over the "
+            f"{VOLUME_MAX_VOXELS / 1e6:.0f} million limit; use a coarser resolution, a smaller "
+            "extent or a lower top."
+        )
+        warnings_out.append(volume_note)
+    cappi_idx = 0
+    if product == "cappi" and keep_vol:
+        # grid the cappi height together with the volume levels (one radarx call per band)
+        z = np.unique(np.concatenate([levels, [height_m]]))
+        cappi_idx = int(np.argmin(np.abs(z - height_m)))
+        keep_idx = np.flatnonzero(np.isclose(z[:, None], levels[None, :]).any(axis=1))
+    elif product == "cappi":
         z = np.array([height_m], dtype=np.float64)
+        keep_idx = np.zeros(0, dtype=np.int64)
     else:
-        z = np.arange(gspec.z_step_m, gspec.z_max_m + 0.5 * gspec.z_step_m, gspec.z_step_m)
+        z = levels
+        keep_idx = np.arange(levels.size) if keep_vol else np.zeros(0, dtype=np.int64)
     nz = z.size
     average = mspec.average or ("linear" if is_refl else "dbz")
     do_merge = nr > 1 and mspec.enabled
@@ -933,6 +1017,7 @@ def build_mosaic(
     # 4. banded gridding and reduction ---------------------------------------------------------
     ny, nx = y.size, x.size
     acc = _Bands(ny, nx, nr)
+    vol_acc = _VolumeAcc.create(keep_idx, ny, nx) if keep_idx.size else None
     per_row = nz * (nr * 36 + 28) * nx
     rows = int(max(16, min(ny, BAND_BUDGET_BYTES // max(per_row, 1))))
     n_bands = -(-ny // rows)
@@ -984,6 +1069,8 @@ def build_mosaic(
             beam_fn,
             inside_fn,
             cut,
+            cappi_idx,
+            vol_acc,
         )
         t_grid += t1 - t0
         t_reduce += time.perf_counter() - t1
@@ -1014,6 +1101,19 @@ def build_mosaic(
     png = render_png(image, lut, vmin_f, vmax_f)
     t_png = time.perf_counter() - t0
     legend = _legend(lut, vmin_f, vmax_f)
+
+    # 5b. the merged 3-D field, quantised against the colour range -------------------------------
+    volume = None
+    volume_z = None
+    volume_rng = None
+    if vol_acc is not None:
+        report(95, "Packing the 3-D volume")
+        volume_rng = _volume_range(variable, product, vol_acc.buf, vmin, vmax)
+        volume = _quantise_volume(vol_acc.buf, *volume_rng)
+        volume_z = z[vol_acc.keep].astype(np.float64)
+        if not volume.any():
+            volume_note = "The 3-D volume is empty: no radar has an echo above the colour range."
+        vol_acc = None  # drop the float16 collector
 
     # 6. statistics ----------------------------------------------------------------------------
     finite = image[np.isfinite(image) & (image >= vmin_f)]
@@ -1098,10 +1198,14 @@ def build_mosaic(
             "east": east,
             "north": north,
             "cells_aeqd": [nx, ny],
-            "levels": int(nz),
+            "levels": int(levels.size if volume is not None else nz),
         },
         warnings=warnings_out,
         z_ref_m=float(height_m if product == "cappi" else z[0]),
+        volume=volume,
+        volume_z_m=volume_z,
+        volume_range=volume_rng,
+        volume_note=volume_note,
     )
     if cache is not None:
         cache.put(record)
@@ -1148,8 +1252,13 @@ def _reduce_band(
     beam_fn: Callable | None,
     inside_fn: _InsideBox,
     cut: float,
+    cappi_idx: int = 0,
+    vol_acc: _VolumeAcc | None = None,
 ) -> None:
-    """Reduce one gridded band to 2-D and accumulate statistics into ``acc``."""
+    """Reduce one gridded band to 2-D and accumulate statistics into ``acc``.
+
+    With ``vol_acc`` the merged 3-D field of the band is also stored (see :class:`_VolumeAcc`).
+    """
     nr = len(volumes)
     fld = out[variable].transpose("radar", "z", "y", "x").values  # (nr, nz, cy, nx) float32
     cov = out["coverage"].transpose("radar", "z", "y", "x").values > 0
@@ -1164,10 +1273,10 @@ def _reduce_band(
 
     # product reduction --------------------------------------------------------------------
     if product == "cappi":
-        m2, kidx = merged[0], np.zeros(merged.shape[-2:], dtype=np.int64)
-        per_radar = fld[:, 0]
-        cov2 = cov[:, 0]
-        level = np.full(m2.shape, float(z[0]), dtype=np.float32)
+        m2, kidx = merged[cappi_idx], np.full(merged.shape[-2:], cappi_idx, dtype=np.int64)
+        per_radar = fld[:, cappi_idx]
+        cov2 = cov[:, cappi_idx]
+        level = np.full(m2.shape, float(z[cappi_idx]), dtype=np.float32)
     elif product == "composite":
         m2, kidx = _composite(merged)
         per_radar = np.fmax.reduce(fld, axis=-3)
@@ -1185,6 +1294,14 @@ def _reduce_band(
         # it shows up as a flat plate over each radar's whole coverage disc. Leave it empty.
         m2 = np.where(np.isfinite(per_radar).any(axis=0), m2, np.nan)
     m2 = np.where(inside, m2, np.nan).astype(np.float32)
+    if vol_acc is not None:
+        # the same "no radar measured anything" rule as above, applied to every level
+        vm = merged[vol_acc.keep]
+        if nr > 1 and do_merge:
+            vm = np.where(np.isfinite(fld[:, vol_acc.keep]).any(axis=0), vm, np.nan)
+        vm = np.where(inside[None], vm, np.nan)
+        with np.errstate(over="ignore", invalid="ignore"):
+            vol_acc.buf[:, r0:r1] = np.clip(vm, -60000.0, 60000.0).astype(np.float16)
     acc.merged[r0:r1] = m2
     acc.radars[:, r0:r1] = per_radar
     acc.level[r0:r1] = level
@@ -1368,6 +1485,75 @@ def _legend(lut: np.ndarray, vmin: float, vmax: float, n: int = 16) -> list[list
             [vmin + frac * (vmax - vmin), "#{:02x}{:02x}{:02x}".format(*(int(c) for c in rgb))]
         )
     return out
+
+
+# ---------------------------------------------------------------------------
+# 3-D volume (for the 3-D view)
+# ---------------------------------------------------------------------------
+
+
+def volume_message(
+    mosaic_id: str, cache: MosaicCache = MOSAICS
+) -> tuple[dict[str, Any], np.ndarray]:
+    """``(header, uint8 array (nz, ny, nx))`` of the merged 3-D field of a cached mosaic.
+
+    The grid is the AEQD working grid: cell ``(k, j, i)`` is centred ``x0 + i * cell_m`` metres
+    east and ``y0 + j * cell_m`` metres north of ``origin`` (lat, lon) at ``z[k]`` metres ASL.
+    Codes: 0 = no echo / not measured, 1..255 -> ``vmin + (code - 1) * step``.
+    """
+    rec = cache.get(mosaic_id)
+    if rec.volume is None or rec.volume_z_m is None or rec.volume_range is None:
+        raise MosaicError(
+            rec.volume_note or "This mosaic has no 3-D volume; create it again to get one"
+        )
+    nz, ny, nx = rec.volume.shape
+    lo, hi = rec.volume_range
+    proj = _aeqd(*rec.origin)
+    sites = []
+    for r in rec.radars:
+        x, y = proj(r.longitude, r.latitude)
+        sites.append(
+            {
+                "name": r.name,
+                "file_id": r.file_id,
+                "latitude": r.latitude,
+                "longitude": r.longitude,
+                "altitude_m": r.altitude_m,
+                "x_m": float(x),
+                "y_m": float(y),
+            }
+        )
+    west, south, east, north = rec.bbox
+    canon = _canonical(rec.variable)
+    header = {
+        "mosaic_id": rec.mosaic_id,
+        "variable": rec.variable,
+        "units": rec.units if rec.product != "echo_top" else _DEFAULT_UNITS.get(canon, ""),
+        "product": rec.product,
+        "grid": {
+            "x0": rec.x0,
+            "y0": rec.y0,
+            "cell_m": rec.cell_m,
+            "nx": nx,
+            "ny": ny,
+            "nz": nz,
+            "z": [float(v) for v in rec.volume_z_m],
+            "origin_lat": rec.origin[0],
+            "origin_lon": rec.origin[1],
+            "west": west,
+            "south": south,
+            "east": east,
+            "north": north,
+        },
+        "vmin": lo,
+        "vmax": hi,
+        "dtype": "uint8",
+        "scale": {"offset": lo, "step": (hi - lo) / 254.0, "nodata": 0},
+        "cmap": _CMAPS.get(canon, _FALLBACK_CMAP),
+        "radars": sites,
+        "analysis_time": rec.analysis_time,
+    }
+    return header, rec.volume
 
 
 # ---------------------------------------------------------------------------

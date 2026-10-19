@@ -33,6 +33,7 @@
     type MosaicResult,
   } from '../stores/mosaic';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+  import { viewMosaicIn3D, volume3dLoading } from '../stores/volume3d';
 
   // ── Derived state ────────────────────────────────────────────────────────
   const isConnected = $derived($connectionStatus === 'connected');
@@ -332,7 +333,14 @@
             <span>Level step (m)</span>
             <input type="number" min="100" max="5000" step="100" value={s.zStepM} onchange={onNum('zStepM', 100, 5000)} />
           </label>
-          <span></span>
+          <label class="check" style="grid-column: 1 / -1">
+            <input
+              type="checkbox"
+              checked={s.keepVolume}
+              onchange={(e) => updateMosaicSettings({ keepVolume: e.currentTarget.checked })}
+            />
+            <span>Keep the 3D volume <span class="muted">(for the 3D view; uses a little memory)</span></span>
+          </label>
           <label class="field">
             <span>Colour min</span>
             <input type="number" placeholder="auto" value={s.vmin ?? ''} onchange={(e) => setOptionalNum('vmin', e.currentTarget.value)} />
@@ -462,6 +470,15 @@
 
         <div class="btn-row">
           <button type="button" class="mini-btn" onclick={fitMapToMosaic}>Fit to mosaic</button>
+          <button
+            type="button"
+            class="mini-btn"
+            disabled={!res.has_volume || $volume3dLoading.mosaic}
+            onclick={() => viewMosaicIn3D(res.mosaic_id)}
+            title={res.has_volume
+              ? 'Show the merged volume of this mosaic in the 3D tab'
+              : (res.volume_note ?? 'This mosaic has no 3D volume; create it again with "Keep the 3D volume"')}
+          >{$volume3dLoading.mosaic ? 'Loading…' : 'View in 3D'}</button>
           <span class="spacer"></span>
           <button
             type="button"

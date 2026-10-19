@@ -393,6 +393,8 @@ class WebSocketManager {
     'cross_section_3d_data',
     'mosaic_result',
     'multidoppler_result',
+    'mosaic_volume',
+    'wind_volume',
   ]);
 
   /** Start tracking a binary payload announced by `header`. */
@@ -529,6 +531,20 @@ class WebSocketManager {
     } else if (type === 'mosaic_result') {
       // PNG bytes + the JSON header; the mosaic store builds the object URL.
       this._dispatchHandlers('mosaic_result_ready', { header, png: new Uint8Array(buffer) });
+    } else if (type === 'mosaic_volume') {
+      // uint8 (nz, ny, nx) merged mosaic field for the 3D view
+      this._dispatchHandlers('mosaic_volume_ready', { header, data: new Uint8Array(buffer) });
+    } else if (type === 'wind_volume') {
+      if (buffer.byteLength % 4 !== 0) {
+        console.error(`[WS] 'wind_volume' payload is not float32-aligned (${buffer.byteLength} bytes)`);
+        this._dispatchHandlers('multidoppler_error', {
+          type: 'multidoppler_error',
+          request_id: header.request_id,
+          message: 'The 3D wind data arrived corrupted',
+        });
+        return;
+      }
+      this._dispatchHandlers('wind_volume_ready', { header, data: new Float32Array(buffer) });
     } else if (type === 'multidoppler_result') {
       // One float32 block [n_fields, nz, ny, nx]; the wind store decodes it.
       if (buffer.byteLength % 4 !== 0) {
@@ -674,6 +690,8 @@ class WebSocketManager {
       case 'cross_section_3d_data':
       case 'mosaic_result':
       case 'multidoppler_result':
+      case 'mosaic_volume':
+      case 'wind_volume':
         // JSON header for incoming binary data — wait for the chunk frames
         this.beginBinary(msg);
         break;

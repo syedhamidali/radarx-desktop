@@ -1033,6 +1033,49 @@ class TestMosaic:
         assert handler._sent[-1]["value"] is None
 
     @pytest.mark.asyncio
+    async def test_mosaic_volume_message(self) -> None:
+        pytest.importorskip("radarx")
+        fa, fb = self._open_two()
+        handler, _ = _make_handler()
+        created = await self._create(handler, [fa, fb], product="composite")
+        assert created["has_volume"] is True and created["volume_shape"][0] == 12
+        handler._sent.clear()
+        handler._frames.clear()
+        await handler.handle_message(
+            json.dumps(
+                {"type": "get_mosaic_volume", "request_id": "v1", "mosaic_id": created["mosaic_id"]}
+            )
+        )
+        msg = next(m for m in handler._sent if m["type"] == "mosaic_volume")
+        nz, ny, nx = msg["grid"]["nz"], msg["grid"]["ny"], msg["grid"]["nx"]
+        assert msg["request_id"] == "v1" and msg["dtype"] == "uint8"
+        assert msg["byte_length"] == nz * ny * nx and msg["chunks"] >= 1
+        assert [r["name"] for r in msg["radars"]] == ["LOW", "HIGH"]
+        assert all({"x_m", "y_m", "latitude", "longitude"} <= set(r) for r in msg["radars"])
+        data = np.frombuffer(_binary(handler), dtype=np.uint8)
+        assert data.size == msg["byte_length"] and data.any()
+        step, off = msg["scale"]["step"], msg["scale"]["offset"]
+        vals = off + (data[data > 0].astype(float) - 1.0) * step
+        assert vals.min() > 15.0 and vals.max() < 45.0
+
+    @pytest.mark.asyncio
+    async def test_mosaic_volume_unavailable_is_an_error(self) -> None:
+        pytest.importorskip("radarx")
+        fa, fb = self._open_two()
+        handler, _ = _make_handler()
+        created = await self._create(handler, [fa, fb], keep_volume=False)
+        assert created["has_volume"] is False
+        handler._sent.clear()
+        await handler.handle_message(
+            json.dumps(
+                {"type": "get_mosaic_volume", "request_id": "v2", "mosaic_id": created["mosaic_id"]}
+            )
+        )
+        err = handler._sent[-1]
+        assert err["type"] == "mosaic_error" and err["request_id"] == "v2"
+        assert "not kept" in err["message"]
+
+    @pytest.mark.asyncio
     async def test_probe_unknown_mosaic(self) -> None:
         handler, _ = _make_handler()
         await handler.handle_message(
@@ -1711,3 +1754,61 @@ class TestDerivedVariables:
         await asyncio.sleep(0.1)
         assert seen == [0]  # sweeps 1..3 never ran
         assert getattr(reader, "derived", None) is None or reader.derived.variables() == []
+
+
+# ---------------------------------------------------------------------------
+# 3-D wind volume (get_wind_volume)
+# ---------------------------------------------------------------------------
+
+
+class TestWindVolume:
+    @staticmethod
+    def _record():
+        from engine import multidoppler as mdop
+
+        nz, ny, nx = 3, 4, 5
+        rng = np.random.default_rng(1)
+        fields = rng.normal(size=(len(mdop.FIELD_ORDER), nz, ny, nx)).astype(np.float32)
+        rec = mdop.WindRecord(
+            wind_id="w-test",
+            fields=fields,
+            x=np.arange(nx) * 1000.0 - 2000.0,
+            y=np.arange(ny) * 1000.0 - 1500.0,
+            z=np.array([1000.0, 2000.0, 3000.0]),
+            origin=(35.0, -97.0),
+            radars=[{"name": "A", "latitude": 35.0, "longitude": -97.0, "altitude_m": 100.0}],
+            summary={"method": "analytic", "analysis_time": None},
+            warnings=[],
+        )
+        mdop.WIND_RESULTS.put(rec)
+        return rec
+
+    @pytest.mark.asyncio
+    async def test_streams_selected_fields(self) -> None:
+        from engine import multidoppler as mdop
+
+        rec = self._record()
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps({"type": "get_wind_volume", "request_id": "w1", "wind_id": rec.wind_id})
+        )
+        msg = next(m for m in handler._sent if m["type"] == "wind_volume")
+        names = [f["name"] for f in msg["fields"]]
+        assert names[:4] == ["u", "v", "w", "speed"]
+        assert {"dbz", "crossing_angle", "n_radars", "divergence"} <= set(names)
+        assert isinstance(msg["summary"], dict) and msg["summary"]["method"] == "analytic"
+        assert msg["shape"] == [len(names), 3, 4, 5] and msg["grid"]["nz"] == 3
+        assert msg["radars"][0]["x_m"] == pytest.approx(0.0, abs=1e-3)
+        data = np.frombuffer(_binary(handler), dtype=np.float32).reshape(msg["shape"])
+        assert msg["byte_length"] == data.nbytes
+        for i, n in enumerate(names):
+            np.testing.assert_array_equal(data[i], rec.fields[mdop.FIELD_ORDER.index(n)])
+
+    @pytest.mark.asyncio
+    async def test_unknown_wind_is_an_error(self) -> None:
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps({"type": "get_wind_volume", "request_id": "w2", "wind_id": "nope"})
+        )
+        err = handler._sent[-1]
+        assert err["type"] == "multidoppler_error" and err["request_id"] == "w2"

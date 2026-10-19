@@ -1,5 +1,4 @@
 import { mount } from 'svelte';
-import App from './App.svelte';
 import './lib/styles/fonts.css';
 import './lib/styles/tokens.css';
 import './lib/styles/theme.css';
@@ -7,8 +6,11 @@ import { applySavedTheme } from './lib/utils/theme';
 
 applySavedTheme(); // first paint already in the right theme
 
-const app = mount(App, {
-  target: document.getElementById('app')!,
-});
+const target = document.getElementById('app')!;
+
+// `?clip=1`: the offline clip renderer (tools/storm_clip), no sidecar needed; otherwise the app.
+const app = new URLSearchParams(location.search).has('clip')
+  ? import('./lib/components/StormClipView.svelte').then((m) => mount(m.default, { target }))
+  : import('./App.svelte').then((m) => mount(m.default, { target }));
 
 export default app;
