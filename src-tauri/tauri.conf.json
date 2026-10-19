@@ -138,6 +138,9 @@
         "rank": "Alternate",
         "mimeType": "application/octet-stream"
       }
-    ]
+    ],
+    "license": "PolyForm-Noncommercial-1.0.0",
+    "licenseFile": "../LICENSE",
+    "copyright": "Copyright (c) 2024-2026 Hamid Ali Syed"
   }
 }

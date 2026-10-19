@@ -11,6 +11,7 @@ import pytest
 import xarray as xr
 
 from engine import plugins
+from tests import radar_data
 
 pytest.importorskip("radarx")
 pytestmark = pytest.mark.filterwarnings("ignore")
@@ -131,10 +132,9 @@ def test_listed_as_unavailable_when_radarx_is_missing(monkeypatch) -> None:
     assert info["available"] is False and "radarx" in info["unavailable_reason"]
 
 
-_COW = Path(
-    "/Users/syed44/Downloads/Others/XRADAR_EXAMPLES/RADAR_CORRECTED/"
-    "cfrad.20220322_220338.299_to_20220322_220506.977_COW1high_SUR.nc"
-)
+_COW = radar_data.example(
+    "RADAR_CORRECTED/cfrad.20220322_220338.299_to_20220322_220506.977_COW1high_SUR.nc"
+) or Path("/nonexistent/COW.nc")
 
 
 @pytest.mark.skipif(

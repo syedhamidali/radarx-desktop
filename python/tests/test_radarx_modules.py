@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +19,7 @@ import xarray as xr
 
 from engine import plugins
 from engine.plugins import ModuleError, run_module
+from tests import radar_data
 
 pytest.importorskip("radarx")
 
@@ -43,13 +43,7 @@ RE_EFF = 4.0 / 3.0 * 6371e3
 SITE = {"latitude": 35.0, "longitude": -97.0, "altitude": 100}
 STORM_XY_KM = (20.0, 20.0)  # volume storm core, east/north of the radar
 
-KATX_CANDIDATES = [
-    os.environ.get("XRADAR_TEST_KATX", ""),
-    str(Path.home() / "Library/Caches/open-radar-data/KATX20130717_195021_V06"),
-    "/private/tmp/claude-502/-Users-syed44-Git-Stuff-Git-Projects-xradar-desktop/"
-    "4919c2aa-1324-499f-9e5a-79edf19be890/scratchpad/data/KATX20130717_195021_V06",
-]
-KATX = next((p for p in KATX_CANDIDATES if p and os.path.exists(p)), None)
+KATX = str(radar_data.katx()) if radar_data.katx() else None
 
 
 # ---------------------------------------------------------------------------

@@ -101,7 +101,7 @@
 
       <!-- License -->
       <div class="about-license">
-        MIT License &middot; openradar
+        PolyForm Noncommercial 1.0.0 &middot; &copy; Hamid Ali Syed
       </div>
 
       <!-- Close -->

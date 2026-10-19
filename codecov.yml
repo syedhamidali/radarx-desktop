@@ -1,0 +1,24 @@
+# Codecov: the Python engine and modules are measured on Ubuntu and macOS (two uploads per CI run).
+codecov:
+  notify:
+    after_n_builds: 2
+
+comment:
+  after_n_builds: 2
+
+coverage:
+  status:
+    project:
+      default:
+        # tolerate rounding noise between runs
+        threshold: 0.5%
+    patch:
+      default:
+        # informational: a patch should mostly be covered, but real-data tests that only run in CI
+        # make local numbers noisy
+        target: 80%
+        informational: true
+
+ignore:
+  - "python/tests"
+  - "python/packaging"
