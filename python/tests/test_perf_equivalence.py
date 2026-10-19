@@ -138,6 +138,11 @@ def test_lazy_masking_is_identical_to_eager_masking():
             equal_nan=True,
         )
         assert float(lazy["DBZH"].mean()) == float(eager["DBZH"].mean())
+        row = lazy["DBZH"].isel(azimuth=3)
+        assert np.array_equal(row.values, eager["DBZH"].isel(azimuth=3).values, equal_nan=True)
+        assert lazy.copy(deep=True).identical(eager)
+        assert lazy.transpose("range", "azimuth").identical(eager.transpose("range", "azimuth"))
+        assert (lazy["DBZH"] + 1).identical(eager["DBZH"] + 1)
     plain = xr.DataArray(np.ones((3, 4)), dims=("azimuth", "range"), name="a")
     assert lazy_mask_below_threshold(xr.Dataset({"a": plain}))["a"].identical(plain)
 
