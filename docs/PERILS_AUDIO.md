@@ -93,15 +93,26 @@ each drove (for the end card), and the `sources` of the manifest.
 
 ## Inputs
 
-SPEC v1 (`docs/PERILS_BUNDLE.md` has the final layout): `manifest.json` (window start), `lma/flashes.json`,
-`stations/stations.json` (series `t_s`, `rain_rate_mmh`, `dm_mm`, `dbz`, `wind_speed_ms`, `wind_dir_deg`,
-`temperature_c`, `pressure_hpa`; optional `wind_gust_ms`, `mrr_dm_mm`, `mrr_fall_speed_ms`,
-`mrr_rain_rate_mmh`; `events` with `hail_candidate`), `stations/<id>_dsd.npz` (time, diameter, concentration or counts,
-optional fall speed), `tornadoes/tornadoes.json` (path with times), optional `radar/overhead_samples.json`;
-`timeline.json` and `camera_path.json` of the renderer, and `events.json` (tornado / hail / flash
-events with clip times and positions). The loaders accept the variants described in the module
-docstrings; the formats that were assumed because the data bundle was not final are listed in the
-verification section below.
+What the loaders read (all times are data seconds since the window start of `manifest.json`):
+
+| File | Used for | Fields used |
+|---|---|---|
+| `manifest.json` | window start, radar grid, steps | `window.start`, `grid` (origin, x_km, y_km), `steps[].time` / `.volume`, `sources` (copied to the report) |
+| `lma/flashes.json` | thunder | `t0`, `flashes[]`: `id`, `t_start_s`, `centroid`, `n_sources`, `sources` `[t_s, lat, lon, alt_m, power_dbw]` (power may be null) |
+| `stations/stations.json` | rain, wind, pressure rumble, convective fallback, hail sensor, air state | per station: `id`, `name`, `type`, `lat`, `lon`, `alt_m` (null allowed), `credit`, `instrument`, `series` (`rain_rate_mmh`, `dm_mm`, `dbz`, `wind_speed_ms`, `wind_gust_ms`, `wind_dir_deg`, `pressure_hpa`, `temperature_c`, `hail_intensity_hits_cm2h`; nulls are missing data; a `lat` / `lon` series makes a vehicle a moving station) |
+| `stations/<id>_dsd.npz` | rain from the drop spectrum, hail tail | `t_s`, `diameter_mm` (+ `diameter_min_mm` / `diameter_max_mm`), `nd_m3mm` (else `counts`); the `fallspeed_ms` axis of a size-velocity matrix is ignored, the Atlas-Ulbrich fall speed is used |
+| `stations/hail_events.json` | hail | `station`, `t_s`, `kind` = `hail_candidate`, `max_d_mm`, `n_large` (10 s samples, merged in the report) |
+| `profiles/mrr_<site>.npz` | rain drop size over a Micro Rain Radar site | lowest gates 150 to 600 m: `fall_speed_ms`, `rain_rate_mmh` (the site is matched to the station id) |
+| `tornadoes/tornadoes.json` | tornado roar | `id`, `rating`, `path` `[[t_s, lat, lon], ...]`, `width_m`, `path_kind`, `source` |
+| `volumes/step_NNNN.npz` | convective index and radar hail class at the listener | `conv_strat` (2 = convective), `hid` (code 10 = hail, lowest 1.5 km), `mesh_mm` |
+| `timeline.json` (renderer) | clip clock | `data_start`, `clip_duration_s`, `mapping` `{t_clip_s, t_data_s}` (monotone, per frame) or the per-frame `speedup` list or a number |
+| `camera_path.json` (renderer) | the listener | per frame `t_clip_s`, `lat`, `lon`, `alt_m`, `heading_deg`, `pitch_deg` |
+| `events.json` (renderer) | tornado existence in clip time and position, hail | `tornado` `{t_clip_start_s, t_clip_end_s, positions}`, `hail[]` (repeats the station events: not counted twice) |
+
+Multi-Doppler winds (`winds/`) and the wind profiler are not used: wind aloft is not audible. No file
+is required except `manifest.json` and the three the renderer writes; a missing one just means that
+layer has no evidence and is silent. `radar/overhead_samples.json` (optional, point samples of
+`convective` / `hail`) is accepted when there are no volumes.
 
 ## How to render
 
