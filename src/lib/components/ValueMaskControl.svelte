@@ -105,7 +105,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .vm select,
   .vm-num {
@@ -119,7 +119,7 @@
   }
   .vm-unit {
     font-size: 11px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .vm-check {
     display: inline-flex;
@@ -137,10 +137,10 @@
   .vm-summary {
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    color: var(--accent-hover, #9aa6ff);
+    color: var(--accent-hover);
   }
   .vm-summary.muted {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     font-family: inherit;
   }
 </style>

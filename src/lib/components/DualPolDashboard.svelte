@@ -383,7 +383,7 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-primary, #0f0f1a);
+    background: var(--bg-primary);
     overflow: hidden;
   }
 
@@ -392,8 +392,8 @@
     align-items: center;
     gap: var(--spacing-lg, 16px);
     padding: var(--spacing-sm, 6px) var(--spacing-md, 12px);
-    background: var(--bg-secondary, #1a1a2e);
-    border-bottom: 1px solid var(--border-color, #2a2a3e);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
     flex-wrap: wrap;
   }
@@ -406,7 +406,7 @@
 
   .dp-ctrl-group label {
     font-size: 10px;
-    color: var(--text-muted, #6a6a80);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     font-weight: 600;
@@ -420,7 +420,7 @@
 
   .dp-ctrl-group input[type="range"] {
     width: 80px;
-    accent-color: var(--accent-primary, var(--c-accent));
+    accent-color: var(--accent-primary);
   }
 
   .dp-toggle {
@@ -432,7 +432,7 @@
   }
 
   .dp-toggle input[type="checkbox"] {
-    accent-color: var(--accent-primary, var(--c-accent));
+    accent-color: var(--accent-primary);
   }
 
   .dp-grid {
@@ -448,8 +448,8 @@
   .dp-cell {
     display: flex;
     flex-direction: column;
-    background: var(--bg-secondary, #1a1a2e);
-    border: 1px solid var(--border-color, #2a2a3e);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-md, 6px);
     overflow: hidden;
   }
@@ -469,7 +469,7 @@
     padding: 0 16px;
     text-align: center;
     font-size: 11px;
-    color: var(--text-muted, #6a6a80);
+    color: var(--text-muted);
   }
 
   .dp-sweep-note {
@@ -479,7 +479,7 @@
     font-weight: 500;
     text-transform: none;
     letter-spacing: 0;
-    color: var(--accent-hover, #7b8aff);
+    color: var(--accent-hover);
     background: rgba(var(--c-accent-rgb), 0.15);
   }
 
@@ -487,9 +487,9 @@
     padding: 4px 8px;
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-secondary, #a0a0b0);
-    background: var(--bg-primary, #0f0f1a);
-    border-bottom: 1px solid var(--border-color, #2a2a3e);
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-color);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     flex-shrink: 0;
@@ -518,13 +518,13 @@
 
   .hid-name {
     font-size: 10px;
-    color: var(--text-primary, #e0e0f0);
+    color: var(--text-primary);
     font-family: var(--font-mono, monospace);
   }
 
   /* Region stats */
   .region-stats-box {
-    border-top: 1px solid var(--border-color, #2a2a3e);
+    border-top: 1px solid var(--border-color);
   }
 
   .rs-grid {
@@ -537,23 +537,23 @@
   }
 
   .rs-label {
-    color: var(--text-muted, #6a6a80);
+    color: var(--text-muted);
   }
 
   .rs-value {
-    color: var(--text-primary, #e0e0f0);
+    color: var(--text-primary);
   }
 
   .rs-empty {
     padding: 4px 8px;
     font-size: 10px;
-    color: var(--text-muted, #6a6a80);
+    color: var(--text-muted);
     font-style: italic;
   }
 
   /* Region selector */
   .region-selector {
-    border-top: 1px solid var(--border-color, #2a2a3e);
+    border-top: 1px solid var(--border-color);
     flex: 1;
   }
 
@@ -568,23 +568,23 @@
     padding: 3px 8px;
     font-size: 9px;
     font-family: var(--font-mono, monospace);
-    background: var(--bg-primary, #0f0f1a);
-    color: var(--text-secondary, #a0a0b0);
-    border: 1px solid var(--border-color, #2a2a3e);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 3px);
     cursor: pointer;
     transition: background 0.15s, color 0.15s;
   }
 
   .dp-btn:hover:not(:disabled) {
-    background: var(--accent-primary, var(--c-accent));
-    color: var(--text-primary, #e0e0f0);
-    border-color: var(--accent-primary, var(--c-accent));
+    background: var(--accent-primary);
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
   }
 
   .dp-btn.active {
-    border-color: var(--accent-primary, var(--c-accent));
-    color: var(--accent-hover, #7b8aff);
+    border-color: var(--accent-primary);
+    color: var(--accent-hover);
   }
 
   .dp-btn:disabled {

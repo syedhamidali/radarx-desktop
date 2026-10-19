@@ -338,10 +338,10 @@
   }
 
   .cs-line {
-    stroke: var(--accent-primary, #5b6cf7);
+    stroke: var(--accent-primary);
     stroke-width: 2.5;
     stroke-dasharray: none;
-    filter: drop-shadow(0 0 4px rgba(91, 108, 247, 0.5));
+    filter: drop-shadow(0 0 4px rgba(var(--c-accent-rgb), 0.5));
   }
 
   .cs-line.rubber {
@@ -350,10 +350,10 @@
   }
 
   .cs-endpoint {
-    fill: var(--accent-primary, #5b6cf7);
-    stroke: white;
+    fill: var(--accent-primary);
+    stroke: var(--c-text);
     stroke-width: 2;
-    filter: drop-shadow(0 0 3px rgba(91, 108, 247, 0.6));
+    filter: drop-shadow(0 0 3px rgba(var(--c-accent-rgb), 0.6));
   }
 
   .cs-endpoint.draggable {
@@ -366,11 +366,11 @@
   }
 
   .cs-label {
-    fill: white;
+    fill: var(--c-text);
     font-size: 12px;
     font-weight: 700;
     font-family: var(--font-sans, sans-serif);
-    text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+    text-shadow: 0 0 6px rgba(var(--c-surface-0-rgb), 0.9);
     pointer-events: none;
   }
 
@@ -390,29 +390,29 @@
     font-size: 12px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--glass-border, rgba(255,255,255,0.1));
-    background: rgba(15, 15, 26, 0.85);
+    border: 1px solid var(--glass-border);
+    background: rgba(var(--c-surface-1-rgb), 0.85);
     /* a fixed dark pill over the map: its text must not follow the app theme */
-    color: rgba(255, 255, 255, 0.78);
+    color: rgba(var(--c-ink-rgb), 0.78);
     cursor: pointer;
     backdrop-filter: blur(8px);
     transition: all 150ms ease;
   }
 
   .cs-action-btn:hover {
-    background: rgba(91, 108, 247, 0.15);
-    border-color: rgba(91, 108, 247, 0.3);
-    color: #fff;
+    background: rgba(var(--c-accent-rgb), 0.15);
+    border-color: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--c-text);
   }
 
   .cs-action-btn.primary {
-    background: rgba(91, 108, 247, 0.2);
-    border-color: rgba(91, 108, 247, 0.4);
-    color: #aab4ff;
+    background: rgba(var(--c-accent-rgb), 0.2);
+    border-color: rgba(var(--c-accent-rgb), 0.4);
+    color: var(--c-accent-strong);
   }
 
   .cs-action-btn.primary:hover {
-    background: rgba(91, 108, 247, 0.35);
-    color: white;
+    background: rgba(var(--c-accent-rgb), 0.35);
+    color: var(--c-text);
   }
 </style>

@@ -27,6 +27,7 @@
     { description: 'Command palette', keys: bound('command-palette'), category: 'Navigation' },
     { description: 'Toggle left sidebar', keys: bound('toggle-left-sidebar'), category: 'View' },
     { description: 'Toggle right sidebar', keys: bound('toggle-right-sidebar'), category: 'View' },
+    { description: 'Hide / show the map (2D and 3D)', keys: bound('toggle-map'), category: 'View' },
     { description: 'Open settings', keys: bound('settings'), category: 'Navigation' },
     { description: 'Play / Pause animation', keys: bound('play-pause'), category: 'Playback' },
     { description: 'Keyboard shortcuts', keys: '?', category: 'Navigation' },
@@ -160,7 +161,7 @@
     position: fixed;
     inset: 0;
     z-index: 950;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(var(--c-shadow-rgb), 0.6);
     display: flex;
     align-items: center;
     justify-content: center;

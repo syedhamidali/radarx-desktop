@@ -286,7 +286,7 @@
   }
   label {
     font-size: 11px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
   .check {
     display: flex;
@@ -300,9 +300,9 @@
     box-sizing: border-box;
     font-size: 12px;
     padding: 3px 6px;
-    color: var(--text-primary, #e4e6f4);
-    background: var(--bg-primary, var(--c-surface-0));
-    border: 1px solid var(--border-color, #2a2e4a);
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
   }
   .inline {
@@ -319,9 +319,9 @@
   button {
     font-size: 11px;
     padding: 3px 8px;
-    color: var(--text-primary, #e4e6f4);
-    background: var(--bg-tertiary, #1a1d33);
-    border: 1px solid var(--border-color, #2a2e4a);
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
     cursor: pointer;
   }
@@ -330,18 +330,18 @@
     cursor: not-allowed;
   }
   button.primary {
-    background: var(--accent, #4f6bed);
-    border-color: var(--accent, #4f6bed);
+    background: var(--accent);
+    border-color: var(--accent);
   }
   button.active {
-    outline: 1px solid var(--accent, #4f6bed);
+    outline: 1px solid var(--accent);
   }
   button.link {
     align-self: flex-start;
     background: none;
     border: none;
     padding: 0;
-    color: var(--accent, #4f6bed);
+    color: var(--accent);
   }
   .actions {
     margin-top: 2px;
@@ -349,17 +349,17 @@
   .help {
     margin: 0;
     font-size: 10px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .empty {
     margin: 0;
     font-size: 11px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .err {
     margin: 0;
     font-size: 10px;
-    color: var(--error, #ef4444);
+    color: var(--error);
   }
   .steps {
     list-style: none;
@@ -370,9 +370,9 @@
     gap: 4px;
   }
   .step {
-    border: 1px solid var(--border-color, #2a2e4a);
+    border: 1px solid var(--border-color);
     border-radius: 6px;
-    background: var(--bg-secondary, #10122a);
+    background: var(--bg-secondary);
   }
   .step.off .title {
     opacity: 0.5;
@@ -408,7 +408,7 @@
   .num {
     flex: none;
     min-width: 12px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     font-variant-numeric: tabular-nums;
   }
   .kind {
@@ -419,17 +419,17 @@
     font-size: 9px;
     padding: 0 4px;
     border-radius: 3px;
-    background: var(--bg-primary, var(--c-surface-0));
-    color: var(--text-muted, #5c6088);
+    background: var(--bg-primary);
+    color: var(--text-muted);
   }
   .kind.transform {
-    color: var(--accent, #4f6bed);
+    color: var(--accent);
   }
   .mini {
     flex: none;
     font-size: 10px;
     font-variant-numeric: tabular-nums;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .ico {
     padding: 0 6px;
@@ -440,7 +440,7 @@
     flex-direction: column;
     gap: 6px;
     padding: 4px 8px 8px;
-    border-top: 1px solid var(--border-color, #2a2e4a);
+    border-top: 1px solid var(--border-color);
   }
   .result h4 {
     margin: 4px 0;
@@ -457,7 +457,7 @@
   .stats th {
     text-align: left;
     font-weight: 500;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .stats td,
   .stats th {
@@ -468,19 +468,19 @@
     font-variant-numeric: tabular-nums;
   }
   .stats .muted {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .tag {
     font-size: 9px;
     padding: 0 4px;
     margin-left: 4px;
     border-radius: 3px;
-    background: var(--bg-primary, var(--c-surface-0));
+    background: var(--bg-primary);
   }
   .skipped {
     margin: 4px 0 0;
     padding-left: 16px;
     font-size: 10px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 </style>

@@ -203,14 +203,14 @@
 
   function pointColor(i: number): string {
     if (selectedIndices.size > 0) {
-      return selectedIndices.has(i) ? '#ff6b35' : 'rgba(100,100,130,0.2)';
+      return selectedIndices.has(i) ? 'var(--c-caution)' : 'rgba(var(--c-ink-rgb), 0.22)';
     }
     if (data?.color && data.color.length > i) {
       const c = data.color;
       const t = colorMax > colorMin ? (c[i] - colorMin) / (colorMax - colorMin) : 0.5;
       return hslColor(t);
     }
-    return 'rgba(91, 108, 247, 0.5)';
+    return 'rgba(var(--c-accent-rgb), 0.5)';
   }
 
   function hslColor(t: number): string {
@@ -420,36 +420,36 @@
     </defs>
 
     <!-- Background -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="var(--bg-primary, #0f0f1a)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="var(--bg-primary)" />
 
     <!-- Grid lines -->
     {#each xTicks as t}
       <line
         x1={xToSvg(t, viewXMin, viewXMax, pw)} y1={MARGIN.top}
         x2={xToSvg(t, viewXMin, viewXMax, pw)} y2={MARGIN.top + ph}
-        stroke="var(--border-color, #2a2a3e)" stroke-width="0.5"
+        stroke="var(--border-color)" stroke-width="0.5"
       />
       <text x={xToSvg(t, viewXMin, viewXMax, pw)} y={svgH - MARGIN.bottom + 16}
-            fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="middle"
+            fill="var(--text-muted)" font-size="9" text-anchor="middle"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
     {#each yTicks as t}
       <line
         x1={MARGIN.left} y1={yToSvg(t, viewYMin, viewYMax, ph)}
         x2={MARGIN.left + pw} y2={yToSvg(t, viewYMin, viewYMax, ph)}
-        stroke="var(--border-color, #2a2a3e)" stroke-width="0.5"
+        stroke="var(--border-color)" stroke-width="0.5"
       />
       <text x={MARGIN.left - 6} y={yToSvg(t, viewYMin, viewYMax, ph) + 3}
-            fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="end"
+            fill="var(--text-muted)" font-size="9" text-anchor="end"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
 
     <!-- Axis labels -->
     <text x={MARGIN.left + pw / 2} y={svgH - 3}
-          fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
+          fill="var(--text-secondary)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)">{var1} {units1 ? `(${units1})` : ''}</text>
     <text x={12} y={MARGIN.top + ph / 2}
-          fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
+          fill="var(--text-secondary)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)"
           transform="rotate(-90, 12, {MARGIN.top + ph / 2})">{var2} {units2 ? `(${units2})` : ''}</text>
 
@@ -481,20 +481,20 @@
 
       <!-- Lasso path -->
       {#if lassoPath}
-        <path d={lassoPath} fill="rgba(255,107,53,0.1)" stroke="#ff6b35" stroke-width="1.5" stroke-dasharray="4,3" />
+        <path d={lassoPath} fill="rgba(var(--c-caution-rgb), 0.1)" stroke="var(--c-caution)" stroke-width="1.5" stroke-dasharray="4,3" />
       {/if}
     </g>
 
     <!-- Border -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="none" stroke="var(--border-color, #2a2a3e)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="none" stroke="var(--border-color)" />
 
     <!-- Hover tooltip -->
     {#if hoveredIdx !== null && data}
       <g pointer-events="none">
         <rect x={hoverX + 8} y={hoverY - 30} width="140" height="24" rx="3"
-              fill="rgba(15,15,26,0.92)" stroke="var(--accent-primary, #5b6cf7)" />
+              fill="rgba(var(--c-surface-1-rgb), 0.92)" stroke="var(--accent-primary)" />
         <text x={hoverX + 14} y={hoverY - 14}
-              fill="var(--text-primary, #e0e0f0)" font-size="10"
+              fill="var(--text-primary)" font-size="10"
               font-family="var(--font-mono, monospace)">
           {data.x[hoveredIdx].toFixed(2)}, {data.y[hoveredIdx].toFixed(2)}
         </text>
@@ -511,8 +511,8 @@
 <style>
   .scatter-container {
     position: relative;
-    background: var(--bg-secondary, #1a1a2e);
-    border: 1px solid var(--border-color, #2a2a3e);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-md, 6px);
     overflow: hidden;
   }
@@ -527,14 +527,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 15, 26, 0.7);
-    color: var(--text-muted, #6a6a80);
+    background: rgba(var(--c-surface-1-rgb), 0.7);
+    color: var(--text-muted);
     font-size: 12px;
     z-index: 5;
   }
   .scatter-error {
-    background: var(--bg-secondary, #1a1a2e);
-    color: var(--accent-danger, #f87171);
+    background: var(--bg-secondary);
+    color: var(--accent-danger);
     padding: 0 16px;
     text-align: center;
   }
@@ -544,9 +544,9 @@
     padding: 2px 8px;
     font-size: 9px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, #6a6a80);
-    background: var(--bg-primary, #0f0f1a);
-    border-top: 1px solid var(--border-color, #2a2a3e);
+    color: var(--text-muted);
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-color);
   }
   .scatter-info span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .scatter-info span:first-child { flex-shrink: 0; }

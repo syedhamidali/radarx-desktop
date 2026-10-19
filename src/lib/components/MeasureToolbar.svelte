@@ -161,7 +161,7 @@
     align-items: center;
     gap: 6px;
     padding: 5px 8px;
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
+    background: var(--glass-bg-heavy);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     backdrop-filter: blur(16px);
@@ -258,7 +258,7 @@
     padding: 2px 8px;
     font-size: 10px;
     color: var(--text-secondary);
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
+    background: var(--glass-bg-heavy);
     border-radius: var(--radius-sm);
     font-style: italic;
     pointer-events: none;

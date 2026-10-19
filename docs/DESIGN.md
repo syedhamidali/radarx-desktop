@@ -127,3 +127,58 @@ instant state change (global rule in `theme.css`) and the sweep is drawn frozen.
 * Do use violet only for *derived* data (module / retrieval output), amber for caution, red for alarm.
 * Do not put the grid, scan lines or any animation behind data.
 * Do not add a colour literal; add a token (in both themes) if you need a new one.
+
+## Hide the map
+
+One persisted setting (`display.hideMap`, Settings store) hides the basemap in the 2D view and the
+ground imagery and terrain in the 3D views. Toggle it with the **Map** checkbox of the 2D toolbar, the
+**Map** button of the 3D toolbars, the command palette ("Hide / Show Map") or **Ctrl/Cmd+Shift+M**
+(rebindable under Settings -> Shortcuts). No map tiles are fetched while it is hidden.
+
+* **2D**: a plain background (the canvas colour of the active theme) with the range rings.
+* **3D**: no ground plane, imagery or terrain; the volume and the frame stay. The Ground menu and
+  *Realistic ground* are greyed out while the map is hidden and come back unchanged when it is shown
+  again (your Ground choice is not overwritten).
+
+| 2D, Clean room | 3D, Mission control | 3D mosaic, Clean room |
+| --- | --- | --- |
+| ![2D with the map hidden](images/ui/2d-map-hidden-light.png) | ![3D with the map hidden](images/ui/3d-map-hidden-dark.png) | ![3D mosaic with the map hidden](images/ui/3d-mosaic-map-hidden-light.png) |
+
+## Value mask
+
+"Hide values below / above / between / outside some limits" is one setting per variable
+(`stores/valueMask.ts`), edited from the **Mask** / **Hide values** button of the 2D and 3D toolbars,
+the Mosaic and Wind panels and the cross-section and RHI controls. It means the same everywhere:
+
+| Mode | Hides (exclusive / *Inclusive*) |
+| --- | --- |
+| below | `v < min` / `v <= min` |
+| above | `v > max` / `v >= max` |
+| between | `min < v < max` / `min <= v <= max` |
+| outside | `v < min or v > max` / `v <= min or v >= max` |
+
+Missing values stay missing, an incomplete mask hides nothing, and limits are compared as float32 like
+the data. Where it applies:
+
+* **2D** (shader, so changing it is instant), **3D polar and mosaic volumes** (shader, on the 8-bit value
+  the volume stores: a limit is honoured to 1/254 of the colour range, and a limit outside the colour
+  range cannot hide values the volume never stored), **wind** map, section and 3D arrows (own mask per
+  field, `wind:<field>`), **cross-section** and **RHI**.
+* **Mosaic**: applied when the mosaic is made (image, PNG, probes, statistics, NetCDF); the panel says so
+  and warns when the mask changed since. The mosaic's 3D volume is masked live in the 3D view.
+* **Exports**: PNG / SVG / PDF / GIF figures draw the mask and say so in a footnote; CSV, NetCDF,
+  CfRadial2 and Zarr write hidden values as missing and record the mask (variable attribute
+  `value_mask`, the history line, the CSV header). Data files follow the *Apply the value mask* tick
+  of the Export panel (on by default while a mask is active; untick it to write every value).
+  The engine side is `python/engine/valuemask.py`; the tests share one rule table with the viewer.
+
+## Colour check
+
+`npm run check:colors` (also a unit test) lists every hard-coded colour in `src/**/*.svelte`. Genuine
+data colours (colormap ramps, hydrometeor classes, storm-cell intensity classes, accent swatches) are
+allow-listed with a reason in `scripts/color-allowlist.json`; anything else must be a token. For code
+that cannot use CSS variables (canvas, WebGL) `utils/themeColors.ts` reads the tokens
+(`ink()`, `surface()`, `series()`, `cssRgb01()`) and `themeRevision` tells a view to redraw when the
+theme changes. Tokens added for this: `--c-ink-rgb`, `--c-shadow-rgb` (translucent overlays that work in
+both themes), `--c-series-1..8` (chart lines), `--c-scene-*` (text and chips on the always-dark polar 3D
+scene) and `--c-scene-light-*` (a light 3D scene).

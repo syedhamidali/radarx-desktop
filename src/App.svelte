@@ -20,7 +20,7 @@
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
   import { get } from 'svelte/store';
-  import { sidecarPort, settings } from './lib/stores/settings';
+  import { sidecarPort, settings, toggleMapHidden } from './lib/stores/settings';
   import { recentFiles } from './lib/stores/recentFiles';
   import { openFiles, setActiveFile } from './lib/stores/fileManager';
   import { matchesCombo, SHORTCUT_REGISTRY } from './lib/utils/shortcuts';
@@ -380,6 +380,7 @@
         case 'toggle-right-sidebar': toggleRightSidebar(); break;
         case 'play-pause': toggleAnimation(); break;
         case 'settings': settingsOpen = !settingsOpen; break;
+        case 'toggle-map': toggleMapHidden(); break;
       }
       return;
     }
@@ -1088,6 +1089,7 @@
     else if (type === 'toggle-left-sidebar') toggleLeftSidebar();
     else if (type === 'toggle-right-sidebar') toggleRightSidebar();
     else if (type === 'toggle-animation') toggleAnimation();
+    else if (type === 'toggle-map') toggleMapHidden();
     else if (type === 'set-view') { viewMode = value; syncWorkspace(); }
     else if (type === 'open-settings') settingsOpen = true;
     else if (type === 'show-shortcuts') shortcutsSheetVisible = true;

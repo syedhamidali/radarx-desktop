@@ -62,6 +62,34 @@
   --c-grid: rgba(var(--c-line-rgb), 0.055); /* faint graticule texture in empty areas */
   --c-scanline: rgba(0, 0, 0, 0.18);
 
+  /* ---- Ink and shadow triplets for translucent overlays: rgba(var(--c-ink-rgb), .12).
+   *      "ink" is the foreground (light on dark, dark on light), so a hover tint or a hairline made
+   *      from it is visible in both themes. ---- */
+  --c-ink-rgb: 224, 235, 247;
+  --c-shadow-rgb: 0, 0, 0;
+
+  /* ---- Chart series (categorical lines in profiles, scatter, time series). Each passes 3:1 on surface-1. ---- */
+  --c-series-1: #2bd9f5;
+  --c-series-2: #f7a35c;
+  --c-series-3: #9f7aea;
+  --c-series-4: #f56565;
+  --c-series-5: #48bb78;
+  --c-series-6: #ed64a6;
+  --c-series-7: #ecc94b;
+  --c-series-8: #8aa4ff;
+
+  /* ---- Text and chips drawn straight onto the 3D scene. The polar 3D scene is dark in both
+   *      themes, so these do not change with the theme. ---- */
+  --c-scene-text: rgba(255, 255, 255, 0.92);
+  --c-scene-text-dim: rgba(255, 255, 255, 0.6);
+  --c-scene-line: rgba(255, 255, 255, 0.18);
+  --c-scene-shadow: rgba(0, 0, 0, 0.9);
+  --c-scene-bg: rgba(12, 14, 24, 0.78);
+  --c-scene-warn: #ffd479;
+  /* ... and on a light 3D scene (Background: light) */
+  --c-scene-light-text: rgba(20, 28, 48, 0.92);
+  --c-scene-light-shadow: rgba(255, 255, 255, 0.9);
+
   /* ---- Typography ---- */
   --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
@@ -220,6 +248,17 @@
   --c-scrim: rgba(20, 40, 60, 0.42);
   --c-grid: rgba(var(--c-line-rgb), 0.07);
   --c-scanline: rgba(0, 30, 60, 0.05);
+  --c-ink-rgb: 10, 26, 42;
+  --c-shadow-rgb: 10, 40, 70;
+
+  --c-series-1: #00688a;
+  --c-series-2: #b85c00;
+  --c-series-3: #6a3fd1;
+  --c-series-4: #b3202f;
+  --c-series-5: #2f7d32;
+  --c-series-6: #b0307a;
+  --c-series-7: #8a6d00;
+  --c-series-8: #3a55c8;
 
   --card-bg: rgba(255, 255, 255, 0.8);
 

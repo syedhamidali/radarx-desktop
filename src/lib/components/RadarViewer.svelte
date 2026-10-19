@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { cssRgb01 } from '../utils/themeColors';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { radarData, selectedVariable, selectedSweep, connectionStatus } from '../stores/radarData';
@@ -34,6 +35,10 @@
   import type { SweepInfo } from '../stores/radarData';
   import RhiViewer from './RhiViewer.svelte';
   import { sweepLabel } from '../utils/rhiGeometry';
+  import { maskOf, maskTest, float32Mask, isMaskActive, valueMasks } from '../stores/valueMask';
+  import MaskPopover from './MaskPopover.svelte';
+  import { mapHidden, setMapHidden } from '../stores/settings';
+  import { getShortcutDisplay } from '../utils/shortcuts';
 
   // ── State ──────────────────────────────────────────────────────────────────
   let isLoading = $state(false);
@@ -47,6 +52,7 @@
   let canvasEl: HTMLDivElement;
   let webglCanvas: HTMLCanvasElement;
   let resizeObserver: ResizeObserver | null = null;
+  let themeObserver: MutationObserver | null = null;
   let containerWidth = $state(800);
   let containerHeight = $state(600);
 
@@ -72,8 +78,8 @@
   let currentMaxRange = $state(1);
   let currentCmap = $state('turbo');
 
-  // Map / geo overlay
-  let showMap = $state(true);
+  // Map / geo overlay. The map on/off choice is a persisted setting shared with the 3D views.
+  const showMap = $derived(!$mapHidden);
   let mapOpacity = $state(1.0);
   let showGeoOverlay = $state(true);
   // Radar sites layer (markers + site card): its code loads the first time it is switched on.
@@ -93,6 +99,8 @@
   let probeActive = $state(false);
   let probeValue: number | null = $state(null);
   let probeLabel: string | null = $state(null);
+  /** The gate under the probe exists but the value mask hides it. */
+  let probeHidden = $state(false);
   let probeX = $state(0);
   let probeY = $state(0);
   let currentEntry: SweepDataEntry | null = $state(null);
@@ -130,6 +138,9 @@
   const legendTitle = $derived(((fieldShown as DisplayedField | null)?.title) ?? variableLabel);
   const sweeps = $derived($radarData.sweeps);
   const variable = $derived($selectedVariable);
+  /** Value mask of what is on screen: a module field has its own, else the variable's. */
+  const maskKey = $derived(fieldShown ? `field:${(fieldShown as DisplayedField).name}` : ($selectedVariable ?? ''));
+  const activeMask = $derived(maskOf($valueMasks, maskKey));
   const sweep = $derived($selectedSweep);
   /** The selected sweep is an RHI (range-height scan): RhiViewer replaces the map view. */
   const sweepMeta = $derived(sweeps.find((sw) => sw.index === sweep));
@@ -166,6 +177,12 @@
         return { ...st, ppiStyle: { variable: v, cmap: cm, vmin: lo, vmax: hi, units: un }, ppiMaxRangeKm: km };
       });
     });
+  });
+
+  // The value mask changed (or the variable did): redraw, the shader hides the gates
+  $effect(() => {
+    void activeMask;
+    if (hasRendered) renderFrame();
   });
 
   // Re-render when map toggle changes (to update transparent background)
@@ -336,6 +353,10 @@
     });
     if (canvasEl) resizeObserver.observe(canvasEl);
 
+    // The theme decides the plain background (map hidden): redraw when data-theme changes.
+    themeObserver = new MutationObserver(() => renderFrame());
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
     // Mosaic hooks: the panel asks for the visible lon/lat box and for "fit to mosaic".
     registerViewBoundsProvider(currentViewBounds);
     window.addEventListener('xradar:mosaic-fit', onMosaicFit);
@@ -345,6 +366,7 @@
     registerViewBoundsProvider(null);
     window.removeEventListener('xradar:mosaic-fit', onMosaicFit);
     resizeObserver?.disconnect();
+    themeObserver?.disconnect();
     unsubSweepData?.();
     unsubField?.();
     unsubSweepStore?.();
@@ -432,6 +454,8 @@
     }
 
     ppi.setTransparentBackground(showMap);
+    ppi.setPlainSurface(showMap ? null : plainSurface());
+    ppi.setValueMask(activeMask);
     ppi.setColormap(currentCmap);
     ppi.setView(scale, translateX, translateY);
     ppi.render(currentVmin, currentVmax);
@@ -442,9 +466,17 @@
     console.log(`[PPI] Rendered ${entry.variable} sweep ${entry.sweep} in ${dt.toFixed(0)}ms (${entry.nAz}x${entry.nRange} gates)`);
   }
 
+  /** Theme colours (canvas, range rings) for the plain background shown while the map is hidden. */
+  function plainSurface() {
+    const [r, g, b] = cssRgb01('--c-text', [0.88, 0.92, 0.97]);
+    return { bg: cssRgb01('--c-surface-0', [0.01, 0.02, 0.05]), ring: [r, g, b, 0.28] as [number, number, number, number] };
+  }
+
   function renderFrame() {
     if (!ppi || !hasRendered) return;
     ppi.setTransparentBackground(showMap);
+    ppi.setPlainSurface(showMap ? null : plainSurface());
+    ppi.setValueMask(activeMask);
     ppi.setColormap(currentCmap);
     ppi.setView(scale, translateX, translateY);
     ppi.render(currentVmin, currentVmax);
@@ -602,6 +634,7 @@
     if (bestAi < 0) {
       probeValue = null;
       probeLabel = null;
+      probeHidden = false;
       return;
     }
     // Find nearest range index
@@ -614,6 +647,9 @@
 
     const val = entry.values[bestAi * entry.nRange + bestRi];
     probeValue = val <= -9998 ? null : val;
+    // A gate the value mask hides reads like missing data, but says why.
+    probeHidden = probeValue !== null && isMaskActive(activeMask) && maskTest(probeValue, float32Mask(activeMask));
+    if (probeHidden) probeValue = null;
     const cat = probeValue !== null ? legendCategories?.find((c) => c.value === Math.round(probeValue!)) : undefined;
     probeLabel = cat ? cat.label : null;
 
@@ -750,8 +786,8 @@
 
       {#if hasRendered && !isRhi}
         <div class="control-group map-controls">
-          <label class="toggle-label" title="Toggle map background">
-            <input type="checkbox" bind:checked={showMap} />
+          <label class="toggle-label" title="Show or hide the map ({getShortcutDisplay('toggle-map')}). Hidden: a plain background with range rings.">
+            <input type="checkbox" checked={showMap} on:change={(e) => setMapHidden(!e.currentTarget.checked)} data-testid="map-toggle" />
             Map
           </label>
           {#if showMap}
@@ -772,6 +808,7 @@
             <input type="checkbox" bind:checked={$showRadarSites} />
             Sites
           </label>
+          <MaskPopover variable={maskKey} units={currentUnits} testid="mask-2d" />
         </div>
         {#if $mosaicLayer}
           <div class="control-group map-controls">
@@ -936,8 +973,8 @@
             <rect
               x={Math.min(x1, x2)} y={Math.min(y1, y2)}
               width={Math.abs(x2 - x1)} height={Math.abs(y2 - y1)}
-              fill="rgba(0,220,255,0.05)"
-              stroke="rgba(0,220,255,0.6)"
+              fill="rgba(var(--c-accent-rgb), 0.05)"
+              stroke="rgba(var(--c-accent-rgb), 0.6)"
               stroke-width="1.5"
               stroke-dasharray="5 3"
             />
@@ -989,7 +1026,7 @@
         </div>
       {:else if probeActive && probeValue === null}
         <div class="probe-tooltip muted" style="left: {probeX + 12}px; top: {probeY - 28}px">
-          No data
+          {probeHidden ? 'Hidden by the value mask' : 'No data'}
         </div>
       {/if}
 
@@ -1260,7 +1297,7 @@
 
   .coord-label { color: var(--text-muted); font-weight: 600; }
   .coord-value { color: var(--text-primary); min-width: 52px; text-align: right; }
-  .coord-sep { color: var(--border-light, var(--border-color)); margin: 0 2px; }
+  .coord-sep { color: var(--border-light); margin: 0 2px; }
 
   .colorbar-wrapper {
     position: absolute;
@@ -1348,7 +1385,7 @@
     font-size: 11px;
     font-weight: 600;
     color: var(--text-primary);
-    text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+    text-shadow: 0 0 4px rgba(var(--c-shadow-rgb), 0.8);
   }
 
   .cat-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -1357,7 +1394,7 @@
     width: 12px;
     height: 12px;
     border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid rgba(var(--c-ink-rgb), 0.25);
   }
 
   .probe-tooltip {
@@ -1419,7 +1456,7 @@
     background: var(--glass-bg-heavy);
     border: 1px solid var(--accent-danger);
     border-radius: 6px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 2px 10px rgba(var(--c-shadow-rgb), 0.35);
   }
   .load-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .load-error-btn {

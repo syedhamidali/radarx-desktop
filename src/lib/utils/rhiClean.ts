@@ -13,7 +13,7 @@
  * "Raw data" switches everything off. Hidden gates become the no-data sentinel (-9999), like the
  * wire format, so the rasteriser and the hover lookup treat them as missing.
  */
-import { maskDescription, maskTest, isMaskActive, type ValueMask } from '../stores/valueMask.ts';
+import { maskDescription, maskTest, isMaskActive, float32Mask, type ValueMask } from '../stores/valueMask.ts';
 import { smoothingLabel, normalizeSmoothing, type Smoothing } from './crossSectionRaster.ts';
 
 export const NODATA = -9999;
@@ -237,7 +237,8 @@ export function cleanField(input: CleanInput, s: RhiNoiseSettings, units = ''): 
   }
 
   if (input.mask && isMaskActive(input.mask)) {
-    for (let i = 0; i < n; i++) if (out[i] > NODATA_LIMIT && maskTest(out[i], input.mask)) out[i] = NODATA;
+    const m32 = float32Mask(input.mask); // the data is float32: compare like the engine and the shaders do
+    for (let i = 0; i < n; i++) if (out[i] > NODATA_LIMIT && maskTest(out[i], m32)) out[i] = NODATA;
     result.applied.push(maskDescription(input.mask, units) ?? 'value mask');
   }
 

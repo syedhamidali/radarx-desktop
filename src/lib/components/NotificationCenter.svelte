@@ -260,7 +260,7 @@
     -webkit-backdrop-filter: blur(40px);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-lg), 0 0 40px rgba(0, 0, 0, 0.3);
+    box-shadow: var(--shadow-lg), 0 0 40px rgba(var(--c-shadow-rgb), 0.3);
     display: flex;
     flex-direction: column;
     overflow: hidden;

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ink, surface, text, textDim } from '../utils/themeColors';
   /**
    * Range-height display of an RHI sweep: x = ground range (km), y = height (km).
    *
@@ -360,12 +361,12 @@
     const ctx = prepareCanvas(baseCanvas, dpr);
     if (!ctx) return;
 
-    const bg = cssVar('--rhi-bg', cssVar('--bg-primary', '#080a14'));
-    const plotBg = cssVar('--rhi-plot-bg', cssVar('--bg-secondary', '#0d1020'));
-    const fg = cssVar('--rhi-text', cssVar('--text-secondary', '#9da2c2'));
-    const fgStrong = cssVar('--rhi-text-strong', cssVar('--text-primary', '#e4e6f4'));
-    const axisLine = cssVar('--rhi-axis', cssVar('--border-light', 'rgba(140,160,250,0.35)'));
-    const gridCol = cssVar('--rhi-grid', 'rgba(170,180,230,0.30)');
+    const bg = cssVar('--rhi-bg', surface(0));
+    const plotBg = cssVar('--rhi-plot-bg', surface(1));
+    const fg = cssVar('--rhi-text', textDim());
+    const fgStrong = cssVar('--rhi-text-strong', text());
+    const axisLine = cssVar('--rhi-axis', ink(0.35));
+    const gridCol = cssVar('--rhi-grid', ink(0.3));
     const halo = cssVar('--rhi-label-halo', plotBg);
 
     ctx.clearRect(0, 0, width, height);
@@ -484,7 +485,7 @@
       ctx.lineWidth = 3;
       ctx.strokeStyle = halo;
       ctx.strokeText(note, plotW - 6, 5);
-      ctx.fillStyle = cssVar('--accent-warning', '#fbbf24');
+      ctx.fillStyle = cssVar('--c-caution', ink(1));
       ctx.fillText(note, plotW - 6, 5);
     }
     ctx.restore();
@@ -553,7 +554,7 @@
     ctx.beginPath();
     ctx.rect(0, 0, plotW, plotH);
     ctx.clip();
-    ctx.strokeStyle = cssVar('--rhi-crosshair', 'rgba(255,255,255,0.55)');
+    ctx.strokeStyle = cssVar('--rhi-crosshair', ink(0.55));
     ctx.lineWidth = 1;
     ctx.setLineDash([3, 3]);
     ctx.beginPath();
@@ -748,9 +749,9 @@
     out.height = Math.round((height + topBar + bottomBar) * dpr);
     const ctx = out.getContext('2d');
     if (!ctx) return;
-    const bg = cssVar('--rhi-bg', '#080a14');
-    const fg = cssVar('--rhi-text', '#9da2c2');
-    const fgStrong = cssVar('--rhi-text-strong', '#e4e6f4');
+    const bg = cssVar('--rhi-bg', surface(0));
+    const fg = cssVar('--rhi-text', textDim());
+    const fgStrong = cssVar('--rhi-text-strong', text());
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, width, height + topBar + bottomBar);
@@ -1028,13 +1029,13 @@
 <style>
   .rhi-viewer {
     /* Theme hooks; each falls back to the app tokens */
-    --rhi-bg: var(--bg-primary, #080a14);
-    --rhi-plot-bg: var(--bg-secondary, #0d1020);
-    --rhi-text: var(--text-secondary, #9da2c2);
-    --rhi-text-strong: var(--text-primary, #e4e6f4);
-    --rhi-axis: var(--border-light, rgba(140, 160, 250, 0.35));
-    --rhi-grid: rgba(170, 180, 230, 0.3);
-    --rhi-crosshair: rgba(255, 255, 255, 0.55);
+    --rhi-bg: var(--bg-primary);
+    --rhi-plot-bg: var(--bg-secondary);
+    --rhi-text: var(--text-secondary);
+    --rhi-text-strong: var(--text-primary);
+    --rhi-axis: var(--border-light);
+    --rhi-grid: rgba(var(--c-ink-rgb), 0.3);
+    --rhi-crosshair: rgba(var(--c-ink-rgb), 0.55);
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -1049,15 +1050,15 @@
     align-items: center;
     gap: 8px 10px;
     padding: 4px var(--spacing-md, 12px);
-    border-bottom: 1px solid var(--border-color, rgba(140, 160, 250, 0.08));
-    background: var(--bg-secondary, #0d1020);
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
     font-size: 11px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     flex-shrink: 0;
   }
   .rhi-summary {
     font-family: var(--font-mono, ui-monospace, monospace);
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
   .rhi-ctl {
     display: inline-flex;
@@ -1096,7 +1097,7 @@
     user-select: none;
   }
   .rhi-plot:focus-visible {
-    box-shadow: inset 0 0 0 1px var(--accent-primary, #5b6cf7);
+    box-shadow: inset 0 0 0 1px var(--accent-primary);
   }
   .rhi-canvas {
     position: absolute;
@@ -1127,9 +1128,9 @@
     padding: 6px 10px;
     font-family: var(--font-mono, ui-monospace, monospace);
     font-size: 11.5px;
-    color: var(--text-primary, #e4e6f4);
-    background: var(--glass-bg-heavy, rgba(8, 10, 20, 0.85));
-    border: 1px solid var(--glass-border, rgba(140, 160, 250, 0.1));
+    color: var(--text-primary);
+    background: var(--glass-bg-heavy);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 6px);
     display: flex;
     flex-direction: column;
@@ -1140,7 +1141,7 @@
   }
   .rhi-readout-var,
   .rhi-readout-none {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     margin-left: 6px;
   }
   .rhi-readout-none {
@@ -1149,7 +1150,7 @@
   .rhi-readout-row {
     display: flex;
     gap: 12px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
 
   .rhi-overlay-msg {
@@ -1161,7 +1162,7 @@
     align-items: center;
     justify-content: center;
     gap: var(--spacing-md, 12px);
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     font-size: 13px;
     pointer-events: none;
   }
@@ -1171,8 +1172,8 @@
   .rhi-spinner {
     width: 32px;
     height: 32px;
-    border: 3px solid var(--border-color, rgba(140, 160, 250, 0.08));
-    border-top-color: var(--accent-primary, #5b6cf7);
+    border: 3px solid var(--border-color);
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: rhi-spin 800ms linear infinite;
   }
@@ -1187,15 +1188,15 @@
     font-weight: 400;
   }
   .rhi-warn {
-    color: var(--accent-warning, #fbbf24);
+    color: var(--accent-warning);
   }
   .rhi-sep {
     width: 1px;
     align-self: stretch;
-    background: var(--border-color, rgba(140, 160, 250, 0.08));
+    background: var(--border-color);
   }
   .rhi-btn.on {
-    background: rgba(91, 108, 247, 0.28);
+    background: rgba(var(--c-accent-rgb), 0.28);
   }
   .rhi-noise-host {
     position: relative;
@@ -1211,11 +1212,11 @@
     flex-direction: column;
     gap: 8px;
     font-size: 11px;
-    color: var(--text-secondary, #9da2c2);
-    background: var(--c-panel-solid, #0d1020); /* opaque: it floats over the side panels */
-    border: 1px solid var(--border-light, rgba(140, 160, 250, 0.14));
+    color: var(--text-secondary);
+    background: var(--c-panel-solid); /* opaque: it floats over the side panels */
+    border: 1px solid var(--border-light);
     border-radius: var(--radius-md, 8px);
-    box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.6));
+    box-shadow: var(--shadow-lg);
     text-transform: none;
     letter-spacing: 0;
     font-weight: 400;
@@ -1223,7 +1224,7 @@
   .rhi-group {
     margin: 0;
     padding: 6px 8px 8px;
-    border: 1px solid var(--border-color, rgba(140, 160, 250, 0.08));
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 6px);
     display: flex;
     flex-direction: column;
@@ -1238,7 +1239,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .rhi-row {
     display: flex;
@@ -1257,13 +1258,13 @@
     user-select: none;
   }
   .rhi-row.strong {
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
     font-weight: 600;
   }
   .rhi-row em {
     font-weight: 400;
     font-style: normal;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .rhi-row input[type='checkbox'] {
     margin: 0;
@@ -1280,7 +1281,7 @@
   .rhi-row .rhi-hint {
     margin-left: 0;
     font-size: 10.5px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .rhi-caption {
     flex-shrink: 0;
@@ -1288,7 +1289,7 @@
     text-align: center;
     font-size: 11px;
     line-height: 1.35;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
     display: -webkit-box;
     -webkit-line-clamp: 2;
     line-clamp: 2;
@@ -1296,7 +1297,7 @@
     overflow: hidden;
   }
   .rhi-caption.raw {
-    color: var(--accent-warning, #fbbf24);
+    color: var(--accent-warning);
   }
   .rhi-colorbar {
     flex-shrink: 0;

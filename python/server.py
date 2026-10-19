@@ -783,6 +783,14 @@ def _export_inputs(
         for key in ("vmin", "vmax"):
             if opts.get(key) is None and isinstance(meta.get(key), (int, float)):
                 opts[key] = meta[key]
+    # value masks are keyed by the name the viewer uses; the exported tree uses the NetCDF-safe name
+    if isinstance(opts.get("value_masks"), dict):
+        opts["value_masks"] = {
+            (derived.export_name(k) if k in stored else k): m
+            for k, m in opts["value_masks"].items()
+        }
+    if opts.get("value_mask_variable") in stored:
+        opts["value_mask_variable"] = derived.export_name(opts["value_mask_variable"])
     return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
 
 
@@ -3822,6 +3830,7 @@ class ConnectionHandler:
                 min_rhohv=msg.get("min_rhohv"),
                 progress=progress_sync,
                 keep_volume=msg.get("keep_volume"),
+                value_mask=msg.get("value_mask"),
             )
 
         t0 = time.perf_counter()

@@ -27,7 +27,7 @@
 
   function buildGradient(name: string, _custom?: unknown): string {
     const rgb = COLORMAP_DATA[name];
-    if (!rgb) return 'linear-gradient(to right, #000, #fff)';
+    if (!rgb) return 'linear-gradient(to right, var(--c-surface-3), var(--c-text))';
     const stops: string[] = [];
     const nStops = 16;
     for (let i = 0; i < nStops; i++) {
@@ -117,7 +117,7 @@
 
   function cmapPreviewGradient(name: string): string {
     const rgb = COLORMAP_DATA[name];
-    if (!rgb) return '#333';
+    if (!rgb) return 'var(--c-surface-3)';
     const stops: string[] = [];
     for (let i = 0; i < 8; i++) {
       const idx = Math.round((i / 7) * 255);
@@ -208,7 +208,7 @@
       <!-- Link to open editor from picker -->
       <div class="cmap-category">Tools</div>
       <button class="cmap-option" on:click={openEditor}>
-        <span class="cmap-name" style="color: var(--accent-primary, #6cf)">Open Colormap Editor...</span>
+        <span class="cmap-name" style="color: var(--accent-primary)">Open Colormap Editor...</span>
       </button>
     </div>
   {/if}
@@ -247,7 +247,7 @@
     background: var(--c-accent);
   }
   .colorbar-container:focus-visible {
-    box-shadow: 0 0 0 2px var(--accent-primary, #6cf);
+    box-shadow: 0 0 0 2px var(--accent-primary);
   }
 
   .cmap-label {
@@ -321,7 +321,7 @@
 
   .range-sep {
     font-size: 10px;
-    color: var(--border-light, var(--border-color));
+    color: var(--border-light);
   }
 
   .range-input {
@@ -349,8 +349,8 @@
     transition: color var(--transition-fast), border-color var(--transition-fast);
   }
   .edit-btn:hover {
-    color: var(--accent-primary, #6cf);
-    border-color: var(--accent-primary, #6cf);
+    color: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 
   /* Colormap picker */
@@ -398,7 +398,7 @@
     height: 10px;
     border-radius: 2px;
     flex-shrink: 0;
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.06));
+    border: 1px solid var(--glass-border);
   }
 
   .cmap-name {
