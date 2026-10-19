@@ -395,7 +395,7 @@ void main() {
     float dAxis = length(p.xy - uAxis);
     float dt = clamp(0.014 * t, 2.5, 110.0);
     // refine near the tornado and below the cloud base where the detail is
-    if (dAxis < 800.0 && p.z < 900.0) dt = min(dt, 3.0 + 0.05 * dAxis);
+    if (dAxis < 800.0 && p.z < 900.0) dt = min(dt, 2.0 + 0.02 * dAxis);
     else if (p.z < 600.0) dt = min(dt, 24.0);
     float ts = t + dt * (0.15 + 0.85 * jitter);
     if (ts > tMax) { dt = tMax - t; ts = t + 0.5 * dt; }
@@ -571,7 +571,7 @@ void main() {
     treeD = LL.a;
     // base colours (dusk, linear): pasture, hay, ploughed, crop, woodland, wet, yard
     vec3 pasture = mix(vec3(0.075, 0.105, 0.04), vec3(0.11, 0.13, 0.05), vr);
-    vec3 hay = mix(vec3(0.20, 0.17, 0.07), vec3(0.24, 0.20, 0.08), vr);
+    vec3 hay = mix(vec3(0.15, 0.13, 0.06), vec3(0.19, 0.16, 0.07), vr);
     vec3 plough = mix(vec3(0.115, 0.075, 0.05), vec3(0.15, 0.10, 0.07), vr);
     vec3 crop = mix(vec3(0.06, 0.10, 0.04), vec3(0.09, 0.125, 0.05), vr);
     vec3 wood = vec3(0.025, 0.045, 0.02);
@@ -580,7 +580,7 @@ void main() {
     albedo = cls < 0.5 ? pasture : cls < 1.5 ? hay : cls < 2.5 ? plough : cls < 3.5 ? crop : cls < 4.5 ? wood : cls < 5.5 ? wet : yard;
     // texture: mowing / grass tufts / clods at several scales
     float grass = 0.72 + 0.55 * n2.r + 0.35 * (n3.g - 0.5);
-    float patchy = 0.8 + 0.4 * n4.b;
+    float patchy = 0.55 + 0.9 * n4.b;
     albedo *= mix(1.0, grass, fine) * patchy;
     // rows of the crop and the furrows of the ploughed field (angle from the field's variation)
     float ang = vr * 3.14159;
@@ -599,9 +599,9 @@ void main() {
   }
 
   // wet ground: darker, glossy; puddles in the low spots
-  float puddle = smoothstep(0.70, 0.82, n3.r * 0.6 + n1.g * 0.4) * uWet;
+  float puddle = smoothstep(0.78, 0.9, n3.r * 0.6 + n1.g * 0.4) * uWet;
   float wet = clamp(uWet * (0.25 + 0.3 * n1.r) + puddle, 0.0, 1.0);
-  albedo *= 2.6 * mix(1.0, 0.6, uWet * 0.7);
+  albedo *= 3.6 * mix(1.0, 0.6, uWet * 0.7);
 
   vec3 N = vec3(0.0, 0.0, 1.0);
   // terrain normal
@@ -621,7 +621,8 @@ void main() {
   vec3 colr = albedo * (amb + fl);
   // glossy sheen of wet ground: reflects the dim sky and the lightning
   float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
-  vec3 sheen = (uAmb.rgb * 0.18 + fl * 1.2) * (0.02 + 0.16 * fres) * wet;
+  // wet fields reflect the bright rain haze at grazing angles (the ground brightens toward the horizon), puddles are mirrors
+  vec3 sheen = (uAmb.rgb * 0.9 + fl * 1.5) * (0.015 + 0.2 * fres * fres) * wet + (uAmb.rgb * 1.2 + fl * 1.6) * puddle * (0.2 + 0.6 * fres);
   colr += sheen;
   outColor = vec4(colr, 1.0);
   outDist = vec4(vDist, 0.0, 0.0, 1.0);

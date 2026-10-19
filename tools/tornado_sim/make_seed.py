@@ -42,7 +42,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--movie", default=str(Path.home() / "Downloads/xradar-exports/perils_movie"))
     ap.add_argument("--out", default=None)
-    ap.add_argument("--shot", default="415,505", help="data-clock seconds of the shot (stations, echo and flashes are taken here)")
+    ap.add_argument(
+        "--shot",
+        default="415,505",
+        help="data-clock seconds of the shot (stations, echo and flashes are taken here)",
+    )
     ap.add_argument("--echo-half-km", type=float, default=8.0)
     args = ap.parse_args()
     movie = Path(args.movie).expanduser()
@@ -67,7 +71,11 @@ def main() -> None:
         "radiusM": round(diam_km * 1000 / 2, 1),
         "radar": ",".join(summ.get("best_radars", [])) or None,
     }
-    sense = "cyclonic" if summ["sense_counts"].get("cyclonic", 0) >= summ["sense_counts"].get("anticyclonic", 0) else "anticyclonic"
+    sense = (
+        "cyclonic"
+        if summ["sense_counts"].get("cyclonic", 0) >= summ["sense_counts"].get("anticyclonic", 0)
+        else "anticyclonic"
+    )
 
     # stations: nearest to the tornado at the shot time with T and Td; and the nearest warm (T - Td >= 1.5 K) station
     stations = json.loads((bundle / "stations" / "stations.json").read_text())
@@ -89,7 +97,9 @@ def main() -> None:
             lat, lon = la, lo
         if lat is None:
             continue
-        cands.append({"id": s["id"], "T": T, "Td": Td, "P": P, "km": km_between(lat_t, lon_t, lat, lon)})
+        cands.append(
+            {"id": s["id"], "T": T, "Td": Td, "P": P, "km": km_between(lat_t, lon_t, lat, lon)}
+        )
     cands.sort(key=lambda c: c["km"])
     near = cands[0]
     warm = next((c for c in cands if c["T"] - c["Td"] >= 1.5), near)
@@ -111,12 +121,24 @@ def main() -> None:
             continue
         if km_between(lat_t, lon_t, f["lat"], f["lon"]) > 45:
             continue
-        flashes.append({"t": round(td, 3), "lat": f["lat"], "lon": f["lon"], "altM": f["alt_m"], "nSources": f["n_sources"]})
+        flashes.append(
+            {
+                "t": round(td, 3),
+                "lat": f["lat"],
+                "lon": f["lon"],
+                "altM": f["alt_m"],
+                "nSources": f["n_sources"],
+            }
+        )
 
     # radar echo: lowest reliable level of the merged volume nearest to the shot time, a box around the tornado
     man = json.loads((bundle / "manifest.json").read_text())
     steps = man["steps"]
-    k = min(range(len(steps)), key=lambda i: abs(steps[i]["t_s"] - tm)) if isinstance(steps[0], dict) and "t_s" in steps[0] else int(round(tm / 60.0))
+    k = (
+        min(range(len(steps)), key=lambda i: abs(steps[i]["t_s"] - tm))
+        if isinstance(steps[0], dict) and "t_s" in steps[0]
+        else round(tm / 60.0)
+    )
     vol = np.load(bundle / "volumes" / f"step_{k:04d}.npz")
     g = man["grid"]
     xs = np.array(g["x_km"])
@@ -139,8 +161,8 @@ def main() -> None:
         "x0": float((xs[ix[0]] - bx) * 1000.0),
         "y0": float((ys[iy[0]] - by) * 1000.0),
         "dx": 500.0,
-        "nx": int(len(ix)),
-        "ny": int(len(iy)),
+        "nx": len(ix),
+        "ny": len(iy),
         "dbz": [None if not np.isfinite(v) else round(float(v), 1) for v in sub.ravel()],
         "t": float(k * 60.0),
     }
@@ -152,25 +174,45 @@ def main() -> None:
         "span": [track[0]["t"], track[-1]["t"]],
         "sense": sense,
         "meso": meso,
-        "thermo": thermo(near, "nearest station: the near-surface air that the funnel's pressure drop condenses"),
-        "inflowThermo": thermo(warm, "nearest station with T - Td >= 1.5 K: the warm inflow that sets the ambient cloud base"),
+        "thermo": thermo(
+            near, "nearest station: the near-surface air that the funnel's pressure drop condenses"
+        ),
+        "inflowThermo": thermo(
+            warm,
+            "nearest station with T - Td >= 1.5 K: the warm inflow that sets the ambient cloud base",
+        ),
         "lightningFlashes": flashes,
         "echo": echo,
-        "survey": {"id": tor["id"], "source": "NWS damage survey (NCEI Storm Events, SPC) EF2 event 1035605: rating, width, begin/end and times", "narrative": tor.get("survey_narrative_start")},
+        "survey": {
+            "id": tor["id"],
+            "source": "NWS damage survey (NCEI Storm Events, SPC) EF2 event 1035605: rating, width, begin/end and times",
+            "narrative": tor.get("survey_narrative_start"),
+        },
         "epochUtc": man["window"]["start"],
     }
     notes = {
         "origin": "first track point (survey begin) unless the seed names one",
-        "observed": ["survey rating, width, path (straight line between begin and end), times", f"parent circulation Vrot {meso['vrot']} m/s (median of the steps), couplet diameter {diam_km} km; the tornado vortex itself is unresolved on a 500 m grid", "station T, Td, p", f"{len(flashes)} lightning flashes (LMA position and time)", "merged radar reflectivity at 0.5 km"],
+        "observed": [
+            "survey rating, width, path (straight line between begin and end), times",
+            f"parent circulation Vrot {meso['vrot']} m/s (median of the steps), couplet diameter {diam_km} km; the tornado vortex itself is unresolved on a 500 m grid",
+            "station T, Td, p",
+            f"{len(flashes)} lightning flashes (LMA position and time)",
+            "merged radar reflectivity at 0.5 km",
+        ],
         "modelled": ["near-core wind profile", "funnel shape", "debris", "cloud and rain texture"],
         "survey_scale_estimate": vk.get("survey_scale_estimate"),
         "shot": [t0, t1],
-        "stations_by_distance": [{k2: (round(v, 2) if isinstance(v, float) else v) for k2, v in c.items()} for c in cands[:6]],
+        "stations_by_distance": [
+            {k2: (round(v, 2) if isinstance(v, float) else v) for k2, v in c.items()}
+            for c in cands[:6]
+        ],
     }
     out = Path(args.out).expanduser() if args.out else movie / "tornado_sim" / "tornado_seed.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"seed": seed, "notes": notes}, indent=1))
-    print(f"wrote {out}: {len(flashes)} flashes, echo {echo['nx']}x{echo['ny']}, nearest station {near['id']} ({near['km']:.1f} km, T {near['T']:.1f} Td {near['Td']:.1f}), warm {warm['id']} ({warm['km']:.1f} km)")
+    print(
+        f"wrote {out}: {len(flashes)} flashes, echo {echo['nx']}x{echo['ny']}, nearest station {near['id']} ({near['km']:.1f} km, T {near['T']:.1f} Td {near['Td']:.1f}), warm {warm['id']} ({warm['km']:.1f} km)"
+    )
 
 
 if __name__ == "__main__":

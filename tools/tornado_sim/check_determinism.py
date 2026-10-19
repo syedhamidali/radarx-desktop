@@ -20,9 +20,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_tornado import serve  # noqa: E402
-
-from engine.animate_tiles import TileCache  # noqa: E402,I001
+from engine.animate_tiles import TileCache
+from render_tornado import serve
 
 
 async def open_page(p, port, seed, size):
@@ -31,19 +30,29 @@ async def open_page(p, port, seed, size):
         headless=True,
         args=["--no-proxy-server", "--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist"],
     )
-    page = await browser.new_page(viewport={"width": size[0], "height": size[1]}, device_scale_factor=1)
+    page = await browser.new_page(
+        viewport={"width": size[0], "height": size[1]}, device_scale_factor=1
+    )
     await page.goto(f"http://127.0.0.1:{port}/?tornado=1")
     await page.wait_for_function("() => !!window.__tornado")
     await page.evaluate(
         "(c) => window.__tornado.init(c)",
-        {"seed": seed, "width": size[0], "height": size[1], "tiles": False, "shot": [450, 462], "debrisCount": 4000},
+        {
+            "seed": seed,
+            "width": size[0],
+            "height": size[1],
+            "tiles": False,
+            "shot": [450, 462],
+            "debrisCount": 4000,
+        },
     )
     return browser, page
 
 
 async def frame(page, mode, tau, t0=450.0):
     await page.evaluate(
-        "(a) => window.__tornado.frame(a)", {"mode": mode, "tau": tau, "t": t0 + tau, "duration": 12, "labels": False}
+        "(a) => window.__tornado.frame(a)",
+        {"mode": mode, "tau": tau, "t": t0 + tau, "duration": 12, "labels": False},
     )
     return await page.evaluate("() => window.__tornado.hashPixels()")
 
@@ -67,7 +76,9 @@ async def main_async(a: argparse.Namespace) -> int:
             same = h1 == h2 == h3
             ok &= same
             results[mode] = {"twice": h1 == h2, "after_other_frames": h1 == h3, "hash": h1}
-            print(f"{mode:7s}: same frame twice {h1 == h2}, after other frames {h1 == h3}  (hash {h1})")
+            print(
+                f"{mode:7s}: same frame twice {h1 == h2}, after other frames {h1 == h3}  (hash {h1})"
+            )
         # sequential vs jump
         n = 45
         last = None
@@ -79,7 +90,9 @@ async def main_async(a: argparse.Namespace) -> int:
         await browser2.close()
         seq_ok = last == jump
         ok &= seq_ok
-        print(f"sequential 45 steps vs a fresh page jumping straight to the frame: {seq_ok}  ({last} vs {jump})")
+        print(
+            f"sequential 45 steps vs a fresh page jumping straight to the frame: {seq_ok}  ({last} vs {jump})"
+        )
         results["sequential_vs_jump"] = seq_ok
     srv.shutdown()
     if a.out:
@@ -89,9 +102,14 @@ async def main_async(a: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument(
-        "--seed", default=str(Path.home() / "Downloads/xradar-exports/perils_movie/tornado_sim/tornado_seed.json")
+        "--seed",
+        default=str(
+            Path.home() / "Downloads/xradar-exports/perils_movie/tornado_sim/tornado_seed.json"
+        ),
     )
     ap.add_argument("--app-dist", default=str(REPO / "dist"))
     ap.add_argument("--out", default=None)

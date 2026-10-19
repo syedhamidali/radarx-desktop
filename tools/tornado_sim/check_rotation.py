@@ -22,9 +22,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from render_tornado import serve  # noqa: E402
-
-from engine.animate_tiles import TileCache  # noqa: E402,I001
+from engine.animate_tiles import TileCache
+from render_tornado import serve
 
 
 async def main_async(a: argparse.Namespace) -> int:
@@ -40,14 +39,28 @@ async def main_async(a: argparse.Namespace) -> int:
         browser = await p.chromium.launch(
             channel="chrome",
             headless=True,
-            args=["--no-proxy-server", "--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist"],
+            args=[
+                "--no-proxy-server",
+                "--use-gl=angle",
+                "--use-angle=metal",
+                "--ignore-gpu-blocklist",
+            ],
         )
-        page = await browser.new_page(viewport={"width": size, "height": size}, device_scale_factor=1)
+        page = await browser.new_page(
+            viewport={"width": size, "height": size}, device_scale_factor=1
+        )
         await page.goto(f"http://127.0.0.1:{port}/?tornado=1")
         await page.wait_for_function("() => !!window.__tornado")
         await page.evaluate(
             "(c) => window.__tornado.init(c)",
-            {"seed": seed, "width": size, "height": size, "tiles": False, "debrisCount": 10, "renderScale": 0.25},
+            {
+                "seed": seed,
+                "width": size,
+                "height": size,
+                "tiles": False,
+                "debrisCount": 10,
+                "renderScale": 0.25,
+            },
         )
 
         async def grab(t: float):
@@ -119,14 +132,29 @@ async def main_async(a: argparse.Namespace) -> int:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument(
-        "--seed", default=str(Path.home() / "Downloads/xradar-exports/perils_movie/tornado_sim/tornado_seed.json")
+        "--seed",
+        default=str(
+            Path.home() / "Downloads/xradar-exports/perils_movie/tornado_sim/tornado_seed.json"
+        ),
     )
     ap.add_argument("--app-dist", default=str(REPO / "dist"))
-    ap.add_argument("--times", type=float, nargs="+", default=[450.75, 459.75, 468.75], help="data times; t mod 3 s = 0.75 keeps the step inside one flow-noise cycle")
+    ap.add_argument(
+        "--times",
+        type=float,
+        nargs="+",
+        default=[450.75, 459.75, 468.75],
+        help="data times; t mod 3 s = 0.75 keeps the step inside one flow-noise cycle",
+    )
     ap.add_argument("--radii", type=float, nargs="+", default=[45.0, 70.0, 110.0, 160.0, 240.0])
-    ap.add_argument("--single", action="store_true", help="one phase of the flow noise only (exact rigid transport), instead of the blend the volume shader draws")
+    ap.add_argument(
+        "--single",
+        action="store_true",
+        help="one phase of the flow noise only (exact rigid transport), instead of the blend the volume shader draws",
+    )
     ap.add_argument("--out", default=None)
     raise SystemExit(asyncio.run(main_async(ap.parse_args())))
 
