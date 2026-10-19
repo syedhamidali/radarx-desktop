@@ -25,6 +25,29 @@ def _class_of(d_mm) -> np.ndarray:
     return np.where(d > 8.0, -1, c)
 
 
+def _merge_hail_rows(rows: list[dict], gap_s: float = 3.0) -> list[dict]:
+    """Merge evidence items of the same station whose clip spans touch (10 s samples): counts add, the
+    maximum diameter is kept, the flux is the largest."""
+    out: list[dict] = []
+    for r in sorted(rows, key=lambda r: (str(r["station_id"]), r["clip_s"][0])):
+        last = out[-1] if out else None
+        if last and last["station_id"] == r["station_id"] and last["evidence"] == r["evidence"] \
+                and r["clip_s"][0] - last["clip_s"][1] <= gap_s:
+            last["clip_s"][1] = max(last["clip_s"][1], r["clip_s"][1])
+            if last.get("event_data_s") and r.get("event_data_s"):
+                last["event_data_s"] = [min(last["event_data_s"][0], r["event_data_s"][0]),
+                                        max(last["event_data_s"][1], r["event_data_s"][1])]
+            last["max_diameter_mm"] = max(last["max_diameter_mm"], r["max_diameter_mm"])
+            last["large_particle_flux_m2s"] = max(last["large_particle_flux_m2s"], r["large_particle_flux_m2s"])
+            if r["counts"] is not None:
+                last["counts"] = (last["counts"] or 0) + r["counts"]
+            last["n_samples"] = last.get("n_samples", 1) + 1
+            last["min_listener_distance_m"] = min(last["min_listener_distance_m"], r["min_listener_distance_m"])
+        else:
+            out.append({**r, "n_samples": 1, "clip_s": list(r["clip_s"])})
+    return out
+
+
 def _first(d: dict, keys):
     for k in keys:
         if d.get(k) is not None:
@@ -72,13 +95,27 @@ class Scene:
         self.lat, self.lon, self.alt, self.heading = c["lat"], c["lon"], c["alt_m"], c["heading_deg"]
         st = self.bundle.stations
         self.dist = (
-            np.array([slant_distance(self.lat, self.lon, self.alt, s.lat, s.lon, s.alt_m) for s in st])
-            if st
-            else np.zeros((0, self.n))
+            np.array([self._station_distance(s) for s in st]) if st else np.zeros((0, self.n))
         )
         if st and self.ground_alt_m == 0.0:
             self.ground_alt_m = float(np.median([s.alt_m for s in st]))
         self._cache: dict = {}
+
+    def _station_distance(self, s) -> np.ndarray:
+        """Slant distance (m) listener -> station per control step; a moving station (a vehicle with a
+        lat / lon series) is followed, a fixed one uses its position."""
+        la, lo = np.full(self.n, s.lat), np.full(self.n, s.lon)
+        if "lat" in s.series and "lon" in s.series:
+            a, b = s.at("lat", self.tw), s.at("lon", self.tw)
+            la, lo = np.where(np.isfinite(a), a, la), np.where(np.isfinite(b), b, lo)
+        return slant_distance(self.lat, self.lon, self.alt, la, lo, s.alt_m)
+
+    def radar_at(self):
+        """The radar volumes sampled at the listener (conv, hail, mesh_mm, ok), or None."""
+        if "radar" not in self._cache:
+            rv = self.bundle.radar_volumes
+            self._cache["radar"] = None if rv is None else rv.sample(self.tw, self.lat, self.lon)
+        return self._cache["radar"]
 
     # -- station blending ---------------------------------------------------------------------
     def station_weights(self, var: str):
@@ -219,9 +256,11 @@ class Scene:
         wsum = np.zeros(n)
         rows: list[dict] = []
         srcs: set[str] = set()
+        n_items = 0
 
         def add(label, sid, name, mask, dist_m, dmx, flx, dm, rr, ev_span, assumed, counts=None):
-            nonlocal w, best, dmax, flux, dm_acc, rr_acc, wsum
+            nonlocal w, best, dmax, flux, dm_acc, rr_acc, wsum, n_items
+            n_items += 1
             dist_a = np.broadcast_to(np.asarray(dist_m, float), (n,))
             prox = np.clip(1.0 - dist_a / reach_m, 0.0, 1.0) ** 2
             ww = smooth_edges(mask, int(0.5 * CTL_RATE)) * prox
@@ -240,7 +279,7 @@ class Scene:
             rows.append({
                 "evidence": label, "station_id": sid, "station_name": name,
                 "event_data_s": ev_span, "clip_s": [float(clip_t.min()), float(clip_t.max())],
-                "max_diameter_mm": float(dmx), "counts": counts, "large_particle_flux_m2s": float(flx),
+                "max_diameter_mm": float(dmx), "counts": counts, "large_particle_flux_m2s": float(np.max(np.asarray(flx)[act])) if np.ndim(flx) else float(flx),
                 "dm_mm": float(dm), "rain_rate_mmh": float(rr),
                 "min_listener_distance_m": float(dist_a[act].min()),
                 "assumed": assumed,
@@ -297,6 +336,22 @@ class Scene:
             add("events.json", None, None, (self.tc >= a) & (self.tc <= b), d, float(dmx or 15.0), flx,
                 float(e.props.get("dm_mm", 8.0)), float(e.props.get("rain_rate_mmh", 50.0)),
                 [float(self.timeline.clip_to_data(a)), float(self.timeline.clip_to_data(b))], assumed, counts)
+        for s_i, s in enumerate(self.bundle.stations):
+            hits = s.at("hail_intensity_hits_cm2h", self.tw)  # a piezo hail sensor: hits / cm2 / h
+            m = np.isfinite(hits) & (hits > 0.5)
+            if m.any():
+                add("station_hail_sensor", s.id, s.name, m, self.dist[s_i], 10.0,
+                    np.where(m, np.nan_to_num(hits) * 1e4 / 3600.0, 0.0), 8.0, 50.0,
+                    [float(self.tw[m].min()), float(self.tw[m].max())],
+                    ["max_diameter_mm (the sensor counts hits, not sizes)"])
+        ra = self.radar_at()
+        if ra is not None:
+            m = ra["ok"] & (ra["hail"] > 0.15)
+            if m.any():
+                dmx = np.where(ra["mesh_mm"] > 0, ra["mesh_mm"], 20.0)
+                add("radar_hail_class", None, "radar volumes (hydrometeor class)", m, np.zeros(n),
+                    float(dmx[m].max()), 2.0, 8.0, 50.0, [float(self.tw[m].min()), float(self.tw[m].max())],
+                    ["large_particle_flux", "dm_mm"] + ([] if (ra["mesh_mm"][m] > 0).any() else ["max_diameter_mm"]))
         rs = self.bundle.radar_samples
         if rs is not None:
             h = self._radar_lookup(rs, "hail")
@@ -304,13 +359,14 @@ class Scene:
             if m.any():
                 add("radar_hail_class", None, "radar volume", m, np.zeros(n), 20.0, 2.0, 8.0, 50.0, None,
                     ["max_diameter_mm", "large_particle_flux", "dm_mm"])
+        rows = _merge_hail_rows(rows)
         res = {
             "w": w,
             "dmax_mm": dmax,
             "flux": flux,
             "dm_mm": np.where(w > 0, dm_acc / np.maximum(wsum, 1e-9), 0.0),
             "rr_mmh": np.where(w > 0, rr_acc / np.maximum(wsum, 1e-9), 0.0),
-            "n_events": len(rows),
+            "n_events": n_items,
             "sources": sorted(srcs),
             "rows": rows,
         }
@@ -388,6 +444,7 @@ class Scene:
                 out.append({
                     "station_id": s.id, "station_name": s.name, "station_type": s.type,
                     "network": s.meta.get("network") or s.meta.get("source") or s.meta.get("instrument"),
+                    "credit": s.meta.get("credit"),
                     "variables": list(variables),
                     "clip_s": [float(self.tc[i]), float(self.tc[j])],
                     "data_s": [float(self.tw[i]), float(self.tw[j])],
@@ -454,7 +511,10 @@ class Scene:
         and only while the rain rate is above 5 mm/h. Returns (index, source)."""
         if "conv" in self._cache:
             return self._cache["conv"]
-        if self.bundle.radar_samples is not None:
+        ra = self.radar_at()
+        if ra is not None and ra["ok"].any():
+            res = (np.where(ra["ok"], np.clip(ra["conv"], 0.0, 1.0), 0.0), "radar_volumes (Steiner-Houze-Yuter)")
+        elif self.bundle.radar_samples is not None:
             res = (np.clip(self._radar_lookup(self.bundle.radar_samples, "convective"), 0, 1), "radar_volume")
         else:
             z, d, okz = self.blend("dbz")

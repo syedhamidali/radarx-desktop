@@ -92,14 +92,19 @@ def load_dsd(path) -> Dsd | None:
     t = np.asarray(t, float).ravel()
     D = np.asarray(D, float).ravel()
     dD = _pick(d, ("dD_mm", "bin_width_mm", "dD", "width_mm"))
+    lo, hi = _pick(d, ("diameter_min_mm",)), _pick(d, ("diameter_max_mm",))
+    if dD is None and lo is not None and hi is not None:
+        dD = np.asarray(hi, float) - np.asarray(lo, float)
     if dD is None:
         edges = np.concatenate([[D[0] - (D[1] - D[0]) / 2], (D[1:] + D[:-1]) / 2, [D[-1] + (D[-1] - D[-2]) / 2]])
         dD = np.diff(edges)
     dD = np.asarray(dD, float).ravel()
-    vt = _pick(d, ("vt_ms", "fall_speed_ms", "v_ms", "vt", "fall_speed"))
-    vt = fall_speed_ms(D) if vt is None else np.asarray(vt, float)
-    if vt.ndim == 2:
+    vt = _pick(d, ("vt_ms", "fall_speed_ms", "v_ms", "vt", "fall_speed", "fallspeed_ms"))
+    vt = None if vt is None else np.asarray(vt, float)
+    if vt is not None and vt.ndim == 2 and vt.shape[-1] == len(D):
         vt = np.nanmean(vt, axis=0)
+    if vt is None or vt.shape != D.shape:  # e.g. the fall-speed AXIS of a size-velocity matrix
+        vt = fall_speed_ms(D)
     N = _pick(d, ("nd", "nd_m3mm", "n_d", "concentration", "N_D", "dsd"))
     from_counts = False
     if N is None:

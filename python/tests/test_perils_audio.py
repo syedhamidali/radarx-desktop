@@ -686,3 +686,142 @@ def test_report_provenance_names_the_stations_and_instruments_that_drove_each_la
     for layer in ("thunder", "tornado", "hail", "rain", "wind"):
         assert layer in rep["layers"]
     json.dumps(rep)
+
+
+# ----------------------------------------------------------------------------- the data agent's bundle layout
+
+
+def write_real_layout_bundle(d: Path) -> Path:
+    """A tiny bundle in the layout written by tools/perils_movie/build_bundle.py (feat/perils-data):
+    stations with null values, a PIPS spectrum npz (fall-speed AXIS, counts matrix), hail_events.json,
+    an MRR profile npz, a tornado record with a null width, and one radar volume npz."""
+    from perils_movie.audio.radar import aeqd_km  # noqa: F401
+
+    (d / "stations").mkdir(parents=True)
+    (d / "lma").mkdir()
+    (d / "tornadoes").mkdir()
+    (d / "profiles").mkdir()
+    (d / "volumes").mkdir()
+    t = list(np.arange(0.0, 600.0, 10.0))
+    nt = len(t)
+    pips = {
+        "id": "PIPS1B", "name": "PIPS 1B", "type": "PIPS: Parsivel2 disdrometer + surface meteorology",
+        "lat": LAT0, "lon": LON0, "alt_m": 90.0, "credit": "Purdue / Penn State", "instrument": "Parsivel2",
+        "series": {
+            "t_s": t, "rain_rate_mmh": [20.0] * nt, "dm_mm": [None] * 5 + [2.0] * (nt - 5),
+            "wind_speed_ms": [6.0] * nt, "wind_gust_ms": [11.0] * nt, "wind_dir_deg": [200.0] * nt,
+            "pressure_hpa": [1000.0] * nt, "temperature_c": [20.0] * nt,
+        },
+    }
+    mob = {"id": "Mesonet_DOW7", "name": "DOW7 mesonet", "type": "mobile mesonet (vehicle mounted)",
+           "lat": LAT0 + 0.05, "lon": LON0, "alt_m": None, "credit": "UIUC FARM",
+           "series": {"t_s": t, "wind_speed_ms": [4.0] * nt, "wind_dir_deg": [180.0] * nt,
+                      "lat": [LAT0 + 0.05 - 0.0001 * k for k in range(nt)], "lon": [LON0] * nt}}
+    radaps = {"id": "RaDAPS_WXT", "name": "RaDAPS", "type": "mobile profiling site", "lat": LAT0 + 0.01,
+              "lon": LON0, "alt_m": 87.0, "credit": "UAH MAPNet",
+              "series": {"t_s": t, "rain_rate_mmh": [15.0] * nt, "hail_intensity_hits_cm2h": [0.0] * 30 + [40.0] * 10 + [0.0] * (nt - 40)}}
+    (d / "stations" / "stations.json").write_text(json.dumps([pips, mob, radaps]))
+    (d / "stations" / "hail_events.json").write_text(json.dumps([
+        {"station": "PIPS1B", "t_s": 200.0 + 10 * k, "kind": "hail_candidate", "max_d_mm": 11.0 + k, "n_large": 3}
+        for k in range(3)]))
+    diam = np.linspace(0.25, 12.0, 24)
+    fall = np.linspace(0.0, 20.0, 32)  # the fall-speed AXIS of the matrix: not one value per diameter
+    nd = np.exp(-1.8 * diam)[None, :].repeat(nt, axis=0) * 5000.0
+    np.savez_compressed(d / "stations" / "PIPS1B_dsd.npz", t_s=np.array(t), diameter_mm=diam,
+                        diameter_min_mm=diam - 0.2, diameter_max_mm=diam + 0.2, fallspeed_ms=fall,
+                        nd_m3mm=nd.astype(np.float32), counts=np.zeros((nt, 32, 24), np.float32),
+                        rain_rate_mmh=np.full(nt, 20.0), dm_mm=np.full(nt, 2.0))
+    np.savez_compressed(d / "profiles" / "mrr_RaDAPS.npz", t_s=np.array(t), height_m=np.array([100.0, 200.0, 300.0, 400.0, 900.0]),
+                        fall_speed_ms=np.full((nt, 5), -6.5), rain_rate_mmh=np.full((nt, 5), 14.0))
+    (d / "tornadoes" / "tornadoes.json").write_text(json.dumps([{
+        "id": "NSED_1", "rating": "EF2", "start": "2022-03-30T20:04:00Z", "end": "2022-03-30T20:08:00Z",
+        "path": [[240.0, LAT0, LON0 - 0.03], [480.0, LAT0 + 0.02, LON0 + 0.03]], "width_m": None,
+        "path_kind": "INTERPOLATED: straight line", "source": "NWS damage survey"}]))
+    flash = {"id": 7, "t_start_s": 100.0, "t_end_s": 100.5, "centroid": [LAT0 + 0.05, LON0, 6000.0], "n_sources": 3,
+             "sources": [[100.0 + 0.1 * k, LAT0 + 0.05, LON0, 6000.0, None if k == 1 else 8.0] for k in range(3)]}
+    (d / "lma" / "flashes.json").write_text(json.dumps({"t0": WINDOW_START, "flashes": [flash]}))
+    xs = list(np.arange(-5.0, 5.001, 0.5))
+    nz, ny, nx = 8, len(xs), len(xs)
+    conv = np.ones((ny, nx), np.uint8)
+    conv[8:13, 8:13] = 2
+    hid = np.zeros((nz, ny, nx), np.uint8)
+    hid[:5, 8:13, 8:13] = 10
+    mesh = np.zeros((ny, nx), np.float32)
+    mesh[8:13, 8:13] = 32.0
+    np.savez_compressed(d / "volumes" / "step_0000.npz", conv_strat=conv, hid=hid, mesh_mm=mesh)
+    man = {"window": {"start": WINDOW_START, "end": "2022-03-30T20:10:00Z"},
+           "grid": {"origin_lat": LAT0, "origin_lon": LON0, "x_km": xs, "y_km": xs},
+           "steps": [{"index": 0, "time": "2022-03-30T20:05:00Z", "volume": "volumes/step_0000.npz"}],
+           "sources": [{"name": "PIPS", "credit": "Purdue"}]}
+    (d / "manifest.json").write_text(json.dumps(man))
+    return d
+
+
+def test_loads_the_layout_written_by_the_data_agent(tmp_path):
+    from perils_movie.audio.bundle import load_bundle
+
+    b = load_bundle(write_real_layout_bundle(tmp_path / "bundle"))
+    by = {s.id: s for s in b.stations}
+    assert by["Mesonet_DOW7"].alt_m == 0.0  # null altitude
+    assert np.isnan(by["PIPS1B"].series["dm_mm"][1][0])  # null value -> NaN
+    dsd = by["PIPS1B"].dsd
+    assert dsd is not None
+    assert dsd.vt.shape == dsd.D.shape  # the fall-speed axis was not taken for one speed per diameter
+    assert dsd.dD[0] == pytest.approx(0.4)
+    assert dsd.rain_rate_mmh(dsd.N)[0] > 0
+    assert len(by["PIPS1B"].events) == 3
+    assert by["PIPS1B"].events[0]["counts"] == 3
+    assert by["PIPS1B"].events[0]["dmax_mm"] == 11.0
+    assert by["PIPS1B"].events[0]["t_end_s"] == 210.0
+    assert float(by["RaDAPS_WXT"].series["mrr_fall_speed_ms"][1][0]) == pytest.approx(6.5)
+    assert b.tornadoes[0].width_m == 200.0
+    assert b.tornadoes[0].meta["path_kind"].startswith("INTERPOLATED")
+    assert b.radar_volumes is not None
+    s = b.radar_volumes.sample(np.array([300.0]), np.array([LAT0]), np.array([LON0]))
+    assert s["ok"][0]
+    assert s["conv"][0] == 1.0
+    assert s["hail"][0] > 0.5
+    assert s["mesh_mm"][0] == 32.0
+    far = b.radar_volumes.sample(np.array([300.0]), np.array([LAT0 + 0.5]), np.array([LON0]))
+    assert not far["ok"][0]  # outside the grid
+
+
+def test_end_to_end_on_the_real_layout_with_every_evidence_type(tmp_path):
+    b_dir = write_real_layout_bundle(tmp_path / "bundle")
+    cam_path = [{"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 300.0, "heading_deg": 0.0},
+                {"t_clip_s": 40.0, "lat": LAT0, "lon": LON0, "alt_m": 300.0, "heading_deg": 0.0}]
+    tl = {"data_start": WINDOW_START, "data_end": "2022-03-30T20:10:00Z", "clip_duration_s": 40.0, "fps": 30,
+          "speedup": 15.0}
+    from perils_movie.audio.render import render_audio
+
+    rep = render_audio(b_dir, tl, cam_path, tmp_path / "out" / "a.wav", seed=2)
+    assert (tmp_path / "out" / "audio_report.json").exists()
+    lay = rep["layers"]
+    assert lay["rain"]["drop_spectrum_fraction"] > 0.9
+    assert lay["rain"]["sources"]["dm"]["dsd"] > 0.9
+    ev = {r["evidence"] for r in rep["provenance"]["hail"]}
+    assert {"station_event", "radar_hail_class", "station_hail_sensor"} <= ev
+    merged = next(r for r in rep["provenance"]["hail"] if r["evidence"] == "station_event")
+    assert merged["n_samples"] == 3  # three 10 s samples merged into one row
+    assert merged["counts"] == 9
+    assert merged["max_diameter_mm"] == 13.0
+    assert lay["convective"]["source"].startswith("radar_volumes")
+    assert lay["convective"]["convective_fraction_of_clip"] == pytest.approx(0.3, abs=0.05)  # one volume, +-90 s of data = 12 s of clip
+    assert lay["tornado"]["evidence"] == ["track:NSED_1"]
+    assert rep["provenance"]["tornado"]["tracks"][0]["path_kind"].startswith("INTERPOLATED")
+    assert rep["master"]["lufs_integrated"] == pytest.approx(-23.0, abs=0.5)
+    assert rep["master"]["true_peak_dbfs"] < -1.0
+    creds = {u["station_id"]: u for u in rep["provenance"]["stations_used"]}
+    assert creds["PIPS1B"]["credit"] == "Purdue / Penn State"
+    assert rep["thunder"]["counts"]["rendered"] == 1
+
+
+def test_a_moving_station_is_followed_by_its_position_series():
+    t = np.arange(0.0, 600.0, 10.0)
+    mob = station(wind=5.0, sid="M", dn=2000.0)
+    la, lo = offset_ll(LAT0, LON0, 0.0, 2000.0 - 3.0 * t)  # drives south at 3 m/s of data time
+    mob.series["lat"] = tseries(t, la)
+    mob.series["lon"] = tseries(t, np.full_like(t, lo))
+    sc = scene(bundle([mob]), dur=20.0, speedup=30.0)
+    assert sc.dist[0][0] == pytest.approx(2000.0, abs=30.0)
+    assert sc.dist[0][-1] < 400.0

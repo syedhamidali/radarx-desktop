@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from .dsd import Dsd, load_dsd
+from .radar import RadarVolumes
 from .timeline import parse_iso
 
 
@@ -102,6 +103,7 @@ class Bundle:
     tornadoes: list[TornadoTrack] = field(default_factory=list)
     events: list[Event] = field(default_factory=list)
     radar_samples: dict[str, np.ndarray] | None = None
+    radar_volumes: object | None = None  # radar.RadarVolumes: the volumes sampled at the listener
     manifest: dict = field(default_factory=dict)
     path: str | None = None
 
@@ -177,7 +179,7 @@ def parse_stations(raw) -> list[Station]:
         out.append(
             Station(
                 str(s.get("id", i)), str(s.get("name", s.get("id", i))), str(s.get("type", "")),
-                float(s["lat"]), float(s["lon"]), float(s.get("alt_m", 0.0)), ser,
+                float(s["lat"]), float(s["lon"]), float(s.get("alt_m") or 0.0), ser,
                 list(s.get("events") or []),
                 meta={k: v for k, v in s.items() if k not in ("series", "events")},
             )
@@ -223,7 +225,7 @@ def parse_tornadoes(raw, window_start: str) -> list[TornadoTrack]:
             TornadoTrack(
                 str(tr.get("id", i)), str(tr.get("name", tr.get("id", i))), tr.get("ef", tr.get("rating")),
                 np.array(t, float)[o], np.array(la, float)[o], np.array(lo, float)[o],
-                float(tr.get("width_m", 200.0)),
+                float(tr.get("width_m") or 200.0),
                 {k: v for k, v in tr.items() if k not in ("path", "track", "points")},
             )
         )
@@ -274,6 +276,52 @@ def parse_radar_samples(raw, window_start: str):
     }
 
 
+HAIL_SAMPLE_S = 10.0  # the PIPS size-velocity samples are 10 s
+
+
+def attach_hail_events(stations: list[Station], raw) -> None:
+    """stations/hail_events.json: ``[{"station", "t_s", "kind": "hail_candidate", "max_d_mm", "n_large"}]``
+    (one per 10 s sample with large particles) -> normalised station events with a time span, the
+    maximum diameter and the particle counts of that sample."""
+    if not raw:
+        return
+    by_id = {s.id: s for s in stations}
+    for e in raw:
+        s = by_id.get(str(e.get("station")))
+        if s is None:
+            continue
+        t0 = float(e["t_s"])
+        s.events.append({
+            "type": str(e.get("kind", e.get("type", "hail_candidate"))),
+            "t_s": t0, "t_end_s": float(e.get("t_end_s", t0 + HAIL_SAMPLE_S)),
+            "dmax_mm": e.get("max_d_mm", e.get("dmax_mm")), "counts": e.get("n_large", e.get("counts")),
+            "evidence": e.get("evidence"),
+        })
+
+
+def attach_mrr(stations: list[Station], path: Path, site: str, window_start: str) -> None:
+    """profiles/mrr_<site>.npz (MRR: t_s, height_m, fall_speed_ms (t, gate), rain_rate_mmh (t, gate)):
+    the lowest usable gates (150 to 600 m) become the station series ``mrr_fall_speed_ms`` (absolute value)
+    and ``mrr_rain_rate_mmh`` of the station whose id contains the site name."""
+    if not path.exists():
+        return
+    st = next((s for s in stations if site.lower() in s.id.lower()), None)
+    if st is None:
+        return
+    z = np.load(path, allow_pickle=False)
+    h = np.asarray(z["height_m"], float)
+    gates = np.where((h >= 150.0) & (h <= 600.0))[0]
+    if len(gates) == 0 or "t_s" not in z.files:
+        return
+    t = np.asarray(z["t_s"], float)
+    for key, name, fn in (("fall_speed_ms", "mrr_fall_speed_ms", np.abs), ("rain_rate_mmh", "mrr_rain_rate_mmh", None)):
+        if key in z.files:
+            a = np.asarray(z[key], float)[:, gates]
+            with np.errstate(all="ignore"):
+                v = np.nanmedian(a if fn is None else fn(a), axis=1)
+            st.series[name] = (t, v)
+
+
 def load_bundle(bundle_dir) -> Bundle:
     d = Path(bundle_dir)
     manifest = _read(d / "manifest.json") or {}
@@ -281,6 +329,9 @@ def load_bundle(bundle_dir) -> Bundle:
     ws, we = _window(manifest, fl_raw)
     radar = _read(d / "radar" / "overhead_samples.json")
     stations = parse_stations(_read(d / "stations" / "stations.json"))
+    attach_hail_events(stations, _read(d / "stations" / "hail_events.json"))
+    for site_file in sorted((d / "profiles").glob("mrr_*.npz")) if (d / "profiles").exists() else []:
+        attach_mrr(stations, site_file, site_file.stem[len("mrr_"):], ws)
     for s in stations:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in s.id)
         for cand in (d / "stations" / f"{s.id}_dsd.npz", d / "stations" / f"{safe}_dsd.npz"):
@@ -295,6 +346,7 @@ def load_bundle(bundle_dir) -> Bundle:
         tornadoes=parse_tornadoes(_read(d / "tornadoes" / "tornadoes.json"), ws),
         events=parse_events(_read(d / "events.json"), ws),
         radar_samples=parse_radar_samples(radar, ws),
+        radar_volumes=RadarVolumes.from_manifest(d, manifest, ws),
         manifest=manifest,
         path=str(d),
     )

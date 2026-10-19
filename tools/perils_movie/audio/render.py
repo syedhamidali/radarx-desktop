@@ -181,7 +181,7 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
     for layer, segs in drivers.items():
         for s in segs:
             u = used.setdefault(s["station_id"], {"station_id": s["station_id"], "name": s["station_name"],
-                                                  "type": s["station_type"], "network": s.get("network"),
+                                                  "type": s["station_type"], "network": s.get("network"), "credit": s.get("credit"),
                                                   "layers": set(), "clip_seconds": 0.0})
             u["layers"].add(layer)
             u["clip_seconds"] += s["clip_s"][1] - s["clip_s"][0]
@@ -208,7 +208,9 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
         "tornado": {"evidence": info["tornado"].get("evidence", []),
                     "tracks": [{"id": t.id, "name": t.name, "ef": t.ef,
                                 "data_s": [float(t.t[0]), float(t.t[-1])],
-                                "source": t.meta.get("source") or t.meta.get("survey")} for t in b.tornadoes],
+                                "source": t.meta.get("source") or t.meta.get("survey"),
+                                "path_kind": t.meta.get("path_kind"), "credit": t.meta.get("credit")}
+                               for t in b.tornadoes],
                     "stylised": True},
         "convective": {"source": info["convective"].get("source")},
         "stations_used": sorted(used.values(), key=lambda u: -u["clip_seconds"]),

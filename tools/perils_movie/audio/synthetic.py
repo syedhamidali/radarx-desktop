@@ -25,7 +25,8 @@ DATA_END = "2022-03-30T20:10:00Z"
 def offset_ll(lat, lon, east_m, north_m):
     dlat = np.degrees(north_m / EARTH_RADIUS_M)
     dlon = np.degrees(east_m / (EARTH_RADIUS_M * np.cos(np.radians(lat))))
-    return float(lat + dlat), float(lon + dlon)
+    la, lo = lat + dlat, lon + dlon
+    return (float(la), float(lo)) if np.ndim(la) == 0 and np.ndim(lo) == 0 else (la, lo)
 
 
 def synthetic_raw(seed: int = 7, with_tornado: bool = True, with_hail: bool = True) -> dict:
