@@ -83,8 +83,8 @@ def summarize(sample):
 
 
 class Bench:
-    def __init__(self, page, cdp):
-        self.page, self.cdp = page, cdp
+    def __init__(self, page, cdp, browser_cdp=None):
+        self.page, self.cdp, self.browser_cdp = page, cdp, browser_cdp
 
     def skip_tour(self):
         try:
@@ -118,17 +118,41 @@ class Bench:
         self.page.wait_for_timeout(150)
         return self.cdp.send("Runtime.getHeapUsage")["usedSize"] / 1048576
 
+    def rss_mb(self):
+        """Resident memory of the page's renderer process (includes ArrayBuffers, which the JS heap figure does not)."""
+        import subprocess
+
+        info = self.browser_cdp.send("SystemInfo.getProcessInfo")["processInfo"]
+        best = 0.0
+        for pr in info:
+            if pr["type"] != "renderer":
+                continue
+            out = subprocess.run(["ps", "-o", "rss=", "-p", str(pr["id"])], capture_output=True, text=True).stdout.strip()
+            if out:
+                best = max(best, int(out) / 1024)
+        return round(best, 0)
+
     def counters(self):
         c = self.cdp.send("Memory.getDOMCounters")
         return {"nodes": c["nodes"], "listeners": c["jsEventListeners"], "docs": c["documents"]}
 
     def open(self, path, timeout=90):
         n = self.page.evaluate("window.__xr.get(window.__xr.openFiles).length")
+        # in-page timestamps: file registered in the store -> a viewer canvas on screen (covers the
+        # on-demand load + mount of the viewer code when the viewer was not there yet)
+        self.page.evaluate(
+            """() => { window.__tf = null; window.__tc = null;
+              const unsub = window.__xr.openFiles.subscribe((f) => { if (f.length > %d && window.__tf === null) window.__tf = performance.now(); });
+              const mo = new MutationObserver(() => { if (window.__tf !== null && window.__tc === null && document.querySelector('.viewer-area canvas')) { window.__tc = performance.now(); mo.disconnect(); unsub(); } });
+              mo.observe(document.body, { childList: true, subtree: true }); }""" % n
+        )
         self.page.evaluate("(p) => window.__xr.wsManager.openFile(p)", path)
         t0 = time.time()
         while time.time() - t0 < timeout:
             if self.page.evaluate("window.__xr.get(window.__xr.openFiles).length") > n:
                 self.page.wait_for_timeout(1500)  # first sweep render
+                tf, tc = self.page.evaluate("[window.__tf, window.__tc]")
+                self.last_canvas_ms = None if (tf is None or tc is None) else round(tc - tf, 1)
                 return time.time() - t0
             self.page.wait_for_timeout(100)
         raise RuntimeError("open timed out: " + path)
@@ -200,10 +224,11 @@ def main():
             cdp.send("Emulation.setCPUThrottlingRate", {"rate": a.cpu})
         page.goto(a.url)
         page.wait_for_function("window.__xr && window.__xr.wsManager.isConnected", timeout=30000)
-        bench = Bench(page, cdp)
+        bench = Bench(page, cdp, b.new_browser_cdp_session())
         bench.skip_tour()
 
         out["open_s"] = round(bench.open(a.file), 2)
+        out["file_to_canvas_ms"] = bench.last_canvas_ms
         if not a.only or a.only == "frames":
             page.wait_for_timeout(1500)
             bench.view("2d")
@@ -219,7 +244,7 @@ def main():
         if not a.only or a.only == "leak":
             bench.close_all()
             page.wait_for_timeout(800)
-            base = {"heap_mb": round(bench.heap_mb(), 1), **bench.counters(), "gl": page.evaluate("window.__gl()")}
+            base = {"heap_mb": round(bench.heap_mb(), 1), "rss_mb": bench.rss_mb(), **bench.counters(), "gl": page.evaluate("window.__gl()")}
             series = []
             files = [a.file] + ([a.file2] if a.file2 else [])
             for i in range(a.cycles):
@@ -235,13 +260,16 @@ def main():
                     bench.view("2d")
                 bench.close_all()
                 page.wait_for_timeout(500)
-                series.append({"i": i + 1, "heap_mb": round(bench.heap_mb(), 1), **bench.counters(), "gl": page.evaluate("window.__gl()")})
+                series.append({"i": i + 1, "heap_mb": round(bench.heap_mb(), 1), "rss_mb": bench.rss_mb(), **bench.counters(), "gl": page.evaluate("window.__gl()")})
             out["leak"] = {"baseline": base, "series": series}
             first, last = series[1] if len(series) > 1 else series[0], series[-1]
             out["leak_summary"] = {
                 "heap_baseline_mb": base["heap_mb"],
                 "heap_after_cycle2_mb": first["heap_mb"],
                 "heap_after_last_mb": last["heap_mb"],
+                "rss_baseline_mb": base["rss_mb"],
+                "rss_after_cycle2_mb": first["rss_mb"],
+                "rss_after_last_mb": last["rss_mb"],
                 "nodes_baseline": base["nodes"],
                 "nodes_last": last["nodes"],
                 "listeners_baseline": base["listeners"],

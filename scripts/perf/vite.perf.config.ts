@@ -19,6 +19,7 @@ function injectHook(): Plugin {
 
 export default (env: any) =>
   mergeConfig((base as any)(env), {
-    build: { outDir: "dist-perf", emptyOutDir: true },
+    // PERF_NOMINIFY=1 keeps function names readable for scripts/perf/profile.py
+    build: { outDir: process.env.PERF_OUT ?? "dist-perf", emptyOutDir: true, ...(process.env.PERF_NOMINIFY ? { minify: false } : {}) },
     plugins: [injectHook()],
   });

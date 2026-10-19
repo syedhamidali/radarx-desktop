@@ -1497,6 +1497,9 @@ export class PPIRenderer {
       for (const prog of programs) {
         if (prog) gl.deleteProgram(prog);
       }
+      // Release the context now (the 2D view is rebuilt on every 2D/3D switch and file open)
+      // instead of whenever the garbage collector reaches the canvas.
+      try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* already lost */ }
     }
 
     this.gl = null;

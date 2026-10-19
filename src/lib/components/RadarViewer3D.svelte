@@ -243,6 +243,8 @@
 
   // GL resources
   let quadVAO:     WebGLVertexArrayObject | null = null;
+  let quadBuf:     WebGLBuffer | null = null;
+  let diagHook:    object | null = null;
   let volumeTex:   WebGLTexture | null = null;
   let angleIdxTex: WebGLTexture | null = null;
   let sweepMetaTex:WebGLTexture | null = null;
@@ -700,8 +702,8 @@
     // Full-screen quad (2 triangles)
     quadVAO = g.createVertexArray()!;
     g.bindVertexArray(quadVAO);
-    const qb = g.createBuffer()!;
-    g.bindBuffer(g.ARRAY_BUFFER, qb);
+    quadBuf = g.createBuffer()!;
+    g.bindBuffer(g.ARRAY_BUFFER, quadBuf);
     g.bufferData(g.ARRAY_BUFFER, new Float32Array([
       -1,-1,  1,-1,  1, 1,
       -1,-1,  1, 1, -1, 1,
@@ -740,7 +742,7 @@
       },
     });
     // Diagnostics hook for tests / the console: renderer counters, no behaviour.
-    (globalThis as any).__xr3d = {
+    (globalThis as any).__xr3d = diagHook = {
       stats: () => ({ ...pr?.stats, gov: governor.snapshot() }),
       // Scene state for tests: adaptive opacity curve / threshold / crop / exaggeration.
       scene: () => ({ shift: tfShift, p995: lastP995, thr: thrValue, rangeKm, vexag, kind, groundMode, groundMap: groundHasMap }),
@@ -1669,7 +1671,7 @@
     e.preventDefault(); // lets 'webglcontextrestored' fire
     pr?.setLost(true);
     gl = null;
-    prog = null; quadVAO = null;
+    prog = null; quadVAO = null; quadBuf = null;
     volumeTex = angleIdxTex = sweepMetaTex = tfTex = groundTex = null;
     groundHasMap = false; groundKey = '';
     overlayCtx = null;
@@ -1848,7 +1850,13 @@
       [volumeTex, angleIdxTex, sweepMetaTex, tfTex, groundTex].forEach(t => t && gl!.deleteTexture(t));
       if (prog)    gl.deleteProgram(prog);
       if (quadVAO) gl.deleteVertexArray(quadVAO);
+      if (quadBuf) gl.deleteBuffer(quadBuf);
+      // Give the GPU memory back now instead of whenever the garbage collector reaches the canvas.
+      try { gl.getExtension('WEBGL_lose_context')?.loseContext(); } catch { /* already lost */ }
     }
+    // The diagnostics hook closes over this component; do not keep a destroyed viewer alive through it.
+    if ((globalThis as any).__xr3d === diagHook) delete (globalThis as any).__xr3d;
+    diagHook = null;
     cpuVol = null;
   });
 </script>
