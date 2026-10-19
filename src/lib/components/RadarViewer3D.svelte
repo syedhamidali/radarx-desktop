@@ -1432,7 +1432,7 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
       const cam: Cam = { eye, fwd, right, up, tanX, tanY, w: cssW, h: cssH };
       drawOverlay(overlayCtx, cam, {
         rangeKm, zTopKm: Z_TOP_KM, vexag, ringStepKm: ringStepFor(rangeKm),
-        siteName, showRings: groundMode !== 'off' || $mapHidden, showFrame: true,
+        siteName, showRings: groundMode !== 'off', showFrame: true,
       });
     } catch (e) {
       console.warn('[3D] overlay failed:', e);

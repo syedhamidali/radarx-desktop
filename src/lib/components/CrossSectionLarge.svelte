@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { themeRevision } from '../utils/themeColors';
   /**
    * CrossSectionLarge -- the comfortable cross-section view: a canvas drawn at the real device
    * pixel size with axes, colour bar and title, hover read-out, zoom/pan, vertical exaggeration,
@@ -82,8 +83,9 @@
   type VeSetting = 'fit' | 1 | 2 | 3 | 4 | 5;
   const HEIGHT_CHOICES = [5, 8, 10, 12, 15, 20, 25, 30, 40];
 
-  function loadPrefs(): { ve: VeSetting; top: 'auto' | number; fill: boolean; light: boolean; asl: boolean } {
-    const d = { ve: 'fit' as VeSetting, top: 'auto' as 'auto' | number, fill: true, light: false, asl: false };
+  function loadPrefs(): { ve: VeSetting; top: 'auto' | number; fill: boolean; light: boolean | null; asl: boolean } {
+    // light = null: the plot follows the app theme until the user chooses otherwise (then it is remembered)
+    const d = { ve: 'fit' as VeSetting, top: 'auto' as 'auto' | number, fill: true, light: null as boolean | null, asl: false };
     try {
       const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}');
       if (p.ve === 'fit' || [1, 2, 3, 4, 5].includes(p.ve)) d.ve = p.ve;
@@ -100,11 +102,16 @@
   let ve = $state<VeSetting>(initial.ve);
   let top = $state<'auto' | number>(initial.top);
   let fill = $state(initial.fill);
-  let light = $state(initial.light);
+  let lightPref = $state<boolean | null>(initial.light);
+  const appLight = $derived.by(() => {
+    void $themeRevision; // re-read when the theme changes
+    return typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light';
+  });
+  const light = $derived(lightPref ?? appLight);
   let asl = $state(initial.asl);
 
   $effect(() => {
-    const p = JSON.stringify({ ve, top, fill, light, asl });
+    const p = JSON.stringify({ ve, top, fill, light: lightPref, asl });
     try {
       localStorage.setItem(PREFS_KEY, p);
     } catch {
@@ -667,8 +674,8 @@
           <label class="csl-check" title={altitudeKm == null ? 'This file does not record the radar altitude' : `Radar altitude ${Math.round(altitudeKm * 1000)} m`}>
             <input type="checkbox" bind:checked={asl} disabled={altitudeKm == null} /> Height above sea level
           </label>
-          <label class="csl-check" title="White background for the saved image">
-            <input type="checkbox" bind:checked={light} /> Light background in the PNG
+          <label class="csl-check" title="White plot background, on screen and in the saved image. Default: follows the app theme">
+            <input type="checkbox" checked={light} onchange={(e) => (lightPref = e.currentTarget.checked)} /> Light background (screen and PNG)
           </label>
         </div>
       </details>
