@@ -109,7 +109,8 @@ async def render(a: argparse.Namespace) -> None:
     settings["camera"] = a.camera
     if a.palette:
         settings["palette"] = a.palette
-    settings["light"] = a.light
+    if a.light:
+        settings["light"] = a.light
     settings["preset"] = a.orbit
     if a.view_km:
         settings["viewKm"] = a.view_km
@@ -343,9 +344,9 @@ def main(argv: list[str] | None = None) -> None:
     )
     ap.add_argument(
         "--light",
-        default="daylight",
+        default=None,
         choices=["daylight", "dusk", "overcast", "night"],
-        help="realistic look: a stylised daylight (default; labelled), the dusk light, a thick overcast "
+        help="realistic look: a stylised daylight (the default of the look; labelled), the dusk light, a thick overcast "
         "(dim stylised light) or night (no sun, lit by lightning)",
     )
     ap.add_argument(
