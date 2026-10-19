@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -321,6 +322,26 @@ def _unique_in(directory: Path, prefix: str, suffix: str) -> Path:
     return candidate
 
 
+class _Target(str):
+    """The path an exporter should write to; ``final`` is where the result ends up on success."""
+
+    final: str
+
+    def __new__(cls, write_to: str, final: str) -> _Target:
+        obj = super().__new__(cls, write_to)
+        obj.final = final
+        return obj
+
+
+def _discard(path: str) -> None:
+    """Remove a (partial) file or folder; never raises."""
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
 @contextlib.contextmanager
 def _output_target(
     output_path: str | None,
@@ -328,15 +349,16 @@ def _output_target(
     suffix: str,
     prefix: str,
     directory: bool = False,
-) -> Iterator[str]:
-    """Yield the path to write to; clean up a temp target if the body fails.
+) -> Iterator[_Target]:
+    """Yield the path to write to; a failed export leaves nothing behind.
 
-    A user-supplied *output_path* gets its parent directories created.  When
-    *output_path* is ``None`` a uniquely named file (or directory) is created in
-    :func:`default_export_dir` and removed again if the export raises, so failures do
-    not leave half-written files behind.
+    With a user-supplied *output_path* the data is written to a hidden sibling file and moved
+    over the destination only when the export finished, so a full disk, a crash or a cancelled
+    export never leaves a truncated file there (nor destroys an earlier good one). The parent
+    folders are created. Without *output_path* a uniquely named file (or folder) is created in
+    :func:`default_export_dir` and removed again if the export raises. The yielded path is a
+    ``str`` whose ``.final`` attribute is the finished file's location.
     """
-    created_temp = output_path is None
     if output_path is None:
         target = _unique_in(default_export_dir(), prefix, suffix)
         if directory:
@@ -344,18 +366,34 @@ def _output_target(
         else:
             target.touch()
         path = str(target)
-    else:
-        path = str(Path(output_path).expanduser())
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            yield _Target(path, path)
+        except BaseException:
+            _discard(path)
+            raise
+        return
+
+    final = str(Path(output_path).expanduser())
+    parent = Path(final).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # Same folder (so the final move is atomic) and same file name tail (so a name-based format
+    # or compression guess, e.g. ``.csv.gz``, still works).
+    tmp = str(parent / f".xradar-{uuid.uuid4().hex[:8]}-{Path(final).name}")
     try:
-        yield path
+        yield _Target(tmp, final)
+        if directory and os.path.isdir(final):
+            backup = f"{tmp}.old"
+            os.replace(final, backup)
+            try:
+                os.replace(tmp, final)
+            except BaseException:
+                os.replace(backup, final)
+                raise
+            _discard(backup)
+        else:
+            os.replace(tmp, final)
     except BaseException:
-        if created_temp:
-            if os.path.isdir(path):
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                with contextlib.suppress(OSError):
-                    os.remove(path)
+        _discard(tmp)
         raise
 
 
@@ -753,7 +791,7 @@ class RadarExporter:
         finally:
             _pyplot().close(fig)
 
-        output_path = str(Path(target).resolve())
+        output_path = str(Path(target.final).resolve())
         progress(100, f"Export complete: {output_path}")
         logger.info("Exported %s to %s", fmt, output_path)
         return output_path
@@ -959,7 +997,7 @@ class RadarExporter:
             for frame in frames:
                 frame.close()
 
-        output_path = str(Path(target).resolve())
+        output_path = str(Path(target.final).resolve())
         progress(100, f"Animation export complete: {output_path}")
         logger.info("Exported GIF animation to %s (%d frames)", output_path, n_frames)
         return output_path
@@ -986,8 +1024,8 @@ class RadarExporter:
         with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
             to_cfradial1(dtree=_netcdf_safe_tree(datatree), filename=target)
 
-        progress(100, f"CfRadial1 export complete: {target}")
-        return str(Path(target).resolve())
+        progress(100, f"CfRadial1 export complete: {target.final}")
+        return str(Path(target.final).resolve())
 
     def _export_cfradial2(
         self,
@@ -1007,8 +1045,8 @@ class RadarExporter:
         with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
             to_cfradial2(_netcdf_safe_tree(datatree), target)
 
-        progress(100, f"CfRadial2 export complete: {target}")
-        return str(Path(target).resolve())
+        progress(100, f"CfRadial2 export complete: {target.final}")
+        return str(Path(target.final).resolve())
 
     def _export_csv(
         self,
@@ -1064,7 +1102,7 @@ class RadarExporter:
         with _output_target(output_path, suffix=".csv", prefix="xradar_export_") as target:
             df.to_csv(target, index=False, float_format="%.4f")
 
-        output_path = str(Path(target).resolve())
+        output_path = str(Path(target.final).resolve())
         progress(100, f"CSV export complete: {output_path}")
         logger.info("Exported CSV to %s (%d rows)", output_path, len(df))
         return output_path
@@ -1094,5 +1132,5 @@ class RadarExporter:
         ) as target:
             datatree.to_zarr(target, mode="w")
 
-        progress(100, f"Zarr export complete: {target}")
-        return str(Path(target).resolve())
+        progress(100, f"Zarr export complete: {target.final}")
+        return str(Path(target.final).resolve())
