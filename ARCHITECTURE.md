@@ -183,8 +183,7 @@ xradar-desktop/
 │   │   │   ├── radarData.ts     # Reactive state for loaded datasets
 │   │   │   └── settings.ts
 │   │   └── utils/
-│   │       ├── websocket.ts     # WebSocket client to Python sidecar
-│   │       └── arrow.ts         # Arrow IPC deserialization
+│   │       └── websocket.ts     # WebSocket client to Python sidecar
 │   ├── assets/
 │   └── main.ts
 ├── python/                 # Python sidecar
