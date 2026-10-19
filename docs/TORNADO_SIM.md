@@ -176,7 +176,43 @@ green pixels; with terrain the vortex stands on the height under its axis.
 
 ### Verification numbers
 
-RESULTS_PLACEHOLDER
+All numbers are for the PERiLS IOP2 EF2 seed (`vt` 55 m/s, `rm` 69 m, warm inflow T 20.4 / Td 18.3 C).
+
+| Check | Result |
+|---|---|
+| tangential wind peaks at `Vt` at the core radius, nowhere above `Vt` (`vortexField.test.mjs`) | peak 55.00 m/s within 1e-4, radius within 0.5 % |
+| `dp/dr = rho v^2 / r` (cyclostrophic) at 4 heights and 6 radii | within 1 % |
+| `div u = 0` of the inflow and updraft | below 1 % |
+| tracers advance around the axis per frame (1/30 s, RK4, five radii and heights) at `omega = v / r` | within 0.001 % of `omega` at the tracer's radius (limit 5 %) |
+| on-screen rotation (`check_rotation.py`: the noise slice at z = 60 m, rings at 55-240 m, cross-correlated between two times) | one phase of the flow noise (rigid transport): mean 1.1 %, worst 2.8 % of the field's `omega`; the blend of two phases the volume draws: mean 3.3 %, worst 6.2 % (the periods read 6.8 s at 55 m, 15 s at 110 m, 61 s at 240 m) |
+| condensation: parcel saturated exactly at `pi_c`; cloud base without vortex vs Espy / Bolton | within 5 % (`funnel.test.mjs`; 179 m solved vs 175 m Espy and 178 m Bolton for T-Td = 1.4 K) |
+| funnel base: LCL with no vortex, lower with a deficit by `dp/(rho g)` (within 15 %), on the ground when `dp(0,0)` exceeds the critical deficit | passes; at EF2 strength it reaches the ground in the 263 m LCL air |
+| inertial debris: dust lofted above boards, terminal speeds ordered, a heavy object flung farther than its flow-following twin | passes |
+| determinism (`check_determinism.py`: same frame twice, after other frames, sequential 45 steps vs a fresh page jumping to it) | identical pixel hashes in all three modes |
+| comfort: largest frame-to-frame change of the mean luminance in the 12 s clips | 12.8 / 255 at 30 fps (chaser), 11.3 (debris); lightning light is smoothed over 0.24 s |
+| speed at 1920 x 1080, Apple M1 Pro (Chrome / ANGLE / Metal) | 0.78 s (chaser) and 0.88 s (debris) of GPU time per frame, 1.3 s per frame with the screenshot; 79 MB of GPU memory, 16-18 MB of JS heap, 12 000 debris particles |
+| unit tests | `npm run test:unit`: 30 tornado tests in 6 files next to the 316 existing ones |
+
+### What looked fake, and what was done (look iterations)
+
+Judged against what tornado footage shows (a rotating cone or wedge funnel with a debris halo, a dark rain-wrapped base):
+
+1. *First picture*: a pale, smooth dome with a white sky. Causes found by switching the volume components on and off
+   (`--mask`): the funnel criterion used the nearest, rain-cooled station (LCL 38 m), so any pressure drop made fog; the
+   haze was brighter than the cloud. Fixed by taking the funnel air from the warm inflow station (cone from the ground
+   to a 400 m wide cloud base), a darker under-cloud ambient and a haze that is lit like the sky.
+2. *Second picture*: the cone and the dust skirt read, but the ground was a black plane and the edge of the funnel was
+   grainy. Fixed by a wet-grass ground with a grazing-angle sheen, a finer march near the axis and a funnel roof that
+   fades into the cloud.
+3. *Debris view*: a featureless fog. Fixed by 12 000 particles recycled near the core (70 to 300 m), crisp boards and
+   metal with grain and corrugation, trees that lean and fall, and per-shot exposure.
+4. *Inside view*: a blue-grey fog; fixed only in part (see below).
+
+Still fake: the funnel surface is smooth compared with real footage (no fine tendrils, no suction vortices, no
+condensation sheath texture below a few metres); the sprites of the debris are flat polygons; the trees are low-poly
+lobes with a dither cut; the procedural ground has no grass blades; the inside view is a dim, foggy interior without
+a readable wall; the clouds above are a smooth deck with little structure; the lightning is light only (no channel).
+
 
 ## Honest limits
 
@@ -194,4 +230,4 @@ RESULTS_PLACEHOLDER
   wind field, not the survey damage at that place.
 - Without tiles the ground is invented farmland, not the real land cover.
 - Lightning is positions and times only; the channel is not drawn and the brightness is a model.
-- Frame time is about 1 to 3 s at 1080p on an Apple M1 Pro with an integrated GPU, 50 MB of GPU memory, one frame at a time.
+- Frame time is 0.8 to 1.3 s at 1080p on an Apple M1 Pro (79 MB of GPU memory), one frame at a time.
