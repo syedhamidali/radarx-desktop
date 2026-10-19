@@ -1135,8 +1135,15 @@ def _f_timing(acc: _Acc) -> list[Finding]:
         )
     if bad:
         nb = sum(t.get("n_backward", 0) for t in bad)
-        nd = sum(t.get("n_duplicate", 0) for t in bad)
-        worst = max(bad, key=lambda t: t.get("n_backward", 0) + t.get("n_duplicate", 0))
+        coarse_ids = {c["sweep"] for c in coarse}  # their repeats are the stored resolution
+        nd = sum(t.get("n_duplicate", 0) for t in bad if t["sweep"] not in coarse_ids)
+        worst = max(
+            bad,
+            key=lambda t: (
+                t.get("n_backward", 0)
+                + (0 if t["sweep"] in coarse_ids else t.get("n_duplicate", 0))
+            ),
+        )
         az = worst.get("backward_az")
         where = {"sweeps": [t["sweep"] for t in bad]}
         if az is not None:

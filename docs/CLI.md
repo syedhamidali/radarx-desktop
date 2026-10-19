@@ -62,6 +62,7 @@ The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`),
 | Step | Command | Purpose |
 |---|---|---|
 | Look | `xrd info` | format, radar, time, sweeps, variables, Nyquist velocity |
+| | `xrd check` | data-quality report with evidence and a suggested QC recipe ([DATA_CHECK.md](DATA_CHECK.md)) |
 | | `xrd plot` | a PPI picture of one variable |
 | Clean | `xrd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |
 | Analyse | `xrd run MODULE` | an algorithm on one sweep or all sweeps (same as `xrd modules run`) |
@@ -107,6 +108,16 @@ wrote KTLX20130520_201643_V06_VRADH_sweep1.png
 
 `xrd plot` uses the publication renderer of the app (range rings, colour scales per variable, no-echo
 codes masked): `--theme dark`, `--dpi 300`, `--vmin/--vmax`, `-p figure.pdf` for a vector file.
+
+`xrd check` is the same data check the app shows after opening a file: what looks wrong (aliasing,
+range folding, clutter, ZDR offset, time gaps ...), with the evidence, where it is, and a suggested
+QC recipe. It changes nothing and exits 0 even when it finds problems (3 only when a file cannot be
+read). `--fix-plan -o recipe.json` writes the suggested recipe for `xrd pipeline`. Every check, its
+method and thresholds: [DATA_CHECK.md](DATA_CHECK.md).
+
+```console
+$ xrd check -i KTLX20130520_201643_V06.gz --fix-plan -o recipe.json
+```
 
 ### Analyse: `modules`, `run`, `cells`
 
