@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from datetime import datetime
@@ -285,6 +286,82 @@ def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
             var.attrs = {k: _netcdf_attr(v) for k, v in var.attrs.items()}
         node.dataset = ds
     return safe
+
+
+# xradar's CfRadial1 writer merges the sweeps with ``compat="no_conflicts"``. The per-sweep scalars
+# below (strings among them) are broadcast along ``time`` first and then thrown away, and carrying
+# them through that merge is what makes a NEXRAD volume take a minute and 12 GB. Dropping them
+# before the merge gives the identical result (tests/test_perf_equivalence.py checks it).
+_CF1_SWEEP_SCALARS = ["sweep_fixed_angle", "sweep_number", "sweep_mode", "prt_mode", "follow_mode"]
+_CF1_LOCK = threading.Lock()
+
+
+def _cfradial1_variables(cf1: Any, dtree: xr.DataTree, dim0: str | None = None) -> xr.Dataset:
+    """``xradar.io.export.cfradial1._variable_mapper`` minus the wasted merge work."""
+    sweep_info = cf1._sweep_info_mapper(dtree)
+    vol_info = cf1._main_info_mapper(dtree)
+    if "fixed_angle" in vol_info:
+        vol_info = vol_info.drop_vars("fixed_angle")
+    sweep_datasets = []
+    for grp in dtree.groups:
+        if "sweep" not in grp:
+            continue
+        data = dtree[grp].to_dataset(inherit="all_coords")
+        if dim0 is None:
+            dim0 = "elevation" if data.sweep_mode.load().astype(str) == "rhi" else "azimuth"
+            if dim0 not in data.dims:
+                dim0 = "time"
+                assert dim0 in data.dims
+        if dim0 != "time" and dim0 in data.dims:
+            data = data.swap_dims({dim0: "time"})
+        data = data.sortby("time").drop_vars(["x", "y", "z", *_CF1_SWEEP_SCALARS], errors="ignore")
+        data.attrs = {}
+        sweep_datasets.append(data)
+    result = xr.combine_by_coords(
+        sweep_datasets,
+        data_vars="all",
+        compat="no_conflicts",
+        join="outer",
+        coords="minimal",
+        combine_attrs="no_conflicts",
+    )
+    result = result.drop_vars(
+        ["latitude", "longitude", "altitude", "spatial_ref", "crs_wkt"], errors="ignore"
+    )
+    result.update(sweep_info)
+    result.update(cf1.calculate_sweep_indices(dtree, result))
+    result = result.reset_coords(["elevation", "azimuth"])
+    result.update(vol_info)
+    return result
+
+
+def _to_cfradial1(dtree: xr.DataTree, filename: str) -> None:
+    """``xradar.io.export.to_cfradial1`` using :func:`_cfradial1_variables` for the heavy step.
+
+    Falls back to xradar's own mapper when its private helpers are missing or anything in the
+    faster path fails, so the file written is always the one xradar would write.
+    """
+    from xradar.io.export import cfradial1 as cf1
+
+    stock = getattr(cf1, "_variable_mapper", None)
+    helpers = ("_sweep_info_mapper", "_main_info_mapper", "calculate_sweep_indices")
+    if stock is None or not all(hasattr(cf1, h) for h in helpers):
+        cf1.to_cfradial1(dtree=dtree, filename=filename)
+        return
+
+    def mapper(tree: xr.DataTree, dim0: str | None = None) -> xr.Dataset:
+        try:
+            return _cfradial1_variables(cf1, tree, dim0)
+        except Exception as exc:
+            logger.debug("fast CfRadial1 merge failed (%s); using xradar's", exc)
+            return stock(tree, dim0)
+
+    with _CF1_LOCK:  # the swap is process-wide
+        cf1._variable_mapper = mapper
+        try:
+            cf1.to_cfradial1(dtree=dtree, filename=filename)
+        finally:
+            cf1._variable_mapper = stock
 
 
 def _safe_stem(name: str) -> str:
@@ -1035,11 +1112,9 @@ class RadarExporter:
         progress: ProgressCallback,
         options: dict[str, Any],
     ) -> str:
-        from xradar.io.export.cfradial1 import to_cfradial1
-
         progress(10, "Preparing CfRadial1 NetCDF export")
         with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
-            to_cfradial1(dtree=_netcdf_safe_tree(datatree), filename=target)
+            _to_cfradial1(_netcdf_safe_tree(datatree), target)
 
         progress(100, f"CfRadial1 export complete: {target.final}")
         return str(Path(target.final).resolve())

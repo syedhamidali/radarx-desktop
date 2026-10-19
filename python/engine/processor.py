@@ -198,7 +198,7 @@ def _get_sweep_data(
     if sweep_loader is not None:
         ds = sweep_loader(sweep_idx)
     else:
-        ds = mask_below_threshold(datatree[sweep_names[sweep_idx]].to_dataset())
+        ds = mask_below_threshold(datatree[sweep_names[sweep_idx]].to_dataset(), only=[variable])
     if variable not in ds.data_vars:
         return empty
 

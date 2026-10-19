@@ -156,7 +156,7 @@ def area_averaged_profile(
     counts: list[int] = []
 
     for sname in sweep_names:
-        ds = mask_below_threshold(datatree[sname].to_dataset())
+        ds = mask_below_threshold(datatree[sname].to_dataset(), only=[variable])
         if variable not in ds.data_vars:
             continue
 
@@ -377,7 +377,7 @@ def get_statistics(
     if sweep >= len(sweep_names):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_names) - 1})")
 
-    ds = mask_below_threshold(datatree[sweep_names[sweep]].to_dataset())
+    ds = mask_below_threshold(datatree[sweep_names[sweep]].to_dataset(), only=[variable])
     if variable not in ds.data_vars:
         available = sorted(str(v) for v in ds.data_vars if ds[v].ndim == 2)
         raise KeyError(f"Variable '{variable}' not found. Available: {available}")

@@ -14,9 +14,11 @@ from __future__ import annotations
 import re
 
 import numpy as np
-from scipy import ndimage
 
 from engine import varmap
+from engine._lazy import LazyModule
+
+ndimage = LazyModule("scipy.ndimage")  # imported on first use (~150 ms)
 
 
 def covers_full_circle(azimuth_deg: np.ndarray) -> bool:

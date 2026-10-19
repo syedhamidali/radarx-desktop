@@ -1198,7 +1198,7 @@ class ConnectionHandler:
                     box,
                     resolution=resolution,
                     z_max=float(z_max_val),
-                    sweep_loader=reader.get_sweep_dataset,
+                    sweep_loader=_loader_for(reader, variable),
                 ),
             )
         except ValueError as exc:
@@ -1266,7 +1266,7 @@ class ConnectionHandler:
                     start,
                     end,
                     width=float(width),
-                    sweep_loader=reader.get_sweep_dataset,
+                    sweep_loader=_loader_for(reader, variable),
                 ),
             )
         except ValueError as exc:
@@ -2237,7 +2237,7 @@ class ConnectionHandler:
         await self.send_progress(10, "Extracting cross-section...")
 
         loop = asyncio.get_running_loop()
-        loader = _get_reader(msg.get("file_id")).get_sweep_dataset
+        loader = _loader_for(_get_reader(msg.get("file_id")), variable)
 
         def run() -> dict[str, Any]:
             if rhi:
@@ -2276,7 +2276,7 @@ class ConnectionHandler:
         await self.send_progress(10, "Extracting vertical profile...")
 
         loop = asyncio.get_running_loop()
-        loader = _get_reader(msg.get("file_id")).get_sweep_dataset
+        loader = _loader_for(_get_reader(msg.get("file_id")), variable)
         result = await loop.run_in_executor(
             None,
             lambda: extract_vertical_profile(
@@ -4224,6 +4224,15 @@ def _volume_result_message(
     }
 
 
+def _loader_for(reader: RadarReader, variable: str) -> Callable[[int], Any]:
+    """``sweep_loader`` for code that reads one moment: only *variable* is decoded and masked."""
+
+    def load(index: int) -> Any:
+        return reader.get_sweep_dataset(index, only=[variable])
+
+    return load
+
+
 def _sweep_dataset(reader: RadarReader, index: int):
     """Full ``xr.Dataset`` of one sweep, loading lazy (ARCO) sweeps on demand."""
     getter = getattr(reader, "get_sweep_dataset", None)  # public API if the reader has one
@@ -4408,12 +4417,16 @@ async def _handle_connection(ws: ServerConnection) -> None:
 
 
 def _preload_heavy_imports() -> None:
-    """Warm the imports the first open + first render need (xradar, colorcet/matplotlib)."""
+    """Warm the imports the first open + first render need (xradar, palettes, scipy)."""
     preload_backends()
     try:
         _palettes()
     except Exception as exc:  # the render reports the real problem later
         logger.debug("palette preload failed: %s", exc)
+    try:
+        import scipy.ndimage  # noqa: F401  (deferred at import: QC, 3D volume, tracking use it)
+    except Exception as exc:
+        logger.debug("scipy preload failed: %s", exc)
 
 
 async def _run_server(port: int, host: str | None = None) -> None:

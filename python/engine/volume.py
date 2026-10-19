@@ -22,7 +22,6 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
-from scipy.ndimage import map_coordinates
 
 from engine.reader import sorted_sweep_names
 
@@ -305,6 +304,7 @@ def _sample_polar(
     out = np.full(n, np.nan, dtype=np.float32)
     if n == 0 or not sweeps:
         return out
+    from scipy.ndimage import map_coordinates  # deferred: ~150 ms at import
 
     rng_pt, theta = _inverse_beam_geometry(ground_m, height_m)
     az_pt = azimuth_deg % 360.0
