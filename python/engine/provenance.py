@@ -261,13 +261,17 @@ def standard_global_attrs(
     conventions: str | None = None,
     history: Any = "",
     extra: Mapping[str, Any] | None = None,
+    layer: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The global attributes every NetCDF/Zarr written by the engine carries (all plain strings).
 
     ``title``, ``institution``, ``source``, ``history``, ``references`` and ``comment`` are the CF
     (section 2.6.2) / CfRadial ones; ``date_created`` is ACDD; ``software`` / ``libraries`` /
     ``provenance_schema`` identify the writer; ``source_files`` lists the input file *names*
-    (never folders). ``history`` is the incoming history with a new line appended.
+    (never folders). ``history`` is the incoming history with a new line appended. *layer* (a
+    layer-provenance
+    dict, see :mod:`engine.layer_provenance`) adds the ``data_class`` / ``data_source`` /
+    ``data_valid_time`` ... attributes that say what kind of numbers the file holds.
     """
     names = source_names(source_files)
     attrs: dict[str, Any] = {}
@@ -289,6 +293,10 @@ def standard_global_attrs(
     attrs["provenance_schema"] = PROVENANCE_SCHEMA
     if names:
         attrs["source_files"] = ", ".join(names)
+    if layer:
+        from engine import layer_provenance
+
+        attrs.update(layer_provenance.attrs(layer))
     if extra:
         for k, v in extra.items():
             if v is not None:
@@ -309,6 +317,7 @@ def csv_comment_block(
     fill: str = "",
     params: Mapping[str, Any] | None = None,
     extra: Mapping[str, Any] | None = None,
+    layer: Mapping[str, Any] | None = None,
 ) -> str:
     """A ``# key: value`` header for a CSV (pandas: ``comment="#"``; R: ``comment.char="#"``).
 
@@ -323,6 +332,11 @@ def csv_comment_block(
         lines.append(f"# source_files: {', '.join(names)}")
     if params:
         lines.append(f"# parameters: {format_params(params)}")
+    if layer:
+        from engine import layer_provenance
+
+        for k, v in layer_provenance.attrs(layer).items():
+            lines.append(f"# {k}: {redact_path(v)}")
     if extra:
         for k, v in extra.items():
             if v is not None and clean_text(v):
@@ -345,6 +359,7 @@ def figure_metadata(
     sweep: int | None = None,
     data_time: str = "",
     params: Mapping[str, Any] | None = None,
+    layer: Mapping[str, Any] | None = None,
 ) -> dict[str, str]:
     """Key/value text embedded in a PNG (tEXt), PDF (Info) or SVG (``<metadata>``) figure.
 
@@ -371,6 +386,8 @@ def figure_metadata(
     if desc:
         meta["Description"] = desc
     comment = [f"libraries: {libraries_string()}"]
+    if layer:
+        comment.append(f"data class: {layer.get('kind', '')} ({layer.get('source', '')})")
     if params:
         comment.append(f"parameters: {format_params(params)}")
     meta["Comment"] = "; ".join(comment)

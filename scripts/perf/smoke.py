@@ -49,10 +49,10 @@ def main():
         check("welcome screen", "Open" in page.inner_text("body"))
         page.wait_for_timeout(3000)  # idle prefetch of the panels
         panels = page.locator(".managed-panel")
-        check("12 right-hand panels", panels.count() == 12)
+        check("14 right-hand panels", panels.count() == 14)
         bodies = page.locator(".managed-panel-content")
         mounted = sum(1 for i in range(bodies.count()) if bodies.nth(i).inner_html().strip() != "")
-        check(f"all panel bodies mounted ({mounted}/12)", mounted == 12)
+        check(f"all panel bodies mounted ({mounted}/14)", mounted == 14)
 
         bench.open(a.file)
         page.wait_for_timeout(1500)

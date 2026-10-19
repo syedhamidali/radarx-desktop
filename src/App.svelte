@@ -55,6 +55,9 @@
   const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
   const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
+  // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
+  // it opens itself when a download needs the user's approval.
+  const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -139,6 +142,7 @@
   $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
+  $effect(() => { whenIdle(() => envDialog.load()); });
   let isDragOver = $state(false);
   let isPlaying = $state(false);
   let animSpeed = $state(1000);
@@ -1109,6 +1113,7 @@
   {#if shortcutsSheet.component}<shortcutsSheet.component bind:visible={shortcutsSheetVisible} />{/if}
   {#if aboutDialog.component}<aboutDialog.component bind:visible={aboutDialogVisible} />{/if}
   {#if crossDialog.component}<crossDialog.component />{/if}
+  {#if envDialog.component}<envDialog.component />{/if}
   {#if settingsOpen && settingsDialog.component}
     <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}

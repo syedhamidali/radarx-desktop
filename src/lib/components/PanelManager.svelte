@@ -9,12 +9,14 @@
   // (expanded ones at once, the rest while the browser is idle). All panels stay mounted once loaded,
   // collapsed or not, exactly as before: their stores listen for window / engine events.
   const PANEL_MAP: Record<string, { lazy: ReturnType<typeof lazy>; label: string; icon: string }> = {
+    layers: { lazy: lazy(() => import('./LayersPanel.svelte')), label: 'Layers', icon: '\u2630' },
     cloud: { lazy: lazy(() => import('./CloudDataPanel.svelte')), label: 'Cloud Data', icon: '☁' },
     mosaic: { lazy: lazy(() => import('./MosaicPanel.svelte')), label: 'Mosaic', icon: '\u{1F5FA}' },
     wind: { lazy: lazy(() => import('./WindPanel.svelte')), label: 'Wind (Multi-Doppler)', icon: '\u{1F32C}' },
     volume: { lazy: lazy(() => import('./VolumePanel.svelte')), label: '3D Volume', icon: '\u{1F4E6}' },
     timeseries: { lazy: lazy(() => import('./TimeSeriesChart.svelte')), label: 'Time Series', icon: '\u{1F4C8}' },
     crosssection: { lazy: lazy(() => import('./CrossSectionPanel.svelte')), label: 'Cross-Section', icon: '///' },
+    sounding: { lazy: lazy(() => import('./SoundingPanel.svelte')), label: 'Sounding', icon: '\u2197' },
     qc: { lazy: lazy(() => import('./QCPanel.svelte')), label: 'Quality Control', icon: '\u2714' },
     storm: { lazy: lazy(() => import('./StormPanel.svelte')), label: 'Storm Cells', icon: '\u26C8' },
     modules: { lazy: lazy(() => import('./ModulesPanel.svelte')), label: 'Modules', icon: '\u{1F9E9}' },
@@ -26,6 +28,8 @@
   // Line icons for the panel headers (24x24, stroke). A panel without an entry here falls back to the
   // `icon` text in PANEL_MAP, so a new panel needs no change to this table.
   const PANEL_ICONS: Record<string, string> = {
+    layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 12.5l9 5 9-5"/><path d="M3 17l9 5 9-5"/>',
+    sounding: '<path d="M4 3v18h17"/><path d="M8 21L17 5"/><path d="M12 21l3-8 3 3"/><path d="M7 8h4"/>',
     cloud: '<path d="M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 8.5a4.5 4.5 0 0 1 0 9.5H7z"/>',
     mosaic: '<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><path d="M13 17h8M17 13v8"/>',
     wind: '<path d="M3 8h11a3 3 0 1 0-3-3M3 12h16a3 3 0 1 1-3 3M3 16h8a2.5 2.5 0 1 1-2.5 2.5"/>',

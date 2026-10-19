@@ -47,7 +47,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, pipeline, plugins, quality, rhi, varmap, web
+from engine import derived, layer_provenance, mosaic, pipeline, plugins, quality, rhi, varmap, web
 from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
@@ -57,6 +57,7 @@ from engine.cloud import (
     list_nexrad_stations,
 )
 from engine.dualpol import histogram_data, region_stats, scatter_data
+from engine.environment.messages import EnvironmentMessages
 from engine.exporter import _FORMAT_EXT, RadarExporter
 from engine.processor import (
     MAX_SECTION_POINTS,
@@ -361,6 +362,12 @@ def _get_reader(file_id: str | None) -> RadarReader:
 
 def _get_datatree(file_id: str | None):
     return _get_reader(file_id).datatree
+
+
+def _lp_kw(reader: RadarReader) -> dict[str, str]:
+    """``valid_time`` / ``source`` of an open file for the layer provenance builders."""
+    ctx = layer_provenance.reader_context(reader)
+    return {"valid_time": ctx["scan_time"], "source": ctx["source"]}
 
 
 def _overrides_for(file_id: str | None) -> dict[str, str]:
@@ -794,7 +801,7 @@ def _export_inputs(
     return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
 
 
-class ConnectionHandler:
+class ConnectionHandler(EnvironmentMessages):
     """Manages message routing for a single WebSocket connection, using shared state."""
 
     def __init__(self, ws: ServerConnection, session: web.SessionContext | None = None) -> None:
@@ -1041,6 +1048,7 @@ class ConnectionHandler:
             "multidoppler_cancel": self._handle_multidoppler_cancel,
             "export_multidoppler": self._handle_export_multidoppler,
             "get_web_info": self._handle_get_web_info,
+            **self._env_handlers(),  # env_* and sounding_open (engine/environment/messages.py)
         }
         if self.session is not None:
             table.update(
@@ -1260,7 +1268,11 @@ class ConnectionHandler:
         flat_data: np.ndarray = result.pop("data")
         await self._send_binary_chunks(
             [flat_data],
-            {"type": "volume_data", **result},
+            {
+                "type": "volume_data",
+                **result,
+                "provenance": layer_provenance.volume_3d(**_lp_kw(reader)).to_dict(),
+            },
             length_key="byte_length",
         )
 
@@ -1328,7 +1340,13 @@ class ConnectionHandler:
         flat_data: np.ndarray = result.pop("data")
         await self._send_binary_chunks(
             [flat_data],
-            {"type": "cross_section_3d_data", **result},
+            {
+                "type": "cross_section_3d_data",
+                **result,
+                "provenance": layer_provenance.cross_section(
+                    variable=variable, **_lp_kw(reader)
+                ).to_dict(),
+            },
             length_key="byte_length",
         )
 
@@ -1553,7 +1571,10 @@ class ConnectionHandler:
         file_id = _register_reader(reader)
         await self.send_progress(100, "Loaded")
         schema_serial = {k: _serializable(v) for k, v in schema.items()}
-        await self.send({"type": "file_opened", "data": schema_serial, "file_id": file_id})
+        prov = await loop.run_in_executor(None, layer_provenance.describe_reader, reader, schema)
+        await self.send(
+            {"type": "file_opened", "data": schema_serial, "file_id": file_id, "provenance": prov}
+        )
 
     async def _handle_open_nexrad_l2(self, msg: dict[str, Any]) -> None:
         s3_path = msg.get("path", "")
@@ -1691,7 +1712,10 @@ class ConnectionHandler:
         file_id = _register_reader(reader)
 
         await self.send_progress(100, f"Loaded {filename}")
-        await self.send({"type": "file_opened", "data": schema, "file_id": file_id})
+        prov = await loop.run_in_executor(None, layer_provenance.describe_reader, reader, schema)
+        await self.send(
+            {"type": "file_opened", "data": schema, "file_id": file_id, "provenance": prov}
+        )
 
         # Warm the reader's lazy sweep data for the most likely first request.
         if schema.get("variables") and schema.get("sweeps"):
@@ -1833,6 +1857,9 @@ class ConnectionHandler:
             )
 
         fields, arrays = await loop.run_in_executor(None, _load_and_pack)
+        prov = fields.pop("provenance", None) or getattr(reader, "_layer_prov", None)
+        if prov:
+            fields["provenance"] = prov
         # file_id: replies arrive in any order, and two open files can both be asked for the
         # same variable and sweep -- the UI needs to know whose data this is.
         await self._send_binary_chunks(
@@ -2319,7 +2346,15 @@ class ConnectionHandler:
 
         result = await loop.run_in_executor(None, run)
 
-        await self.send({"type": "cross_section_result", **result})
+        await self.send(
+            {
+                "type": "cross_section_result",
+                **result,
+                "provenance": layer_provenance.cross_section(
+                    variable=variable, **_lp_kw(_get_reader(msg.get("file_id")))
+                ).to_dict(),
+            }
+        )
 
     async def _handle_get_vertical_profile(self, msg: dict[str, Any]) -> None:
         """Extract a vertical profile at a geographic point."""
@@ -2733,6 +2768,12 @@ class ConnectionHandler:
                 "backend": scan.backend,
                 "backend_label": scan.backend_label,
                 "note": scan.note,
+                "provenance": layer_provenance.storm_cells(
+                    valid_time=layer_provenance.reader_context(_get_reader(msg.get("file_id")))[
+                        "scan_time"
+                    ],
+                    params={"threshold_dbz": threshold_dbz, "min_size_km2": min_size_km2},
+                ).to_dict(),
             }
         )
 
@@ -3281,6 +3322,12 @@ class ConnectionHandler:
                     "sweep": sweep,
                     "units": str(block.get("units") or ""),
                     "file_id": out_file_id,
+                    "provenance": layer_provenance.derived_field(
+                        name=str(block.get("title") or name),
+                        module=module_id,
+                        params=payload.get("params"),
+                        valid_time=layer_provenance.reader_context(reader)["scan_time"],
+                    ).to_dict(),
                     **fields_hdr,
                     **_field_range(block, arrays[2]),
                 },
@@ -3384,7 +3431,15 @@ class ConnectionHandler:
         msg: dict[str, Any] = {
             "type": "derived_variables",
             "file_id": file_id,
-            "variables": store.variables() if store is not None else [],
+            "variables": [
+                {
+                    **v,
+                    "provenance": layer_provenance.from_derived_info(
+                        v, layer_provenance.reader_context(reader)["scan_time"]
+                    ).to_dict(),
+                }
+                for v in (store.variables() if store is not None else [])
+            ],
         }
         if evicted:
             msg["evicted"] = evicted
@@ -3861,10 +3916,12 @@ class ConnectionHandler:
         record = await _run_holding(_locks.get("mosaic"), _build)
         if self.session is not None:  # only the creator may probe / export this mosaic
             self.session.owned["mosaics"].add(record.mosaic_id)
+        rec_header = record.header()
         header = {
             "type": "mosaic_result",
             "request_id": request_id,
-            **record.header(),
+            **rec_header,
+            "provenance": layer_provenance.for_mosaic_header(rec_header),
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
         }
         await self._send_binary_chunks([record.png], header, length_key="png_bytes")
@@ -4097,6 +4154,7 @@ class ConnectionHandler:
             "radars": radars,
             "analysis_time": full.get("analysis_time"),
             "summary": {k: full[k] for k in self._WIND_VOLUME_SUMMARY if k in full},
+            "provenance": layer_provenance.for_winds_header(full),
         }
         await self._send_binary_chunks([block], header, length_key="byte_length")
 
@@ -4198,10 +4256,12 @@ class ConnectionHandler:
             raise
         if self.session is not None:  # only the creator may export this wind analysis
             self.session.owned["winds"].add(record.wind_id)
+        rec_header = record.header()
         header = {
             "type": "multidoppler_result",
             "request_id": request_id,
-            **record.header(),
+            **rec_header,
+            "provenance": layer_provenance.for_winds_header(rec_header),
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
         }
         await self._send_binary_chunks([record.fields], header, length_key="byte_length")
@@ -4428,6 +4488,9 @@ def _derived_sweep_data(
         attrs={"units": meta.get("units", "")},
     )
     fields, arrays = _pack_field(da, variable, rays=rhi.rhi_rays(ds))
+    fields["provenance"] = layer_provenance.from_derived_info(
+        meta, layer_provenance.reader_context(reader)["scan_time"]
+    ).to_dict()
     fields.update(
         derived=True,
         label=meta.get("label", variable),

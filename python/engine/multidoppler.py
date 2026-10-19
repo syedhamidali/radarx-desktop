@@ -1929,7 +1929,7 @@ def _true_north_vectors(
 
 def _wind_attrs(rec: WindRecord) -> dict[str, Any]:
     """Global attributes: method, options, background, QC thresholds/counts, radars, versions."""
-    from engine import provenance
+    from engine import layer_provenance, provenance
 
     s = rec.summary
     o = s.get("options") or {}
@@ -1945,6 +1945,7 @@ def _wind_attrs(rec: WindRecord) -> dict[str, Any]:
         "radars": names,
     }
     attrs = provenance.standard_global_attrs(
+        layer=layer_provenance.for_winds_header({**s, "radars": radars}),
         title="Multi-Doppler wind analysis",
         action=f"multi-Doppler {method} wind retrieval",
         params=params,

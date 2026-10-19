@@ -30,7 +30,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine import hdf5_guard, provenance
+from engine import hdf5_guard, layer_provenance, provenance
 from engine.varmap import role_for_name, unit_class
 
 logger = logging.getLogger(__name__)
@@ -532,6 +532,12 @@ def radar_global_attrs(
         source=src_text,
         conventions=conventions,
         history=src.get("history"),
+        layer=layer_provenance.observed_radar(
+            radar=instrument,
+            scan_time=start,
+            fmt=kind,
+            simulated=provenance.clean_text(src.get("simulated_data")).lower() == "true",
+        ).to_dict(),
     )
     attrs["version"] = version
     if kind == "cfradial1":

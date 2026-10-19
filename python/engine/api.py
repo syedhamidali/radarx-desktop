@@ -124,6 +124,7 @@ __all__ = [
     "recipes",
     "reload_modules",
     "run",
+    "sounding",
     "track",
     "user_errors",
     "winds",
@@ -2347,6 +2348,41 @@ def track(
 def info(file: str | os.PathLike[str] | Volume) -> dict[str, Any]:
     """:meth:`Volume.info` of a file (``xrd info -i FILE``)."""
     return open(file).info()
+
+
+def sounding(
+    file: str | os.PathLike[str],
+    *,
+    format: str = "auto",  # noqa: A002 - same name as the command-line option
+    wind_units: str | None = None,
+    virtual_temperature: bool = True,
+) -> dict[str, Any]:
+    """Read a radiosonde file and return its labelled diagnostics (``xrd sounding -i FILE --json``).
+
+    Formats: University of Wyoming text list and CSV, SPC / SHARPpy text, IEM RAOB JSON, IGRA2 and
+    any CSV whose header names the columns. The result is a plain dict: ``levels`` (hPa, m, degC,
+    m/s), ``provenance``, ``launch_time``, ``drift_note`` and ``diagnostics`` with the parcels
+    (surface-based, mixed-layer, most-unstable: CAPE, CIN, LCL, LFC, EL, lifted index), bulk shear,
+    storm-relative helicity with the Bunkers motion, freezing and wet-bulb-zero levels and
+    precipitable water, each with its definition. Heights are metres above the launch site.
+
+    Examples
+    --------
+    >>> d = api.sounding("BMX_20220330_00Z.csv", wind_units="kt")  # doctest: +SKIP
+    >>> d["diagnostics"]["parcels"]["most-unstable"]["cape"]  # doctest: +SKIP
+    """
+    from engine import sounding as sounding_engine
+
+    try:
+        snd = sounding_engine.read_sounding_file(file, format, wind_units)
+        result = sounding_engine.analyse(snd)
+        if not virtual_temperature:
+            result["diagnostics"] = sounding_engine.diagnose(snd, virtual=False)
+        return result
+    except sounding_engine.SoundingError as exc:
+        raise XrdInputError(f"{Path(file).name}: {exc}") from exc
+    except sounding_engine.RadarxMissing as exc:
+        raise XrdDependencyError(str(exc)) from exc
 
 
 def plot(
