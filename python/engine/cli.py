@@ -79,6 +79,7 @@ COMMANDS = (
     "cells",
     "mosaic",
     "winds",
+    "animate",
     "export",
     "examples",
     "completion",
@@ -372,7 +373,8 @@ GROUPS = (
                  ("modules", "list | show the algorithms and their parameters"),
                  ("cells", "find storm cells; several files are tracked in time"))),
     ("Combine", (("mosaic", "merge several radars onto one map"),
-                 ("winds", "3-D winds from two or more radars (multi-Doppler)"))),
+                 ("winds", "3-D winds from two or more radars (multi-Doppler)"),
+                 ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
     ("Help", (("examples", "a guided tour of copy-paste commands"),
               ("completion", "shell completion script for bash, zsh or fish"))),
@@ -730,6 +732,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--field", default="speed", help="field shown in colour (default speed)")
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.set_defaults(func=cmd_winds)
+
+    # -- animate -------------------------------------------------------------------------
+    from engine import animate_cli
+
+    animate_cli.add_parser(command, _add_input, _add_output, _add_plot)
 
     # -- export --------------------------------------------------------------------------
     p = command(
@@ -1804,6 +1811,11 @@ xrd cells -i 'mayfield/KHPX/*_V06' -o cells.csv --tracks tracks.csv -p tracks.pn
 xrd mosaic -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 KPAH20211211_015935_V06 KVWX20211211_015522_V06
 xrd mosaic -i 'mayfield/*/*_0159*_V06' -o mosaic.nc -p map.png
 xrd winds -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 --extent 80 -o winds.nc -p winds.png --level-km 3""",
+    "animate": """\
+# ANIMATE - a storm-centred 3D animation of many volumes (needs radarx; --no-render needs nothing else)
+xrd animate -i 'mayfield/*/*_V06' --no-render
+xrd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
+xrd animate -i mayfield -p still.png --still-at 12""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images
 xrd export -i {SAMPLE} -o ktlx.nc
@@ -1828,6 +1840,7 @@ TOPIC_ALIASES = {
     "cells": "analyse",
     "mosaic": "combine",
     "winds": "combine",
+    "animate": "animate",
     "export": "save",
     "config": "reproduce",
 }

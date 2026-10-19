@@ -19,6 +19,8 @@ export interface CamKey {
   dx: number;
   dy: number;
   dz: number;
+  /** Vertical field of view in degrees at this key (optional; the renderer's own when no key sets one). */
+  fov?: number;
 }
 
 export type CamChannel = 'theta' | 'phi' | 'dist' | 'dx' | 'dy' | 'dz';
@@ -62,6 +64,8 @@ export function cameraAt(keys: CamKey[], t: number): CamKey {
   const ts = keys.map((k) => k.t);
   const out: any = { t };
   for (const c of CHANNELS) out[c] = hermite(ts, keys.map((k) => k[c]), t);
+  // an optional field of view: keys that do not set one take the renderer's default (45 degrees)
+  if (keys.some((k) => k.fov !== undefined)) out.fov = hermite(ts, keys.map((k) => k.fov ?? 45), t);
   return out as CamKey;
 }
 
