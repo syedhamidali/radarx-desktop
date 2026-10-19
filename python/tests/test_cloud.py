@@ -275,3 +275,99 @@ class TestNearestScan:
             2024, 1, 1, 0, 5, tzinfo=timezone.utc
         )
         assert cloud.scan_time("KLOT20241399_000500_V06") is None
+
+
+class TestLatestScanInfo:
+    """Radar-sites card: newest volume of a station, from a mocked S3 listing (no network)."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self, fake_s3: FakeS3) -> None:
+        cloud._INFO_CACHE.clear()
+
+    @staticmethod
+    def _today() -> str:
+        return datetime.now(timezone.utc).strftime("%Y/%m/%d")
+
+    def test_ok_reports_newest_volume_size_and_age(self, fake_s3: FakeS3) -> None:
+        now = datetime.now(timezone.utc)
+        older = (now - timedelta(minutes=14)).strftime("%Y%m%d_%H%M%S")
+        newer = (now - timedelta(minutes=4)).strftime("%Y%m%d_%H%M%S")
+        fake_s3.keys = [
+            f"{self._today()}/KLOT/KLOT{older}_V06",
+            f"{self._today()}/KLOT/KLOT{newer}_V06",
+            f"{self._today()}/KLOT/KLOT{newer}_V06_MDM",
+        ]
+        info = cloud.latest_scan_info("klot")
+        assert info["status"] == "ok"
+        assert info["station"] == "KLOT"
+        assert info["name"] == f"KLOT{newer}_V06"
+        assert info["path"] == f"s3://unidata-nexrad-level2/{self._today()}/KLOT/KLOT{newer}_V06"
+        assert info["size"] == 10
+        assert info["scan_time"].endswith("Z")
+        assert 200 < info["age_s"] < 400  # ~4 min, from the file name (the volume start time)
+        assert info["now"].endswith("Z")
+        assert info["source"] == "s3://unidata-nexrad-level2/"
+
+    def test_falls_back_to_yesterday(self, fake_s3: FakeS3) -> None:
+        y = datetime.now(timezone.utc) - timedelta(days=1)
+        fake_s3.keys = [f"{y:%Y/%m/%d}/KLOT/KLOT{y:%Y%m%d}_235500_V06"]
+        info = cloud.latest_scan_info("KLOT")
+        assert info["status"] == "ok"
+        assert info["scan_time"].startswith(f"{y:%Y-%m-%d}T23:55:00")
+        assert info["age_s"] > 0
+
+    def test_not_found_has_no_age_and_is_not_an_error(self, fake_s3: FakeS3) -> None:
+        fake_s3.keys = []
+        info = cloud.latest_scan_info("KLOT")
+        assert info["status"] == "not_found"
+        assert "age_s" not in info and "scan_time" not in info
+
+    def test_offline(self, fake_s3: FakeS3, monkeypatch: pytest.MonkeyPatch) -> None:
+        class EndpointConnectionError(Exception):  # same class name as botocore's
+            pass
+
+        class Boom:
+            def get_paginator(self, name: str):
+                raise EndpointConnectionError("no route")
+
+        monkeypatch.setattr(cloud, "_s3", lambda: Boom())
+        info = cloud.latest_scan_info("KLOT", use_cache=False)
+        assert info["status"] == "offline"
+        assert "age_s" not in info
+
+    def test_connection_error_is_offline_other_errors_are_not(
+        self, fake_s3: FakeS3, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class Err:
+            def __init__(self, exc: Exception) -> None:
+                self.exc = exc
+
+            def get_paginator(self, name: str):
+                raise self.exc
+
+        monkeypatch.setattr(cloud, "_s3", lambda: Err(ConnectionError("reset")))
+        assert cloud.latest_scan_info("KLOT", use_cache=False)["status"] == "offline"
+        monkeypatch.setattr(cloud, "_s3", lambda: Err(PermissionError("denied")))
+        info = cloud.latest_scan_info("KLOT", use_cache=False)
+        assert info["status"] == "error"
+        assert "denied" in info["message"]
+
+    def test_successes_are_cached_briefly(self, fake_s3: FakeS3) -> None:
+        stamp = f"{datetime.now(timezone.utc):%Y%m%d_%H%M%S}"
+        fake_s3.keys = [f"{self._today()}/KLOT/KLOT{stamp}_V06"]
+        cloud.latest_scan_info("KLOT")
+        n = len(fake_s3.calls)
+        cloud.latest_scan_info("KLOT")
+        assert len(fake_s3.calls) == n  # second call served from the 20 s cache
+        cloud.latest_scan_info("KLOT", use_cache=False)
+        assert len(fake_s3.calls) > n
+
+    def test_failures_are_not_cached(self, fake_s3: FakeS3) -> None:
+        fake_s3.fail = True
+        assert cloud.latest_scan_info("KLOT")["status"] == "error"
+        assert "KLOT" not in cloud._INFO_CACHE
+
+    def test_bad_station_never_touches_s3(self, fake_s3: FakeS3) -> None:
+        info = cloud.latest_scan_info("../x")
+        assert info["status"] == "error"
+        assert fake_s3.calls == []

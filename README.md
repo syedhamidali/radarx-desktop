@@ -62,6 +62,12 @@ for files with no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`). O
 
 ## What it does
 
+### Browse the radar network
+
+Switch on **Sites** above the map to see the 156 NEXRAD sites (and your own CSV/JSON list for other networks); click
+one for its card: position, the age of its latest scan, **Open latest volume** and **Browse archive**. Nothing goes to
+the internet before a dialog says what will be fetched and how big it is. See [docs/RADAR_SITES.md](docs/RADAR_SITES.md).
+
 ### See it in 2D and 3D
 
 Pan and zoom a GPU-rendered PPI on a map, then switch to the 3D volume: every sweep is ray-marched on the GPU, with

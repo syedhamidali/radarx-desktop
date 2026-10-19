@@ -43,6 +43,7 @@ usage
 opening-data
 viewing
 using-modules
+RADAR_SITES
 RHI
 CROSSSECTION
 export

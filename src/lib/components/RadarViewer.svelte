@@ -15,6 +15,8 @@
   import { styleFor, variableStylesRevision } from '../utils/variableStyles';
   import MapBackground from './MapBackground.svelte';
   import GeoOverlay from './GeoOverlay.svelte';
+  import { lazy } from '../utils/lazy.svelte';
+  import { showRadarSites } from '../stores/radarSitesPref';
   import MeasureTools from './MeasureTools.svelte';
   import Annotations from './Annotations.svelte';
   import MeasureToolbar from './MeasureToolbar.svelte';
@@ -74,6 +76,9 @@
   let showMap = $state(true);
   let mapOpacity = $state(1.0);
   let showGeoOverlay = $state(true);
+  // Radar sites layer (markers + site card): its code loads the first time it is switched on.
+  const sitesLayer = lazy(() => import('./RadarSitesLayer.svelte'));
+  $effect(() => { if ($showRadarSites) void sitesLayer.load(); });
 
   // Measurement / annotation mode
   let measureToolsVisible = $state(false);
@@ -763,6 +768,10 @@
             <input type="checkbox" bind:checked={showGeoOverlay} />
             Geo
           </label>
+          <label class="toggle-label" title="Show NEXRAD and your own radar sites; click one for its latest scan">
+            <input type="checkbox" bind:checked={$showRadarSites} />
+            Sites
+          </label>
         </div>
         {#if $mosaicLayer}
           <div class="control-group map-controls">
@@ -832,6 +841,19 @@
           {radarLat}
           {radarLon}
           {radarName}
+          maxRange={currentMaxRange}
+          {scale}
+          {translateX}
+          {translateY}
+          {containerWidth}
+          {containerHeight}
+        />
+      {/if}
+
+      {#if $showRadarSites && sitesLayer.component && hasRendered && (radarLat !== 0 || radarLon !== 0)}
+        <sitesLayer.component
+          {radarLat}
+          {radarLon}
           maxRange={currentMaxRange}
           {scale}
           {translateX}

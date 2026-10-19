@@ -230,6 +230,7 @@
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('xradar:set-view-mode', handleSetViewMode);
+    window.addEventListener('xradar:cloud-site', onCloudSite);
     // Check for first-launch onboarding
     if (!localStorage.getItem('xradar-onboarding-done')) {
       onboardingVisible = true;
@@ -296,6 +297,7 @@
     destroyed = true;
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('xradar:set-view-mode', handleSetViewMode);
+    window.removeEventListener('xradar:cloud-site', onCloudSite);
     window.removeEventListener('dragenter', onDomDragEnter);
     window.removeEventListener('dragover', onDomDragOver);
     window.removeEventListener('dragleave', onDomDragLeave);
@@ -500,6 +502,12 @@
   async function openLatestFromCloud() {
     await showPanel('cloud');
     window.dispatchEvent(new CustomEvent('xradar:cloud-open-latest'));
+  }
+
+  /** Radar sites card: bring the Cloud panel into view, then let it act on the queued request. */
+  async function onCloudSite() {
+    await showPanel('cloud');
+    window.dispatchEvent(new CustomEvent('xradar:cloud-site-apply'));
   }
 
   /** Open files handed over by the OS, waiting (up to a minute) for the engine to be connected. */

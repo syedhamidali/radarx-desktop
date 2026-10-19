@@ -6,6 +6,7 @@
   import { focusTrap } from '../utils/focusTrap';
   import { isWebMode } from '../utils/env';
   import UpdatesSettings from './UpdatesSettings.svelte';
+  import { lazy } from '../utils/lazy.svelte';
   import {
     SHORTCUT_REGISTRY,
     formatKeyCombo,
@@ -20,8 +21,11 @@
 
   const dispatch = createEventDispatcher();
 
+  // The radar-sites section brings the site catalogue with it: fetch it when the Data tab is first shown.
+  const radarSitesSettings = lazy(() => import('./RadarSitesSettings.svelte'));
   type TabId = 'general' | 'display' | 'data' | 'export' | 'updates' | 'shortcuts';
   let activeTab: TabId = $state('general');
+  $effect(() => { if (activeTab === 'data') void radarSitesSettings.load(); });
 
   // Local copy for live editing
   const s = $derived($settings);
@@ -454,6 +458,10 @@
               {/if}
             </div>
 
+            {/if}
+
+            {#if radarSitesSettings.component}
+              <div class="settings-section"><radarSitesSettings.component /></div>
             {/if}
 
             <div class="section-footer">

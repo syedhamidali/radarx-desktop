@@ -614,6 +614,126 @@ def get_latest_nexrad_l2(station: str) -> dict[str, Any]:
     raise RuntimeError(f"No recent Level II files found for {st}")
 
 
+_OFFLINE_ERROR_NAMES = frozenset(
+    {
+        "EndpointConnectionError",
+        "ConnectTimeoutError",
+        "ReadTimeoutError",
+        "ConnectionClosedError",
+        "ProxyConnectionError",
+        "SSLError",
+        "NoCredentialsError",
+        "ConnectionError",
+        "gaierror",
+    }
+)
+_INFO_TTL_S = 20.0
+_INFO_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_INFO_CACHE_LOCK = threading.Lock()
+
+
+def _is_offline_error(exc: BaseException | None) -> bool:
+    """True when *exc* (or anything it was raised from) is a network-level failure."""
+    seen = 0
+    while exc is not None and seen < 8:
+        if type(exc).__name__ in _OFFLINE_ERROR_NAMES:
+            return True
+        if isinstance(exc, (ConnectionError, TimeoutError)):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
+
+
+def latest_scan_info(station: str, *, use_cache: bool = True) -> dict[str, Any]:
+    """Describe the newest Level II volume of *station* without downloading it.
+
+    One S3 listing (today's folder, else yesterday's, UTC) - metadata only.  Never raises: the
+    result always carries ``status``: ``"ok"`` | ``"not_found"`` (listed, no scan) | ``"offline"``
+    (network failure) | ``"error"`` (bad station or any other failure) plus a ``message``.
+
+    On ``"ok"``: ``name``, ``path`` (s3:// URL, exactly what ``open_nexrad_l2`` takes), ``size``
+    (bytes, from the listing), ``scan_time`` (UTC, parsed from the file name = volume start),
+    ``last_modified`` (when the object was written to S3), ``now`` (this machine's UTC clock) and
+    ``age_s`` (``now - scan_time``, clamped to >= 0).  Nothing is inferred beyond what the
+    listing says: no scan means no age.
+    """
+    try:
+        st = _normalize_station(station)
+    except ValueError as exc:
+        return {"status": "error", "station": str(station), "message": str(exc)}
+
+    now_mono = time.monotonic()
+    if use_cache:
+        with _INFO_CACHE_LOCK:
+            hit = _INFO_CACHE.get(st)
+            if hit is not None and hit[0] > now_mono:
+                return _with_age(copy.deepcopy(hit[1]))
+
+    now = datetime.now(timezone.utc)
+    last_exc: BaseException | None = None
+    listed_ok = False
+    result: dict[str, Any] | None = None
+    for delta_days in (0, 1):
+        day = (now - timedelta(days=delta_days)).strftime("%Y-%m-%d")
+        try:
+            files = list_nexrad_l2_files(st, day, use_cache=False)
+        except Exception as exc:
+            last_exc = exc
+            continue
+        listed_ok = True
+        timed = [(scan_time(f["name"]), f) for f in files]
+        timed = [(t, f) for t, f in timed if t is not None]
+        if timed:
+            t, f = max(timed, key=lambda tf: tf[0])
+            result = {
+                "status": "ok",
+                "station": st,
+                "name": f["name"],
+                "path": f["path"],
+                "size": int(f.get("size") or 0),
+                "scan_time": t.isoformat().replace("+00:00", "Z"),
+                "last_modified": f.get("last_modified", ""),
+                "source": f"s3://{_NEXRAD_L2_BUCKET}/",
+            }
+            break
+
+    if result is None:
+        if not listed_ok and last_exc is not None:
+            offline = _is_offline_error(last_exc)
+            result = {
+                "status": "offline" if offline else "error",
+                "station": st,
+                "message": (
+                    "Could not reach the AWS public bucket (offline or blocked)."
+                    if offline
+                    else f"Listing failed: {last_exc}"
+                ),
+            }
+        else:
+            result = {
+                "status": "not_found",
+                "station": st,
+                "message": f"No Level II volume for {st} today or yesterday (UTC).",
+            }
+    if result["status"] in ("ok", "not_found"):
+        with _INFO_CACHE_LOCK:
+            _INFO_CACHE[st] = (now_mono + _INFO_TTL_S, copy.deepcopy(result))
+            while len(_INFO_CACHE) > 256:
+                _INFO_CACHE.pop(next(iter(_INFO_CACHE)))
+    return _with_age(result)
+
+
+def _with_age(info: dict[str, Any]) -> dict[str, Any]:
+    """Stamp *info* with this machine's UTC clock and, for an ok result, the scan's age."""
+    now = datetime.now(timezone.utc)
+    info["now"] = now.isoformat().replace("+00:00", "Z")
+    if info.get("status") == "ok":
+        t = datetime.fromisoformat(info["scan_time"].replace("Z", "+00:00"))
+        info["age_s"] = max(0.0, (now - t).total_seconds())
+    return info
+
+
 # ── NEXRAD ARCO (icechunk / Zarr v3) ─────────────────────────────────────────
 
 
