@@ -7,7 +7,7 @@
  * curves are labelled. Pure drawing, no state.
  */
 import { type Station, type TimeHeight, type ProvKind, codeValue, dsdColumn, raindropFall, seriesAt } from './perilsData.ts';
-import { chip, drawText, panel, provColour, rgba, ui, type RGB } from './perilsStyle.ts';
+import { chip, drawText, fit, panel, provColour, rgba, ui, type RGB } from './perilsStyle.ts';
 
 const line = (ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, w: number, c: string) => {
   ctx.strokeStyle = c;
@@ -116,7 +116,7 @@ export function drawDsdInset(ctx: CanvasRenderingContext2D, x: number, y: number
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
   chip(ctx, 'observed', x + 12 * u, y + 30 * u, u, 'OBSERVED · drop sizes', 12);
-  drawText(ctx, st.name, x + w - 12 * u, y + 24 * u, u, { size: 12, weight: 500, align: 'right', halo: 0, color: rgba(ui().dim, 1) });
+  drawText(ctx, fit(ctx, st.name, w - 200 * u, u, { size: 12, weight: 500 }), x + w - 12 * u, y + 24 * u, u, { size: 12, weight: 500, align: 'right', halo: 0, color: rgba(ui().dim, 1) });
   const px = x + 40 * u;
   const py = y + 46 * u;
   const pw = w - 56 * u;

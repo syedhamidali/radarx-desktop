@@ -102,6 +102,14 @@ export function measure(ctx: CanvasRenderingContext2D, str: string, u: number, o
   return ctx.measureText(str).width;
 }
 
+/** `str` shortened with an ellipsis to fit `maxW` pixels (`u`-scaled text options). */
+export function fit(ctx: CanvasRenderingContext2D, str: string, maxW: number, u: number, o: TextOpts = {}): string {
+  if (measure(ctx, str, u, o) <= maxW) return str;
+  let s = str;
+  while (s.length > 1 && measure(ctx, `${s}…`, u, o) > maxW) s = s.slice(0, -1);
+  return `${s}…`;
+}
+
 /** A translucent rounded panel; returns the inner origin. */
 export function panel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, u: number, alpha = 0.58): void {
   const r = 8 * u;

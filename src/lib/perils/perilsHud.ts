@@ -13,7 +13,7 @@
 import {
   type PerilsData, type ProvKind, type Station, type Readout, clockUtc, fmtOffset, compass16, seriesAt,
 } from './perilsData.ts';
-import { PROV, type RGB, chip, drawText, measure, panel, provColour, rgba, ui, FONT, MONO } from './perilsStyle.ts';
+import { PROV, type RGB, chip, drawText, fit, measure, panel, provColour, rgba, ui, FONT, MONO } from './perilsStyle.ts';
 import { wrapText } from './perilsCaptions.ts';
 import { tempColour } from './perilsSurface.ts';
 import { COLORMAP_DATA } from '../utils/colormaps';
@@ -205,7 +205,7 @@ export function drawStationCard(ctx: CanvasRenderingContext2D, H: number, u: num
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
   chip(ctx, 'observed', x + 12 * u, y + 30 * u, u, `OBSERVED · ${st.type || 'station'}`, 13);
-  drawText(ctx, st.name, x + 14 * u, y + 56 * u, u, { size: 17, weight: 700, halo: 0 });
+  drawText(ctx, fit(ctx, st.name, w - 28 * u, u, { size: 17, weight: 700 }), x + 14 * u, y + 56 * u, u, { size: 17, weight: 700, halo: 0 });
   const f = (v: number | null, d = 1, unit = '') => (v == null ? '–' : `${v.toFixed(d)}${unit}`);
   const col = (i: number, j: number) => ({ x: x + 14 * u + i * 118 * u, y: y + (80 + j * 40) * u });
   const cells: [string, string][] = [
