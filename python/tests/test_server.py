@@ -1795,7 +1795,8 @@ class TestWindVolume:
         msg = next(m for m in handler._sent if m["type"] == "wind_volume")
         names = [f["name"] for f in msg["fields"]]
         assert names[:4] == ["u", "v", "w", "speed"]
-        assert "dbz" in names and "crossing_angle" in names
+        assert {"dbz", "crossing_angle", "n_radars", "divergence"} <= set(names)
+        assert isinstance(msg["summary"], dict) and msg["summary"]["method"] == "analytic"
         assert msg["shape"] == [len(names), 3, 4, 5] and msg["grid"]["nz"] == 3
         assert msg["radars"][0]["x_m"] == pytest.approx(0.0, abs=1e-3)
         data = np.frombuffer(_binary(handler), dtype=np.float32).reshape(msg["shape"])

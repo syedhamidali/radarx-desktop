@@ -124,7 +124,82 @@ validated (no sounding or profiler comparison).
   a stage already running finishes first.
 - Map positions of the grid use the same spherical formulas as the PPI viewer, so cells can differ
   from the WGS84 gridding by up to about 0.5 % of the distance from the grid origin.
-- Not included: terrain-following levels, the vertical-vorticity constraint, a 3-D vector layer.
+- Not included: terrain-following levels, the vertical-vorticity constraint.
+
+## The wind in 3D: flow, arrows, animated field
+**View in 3D** (Wind panel) opens the 3D tab on the wind. The toolbar has two toggle buttons, both
+fading in and out over about 0.4 s, and the wind row has a third:
+
+- **Flow** (on by default, key `F`): thin, light, translucent trails (colour by speed, w or none)
+  that flow along the retrieved wind, like windy / earth.nullschool. Density, opacity, width, trail
+  length, visual speed and colour are sliders; pause/play freezes the picture exactly. On a dark
+  scene the trails glow (additive blending, pale blue for calm air to pink for strong wind); on a
+  light scene they are darker saturated colours with a thin light halo.
+- **Animate field** (off by default): the radar echo drifts subtly along the retrieved wind, on
+  its own or together with the flow. Only the echo is moved; where there is no wind it stays.
+- **Arrows** (off by default): the 3D arrows of the analysis grid.
+
+![Four frames of the flow over the mosaic volume (Mayfield, KY, 2021-12-11 02:08 UTC)](images/wind3d-flow-strip.png)
+
+![Flow of the analysis, animated](images/wind3d-flow.gif)
+
+Flow with *Animate field* on (left: the echo drifts a little along the wind as well), and on a
+light scene (right: darker saturated trails with a thin light halo):
+
+![Flow and animated field](images/wind3d-flow-and-field.png)
+![Flow on a light scene](images/wind3d-flow-light.png)
+
+Of the two, the flow is the one that reads: it shows direction, convergence and speed at a
+glance and leaves the echo untouched; the animated field alone is subtle (the cells wobble along
+the wind and the changing volume is drawn at reduced quality), which is why it is off by default and
+meant as an addition to the flow, not a replacement.
+
+### What the flow animation shows and does not show
+The animation is a picture of the retrieved field and nothing else. These are guarantees of the
+code (the CPU reference `src/lib/utils/windFlow.ts` is pinned by unit tests; the GPU code in
+`flowRenderer.ts` does the same and was checked against it on the Mayfield case: positions and trails
+agree to 1e-4 km, no particle was ever found without wind):
+
+1. **Only where the analysis has a wind.** A cell has wind if u and v are finite (and w when the
+   analysis retrieved w), at least two radars saw it, its beam-crossing angle is at least the minimum
+   and its error is at most the limit ("Hide error >"). The arrows use the same mask. If the
+   analysis did not retrieve w at all, the flow is horizontal only and the readout says so.
+2. **No extrapolation.** The wind is sampled by trilinear interpolation; if any of the eight cells
+   around a point has no wind, the sample is invalid. A particle that reaches an invalid sample
+   stops, fades out and is reborn inside a cell all of whose corners have wind. Nothing is filled
+   in, held, smoothed, or perturbed: there is no noise, turbulence or curl in the animation.
+3. **Real motion in physical space.** Particles move in metres with u, v **and** w, by a midpoint
+   (RK2) integrator with sub-steps of at most half a cell. Time is the frame time times ONE visible
+   factor, the *visual speed* (default: a 30 m/s wind crosses the domain in about 10 s; shown as
+   "×1250 (1 s = 21 min of wind motion)"). The vertical exaggeration is applied only when drawing.
+4. **Frozen, not a forecast.** The analysis is one instant: the trails are streamlines of the
+   field at the analysis time (shown above the scene), drawn as moving dashes. Particle positions
+   mean nothing as time; they only show the direction and speed of the wind at that instant.
+5. **Confidence is visible.** Trails get fainter where the beam-crossing angle is close to the minimum
+   or the error is large, when those fields exist. A trail is a piece of the streamline through the
+   particle (the field integrated backwards), and it is cut where the path leaves the wind.
+6. **A read-out for the field that is drawn:** maximum speed, maximum |w|, share of cells with wind,
+   mean divergence, and a warning badge if the QC limits (`max_speed`, `max_abs_w`) removed cells or
+   were hit, if the field looks noisy (very strong winds: usually aliased velocities), or if w was
+   not retrieved. Do not over-trust a field with a warning.
+7. **Animate field is display only.** The echo is sampled where each cell was a moment ago, using
+   the retrieved wind at that cell, in two phases half a cycle apart that are cross-faded (no seam);
+   the amplitude ("Drift", km at the strong end) is a display choice, it is not a forecast of the
+   storm's motion. Cells without wind do not move.
+
+Not drawn: wind at heights or places without a retrieved wind, uncertainty-free "smooth" fields,
+anything outside the analysis box. The particles are depth-tested against the arrows and each other
+only; the ray-marched volume does not occlude them (they are drawn over it, translucent, so the echo
+stays visible). With the camera below the ground plane the ground does not hide them.
+
+Performance (Apple M1 Pro, headless Chrome, 4-radar mosaic volume under the flow): 60 fps with the
+default 5k particles and with 40k; about 45 fps while orbiting with 40k (the volume is drawn on
+every frame then); 42 fps with 60k at rest. Flow with Animate field on: 42 fps; Animate field alone
+53 fps (the changing volume is drawn on every frame). While the flow plays and the camera is still,
+the volume and ground are drawn once and re-used, which is why the flow is cheap. The quality
+governor lowers the number of particles drawn when the GPU is slow; the particle buffers are freed
+when the flow is switched off (after the fade), when the tab is hidden or when the source changes.
+With "prefers-reduced-motion" the animation starts paused.
 
 ## Tests
 `python/tests/test_multidoppler.py` builds **synthetic** radar volumes (two sites 70 km apart, radial
@@ -137,6 +212,11 @@ Nyquist estimate; the automatic lowest level for far-apart radars and the automa
 output checks (counts, masks, thresholds, `keep_raw`); the per-level coverage table; the figures
 (arrow fill/edge colours per theme, panel counts, `cmweather` colour map); and smoke tests on the two
 real cases above that skip when the NEXRAD files are not present (path in `XRADAR_SEVERE_CASES`).
+`src/lib/utils/windFlow.test.mjs` (`npm run test:unit`) tests the flow: uniform flow is a straight line at
+the right speed, solid-body rotation is a circle of the right radius and period, a vertical wind
+raises the particle at w, a particle never enters a cell without wind, a sample with any invalid
+corner is invalid, trails are cut where the wind ends, seeding is only in valid cells, the mask,
+the confidence, the fades and the read-out.
 
 ## Protocol
 ```

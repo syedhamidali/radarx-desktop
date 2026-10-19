@@ -29,6 +29,8 @@ import {
 } from './qualityGovernor';
 import { GLSL_HASH, GLSL_THRESHOLD, glslGroundColor } from './volumeShaderParts';
 import { buildArrowMesh } from './windGlyphs';
+import { FlowLayer, type FlowParams } from './flowRenderer';
+import { activeParticles, type FlowField } from './windFlow.ts';
 import { chooseDownsample, packRG8Slab, type CartVolume, type SceneBox } from './cartesianVolume';
 
 // ─── Shaders ────────────────────────────────────────────────────────────────
@@ -75,6 +77,20 @@ function volumeFrag(): string {
     uniform int   u_light;
     uniform float u_themeLight;    // 0 dark scene, 1 light scene
 
+    // Optional drift of the echo along the retrieved wind (display only): the volume is sampled
+    // where each cell came from, u_animT * phase seconds ago, in two half-period shifted phases
+    // that are cross-faded so the loop has no seam. Cells without wind do not move.
+    uniform int   u_animOn;
+    uniform float u_animAmp;       // fade 0..1
+    uniform float u_animT;         // simulated seconds of drift at the end of a cycle
+    uniform float u_animPhase;     // 0..1
+    uniform highp sampler3D u_windTex;  // RGBA16F: u, v, w (m/s), confidence
+    uniform vec3  u_wOrigin;       // wind grid, km (its own frame)
+    uniform vec3  u_wCell;
+    uniform vec3  u_wDims;
+    uniform vec2  u_wOffset;       // wind frame -> scene frame
+    uniform float u_vexag;
+
     out vec4 fragColor;
 
     // Field at a scene position: val 0..1 over [vmin, vmax], cov = fraction of the neighbourhood
@@ -88,6 +104,33 @@ function volumeFrag(): string {
       float b = rg.r / rg.g;
       val = clamp((b * 255.0 - 1.0) / 254.0, 0.0, 1.0);
       cov = rg.g;
+      return true;
+    }
+    vec4 windAt(vec3 pos) {
+      vec3 pp = vec3(pos.xy - u_wOffset, pos.z / u_vexag);
+      vec3 f = (pp - u_wOrigin) / u_wCell;
+      if (any(lessThan(f, vec3(0.0))) || any(greaterThan(f, u_wDims - 1.0))) return vec4(0.0);
+      return texture(u_windTex, (f + 0.5) / u_wDims);
+    }
+
+    bool sampleAdvected(vec3 pos, out float val, out float cov) {
+      if (u_animOn == 0) return sampleField(pos, val, cov);
+      vec4 wv = windAt(pos);
+      vec3 dir = vec3(wv.xy, wv.z * u_vexag) * (0.001 * u_animT * u_animAmp);
+      float p1 = u_animPhase;
+      float p2 = fract(p1 + 0.5);
+      float w1 = 1.0 - abs(2.0 * p1 - 1.0);
+      float w2 = 1.0 - w1;
+      float v1, c1, v2, c2;
+      bool k1 = sampleField(pos - dir * p1, v1, c1);
+      bool k2 = sampleField(pos - dir * p2, v2, c2);
+      float a1 = k1 ? w1 * c1 : 0.0;
+      float a2 = k2 ? w2 * c2 : 0.0;
+      float s = a1 + a2;
+      val = 0.0; cov = 0.0;
+      if (s <= 0.002) return false;
+      val = (a1 * v1 + a2 * v2) / s;
+      cov = s;
       return true;
     }
 ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
@@ -154,7 +197,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
 
           vec3 pos = o + rayDir * t;
           float val, cov;
-          if (!sampleField(pos, val, cov)) continue;
+          if (!sampleAdvected(pos, val, cov)) continue;
 
           vec4 tf = texture(u_transferFn, vec2((val * 255.0 + 0.5) / 256.0, 0.5));
           float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val);
@@ -170,7 +213,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
               float sgn = (k - ax * 2 == 0) ? -1.0 : 1.0;
               vec3 off = vec3(ax == 0 ? 1.0 : 0.0, ax == 1 ? 1.0 : 0.0, ax == 2 ? 1.0 : 0.0) * (sgn * e);
               float vv, c;
-              bool ok = sampleField(pos + off, vv, c);
+              bool ok = sampleAdvected(pos + off, vv, c);
               gv[k] = ok ? vv : 0.0;
             }
             vec3 gr = vec3(gv[1] - gv[0], gv[3] - gv[2], gv[5] - gv[4]);
@@ -327,6 +370,34 @@ export interface GlyphStyle {
   width: number;
 }
 
+/** What the user sets for the flow; the renderer adds the per-frame particle count (quality). */
+export interface FlowUserParams {
+  /** Particles allocated (the quality governor draws a share of them). */
+  requested: number;
+  lifeSec: number;
+  visualSpeed: number;
+  trailSec: number;
+  widthPx: number;
+  haloPx: number;
+  opacity: number;
+  colorMode: 0 | 1 | 2;
+  colorMax: number;
+  core: [number, number, number];
+  halo: [number, number, number];
+  /** Additive (glowing) blending, for dark scenes; otherwise alpha blending. */
+  additive: boolean;
+}
+
+/** Subtle drift of the radar echo along the retrieved wind (display only). */
+export interface FieldAnimParams {
+  /** Displacement (km) of a cell moving at `refSpeed` over one cycle. */
+  ampKm: number;
+  /** Seconds per cycle. */
+  period: number;
+  /** m/s the amplitude refers to (a high percentile of the wind speed). */
+  refSpeed: number;
+}
+
 export interface CamFrame {
   eye: Vec3;
   fwd: Vec3;
@@ -387,6 +458,31 @@ export class CartesianRenderer {
   private volOffset: [number, number] = [0, 0];
   private glyphData: Float32Array | null = null;
 
+  // wind flow (particles advected by the retrieved wind)
+  private flow: FlowLayer | null = null;
+  flowError = '';
+  private flowField: FlowField | null = null;
+  private flowCells: Uint32Array = new Uint32Array(0);
+  private flowPlaying = true;
+  private flowOffset: [number, number] = [0, 0];
+  private flowLut: Uint8Array | null = null;
+  private flowUser: FlowUserParams = {
+    requested: 30000, lifeSec: 6, visualSpeed: 600, trailSec: 0.9, widthPx: 1.6, haloPx: 0.9, opacity: 0.9,
+    colorMode: 0, colorMax: 40, core: [1, 1, 1], halo: [0.03, 0.04, 0.06], additive: true,
+  };
+  // flow and field animation fade in / out (alpha ramp) instead of popping
+  private flowTarget = 0;
+  private flowFade = 0;
+  private flowReleased = false;
+  private animTarget = 0;
+  private animFade = 0;
+  private animPhase = 0;
+  private animUser: FieldAnimParams = { ampKm: 3, period: 6, refSpeed: 30 };
+  private windTex: WebGLTexture | null = null;
+  private lastFadeT = 0;
+  private lastFlowT = 0;
+  private flowActive = 0;
+
   // scene state
   private params: SceneParams = {
     vexag: 6, stepKm: 0.5, opacity: 0.8, thr: 0, thrSoft: 0.03, thrMode: 0, groundMode: 'grid',
@@ -438,7 +534,7 @@ export class CartesianRenderer {
     this.resizeObs = new ResizeObserver(() => {
       if (this.resize()) {
         this.pr.presentLast();
-        this.pr.noteInteraction();
+        this.nudge();
       }
     });
     this.resizeObs.observe(container);
@@ -474,7 +570,7 @@ export class CartesianRenderer {
         this.tTheta = this.camTheta;
         this.tPhi = this.camPhi;
       }
-      this.pr.noteInteraction();
+      this.nudge();
     };
     this.onUp = () => {
       this.dragging = false;
@@ -486,7 +582,7 @@ export class CartesianRenderer {
       this.opts.onUserCamera?.();
       this.camDist = Math.max(5, Math.min(8000, this.camDist * (1 + e.deltaY * 0.001)));
       this.tDist = this.camDist;
-      this.pr.noteInteraction();
+      this.nudge();
     };
     this.onKey = (e) => {
       const step = e.shiftKey ? 15 : 5;
@@ -503,7 +599,7 @@ export class CartesianRenderer {
       this.tTheta = this.camTheta;
       this.tPhi = this.camPhi;
       e.preventDefault();
-      this.pr.noteInteraction();
+      this.nudge();
     };
     this.onLost = (e) => {
       e.preventDefault();
@@ -566,6 +662,7 @@ export class CartesianRenderer {
       'u_volume', 'u_transferFn', 'u_ground', 'u_hasVol', 'u_boxMin', 'u_boxMax', 'u_groundMin', 'u_groundMax',
       'u_stepSize', 'u_stepUser', 'u_maxSteps', 'u_opacityScale', 'u_thr', 'u_thrSoft', 'u_thrMode',
       'u_groundMode', 'u_groundSize', 'u_groundHalf', 'u_ringStep', 'u_light', 'u_themeLight',
+      'u_animOn', 'u_animAmp', 'u_animT', 'u_animPhase', 'u_windTex', 'u_wOrigin', 'u_wCell', 'u_wDims', 'u_wOffset', 'u_vexag',
     ]) this.vu[n] = gl.getUniformLocation(this.volProg, n);
     this.au = {};
     for (const n of [
@@ -631,12 +728,160 @@ export class CartesianRenderer {
     this.lutTex = tex2d(this.lutData ?? new Uint8Array(256 * 4), 256, 1);
     this.groundTex = tex2d(new Uint8Array([20, 24, 34, 255]), 1, 1);
     this.volTex = null;
+    this.cacheTex = null;
+    this.cacheValid = false;
+    this.staticDirty = true;
+    this.cacheProg = this.link(
+      QUAD_VERT,
+      `#version 300 es
+      precision highp float;
+      uniform sampler2D u_cache;
+      out vec4 o;
+      void main() { o = texelFetch(u_cache, ivec2(gl_FragCoord.xy), 0); }`,
+    );
+    this.cacheLoc = gl.getUniformLocation(this.cacheProg, 'u_cache');
+    try {
+      this.flow = new FlowLayer(gl);
+      this.flowError = '';
+      if (this.flowLut) this.flow.setLut(this.flowLut);
+    } catch (e) {
+      this.flow = null;
+      this.flowError = e instanceof Error ? e.message : String(e);
+      console.error('[Cartesian3D] wind flow unavailable:', e);
+    }
+  }
+
+  // ── Wind flow ───────────────────────────────────────────────────────────
+
+  /**
+   * Give the flow its wind (null removes it) and the cells particles are born in. `offset` = km
+   * from the wind grid's frame into the scene frame.
+   */
+  setFlowField(f: FlowField | null, cells: Uint32Array, offset: [number, number]): void {
+    this.flowField = f;
+    this.flowCells = cells;
+    this.flowOffset = offset;
+    if (this.flow && !this.lost) {
+      if (!f || this.flowPresent) {
+        this.flow.setField(f, cells, this.flowUser.requested, this.flowUser.lifeSec);
+        this.flowReleased = false;
+      } else {
+        this.flowReleased = true; // the flow is off: nothing is kept on the GPU
+      }
+    }
+    if (this.windTex) this.freeWindTexture();
+    if (this.animPresent) this.uploadWindTexture();
+    this.requestFrame();
+  }
+
+  private get flowPresent(): boolean {
+    return this.flowTarget > 0 || this.flowFade > 0;
+  }
+  private get animPresent(): boolean {
+    return this.animTarget > 0 || this.animFade > 0;
+  }
+
+  setFlowParams(p: Partial<FlowUserParams>): void {
+    const old = this.flowUser;
+    this.flowUser = { ...old, ...p };
+    if (this.flow && !this.lost && this.flowField && !this.flowReleased) {
+      if (this.flowUser.requested > this.flow.allocated || (p.lifeSec !== undefined && p.lifeSec !== old.lifeSec)) {
+        this.flow.setField(this.flowField, this.flowCells, this.flowUser.requested, this.flowUser.lifeSec);
+      } else {
+        this.flow.markDirty();
+      }
+    }
+    this.requestFrame();
+  }
+
+  setFlowLut(rgba: Uint8Array): void {
+    this.flowLut = rgba;
+    if (this.flow && !this.lost) this.flow.setLut(rgba);
+    this.requestFrame();
+  }
+
+  /** Fade the flow in (true) or out (false); once it has faded out its GPU data is freed. */
+  setFlowEnabled(on: boolean): void {
+    this.flowTarget = on ? 1 : 0;
+    this.lastFadeT = 0;
+    if (on && this.flowReleased && this.flow && !this.lost && this.flowField) {
+      this.flow.setField(this.flowField, this.flowCells, this.flowUser.requested, this.flowUser.lifeSec);
+      this.flowReleased = false;
+      this.lastFlowT = 0;
+    }
+    this.requestFrame();
+  }
+
+  /** Play / pause the flow and the field animation (a paused picture is exactly reproducible). */
+  setFlowPlaying(on: boolean): void {
+    this.flowPlaying = on;
+    this.lastFlowT = 0;
+    this.requestFrame();
+  }
+
+  /** Fade the field animation in or out; `p` = amplitude and period. */
+  setFieldAnim(on: boolean, p?: Partial<FieldAnimParams>): void {
+    if (p) this.animUser = { ...this.animUser, ...p };
+    this.animTarget = on ? 1 : 0;
+    this.lastFadeT = 0;
+    if (on && !this.windTex && this.flowField) this.uploadWindTexture();
+    this.markDirty();
+  }
+
+  private uploadWindTexture(): void {
+    const f = this.flowField;
+    if (!f || this.lost) return;
+    const gl = this.gl;
+    this.windTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_3D, this.windTex);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, f.nx, f.ny, f.nz, 0, gl.RGBA, gl.FLOAT, f.data);
+  }
+
+  private freeWindTexture(): void {
+    if (this.windTex && !this.lost) this.gl.deleteTexture(this.windTex);
+    this.windTex = null;
+  }
+
+  /** Free the particle data on the GPU (the tab is hidden) and bring it back (`resumeFlow`). */
+  suspendFlow(): void {
+    if (this.flow && !this.lost) this.flow.release();
+  }
+  resumeFlow(): void {
+    if (this.flow && !this.lost && this.flowField && this.flowPresent) {
+      this.flow.setField(this.flowField, this.flowCells, this.flowUser.requested, this.flowUser.lifeSec);
+      this.lastFlowT = 0;
+      this.requestFrame();
+    }
+  }
+
+  /** Test hook: state, aux and trail points of the first `n` particles. */
+  flowReadBack(n: number): Float32Array | null {
+    return this.flow && this.flow.ready ? this.flow.readBack(Math.min(n, this.flow.allocated)) : null;
+  }
+
+  /** Test hook: one update pass of exactly `dt` animation seconds (all allocated particles). */
+  flowStepOnce(dt: number): void {
+    if (this.flow && this.flow.ready) this.flow.step(dt, { ...this.flowUser, active: this.flow.allocated });
+  }
+
+  private flowParams(levelIndex: number): FlowParams {
+    const u = this.flowUser;
+    const n = activeParticles(u.requested, levelIndex);
+    if (n !== this.flowActive) this.flow?.markDirty(); // particles that join the drawing need their trails
+    this.flowActive = n;
+    return { ...u, active: this.flowActive };
   }
 
   private attachPipeline(): void {
     const job: ProgressiveJob = {
       begin: (params, w, h) => this.beginFrame(params, w, h),
-      drawBand: () => this.drawBand(),
+      drawBand: (y, rows, w, h) => this.drawBand(y, rows, w, h),
     };
     this.pr = new ProgressiveRenderer({
       gl: this.gl,
@@ -664,15 +909,36 @@ export class CartesianRenderer {
 
   // ── Data ────────────────────────────────────────────────────────────────
 
-  /** Request a redraw (coalesced). */
+  /** The static layer (volume, ground, background) is out of date: draw it again, then animate over it. */
+  private staticDirty = true;
+  private cacheTex: WebGLTexture | null = null;
+  private cacheSize: [number, number] = [0, 0];
+  private cacheValid = false;
+  private cacheRegion: [number, number] = [0, 0];
+  private cacheProg: WebGLProgram | null = null;
+  private cacheLoc: WebGLUniformLocation | null = null;
+  private useCache = false;
+  private capture = false;
+
+  /** Request a redraw (coalesced); the static layer is redrawn. */
   markDirty(): void {
+    this.staticDirty = true;
     if (!this.disposed && !this.lost) this.pr.request();
   }
-  interact(): void {
+  /** Request a redraw of the moving parts only (arrows, flow): the static layer stays. */
+  private requestFrame(): void {
+    if (!this.disposed && !this.lost) this.pr.request();
+  }
+  /** Camera / slider activity: the static layer changes, render coarser until it settles. */
+  private nudge(): void {
+    this.staticDirty = true;
     if (!this.disposed && !this.lost) this.pr.noteInteraction();
   }
+  interact(): void {
+    this.nudge();
+  }
   stats(): Record<string, unknown> {
-    return { ...this.pr.stats, gov: this.governor.snapshot(), glyphs: this.instCount, volumeReady: !!this.volTex && !!this.volBox, volume: this.volume ? [this.volume.nx, this.volume.ny, this.volume.nz] : null };
+    return { ...this.pr.stats, gov: this.governor.snapshot(), glyphs: this.instCount, volumeReady: !!this.volTex && !!this.volBox, flow: this.flow ? { active: this.flowActive, allocated: this.flow.allocated, playing: this.flowPlaying, fade: this.flowFade, animFade: this.animFade, released: this.flowReleased, error: this.flowError } : null, volume: this.volume ? [this.volume.nx, this.volume.ny, this.volume.nz] : null };
   }
   resume(): void {
     this.pr.resume();
@@ -763,6 +1029,7 @@ export class CartesianRenderer {
     this.setTransfer(this.tfData);
     if (this.lutData) this.setGlyphLut(this.lutData);
     if (this.glyphData) this.setGlyphs(this.glyphData, this.instCount);
+    if (this.flow && this.flowField) this.flow.setField(this.flowField, this.flowCells, this.flowUser.requested, this.flowUser.lifeSec);
     if (this.groundImg) this.setGround(this.groundImg.size, this.groundImg.data, this.groundImg.half);
     this.markDirty();
   }
@@ -803,13 +1070,13 @@ export class CartesianRenderer {
     const gl = this.gl;
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instBuf);
     gl.bufferData(gl.ARRAY_BUFFER, data && count ? data.subarray(0, count * 8) : new Float32Array(8), gl.DYNAMIC_DRAW);
-    this.markDirty();
+    this.requestFrame();
   }
 
   setGlyphStyle(s: Partial<GlyphStyle>): void {
     this.style = { ...this.style, ...s };
     if (s.lut) this.setGlyphLut(s.lut);
-    this.markDirty();
+    this.requestFrame();
   }
 
   /** Map image over [-half, half]^2 km around the scene origin (RGBA, row 0 = north); null = none. */
@@ -860,7 +1127,7 @@ export class CartesianRenderer {
     } else {
       this.camTheta = this.tTheta + ((this.camTheta - this.tTheta + 540) % 360) - 180;
     }
-    this.pr.noteInteraction();
+    this.nudge();
   }
 
   /** Re-scale the camera target height when the vertical exaggeration changes. */
@@ -909,7 +1176,7 @@ export class CartesianRenderer {
       this.camDist += (this.tDist - this.camDist) * lf;
       this.camTheta += dTheta * lf;
       this.camPhi += dPhi * lf;
-      this.pr.noteInteraction();
+      this.nudge();
     }
     const { eye, fwd, right, up } = this.camVectors();
     const tanY = Math.tan(FOV / 2);
@@ -956,10 +1223,92 @@ export class CartesianRenderer {
     gl.uniform1f(u.u_ringStep, p.gridStepKm * 2);
     gl.uniform1i(u.u_light, p.light ? 1 : 0);
     gl.uniform1f(u.u_themeLight, p.lightScene ? 1 : 0);
+
+    // fades: the flow and the field animation fade in / out over ~0.4 s
+    const fdt = this.lastFadeT === 0 || nowT - this.lastFadeT > 250 ? 1 / 60 : (nowT - this.lastFadeT) / 1000;
+    this.lastFadeT = nowT;
+    const approach = (v: number, t: number) => (v < t ? Math.min(t, v + fdt / 0.4) : Math.max(t, v - fdt / 0.4));
+    this.flowFade = approach(this.flowFade, this.flowTarget);
+    this.animFade = approach(this.animFade, this.animTarget);
+    if (this.flowFade !== this.flowTarget || this.animFade !== this.animTarget) this.pr.request();
+    if (!this.flowPresent && !this.flowReleased && this.flow && this.flow.ready) {
+      this.flow.release(); // faded out: free the particles
+      this.flowReleased = true;
+    }
+    if (!this.animPresent && this.windTex) this.freeWindTexture();
+    this.lastFadeT = this.flowPresent || this.animPresent ? nowT : 0;
+
+    // wind flow: one update pass per frame (not per band); nothing runs while paused except a refresh
+    const fl = this.flow;
+    const flowOn = this.flowPresent && !!fl && fl.ready;
+    const fieldAnim = this.animPresent && !!this.windTex;
+    // While only the flow plays, the volume does not change from frame to frame: it is drawn once
+    // (a "capture" frame copies its bands into a texture) and later frames just redraw the texture.
+    // The animated field changes the volume every frame: no cache, interactive quality.
+    const animating = flowOn && this.flowPlaying && !fieldAnim;
+    this.useCache = animating && !params.interacting && !this.staticDirty && this.cacheValid && this.cacheRegion[0] === w && this.cacheRegion[1] === h;
+    this.capture = animating && !params.interacting && !this.useCache;
+    if (this.capture) {
+      this.ensureCache();
+      this.cacheValid = false;
+      this.staticDirty = false;
+    }
+    if (fieldAnim) {
+      if (this.flowPlaying) {
+        const dtp = this.lastFlowT === 0 ? 1 / 60 : Math.min(0.05, (nowT - this.lastFlowT) / 1000);
+        this.animPhase = (this.animPhase + dtp / this.animUser.period) % 1;
+        if (!flowOn) this.lastFlowT = nowT;
+        this.nudge(); // keeps the frames coming; the changing volume is drawn at interactive quality
+      }
+      this.staticDirty = true;
+    }
+    if (flowOn && fl) {
+      const fp = this.flowParams(params.index);
+      if (this.flowPlaying) {
+        const gapMs = nowT - this.lastFlowT;
+        const dt = this.lastFlowT === 0 || gapMs > 250 ? 1 / 60 : Math.min(gapMs / 1000, 0.05);
+        this.lastFlowT = nowT;
+        fl.step(dt, fp);
+        this.pr.request(); // keep animating
+      } else if (fl.needsRefresh) {
+        fl.step(0, fp);
+      }
+    }
+    // uniforms of the field animation (the volume program is current again for the draw)
+    gl.useProgram(this.volProg);
+    gl.uniform1i(u.u_animOn, fieldAnim ? 1 : 0);
+    if (fieldAnim && this.flowField) {
+      const f = this.flowField;
+      gl.uniform1f(u.u_animAmp, this.animFade);
+      gl.uniform1f(u.u_animT, (this.animUser.ampKm * 1000) / Math.max(1, this.animUser.refSpeed));
+      gl.uniform1f(u.u_animPhase, this.animPhase);
+      gl.uniform3f(u.u_wOrigin, f.x0, f.y0, f.z0);
+      gl.uniform3f(u.u_wCell, f.dx, f.dy, f.dz);
+      gl.uniform3f(u.u_wDims, f.nx, f.ny, f.nz);
+      gl.uniform2f(u.u_wOffset, this.flowOffset[0], this.flowOffset[1]);
+      gl.uniform1f(u.u_vexag, ve);
+    }
     return true;
   }
 
-  private drawBand(): void {
+  private ensureCache(): void {
+    const gl = this.gl;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    if (this.cacheTex && this.cacheSize[0] === W && this.cacheSize[1] === H) return;
+    if (this.cacheTex) gl.deleteTexture(this.cacheTex);
+    this.cacheTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.cacheTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    this.cacheSize = [W, H];
+    this.cacheValid = false;
+  }
+
+  private drawBand(y: number, rows: number, w: number, h: number): void {
     const gl = this.gl;
     const p = this.params;
     const fr = this.frame;
@@ -968,6 +1317,19 @@ export class CartesianRenderer {
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     gl.disable(gl.DEPTH_TEST);
     gl.disable(gl.CULL_FACE);
+
+    if (this.useCache && this.cacheTex && this.cacheProg) {
+      gl.useProgram(this.cacheProg);
+      gl.bindVertexArray(this.quadVAO);
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.cacheTex);
+      gl.uniform1i(this.cacheLoc, 2);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.bindVertexArray(null);
+      this.drawDynamic(fr);
+      return;
+    }
 
     gl.useProgram(this.volProg);
     gl.bindVertexArray(this.quadVAO);
@@ -980,11 +1342,34 @@ export class CartesianRenderer {
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.groundTex);
     gl.uniform1i(this.vu.u_ground, 4);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_3D, this.windTex);
+    gl.uniform1i(this.vu.u_windTex, 2);
     gl.activeTexture(gl.TEXTURE0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.bindVertexArray(null);
+    if (this.capture && this.cacheTex) {
+      // keep a clean copy of this band (before arrows / flow are drawn over it)
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, this.cacheTex);
+      gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, y, 0, y, w, rows);
+      gl.activeTexture(gl.TEXTURE0);
+      if (y + rows >= h) {
+        this.cacheValid = true;
+        this.cacheRegion = [w, h];
+      }
+    }
+    this.drawDynamic(fr);
+  }
 
-    if (this.instCount === 0 || !this.arrowVAO) return;
+  /** Arrows and flow, over the static layer (every frame). */
+  private drawDynamic(fr: { viewProj: Float32Array; eye: Vec3; w: number; h: number; params: QualityParams; tanY: number }): void {
+    const gl = this.gl;
+    const p = this.params;
+    if (this.instCount === 0 || !this.arrowVAO) {
+      this.drawFlow();
+      return;
+    }
     gl.useProgram(this.arrowProg);
     const a = this.au;
     const st = this.style;
@@ -1017,7 +1402,27 @@ export class CartesianRenderer {
     gl.bindVertexArray(null);
     gl.disable(gl.CULL_FACE);
     gl.disable(gl.DEPTH_TEST);
+    this.drawFlow();
     void p;
+  }
+
+  private drawFlow(): void {
+    const fl = this.flow;
+    if (!this.flowPresent || !fl || !fl.ready || this.flowActive <= 0 || this.flowFade <= 0) return;
+    const gl = this.gl;
+    const fr = this.frame;
+    const ch = Math.max(1, this.container.clientHeight);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LESS);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    // the destination alpha stays 1 (the canvas is composited over the page): colour only
+    if (this.flowUser.additive) gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE, gl.ZERO, gl.ONE);
+    else gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ZERO, gl.ONE);
+    fl.draw(fr.viewProj, [fr.w, fr.h], { ...this.flowUser, opacity: this.flowUser.opacity * this.flowFade, active: this.flowActive }, this.params.vexag, this.flowOffset, fr.h / ch);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+    gl.disable(gl.DEPTH_TEST);
   }
 
   // ── Teardown ────────────────────────────────────────────────────────────
@@ -1047,6 +1452,9 @@ export class CartesianRenderer {
     }
     this.volume = null;
     this.glyphData = null;
+    this.flow?.dispose();
+    this.flow = null;
+    this.freeWindTexture();
     this.canvas.remove();
   }
 }

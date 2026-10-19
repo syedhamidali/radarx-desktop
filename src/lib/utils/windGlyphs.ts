@@ -15,6 +15,7 @@
  */
 
 import type { WindVolume } from './cartesianVolume';
+import { cellConfidence, hasRetrievedW } from './windFlow.ts';
 
 // ─── Mesh ───────────────────────────────────────────────────────────────────
 
@@ -199,27 +200,24 @@ export function selectLevels(z: ArrayLike<number>, zMinKm: number, zMaxKm: numbe
   return out;
 }
 
-/** Whether the cell at flat index `q` gets an arrow under `o`. */
-function cellVisible(w: WindVolume, o: GlyphOptions, q: number): boolean {
-  const uu = w.fields.u[q];
-  const vv = w.fields.v[q];
-  if (!Number.isFinite(uu) || !Number.isFinite(vv)) return false;
-  const cross = w.fields.crossing_angle;
-  if (o.minCrossing > 0 && !(cross && cross[q] >= o.minCrossing)) return false;
-  const unc = w.fields.uncertainty;
-  if (o.maxUncertainty !== null && unc && !(unc[q] <= o.maxUncertainty)) return false;
+/**
+ * Whether the cell at flat index `q` gets an arrow under `o`: the same mask as the flow animation
+ * (finite u / v (/ w), at least two radars, crossing angle, uncertainty), plus a minimum speed.
+ */
+function cellVisible(w: WindVolume, o: GlyphOptions, q: number, wRet: boolean): boolean {
+  if (!(cellConfidence(w, { minCrossing: o.minCrossing, maxUncertainty: o.maxUncertainty, minRadars: 2 }, q, wRet) > 0)) return false;
   const ww = w.fields.w;
-  const wv = ww && Number.isFinite(ww[q]) ? ww[q] : 0;
-  return Math.sqrt(uu * uu + vv * vv + wv * wv) >= Math.max(o.minSpeed, 1e-3);
+  const wv = wRet && ww ? ww[q] : 0;
+  return Math.sqrt(w.fields.u[q] ** 2 + w.fields.v[q] ** 2 + wv * wv) >= Math.max(o.minSpeed, 1e-3);
 }
 
-function countGlyphs(w: WindVolume, o: GlyphOptions, levels: number[], sh: number): number {
+function countGlyphs(w: WindVolume, o: GlyphOptions, levels: number[], sh: number, wRet: boolean): number {
   const nxy = w.nx * w.ny;
   const half = Math.floor(sh / 2);
   let n = 0;
   for (const k of levels) {
     for (let j = half; j < w.ny; j += sh) {
-      for (let i = half; i < w.nx; i += sh) if (cellVisible(w, o, k * nxy + j * w.nx + i)) n++;
+      for (let i = half; i < w.nx; i += sh) if (cellVisible(w, o, k * nxy + j * w.nx + i, wRet)) n++;
     }
   }
   return n;
@@ -234,8 +232,9 @@ export function buildGlyphs(w: WindVolume, o: GlyphOptions, stats: WindStats = w
   let sh = Math.max(1, Math.round(o.strideH));
   const levels = selectLevels(w.z, o.zMinKm, o.zMaxKm, sv);
   // grow the horizontal stride until the arrows that would really be drawn fit the cap
-  let total = countGlyphs(w, o, levels, sh);
-  while (total > o.maxGlyphs && sh < 64) total = countGlyphs(w, o, levels, ++sh);
+  const wRet = hasRetrievedW(w);
+  let total = countGlyphs(w, o, levels, sh, wRet);
+  while (total > o.maxGlyphs && sh < 64) total = countGlyphs(w, o, levels, ++sh, wRet);
   const spacing = sh * Math.max(w.dx, w.dy);
   const kmPerMs = (0.9 * spacing * Math.max(0.05, o.lengthScale)) / stats.speedP95;
   const colorMax = o.colorBy === 'w' ? stats.absWP98 : stats.speedP98;
@@ -248,10 +247,10 @@ export function buildGlyphs(w: WindVolume, o: GlyphOptions, stats: WindStats = w
     for (let j = half; j < w.ny; j += sh) {
       for (let i = half; i < w.nx; i += sh) {
         const q = base + j * w.nx + i;
-        if (!cellVisible(w, o, q)) continue;
+        if (!cellVisible(w, o, q, wRet)) continue;
         const uu = u[q];
         const vv = v[q];
-        const wv = ww && Number.isFinite(ww[q]) ? ww[q] : 0;
+        const wv = wRet && ww ? ww[q] : 0;
         const spd3 = Math.sqrt(uu * uu + vv * vv + wv * wv);
         const dx = uu;
         const dy = vv;
@@ -314,6 +313,35 @@ export function lutFromCss(css: string[]): Uint8Array {
     out[i * 4] = m ? +m[1] : 200;
     out[i * 4 + 1] = m ? +m[2] : 200;
     out[i * 4 + 2] = m ? +m[3] : 200;
+    out[i * 4 + 3] = 255;
+  }
+  return out;
+}
+
+/**
+ * Colour table of the flow trails, 256 RGBA entries over the speed (or w) range. Thin translucent
+ * trails need light colours on a dark scene (they are blended additively, so they glow), and
+ * saturated mid-dark ones on a light scene (alpha blended). Light ramps in the manner of windy /
+ * zoom.earth / earth.nullschool: calm air is pale blue, strong wind warm pink.
+ */
+export function flowRamp(kind: 'speed' | 'w', lightScene: boolean): Uint8Array {
+  const stops: [number, [number, number, number]][] =
+    kind === 'speed'
+      ? lightScene
+        ? [[0, [35, 75, 205]], [0.25, [0, 135, 215]], [0.5, [0, 160, 130]], [0.75, [235, 115, 25]], [1, [210, 25, 90]]]
+        : [[0, [165, 210, 255]], [0.2, [110, 235, 235]], [0.4, [175, 250, 170]], [0.62, [255, 245, 130]], [0.82, [255, 190, 110]], [1, [255, 135, 155]]]
+      : lightScene
+        ? [[0, [30, 80, 200]], [0.5, [80, 90, 110]], [1, [200, 40, 40]]]
+        : [[0, [120, 185, 255]], [0.5, [235, 240, 255]], [1, [255, 145, 125]]];
+  const out = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let k = 0;
+    while (k < stops.length - 2 && t > stops[k + 1][0]) k++;
+    const [t0, c0] = stops[k];
+    const [t1, c1] = stops[k + 1];
+    const f = Math.max(0, Math.min(1, (t - t0) / (t1 - t0)));
+    for (let c = 0; c < 3; c++) out[i * 4 + c] = Math.round(c0[c] + (c1[c] - c0[c]) * f);
     out[i * 4 + 3] = 255;
   }
   return out;

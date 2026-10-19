@@ -77,6 +77,8 @@ export interface WindVolume {
   originLon: number;
   sites: SceneSite[];
   analysisTime: string | null;
+  /** Method, QC limits, coverage ... of the analysis (copied from its header). */
+  summary: any;
 }
 
 // ─── Decoding the sidecar messages ──────────────────────────────────────────
@@ -157,6 +159,7 @@ export function decodeWindVolume(h: any, data: Float32Array): WindVolume | null 
     originLon: g.origin_lon,
     sites: sitesFrom(h.radars),
     analysisTime: h.analysis_time ?? null,
+    summary: h.summary ?? {},
   };
 }
 

@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildArrowMesh, autoStrides, buildGlyphs, selectLevels, windStats, arrowPalette, lutFromCss, percentile, DEFAULT_GLYPH_OPTIONS,
+  buildArrowMesh, autoStrides, flowRamp, buildGlyphs, selectLevels, windStats, arrowPalette, lutFromCss, percentile, DEFAULT_GLYPH_OPTIONS,
 } from './windGlyphs.ts';
 
 /** nx x ny x nz grid, u = 10, v = 0, w = 1 everywhere except where overridden. */
@@ -136,4 +136,20 @@ test('default density follows the cells that have wind, not the grid size', () =
   assert.ok(a.strideH > b.strideH);
   assert.equal(a.strideV, 1);
   assert.ok(b.strideH >= 1);
+});
+
+test('flow colour ramps: light on dark scenes, saturated and darker on light scenes, smooth', () => {
+  const lum = (a, i) => (0.2126 * a[i * 4] + 0.7152 * a[i * 4 + 1] + 0.0722 * a[i * 4 + 2]) / 255;
+  for (const kind of ['speed', 'w']) {
+    const dark = flowRamp(kind, false);
+    const light = flowRamp(kind, true);
+    for (let i = 0; i < 256; i++) {
+      assert.ok(lum(dark, i) > 0.55, `${kind} dark-scene ramp too dark at ${i}: ${lum(dark, i)}`);
+      assert.ok(lum(light, i) < 0.62, `${kind} light-scene ramp too light at ${i}: ${lum(light, i)}`);
+      assert.equal(dark[i * 4 + 3], 255);
+      if (i > 0) for (let c = 0; c < 3; c++) assert.ok(Math.abs(dark[i * 4 + c] - dark[(i - 1) * 4 + c]) < 12, 'no jumps');
+    }
+  }
+  const s = flowRamp('speed', false);
+  assert.ok(s[2] > 150 && s[0] < s[255 * 4], 'pale blue at calm, warm at strong wind');
 });

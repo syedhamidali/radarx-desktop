@@ -3730,7 +3730,31 @@ class ConnectionHandler:
         )
 
     # Fields of a wind analysis the 3-D view needs (name order of the binary block).
-    _WIND_VOLUME_FIELDS = ("u", "v", "w", "speed", "dbz", "crossing_angle", "uncertainty")
+    _WIND_VOLUME_FIELDS = (
+        "u",
+        "v",
+        "w",
+        "speed",
+        "dbz",
+        "crossing_angle",
+        "uncertainty",
+        "n_radars",
+        "divergence",
+    )
+    # What the 3-D view shows next to the flow (QC limits, coverage, ...): copied from the header.
+    _WIND_VOLUME_SUMMARY = (
+        "method",
+        "boundary",
+        "coverage_pct",
+        "dual_coverage_pct",
+        "w_valid_pct",
+        "valid_cells",
+        "total_cells",
+        "min_crossing_angle",
+        "qc",
+        "notes",
+        "has_uncertainty",
+    )
 
     async def _handle_get_wind_volume(self, msg: dict[str, Any]) -> None:
         """``{type: "get_wind_volume", request_id, wind_id}`` -> ``wind_volume`` + frames.
@@ -3774,6 +3798,7 @@ class ConnectionHandler:
             "grid": full["grid"],
             "radars": radars,
             "analysis_time": full.get("analysis_time"),
+            "summary": {k: full[k] for k in self._WIND_VOLUME_SUMMARY if k in full},
         }
         await self._send_binary_chunks([block], header, length_key="byte_length")
 

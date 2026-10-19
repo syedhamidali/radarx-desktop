@@ -28,9 +28,13 @@
     type CartVolume, type SceneBox, type SceneSite,
   } from '../utils/cartesianVolume';
   import {
-    buildGlyphs, windStats, autoStrides, arrowPalette, lutFromCss, DEFAULT_GLYPH_OPTIONS, type GlyphColorBy, type GlyphSet,
+    buildGlyphs, windStats, autoStrides, arrowPalette, flowRamp, lutFromCss, DEFAULT_GLYPH_OPTIONS, type GlyphColorBy, type GlyphSet,
   } from '../utils/windGlyphs';
   import { CartesianRenderer, type CamFrame } from '../utils/cartesianRenderer';
+  import {
+    buildFlowField, seedCells, levelsUniform, physicsCheck, defaultVisualSpeed, describeVisualSpeed, formatUtc,
+    type FlowColor, type PhysicsCheck,
+  } from '../utils/windFlow.ts';
   import { drawCartesianOverlay } from '../utils/cartesianOverlay';
   import { yieldToMain, type QualityMode, type GovernorState } from '../utils/qualityGovernor';
   import TransferFunctionEditor from './TransferFunctionEditor.svelte';
@@ -82,6 +86,9 @@
     if (wv && windOn) b = unionBox(b, translateBox(gridBox(wv), windOffset[0], windOffset[1]));
     return b;
   });
+
+  /** The camera frames the wind grid when the wind is the subject, else the whole scene. */
+  const frameBox = $derived.by((): SceneBox | null => (src === 'wind' && wv && windOn ? translateBox(gridBox(wv), windOffset[0], windOffset[1]) : sceneBox));
 
   const sites = $derived.by((): SceneSite[] => {
     const out: SceneSite[] = [];
@@ -201,6 +208,37 @@
   let wColor = $state<GlyphColorBy>('none');
   let wMinCrossing = $state(30);
   let glyphInfo = $state({ count: 0, strideH: 3, strideV: 2, kmPerMs: 0, colorMax: 0 });
+
+  // Wind display: the flow (streamlines advected by the retrieved wind; on by default), arrows
+  // (off by default) and a subtle drift of the radar echo along the wind (off by default) are three
+  // independent toggles; each fades in and out.
+  let flowOnUser = $state<boolean>(loadPref<boolean>('flowOn', true));
+  let arrowsOnUser = $state<boolean>(loadPref<boolean>('arrowsOn', false));
+  let animField = $state(false);
+  let animAmp = $state(3);
+  const showArrows = $derived(windOn && arrowsOnUser);
+  const showFlow = $derived(windOn && flowOnUser);
+  function toggleFlow() { flowOnUser = !flowOnUser; savePref('flowOn', flowOnUser); }
+  function toggleArrows() { arrowsOnUser = !arrowsOnUser; savePref('arrowsOn', arrowsOnUser); }
+  const reduceMotion = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let flowPlaying = $state(!reduceMotion);
+  let flowCount = $state(6000);
+  let flowCountTouched = false;
+  let flowWidth = $state(1.4);
+  let flowTrail = $state(0.8);
+  let flowOpacity = $state(0.55);
+  let flowSpeedMul = $state(1);
+  let flowColor = $state<FlowColor>('speed');
+  let uncOn = $state(false);
+  let uncVal = $state(5);
+  /** Wind error above which cells are hidden (arrows and flow alike); null = no limit. */
+  const uncMax = $derived(uncOn && wv?.fields.uncertainty ? uncVal : null);
+  const extentKm = $derived(wv ? Math.max(wv.nx * wv.dx, wv.ny * wv.dy) : 0);
+  const baseVisualSpeed = $derived(defaultVisualSpeed(extentKm));
+  const visualSpeed = $derived(Math.max(1, Math.round(baseVisualSpeed * flowSpeedMul)));
+  let flowInfo = $state({ usable: false, seeds: 0, msg: '' });
+  let physics = $state<PhysicsCheck | null>(null);
+  const analysisUtc = $derived(formatUtc(wv?.analysisTime));
   const wStats = $derived(wv ? windStats(wv) : null);
   const maxCrossing = $derived(wv?.fields.crossing_angle ? 90 : 0);
 
@@ -281,7 +319,7 @@
     camPreset = preset;
     const rect = container.getBoundingClientRect();
     const asp = rect.height > 0 ? rect.width / rect.height : 1.6;
-    const pose = framePose(sceneBox, vexag, asp, Math.PI / 4, preset);
+    const pose = framePose(frameBox ?? sceneBox, vexag, asp, Math.PI / 4, preset);
     renderer.setPose(pose, instant);
   }
 
@@ -300,8 +338,12 @@
     unsubGov = renderer.governor.state.subscribe((s) => { qState = s; });
     (globalThis as any).__xrCart = {
       stats: () => renderer?.stats(),
-      state: () => ({ cmap, vexag, groundMode, lightScene, baseVol, windOn, glyphInfo, thrValue, hasGround: renderer?.hasGroundMap }),
+      state: () => ({ cmap, vexag, groundMode, lightScene, baseVol, windOn, windOffset, flowOnUser, arrowsOnUser, animField, flowPlaying, visualSpeed, flowInfo, physics, glyphInfo, thrValue, hasGround: renderer?.hasGroundMap }),
       cam: () => renderer && { theta: renderer.camTheta, phi: renderer.camPhi, dist: renderer.camDist, tgt: renderer.camTgt },
+      flowRead: (n: number) => renderer?.flowReadBack(n) ?? null,
+      flowStep: (dt: number) => renderer?.flowStepOnce(dt),
+      flowField: () => lastFlowField,
+      flowPause: (on: boolean) => { flowPlaying = !on; },
       glyphCenter: () => {
         const g = glyphSet;
         if (!g || !g.count) return null;
@@ -376,13 +418,14 @@
   // scene box + camera framing
   $effect(() => {
     const b = sceneBox;
+    const fb = frameBox ?? b;
     const r = ready;
     if (!r) return;
     untrack(() => {
       renderer?.setSceneBox(b);
-      if (b) {
-        const key = `${b.xMin.toFixed(1)},${b.xMax.toFixed(1)},${b.yMin.toFixed(1)},${b.yMax.toFixed(1)},${b.zMax.toFixed(2)}`;
-        if (key !== framedKey) { framedKey = key; if (!camTouched || true) { camTouched = false; resetCamera('oblique', true); } }
+      if (b && fb) {
+        const key = `${fb.xMin.toFixed(1)},${fb.xMax.toFixed(1)},${fb.yMin.toFixed(1)},${fb.yMax.toFixed(1)},${fb.zMax.toFixed(2)}`;
+        if (key !== framedKey) { framedKey = key; camTouched = false; resetCamera('oblique', true); }
         scheduleGround(300);
       }
     });
@@ -400,8 +443,9 @@
   let glyphSet: GlyphSet | null = null;
   $effect(() => {
     const w = wv;
-    const on = windOn;
+    const on = showArrows;
     const stats = wStats;
+    const unc = uncMax;
     const lo = wLevelLo, hi = wLevelHi, sh = wStrideH, sv = wStrideV, len = wLength, col = wColor, minC = wMinCrossing, ve = vexag;
     const off = windOffset;
     if (!ready) return;
@@ -418,7 +462,7 @@
       glyphSet = buildGlyphs(w, {
         ...DEFAULT_GLYPH_OPTIONS,
         zMinKm: zl, zMaxKm: zh, strideH: sh, strideV: sv, minCrossing: minC, lengthScale: len, vexag: ve,
-        colorBy: col, offsetX: off[0], offsetY: off[1],
+        colorBy: col, offsetX: off[0], offsetY: off[1], maxUncertainty: unc,
       }, stats);
       glyphInfo = { count: glyphSet.count, strideH: glyphSet.strideH, strideV: glyphSet.strideV, kmPerMs: glyphSet.kmPerMs, colorMax: glyphSet.colorMax };
       renderer.setGlyphs(glyphSet.data, glyphSet.count);
@@ -441,8 +485,102 @@
     });
   });
 
+  // ── Wind flow ─────────────────────────────────────────────────────────────
+  let flowTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastFlowField: ReturnType<typeof buildFlowField> | null = null;
+  /** Build the masked wind (same mask as the arrows) and hand it to the GPU; debounced for the sliders. */
+  $effect(() => {
+    const w = wv;
+    const minC = wMinCrossing;
+    const unc = uncMax;
+    const lo = wLevelLo, hi = wLevelHi;
+    const off = windOffset;
+    if (!ready) return;
+    untrack(() => {
+      if (flowTimer) clearTimeout(flowTimer);
+      flowTimer = setTimeout(() => {
+        flowTimer = null;
+        if (!renderer) return;
+        if (!w) {
+          renderer.setFlowField(null, new Uint32Array(0), [0, 0]);
+          physics = null;
+          flowInfo = { usable: false, seeds: 0, msg: '' };
+          return;
+        }
+        const f = buildFlowField(w, { minCrossing: minC, maxUncertainty: unc, minRadars: 2 });
+        lastFlowField = f;
+        physics = physicsCheck(w, f, w.summary?.qc);
+        if (w.nx < 2 || w.ny < 2 || w.nz < 2 || !levelsUniform(w.z)) {
+          flowInfo = { usable: false, seeds: 0, msg: 'The analysis levels are not evenly spaced: the flow cannot be drawn.' };
+          renderer.setFlowField(null, new Uint32Array(0), [0, 0]);
+          return;
+        }
+        const zl = w.z[Math.max(0, Math.min(lo, hi))] - f.dz / 2;
+        const zh = w.z[Math.min(w.nz - 1, Math.max(lo, hi))] + f.dz / 2;
+        const cells = seedCells(f, zl, zh);
+        // a light default density that follows the size of the wind region (the volume stays visible)
+        if (!flowCountTouched) flowCount = Math.max(1500, Math.min(20000, Math.round(cells.length * 0.3 / 500) * 500));
+        flowInfo = {
+          usable: cells.length > 0,
+          seeds: cells.length,
+          msg: cells.length === 0 ? 'No cell has a retrieved wind at these levels and limits: there is nothing to animate.' : '',
+        };
+        if (cells.length > 0) renderer.setFlowField(f, cells, off);
+        else renderer.setFlowField(null, new Uint32Array(0), [0, 0]);
+      }, 120);
+    });
+  });
+
+  // Flow appearance: light, thin, translucent trails coloured by wind speed. On a dark scene they
+  // are blended additively (a soft glow); on a light scene they are dark saturated colours with a
+  // thin light halo.
+  $effect(() => {
+    const light = lightScene;
+    const col = flowColor;
+    const stats = wStats;
+    const p = { requested: flowCount, width: flowWidth, trail: flowTrail, vs: visualSpeed, op: flowOpacity };
+    if (!ready) return;
+    untrack(() => {
+      const pal = arrowPalette(light);
+      renderer?.setFlowParams({
+        requested: p.requested, lifeSec: 6, visualSpeed: p.vs, trailSec: p.trail, widthPx: p.width,
+        haloPx: light ? 0.7 : 0, opacity: light ? Math.min(1, p.op * 1.3) : p.op * 0.45, additive: !light,
+        colorMode: col === 'none' ? 0 : col === 'speed' ? 1 : 2,
+        colorMax: stats ? (col === 'w' ? stats.absWP98 : stats.speedP98) : 40,
+        core: light ? [0.1, 0.12, 0.18] : [0.92, 0.96, 1], halo: light ? [0.97, 0.97, 0.98] : pal.outline,
+      });
+      if (col !== 'none') renderer?.setFlowLut(flowRamp(col === 'w' ? 'w' : 'speed', light));
+    });
+  });
+  $effect(() => {
+    const on = showFlow;
+    const playing = flowPlaying;
+    if (!ready) return;
+    untrack(() => { renderer?.setFlowPlaying(playing); renderer?.setFlowEnabled(on); });
+  });
+  // subtle drift of the radar echo along the retrieved wind (display only)
+  $effect(() => {
+    const on = animField && !!wv && baseVol !== 'none' && showWind;
+    const amp = animAmp;
+    const stats = wStats;
+    if (!ready) return;
+    untrack(() => renderer?.setFieldAnim(on, { ampKm: amp, period: 6, refSpeed: stats ? stats.speedP95 : 30 }));
+  });
+  // a hidden tab frees the particle data; it is rebuilt when the tab is shown again
+  function onVisibility() {
+    if (document.hidden) renderer?.suspendFlow();
+    else renderer?.resumeFlow();
+  }
+  onMount(() => {
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  });
+  const flowLegend = $derived(showFlow && flowColor !== 'none');
+  const legendKind = $derived<FlowColor | GlyphColorBy>(flowLegend ? flowColor : wColor);
+  const legendMax = $derived(flowLegend ? (wStats ? (flowColor === 'w' ? wStats.absWP98 : wStats.speedP98) : 0) : glyphInfo.colorMax);
+
   const legendGradient = $derived(
-    wColor === 'w'
+    legendKind === 'w'
       ? 'linear-gradient(90deg, rgb(33,102,172), rgb(103,169,207), rgb(247,247,247), rgb(239,138,98), rgb(178,24,43))'
       : 'linear-gradient(90deg, rgb(68,1,84), rgb(59,82,139), rgb(33,145,140), rgb(94,201,98), rgb(253,231,37))',
   );
@@ -551,6 +689,15 @@
     {#if volume}
       <button class="reset-btn" class:active={showTfe} onclick={() => (showTfe = !showTfe)} title="Transfer function editor">TF</button>
     {/if}
+    {#if wv}
+      <div class="ctrl-group toggles" role="group" aria-label="Wind animation">
+        <button class="reset-btn tog" class:active={flowOnUser} aria-pressed={flowOnUser} onclick={toggleFlow}
+                title="Animated streamlines of the retrieved wind (key F). Fades in and out.">≋ Flow</button>
+        <button class="reset-btn tog" class:active={animField} aria-pressed={animField} onclick={() => (animField = !animField)}
+                disabled={baseVol === 'none'}
+                title={baseVol === 'none' ? 'There is no radar volume to animate' : 'Animate field: the radar echo drifts subtly along the retrieved wind (display only, not a forecast). Fades in and out.'}>◌ Animate field</button>
+      </div>
+    {/if}
     {#if busy}<span class="sweep-count">loading…</span>{/if}
   </div>
 
@@ -595,17 +742,90 @@
   </div>
 
   {#if wv}
-    <div class="controls-3d row2 windrow" aria-label="Wind vectors">
-      <label class="chk" title="Show the retrieved wind as 3D arrows">
-        <input type="checkbox" bind:checked={showWind} /> Wind vectors
+    <div class="controls-3d row2 windrow" aria-label="Wind">
+      <label class="chk" title="Show the retrieved wind in 3D">
+        <input type="checkbox" bind:checked={showWind} /> Wind
       </label>
       {#if showWind}
+        <button class="reset-btn" class:active={arrowsOnUser} aria-pressed={arrowsOnUser} onclick={toggleArrows}
+                title="3D arrows at the analysis grid points">Arrows</button>
+        {#if showFlow || animField}
+          <button class="reset-btn play-btn" class:active={flowPlaying} onclick={() => (flowPlaying = !flowPlaying)}
+                  title={flowPlaying ? 'Pause the animation (the picture stays exactly as it is)' : 'Play the animation'}>{flowPlaying ? '❚❚ Pause' : '▶ Play'}</button>
+        {/if}
         <div class="ctrl-group" title="Show only these levels (km above sea level)">
           <label for="wlo-ctrl">Levels</label>
           <input id="wlo-ctrl" type="range" min="0" max={wv.nz - 1} step="1" bind:value={wLevelLo} />
           <input id="whi-ctrl" type="range" min="0" max={wv.nz - 1} step="1" bind:value={wLevelHi} aria-label="Top level" />
           <span class="ctrl-val wide">{wv.z[Math.min(wLevelLo, wLevelHi)].toFixed(1)}–{wv.z[Math.max(wLevelLo, wLevelHi)].toFixed(1)} km</span>
         </div>
+        {#if maxCrossing > 0}
+          <div class="ctrl-group" title="Show only cells whose beams cross at least this angle (the wind is poorly constrained below ~30°)">
+            <label for="wcr-ctrl">Crossing ≥</label>
+            <input id="wcr-ctrl" type="range" min="0" max="90" step="5" bind:value={wMinCrossing} />
+            <span class="ctrl-val">{wMinCrossing}°</span>
+          </div>
+        {/if}
+        {#if wv.fields.uncertainty}
+          <div class="ctrl-group" title="Hide the wind (arrows and flow) where its estimated error is larger than this">
+            <label class="chk"><input type="checkbox" bind:checked={uncOn} /> Hide error ></label>
+            <input id="wunc-ctrl" type="range" min="1" max="20" step="1" bind:value={uncVal} disabled={!uncOn} aria-label="Largest error shown" />
+            <span class="ctrl-val">{uncVal} m/s</span>
+          </div>
+        {/if}
+      {/if}
+    </div>
+    {#if showWind && showFlow}
+      <div class="controls-3d row2 flowrow" aria-label="Wind flow">
+        <span class="row-tag">Flow</span>
+        <div class="ctrl-group" title="Number of particles (the quality governor draws fewer when the GPU is busy)">
+          <label for="fcount-ctrl">Density</label>
+          <input id="fcount-ctrl" type="range" min="2000" max="60000" step="1000" bind:value={flowCount} oninput={() => (flowCountTouched = true)} />
+          <span class="ctrl-val">{(flowCount / 1000).toFixed(0)}k</span>
+        </div>
+        <div class="ctrl-group" title="Opacity of the trails">
+          <label for="fop-ctrl">Opacity</label>
+          <input id="fop-ctrl" type="range" min="0.1" max="1" step="0.05" bind:value={flowOpacity} />
+          <span class="ctrl-val">{Math.round(flowOpacity * 100)}%</span>
+        </div>
+        <div class="ctrl-group">
+          <label for="fwid-ctrl">Width</label>
+          <input id="fwid-ctrl" type="range" min="0.8" max="4" step="0.2" bind:value={flowWidth} />
+        </div>
+        <div class="ctrl-group" title="Length of the trails in animation seconds">
+          <label for="ftrail-ctrl">Trail</label>
+          <input id="ftrail-ctrl" type="range" min="0.2" max="2.5" step="0.1" bind:value={flowTrail} />
+          <span class="ctrl-val">{flowTrail.toFixed(1)} s</span>
+        </div>
+        <div class="ctrl-group" title="Visual speed: simulated seconds of wind per animation second. The default lets a 30 m/s wind cross the domain in about 10 s.">
+          <label for="fspeed-ctrl">Speed</label>
+          <input id="fspeed-ctrl" type="range" min="0.1" max="4" step="0.05" bind:value={flowSpeedMul} />
+          <span class="ctrl-val wide" id="fspeed-val">×{visualSpeed}</span>
+        </div>
+        <div class="ctrl-group">
+          <label for="fcol-ctrl">Colour</label>
+          <select id="fcol-ctrl" class="quality-sel" bind:value={flowColor}>
+            <option value="none">None</option>
+            <option value="speed">Speed</option>
+            <option value="w">w (vertical)</option>
+          </select>
+        </div>
+      </div>
+    {/if}
+    {#if showWind && animField && baseVol !== 'none'}
+      <div class="controls-3d row2 animrow" aria-label="Field animation">
+        <span class="row-tag">Field</span>
+        <div class="ctrl-group" title="How far the echo drifts in one cycle where the wind is at its strong end (a display choice, not a forecast)">
+          <label for="fanim-ctrl">Drift</label>
+          <input id="fanim-ctrl" type="range" min="0.5" max="8" step="0.5" bind:value={animAmp} />
+          <span class="ctrl-val">{animAmp.toFixed(1)} km</span>
+        </div>
+        <span class="fn-main">The radar echo drifts along the retrieved wind only where there is wind; elsewhere it stays still.</span>
+      </div>
+    {/if}
+    {#if showWind && showArrows}
+      <div class="controls-3d row2 arrowrow" aria-label="Wind arrows">
+        <span class="row-tag">Arrows</span>
         <div class="ctrl-group" title="Take every n-th grid cell horizontally (1 = every cell)">
           <label for="wsh-ctrl">Density H</label>
           <input id="wsh-ctrl" type="range" min="1" max="16" step="1" bind:value={wStrideH} />
@@ -633,16 +853,27 @@
             <option value="w">w (vertical)</option>
           </select>
         </div>
-        {#if maxCrossing > 0}
-          <div class="ctrl-group" title="Show only cells whose beams cross at least this angle (the wind is poorly constrained below ~30°)">
-            <label for="wcr-ctrl">Crossing ≥</label>
-            <input id="wcr-ctrl" type="range" min="0" max="90" step="5" bind:value={wMinCrossing} />
-            <span class="ctrl-val">{wMinCrossing}°</span>
-          </div>
-        {/if}
         <span class="sweep-count" title="Arrows drawn">{glyphInfo.count.toLocaleString()} arrows</span>
-      {/if}
-    </div>
+      </div>
+    {/if}
+    {#if showWind}
+      <div class="flow-note" role="note">
+        {#if showFlow}
+          <span class="fn-main">Streamlines of the analysis{analysisUtc ? ` at ${analysisUtc}` : ''} (frozen wind, not a forecast) · visual speed ×{visualSpeed} ({describeVisualSpeed(visualSpeed)})</span>
+        {:else}
+          <span class="fn-main">Arrows of the analysis{analysisUtc ? ` at ${analysisUtc}` : ''}</span>
+        {/if}
+        {#if physics}
+          <span class="fn-phys" title="Read-out of the wind that is drawn (cells with a retrieved wind under the current limits)">
+            max {physics.maxSpeed.toFixed(0)} m/s{physics.maxAbsW !== null ? ` · max |w| ${physics.maxAbsW.toFixed(1)} m/s` : ''} · wind in {physics.validShare.toFixed(physics.validShare < 10 ? 1 : 0)}% of cells{physics.meanDivergence !== null ? ` · mean div ${physics.meanDivergence.toFixed(2)}×10⁻³/s` : ''}
+          </span>
+          {#if physics.warnings.length > 0}
+            <span class="fn-warn" title={physics.warnings.join('\n')}>⚠ {physics.warnings.length} {physics.warnings.length === 1 ? 'note' : 'notes'}: {physics.warnings[0]}</span>
+          {/if}
+        {/if}
+        {#if showFlow && flowInfo.msg}<span class="fn-warn">{flowInfo.msg}</span>{/if}
+      </div>
+    {/if}
   {/if}
 
   {#if showTfe && volume}
@@ -662,7 +893,7 @@
 
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div class="canvas-wrap" bind:this={container} tabindex="0" role="application" aria-label="3D scene"
-       onkeydown={(e) => { if (e.key === 'r' || e.key === 'R') resetCamera(); }}>
+       onkeydown={(e) => { if (e.key === 'r' || e.key === 'R') resetCamera(); else if ((e.key === 'f' || e.key === 'F') && wv) toggleFlow(); }}>
     <canvas class="scene-overlay" bind:this={overlayCanvas} aria-hidden="true"></canvas>
 
     {#if volume}
@@ -673,11 +904,11 @@
         <span class="cb-var">{variable} ({units})</span>
       </div>
     {/if}
-    {#if windOn && wColor !== 'none' && glyphInfo.count > 0}
+    {#if windOn && legendKind !== 'none' && (flowLegend || (showArrows && glyphInfo.count > 0))}
       <div class="arrow-legend">
-        <span>{wColor === 'w' ? `w −${glyphInfo.colorMax.toFixed(0)}` : '0'}</span>
+        <span>{legendKind === 'w' ? `w −${legendMax.toFixed(0)}` : '0'}</span>
         <div class="al-bar" style="background: {legendGradient}"></div>
-        <span>{wColor === 'w' ? `+${glyphInfo.colorMax.toFixed(0)}` : glyphInfo.colorMax.toFixed(0)} m/s</span>
+        <span>{legendKind === 'w' ? `+${legendMax.toFixed(0)}` : legendMax.toFixed(0)} m/s</span>
       </div>
     {/if}
 
@@ -775,6 +1006,19 @@
     background: rgba(20,22,38,0.8); border: 1px solid var(--border-color); border-radius: var(--radius-sm); pointer-events: none;
   }
   .al-bar { width: 90px; height: 8px; border-radius: 2px; border: 1px solid rgba(128,128,128,0.4); }
+  .toggles { gap: 4px; }
+  .tog { font-weight: 700; }
+  .tog:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row-tag { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent-primary); min-width: 40px; }
+  .windrow input[type="range"], .flowrow input[type="range"], .arrowrow input[type="range"] { width: 56px; }
+  .play-btn { min-width: 74px; }
+  .flow-note {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 3px var(--spacing-md);
+    font-size: 10px; color: var(--text-muted); background: var(--bg-secondary); border-bottom: 1px solid var(--border-color);
+  }
+  .fn-main { color: var(--text-secondary); }
+  .fn-phys { font-family: var(--font-mono); }
+  .fn-warn { color: var(--accent-warning, #d9a441); }
   .compass-wrap { position: absolute; bottom: 10px; left: 10px; pointer-events: none; z-index: 3; }
   .hint-3d {
     padding: 3px var(--spacing-md); font-size: 10px; color: var(--text-muted); text-align: center;

@@ -72,25 +72,26 @@ How the volume is made and sent:
 
 ## 3D wind
 Press **View in 3D** under the result of the **Wind (multi-Doppler)** panel (or pick **Wind
-(multi-Doppler)** in the Source bar). The retrieved wind is drawn as 3D arrows on top of the
-merged reflectivity of the mosaic if there is one, else of the wind analysis' own reflectivity
-grid, or on its own (**Volume: None**).
+(multi-Doppler)** in the Source bar). The retrieved wind is drawn on top of the merged reflectivity
+of the mosaic if there is one, else of the wind analysis' own reflectivity grid, or on its own
+(**Volume: None**). By default it is shown as an animated **Flow** of thin translucent trails
+(toggle in the toolbar, key `F`); **Animate field** (the echo drifts subtly along the wind) and
+**Arrows** are two more independent toggles. What the animation shows, and what it does not, is
+written down in [MULTIDOPPLER.md](MULTIDOPPLER.md#what-the-flow-animation-shows-and-does-not-show).
+
+![Flow of the analysis over the mosaic volume](images/wind3d-flow-strip.png)
 
 ![Multi-Doppler wind arrows over the mosaic volume](images/wind3d-arrows.png)
 
-Controls: show / hide, level range (km ASL), horizontal and vertical density (every n-th cell /
-level), arrow length and width, colour by speed, w or none, and "crossing angle >=" (cells where
-the beams cross at a small angle constrain the wind badly). The arrows are white with a dark edge
-on a dark scene and dark with a light edge on a light scene, so they stay visible over any
-volume colour; coloured arrows keep the same edge. Each arrow points along (u, v, w) as seen in
-the vertically exaggerated scene and its length is proportional to the 3D speed (the legend in
-the corner gives km per 10 m/s). The default density follows the cells that have wind. If the
-mosaic and the wind grid have different AEQD origins, the wind is shifted into the mosaic frame
-(translation only). Up to 80 000 arrows are drawn (the horizontal stride grows to fit); with 80 000
-arrows (the Mayfield analysis with the crossing-angle limit off) the frame time still stayed
-within the display's refresh on an M1 Pro. Streamlines are not drawn. The Mayfield example uses
-velocities that are not dealiased, so its wind is noisy at the edges; the arrows show whatever
-the retrieval returned.
+Arrow controls: level range (km ASL), horizontal and vertical density (every n-th cell / level),
+length and width, colour by speed, w or none, "crossing angle >=" and "hide error >" (both shared
+with the flow). The arrows are white with a dark edge on a dark scene and dark with a light edge on
+a light scene, so they stay visible over any volume colour. Each arrow points along (u, v, w) as seen
+in the vertically exaggerated scene and its length is proportional to the 3D speed (the legend in
+the corner gives km per 10 m/s). If the mosaic and the wind grid have different AEQD origins, the wind
+is shifted into the mosaic frame (translation only). Up to 80 000 arrows are drawn (the horizontal
+stride grows to fit). The Mayfield example is noisy at the edges; the arrows and the flow show
+whatever the retrieval returned (the warning badge says so).
 
 ## Colormap in 3D
 The 3D views (polar, mosaic, wind) have a **Colormap** menu with the same names as the 2D colour
@@ -124,8 +125,9 @@ products (hydrometeor classes, ...) keep their class colours and the menu is dis
    byte_length, chunks} + uint8 frames (nz, ny, nx), x fastest; or {type:"mosaic_error", for:"volume"}
 → {type:"get_wind_volume", request_id, wind_id}
 ← {type:"wind_volume", request_id, wind_id, fields:[{name, units}], shape:[n, nz, ny, nx], grid,
-   radars:[{…, x_m, y_m}], byte_length, chunks} + float32 frames (u, v, w, speed, dbz,
-   crossing_angle, uncertainty); or {type:"multidoppler_error", request_id}
+   radars:[{…, x_m, y_m}], analysis_time, summary:{method, boundary, coverage_pct, qc, …},
+   byte_length, chunks} + float32 frames (u, v, w, speed, dbz, crossing_angle, uncertainty,
+   n_radars, divergence); or {type:"multidoppler_error", request_id}
 → {type:"mosaic_probe", mosaic_id, lon, lat}   ← {type:"mosaic_probe_result", value, radars:[…]}
 → {type:"export_mosaic", mosaic_id, format:"netcdf"|"png", path, overwrite?} ← {type:"file_saved"}
 ```
