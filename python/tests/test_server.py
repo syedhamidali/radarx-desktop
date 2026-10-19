@@ -1812,3 +1812,23 @@ class TestWindVolume:
         )
         err = handler._sent[-1]
         assert err["type"] == "multidoppler_error" and err["request_id"] == "w2"
+
+
+class TestNexradLatestInfo:
+    @pytest.mark.asyncio
+    async def test_reply_type_and_fields(self) -> None:
+        handler, _ = _make_handler()
+        fake = {"status": "ok", "station": "KLOT", "name": "KLOT20240101_000500_V06", "age_s": 12.0}
+        with patch.object(server, "latest_scan_info", lambda station: dict(fake)):
+            await handler.handle_message(
+                json.dumps({"type": "get_nexrad_latest_info", "station": "KLOT"})
+            )
+        reply = handler._sent[-1]
+        assert reply["type"] == "nexrad_latest_info"
+        assert reply["status"] == "ok" and reply["name"] == "KLOT20240101_000500_V06"
+
+    @pytest.mark.asyncio
+    async def test_station_required(self) -> None:
+        handler, _ = _make_handler()
+        await handler.handle_message(json.dumps({"type": "get_nexrad_latest_info"}))
+        assert handler._sent[-1]["type"] == "error"

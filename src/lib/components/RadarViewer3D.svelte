@@ -27,6 +27,9 @@
     type Cam, type CameraPreset,
   } from '../utils/scene3d';
   import { buildGroundMap } from '../utils/groundMap';
+  import { get } from 'svelte/store';
+  import { showRadarSites } from '../stores/radarSitesPref';
+  import type { SceneMarker } from '../utils/scene3d';
   import { GLSL_THRESHOLD, GLSL_HASH, GLSL_GROUND_POLAR } from '../utils/volumeShaderParts';
   import CmapSelect from './CmapSelect.svelte';
   import { cmapOverrides, effectiveCmap, chooseCmap } from '../stores/cmapChoice';
@@ -1254,6 +1257,30 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
   let groundGen = 0;
   let groundTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Radar sites on the ground (only fetched, and only followed, while the layer is switched on).
+  let sitesScene: typeof import('../utils/radarSitesScene') | null = null;
+  let stopSites: (() => void) | null = null;
+  $effect(() => {
+    const on = $showRadarSites;
+    untrack(() => {
+      stopSites?.();
+      stopSites = null;
+      if (!on) { markDirty(); return; }
+      void import('../utils/radarSitesScene').then((m) => {
+        if (!get(showRadarSites)) return;
+        sitesScene = m;
+        stopSites?.();
+        stopSites = m.startSceneSites(markDirty);
+      });
+    });
+    return () => { stopSites?.(); stopSites = null; };
+  });
+  function sceneSiteMarkers(): SceneMarker[] | undefined {
+    if (!sitesScene || !get(showRadarSites) || groundMode === 'off') return undefined;
+    const site = currentSite();
+    return site ? sitesScene.sceneMarkers(site.lat, site.lon, rangeKm) : undefined;
+  }
+
   /** Radar site from the file's attributes (null when unknown). */
   function currentSite(): { lat: number; lon: number } | null {
     const a = $radarData.attributes ?? {};
@@ -1409,6 +1436,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       drawOverlay(overlayCtx, cam, {
         rangeKm, zTopKm: Z_TOP_KM, vexag, ringStepKm: ringStepFor(rangeKm),
         siteName, showRings: groundMode !== 'off', showFrame: true,
+        markers: sceneSiteMarkers(),
       });
     } catch (e) {
       console.warn('[3D] overlay failed:', e);

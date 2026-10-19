@@ -16,6 +16,7 @@
     formatRelative,
     parseScanTime,
   } from '../utils/radarNetwork';
+  import { takePendingCloudRequest } from '../utils/cloudRequest';
 
   type Station = {
     id: string;
@@ -107,7 +108,24 @@
     openRealtime();
   }
 
+  /** Radar sites card: list this station's archive, or open the exact file the card showed. */
+  function applySiteRequest() {
+    const r = takePendingCloudRequest();
+    if (!r) return;
+    selectedStation = r.station;
+    if (r.action === 'open') {
+      mode = 'realtime';
+      openL2File({ name: r.name, path: r.path, size: r.size ?? 0 });
+    } else {
+      mode = 'archive';
+      archiveDate = todayStr();
+      fetchL2Files();
+    }
+  }
+
   onMount(() => {
+    window.addEventListener('xradar:cloud-site-apply', applySiteRequest);
+    applySiteRequest(); // a request that arrived while this panel was still loading
     // Hosted web app: the first thing a visitor sees is the latest scan of a busy radar.
     unsubWebUi = webUi.subscribe((on) => {
       if (on && selectedStation === 'KLOT') selectedStation = 'KTLX';
@@ -157,6 +175,7 @@
 
   onDestroy(() => {
     window.removeEventListener('xradar:cloud-open-latest', onOpenLatestRequest);
+    window.removeEventListener('xradar:cloud-site-apply', applySiteRequest);
     unsubWebUi?.();
     if (cloudOp) cancelOp(cloudOp.id);
     unsubStations?.();

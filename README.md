@@ -10,13 +10,23 @@ run algorithms on it (hydrometeor classification, storm detection, ...), and exp
 [xradar](https://github.com/openradar/xradar), [xarray](https://xarray.dev/) and
 [radarx](https://github.com/syedhamidali/radarx). **Nothing else to install**: the installers include everything.
 
+It is built for research, so it holds itself to one rule: everything on screen or in a file is observed data, a
+labelled method applied to it, or a labelled picture, and nothing is invented. See the
+[science policy](docs/SCIENCE.md).
+
 <p align="center">
   <img src="docs/images/reflectivity.png" width="760" alt="Reflectivity from the KTLX radar, Oklahoma, 20 May 2013: a line of supercells">
 </p>
 
 <sub>Reflectivity from KTLX (Oklahoma City), 20 May 2013, 0.5° sweep. NEXRAD Level II, exported from the app.</sub>
 
-![xradar-desktop showing the same scan on a map](docs/images/app-2d.png)
+<p align="center">
+  <img src="docs/images/app-2d.png" width="49%" alt="xradar-desktop, dark theme: the same scan in the 2D view">
+  <img src="docs/images/app-2d-light.png" width="49%" alt="xradar-desktop, light theme: the same scan in the 2D view">
+</p>
+
+<sub>The 2D view in the dark and light themes (screenshots taken offline, so the map basemap is switched off; the app
+draws OpenStreetMap or OpenTopoMap under the scan when it is on).</sub>
 
 ## Download
 
@@ -52,12 +62,48 @@ for files with no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`). O
 
 ## What it does
 
+### Browse the radar network
+
+Switch on **Sites** above the map to see the 156 NEXRAD sites (and your own CSV/JSON list for other networks); click
+one for its card: position, the age of its latest scan, **Open latest volume** and **Browse archive**. Nothing goes to
+the internet before a dialog says what will be fetched and how big it is. See [docs/RADAR_SITES.md](docs/RADAR_SITES.md).
+
 ### See it in 2D and 3D
 
 Pan and zoom a GPU-rendered PPI on a map, then switch to the 3D volume: every sweep is ray-marched on the GPU, with
 a transfer-function editor, a map ground plane and adjustable vertical exaggeration.
 
-![3D volume of the Oklahoma squall line over a map](docs/images/app-3d.png)
+<p align="center">
+  <img src="docs/images/app-3d.png" width="49%" alt="3D volume of the Oklahoma squall line, dark theme">
+  <img src="docs/images/app-3d-light.png" width="49%" alt="3D volume of the Oklahoma squall line, light theme">
+</p>
+
+### Range-height scans (RHI)
+
+RHI sweeps are recognised and drawn as what they are: a vertical cut through the storm (ground range along x, height
+along y), with the messy real-world cases handled (rays stored out of order, interleaved passes, pseudo-RHIs cut out
+of a volume) and a noise and smoothing menu. See [docs/RHI.md](docs/RHI.md).
+
+![CPOL RHI, cleaned](docs/images/rhi-cpol-dbz.png)
+
+### Mosaics, winds and 3D flow
+
+Merge several radars onto one grid (radarx) and see the mosaic over the map or as a 3D volume. Retrieve the 3D wind
+from two or more Doppler radars and watch it as **animated flow** and arrows in 3D, on the same scene as the storm.
+The flow follows the retrieved wind only (no extrapolation outside the analysis), and what it shows and does not show
+is written down. See [docs/MOSAIC.md](docs/MOSAIC.md) and [docs/MULTIDOPPLER.md](docs/MULTIDOPPLER.md).
+
+![3D mosaic of four radars, the Mayfield tornado night](docs/images/mosaic3d-oblique.png)
+
+### Realistic ground and storm clips
+
+Optionally put the 3D scene on terrain with satellite imagery (the storm hides behind hills by construction) and draw
+the storm with a stylised, sun-lit look. Both are opt-in, labelled on the image as stylised, and never change the
+data; the scientific colour scale stays the default. `tools/storm_clip` renders a storm-centred MP4 with the same
+renderer. Imagery is Sentinel-2 cloudless (CC BY-NC-SA 4.0) and Terrain Tiles, fetched only when you switch it on;
+see [docs/REALISTIC_3D.md](docs/REALISTIC_3D.md) and [docs/STORM_CLIP.md](docs/STORM_CLIP.md).
+
+![Realistic ground: satellite imagery, the storm and its shadow](docs/images/storm3d-realistic-topdown.png)
 
 ### Cross-sections
 
@@ -76,7 +122,7 @@ field that you view in 2D, in 3D, or export. Included: hydrometeor classificatio
 rotation couplets, shear, ZDR arcs, ZDR columns, storm detection, cell size sorting, and more. Write your own in
 about ten lines, see [docs/MODULES.md](docs/MODULES.md).
 
-![Hydrometeor classification run on every sweep, shown on the map, with the Modules panel open](docs/images/modules-hid.png)
+![Hydrometeor classification run on every sweep, with the Modules panel open](docs/images/modules-hid.png)
 
 ### Clean the data
 
@@ -99,6 +145,11 @@ Everything above also runs without the GUI, on the same engine: `xrd info -i FIL
 PNG, SVG and PDF figures with colorbar, rings and title; NetCDF (CfRadial1), CfRadial2, Zarr and CSV data; batch
 and animation export. Cleaned and derived fields are written into the file next to the original moments.
 
+Outputs are **standards-clean and self-describing**: CF-1.8 / CfRadial 1.4 and FM-301 layouts, CF flag attributes,
+the software and library versions, every parameter and a `history` line per step, and no absolute paths of your
+machine, so a result can be repeated and opens in other tools. See
+[docs/OUTPUT_STANDARDS.md](docs/OUTPUT_STANDARDS.md).
+
 ## More features
 
 - **Formats:** NEXRAD Level II, ODIM H5, CfRadial 1/2, IRIS/Sigmet, Rainbow, Furuno, IMD, UF and more through xradar
@@ -108,7 +159,22 @@ and animation export. Cleaned and derived fields are written into the file next 
 - **Dual-pol:** ZDR, KDP, RhoHV, HID dashboards, scatter plots and histograms
 - **Cross-sections, profiles and time series**, difference between two sweeps or files
 - **Stays responsive:** requests are scheduled and cancellable, and the 3D view lowers its quality on its own if it
-  gets slow (see [docs/RESPONSIVENESS.md](docs/RESPONSIVENESS.md))
+  gets slow (see [docs/RESPONSIVENESS.md](docs/RESPONSIVENESS.md), [docs/PERFORMANCE.md](docs/PERFORMANCE.md))
+- **Stable:** the engine runs in its own supervised process; bad files, runaway modules and low memory produce a
+  message, not a crash (see [docs/STABILITY.md](docs/STABILITY.md), [docs/RELIABILITY.md](docs/RELIABILITY.md))
+- **Smaller installers:** the engine bundle was slimmed from 346 MB to 220 MB unpacked and the shell binary from
+  13.8 MB to 7.7 MB (see [docs/PACKAGING_AUDIT.md](docs/PACKAGING_AUDIT.md))
+- **Automatic updates, under your control:** signature-checked, never mid-job, switchable off
+  ([docs/UPDATES.md](docs/UPDATES.md))
+- **Web build:** the same engine as an anonymous web service ([docs/WEB.md](docs/WEB.md))
+
+## Where it is going
+
+Hydrology (radar rainfall to runoff and flash-flood indicators) and machine learning for flash floods, environment
+data from HRRR, ERA5, soundings and MRMS, winter weather, lightning, cloud microphysics and domain packs, all with
+the provenance of every layer shown (observed, model/analysis, retrieved, simulated). The master list of planned
+work is the GitHub issue [Roadmap: the futuristic radar workbench](https://github.com/syedhamidali/xradar-desktop/issues/120),
+with one roadmap issue per area. Nothing there is promised for a date.
 
 ## How it works
 
@@ -117,9 +183,9 @@ and animation export. Cleaned and derived fields are written into the file next 
  Svelte + WebGL2   ◀─WebSocket─  reads files, runs modules, exports
 ```
 
-The window is a Svelte app in a small Tauri shell. The data work happens in a Python engine that the app starts and
-talks to over a local WebSocket, sending arrays as Apache Arrow. The installers bundle that engine
-(see [docs/BUNDLING.md](docs/BUNDLING.md)).
+The window is a Svelte app in a small Tauri shell, drawing with its own WebGL2 renderers. The data work happens in a
+Python engine that the app starts and talks to over a local WebSocket (JSON plus raw binary arrays). The installers
+bundle that engine (see [docs/BUNDLING.md](docs/BUNDLING.md)); [ARCHITECTURE.md](ARCHITECTURE.md) has the full picture.
 
 ## Build from source
 
@@ -160,23 +226,29 @@ interpreter. Exports go to `~/Downloads/xradar-exports` unless you choose a fold
 
 ## Development
 
+Read [CONTRIBUTING.md](CONTRIBUTING.md) (set-up, checks, commit style, DCO sign-off, how to add a module) and the
+[science policy](docs/SCIENCE.md) that every feature has to meet. The pull request template carries the checklist.
+
 ```bash
 ruff check --config ruff.toml python/ && ruff format --config ruff.toml python/
 (cd python && python -m pytest tests/)      # Python tests
-npx svelte-check --tsconfig ./tsconfig.json && npx tsc --noEmit    # frontend checks
+npx svelte-check --tsconfig ./tsconfig.json && npx tsc --noEmit && npm run test:unit    # frontend checks
+python scripts/check_links.py               # Markdown links
 ```
 
 ```
 xradar-desktop/
-├── src/             Svelte frontend (2D and 3D viewers, panels, stores)
-├── src-tauri/       Rust shell (starts and watches the engine)
+├── src/             Svelte frontend (2D and 3D viewers, WebGL2 renderers, panels, stores)
+├── src-tauri/       Rust shell (starts and watches the engine, updater)
 ├── python/
 │   ├── server.py    WebSocket entry point
-│   ├── engine/      reader, renderer, exporter, derived variables, mosaic, plugin SDK
+│   ├── engine/      reader, renderer, exporter, derived variables, mosaic, winds, CLI, API, plugin SDK
 │   ├── modules/     plug-in algorithms (drop a file here to add one)
 │   ├── packaging/   builds the self-contained engine for the installers
 │   └── tests/
-└── docs/            CLI, API, MODULES, BUNDLING, MOSAIC, RESPONSIVENESS
+├── docs/            all documentation (index: docs/index.md), including SCIENCE, LICENSES, CLI, API
+├── scripts/         performance measurements, licence notices, link checker
+└── tools/           offline storm-clip renderer
 ```
 
 ## Using the 3D view
@@ -193,4 +265,10 @@ xradar-desktop/
 xradar-desktop is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): you may use, copy and
 modify it for **noncommercial purposes** (personal use, research, education, charities, public-interest and government
 use). **Commercial use is not permitted** without a separate written license from the copyright holder, who keeps all
-other rights. See [NOTICE](NOTICE) for how to ask for one and for the third-party software the app builds on.
+other rights. See [NOTICE](NOTICE) for how to ask for one.
+
+The app builds on third-party software, fonts, colour maps, data and imagery, each under its own terms:
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists them (generated and checked in CI; see
+[docs/LICENSES.md](docs/LICENSES.md)). Note that one optional layer, the Sentinel-2 cloudless imagery of the realistic
+ground, is itself non-commercial (CC BY-NC-SA 4.0). Contributions come under the project licence with a
+[DCO](DCO) sign-off. The licence wording and these notices are to be reviewed by a lawyer; nothing here is legal advice.

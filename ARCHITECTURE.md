@@ -1,244 +1,167 @@
-# xradar-desktop — Architecture
+# xradar-desktop - Architecture
 
-A lightweight, cross-platform desktop application for radar data research, built on top of **xradar**, **xarray**, and **Dask**.
-
----
-
-## High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        xradar-desktop                              │
-│                   (Tauri 2.0 — Rust Shell)                         │
-│         Native menus · File dialogs · OS notifications             │
-│              Auto-update · ~15MB installer                         │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  ┌─────────────────────────────────┐   ┌──────────────────────────┐ │
-│  │     Frontend (Svelte)           │   │    Python Sidecar        │ │
-│  │                                 │   │    (Bundled via PyO3     │ │
-│  │  ┌───────────────────────────┐  │   │     or subprocess)      │ │
-│  │  │   Radar Viewer            │  │   │                          │ │
-│  │  │   ┌───────────────────┐   │  │   │  ┌──────────────────┐   │ │
-│  │  │   │  deck.gl / Mapbox │   │  │   │  │    xradar        │   │ │
-│  │  │   │  GPU-rendered map │   │◄─┼───┼──│  ┌────────────┐  │   │ │
-│  │  │   │  + radar overlay  │   │  │   │  │  │ NEXRAD L2  │  │   │ │
-│  │  │   └───────────────────┘   │  │   │  │  │ ODIM H5    │  │   │ │
-│  │  └───────────────────────────┘  │   │  │  │ CfRadial   │  │   │ │
-│  │                                 │   │  │  │ IRIS/Sigmet│  │   │ │
-│  │  ┌───────────────────────────┐  │   │  │  │ Rainbow    │  │   │ │
-│  │  │   Data Inspector          │  │   │  │  │ Furuno     │  │   │ │
-│  │  │   • Variable browser      │  │   │  │  │ IMD        │  │   │ │
-│  │  │   • Metadata viewer       │  │   │  │  └────────────┘  │   │ │
-│  │  │   • Coordinate explorer   │  │   │  └──────────────────┘   │ │
-│  │  └───────────────────────────┘  │   │           │              │ │
-│  │                                 │   │           ▼              │ │
-│  │  ┌───────────────────────────┐  │   │  ┌──────────────────┐   │ │
-│  │  │   Processing Panel        │  │   │  │  xarray + Dask   │   │ │
-│  │  │   • QC / filtering        │  │   │  │                  │   │ │
-│  │  │   • Gridding              │  │   │  │  • Lazy loading  │   │ │
-│  │  │   • Compositing           │  │   │  │  • Chunked I/O   │   │ │
-│  │  │   • Dual-pol products     │  │   │  │  • Parallel ops  │   │ │
-│  │  └───────────────────────────┘  │   │  │  • Out-of-core   │   │ │
-│  │                                 │   │  └──────────────────┘   │ │
-│  │  ┌───────────────────────────┐  │   │           │              │ │
-│  │  │   Export Panel             │  │   │           ▼              │ │
-│  │  │   • PNG/SVG/PDF (pub)     │  │   │  ┌──────────────────┐   │ │
-│  │  │   • NetCDF / CfRadial2   │  │   │  │  Rendering       │   │ │
-│  │  │   • GeoTIFF / Zarr       │  │   │  │                  │   │ │
-│  │  │   • Animation (GIF/MP4)  │  │   │  │  Datashader      │   │ │
-│  │  └───────────────────────────┘  │   │  │  (fast raster)   │   │ │
-│  │                                 │   │  │       +          │   │ │
-│  └─────────────────────────────────┘   │  │  Cairo/Pillow    │   │ │
-│              ▲                         │  │  (pub-quality)    │   │ │
-│              │                         │  └──────────────────┘   │ │
-│              │    WebSocket / IPC      │           │              │ │
-│              │  (Arrow IPC for data)   │           │              │ │
-│              └─────────────────────────┘           │              │ │
-│                                                     │              │ │
-└─────────────────────────────────────────────────────────────────────┘
-                                                      │
-                    ┌─────────────────────────────────┘
-                    ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                         File System / Data                          │
-│                                                                     │
-│   ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│   │ Local    │  │  S3 /    │  │  THREDDS │  │  Real-time feed  │  │
-│   │ files    │  │  Cloud   │  │  OPeNDAP │  │  (LDM / polling) │  │
-│   └──────────┘  └──────────┘  └──────────┘  └──────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-```
+A desktop (and web) application for weather radar data, built on **xradar**, **xarray** and **radarx**. This page is
+the map: what the parts are, how data moves, and why it is built this way. Details live in `docs/`
+(each topic has its own page; links below). The rules every feature follows are in
+[docs/SCIENCE.md](docs/SCIENCE.md).
 
 ---
 
-## Data Flow
+## High-level picture
 
 ```
-User opens file(s)
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Tauri 2 shell (Rust, src-tauri/)                                             │
+│ native window · file associations · starts and supervises the engine         │
+│ signed auto-update (updates.rs, docs/UPDATES.md)                             │
+│                                                                              │
+│  ┌────────────────────────────────────┐        ┌───────────────────────────┐ │
+│  │ Frontend (Svelte 5, src/)          │        │ Python engine (python/)   │ │
+│  │                                    │ WebSock│                           │ │
+│  │  2D PPI      WebGL2 ppiRenderer    │  JSON  │ server.py  (WebSocket)    │ │
+│  │  3D volume   WebGL2 ray-marcher    │ + raw  │ engine/                   │ │
+│  │  3D mosaic + wind flow (WebGL2)    │ binary │   reader   (xradar)       │ │
+│  │  RHI, cross-sections, charts       │◀──────▶│   volume · derived        │ │
+│  │  panels: Modules, Pipeline, Mosaic,│ chunks │   pipeline · processor    │ │
+│  │   Wind, Cells, Export, Settings    │        │   mosaic · multidoppler   │ │
+│  │  map tiles (OSM / OpenTopoMap)     │        │   cells · tracking · rhi  │ │
+│  │  workers: binary decode, meshes    │        │   exporter · cfwrite      │ │
+│  └────────────────────────────────────┘        │   provenance · cli · api  │ │
+│                                                 │ modules/  (plug-ins)      │ │
+│                                                 └─────────────┬─────────────┘ │
+└───────────────────────────────────────────────────────────────┼───────────────┘
+                                                                │
+          ┌──────────────────┬──────────────────────┬───────────┴────────┐
+          ▼                  ▼                      ▼                    ▼
+   local files         NOAA NEXRAD on AWS     ARCO / icechunk      exports (CfRadial1/2,
+   (any xradar         (Cloud data panel,     (S3, on request)     Zarr, CSV, PNG/SVG/PDF)
+    format)             on request)
+
+The same engine runs without the window:  xrd ...  (engine/cli.py)   from engine import api
+and as an anonymous web service:          python server.py --web     (docs/WEB.md)
+```
+
+## Data flow
+
+```
+User opens a file
         │
         ▼
-┌──────────────────┐     Lazy — no full read
-│  xradar.open_*   │────────────────────────┐
-└──────────────────┘                        │
-        │                                   ▼
-        ▼                          ┌──────────────────┐
-  xr.Dataset (Dask-backed)        │  Dask Scheduler   │
-        │                          │  (threaded or     │
-        │                          │   distributed)    │
-        ▼                          └──────────────────┘
-┌──────────────────┐                        │
-│  User applies    │                        │
-│  operations:     │  ← only triggers ──────┘
-│  • slice sweep   │    compute on the
-│  • threshold     │    chunks needed
-│  • grid          │
-└──────────────────┘
+ xradar.open_*  ──────────────►  lazy xr.Dataset volume (metadata sent at once)
         │
-        ├──── Interactive view ──► Datashader rasterize()
-        │                          → PNG tile → WebSocket
-        │                          → deck.gl BitmapLayer
-        │                          (60fps pan/zoom)
+        ├── View ──► sweep arrays (Float32, raw binary frames) ──► GPU texture
+        │            the colour scale, mask and smoothing are applied on the GPU (WebGL2),
+        │            so changing them costs no round trip
         │
-        └──── Publication export ─► Datashader @ high DPI (300-600)
-                                    + Cairo vector overlays (map borders,
-                                      gridlines, colorbars, labels)
-                                    → SVG/PDF/PNG
-                                    (journal-quality, no matplotlib)
+        ├── Module / pipeline ──► engine computes a Result (scalars, tables, overlay, field)
+        │                         or a derived variable stored with the volume (with provenance)
+        │
+        ├── Mosaic / multi-Doppler ──► radarx grids the radars onto one Cartesian grid;
+        │                              the volume is sent to the 3D viewer
+        │
+        └── Export ──► CfRadial1/2, Zarr, CSV, PNG/SVG/PDF with self-describing metadata
+                       (versions, parameters, history; no absolute paths)
 ```
 
----
+Requests are scheduled and cancellable on the client (`src/lib/utils/requestScheduler.ts`,
+[docs/RESPONSIVENESS.md](docs/RESPONSIVENESS.md)); the engine guards memory, runtime and corrupt input
+([docs/RELIABILITY.md](docs/RELIABILITY.md), [docs/STABILITY.md](docs/STABILITY.md)).
 
-## Communication Protocol
+## Communication
+
+One WebSocket on localhost (a free port chosen by the shell, a random token on the connection). Messages are JSON
+with a `type`; arrays travel as raw binary frames that follow a JSON header:
 
 ```
-Frontend (JS)                         Python Sidecar
-     │                                      │
-     │──── open_file(path) ────────────────►│
-     │◄─── schema: {vars, dims, attrs} ────│  (metadata only, instant)
-     │                                      │
-     │──── render(var, sweep, bbox) ───────►│
-     │◄─── Arrow IPC buffer ───────────────│  (zero-copy raster tile)
-     │                                      │
-     │──── process(pipeline_config) ───────►│
-     │◄─── progress stream ────────────────│  (via WebSocket)
-     │◄─── result: updated schema ─────────│
-     │                                      │
-     │──── export(format, dpi, extent) ────►│
-     │◄─── file_saved(path) ───────────────│
+Frontend                                        Engine
+  │── open_file {path} ───────────────────────────▶│
+  │◀── file_opened {metadata: sweeps, vars, site} ─│   instant, no data read
+  │── get_sweep_data / render {var, sweep} ───────▶│
+  │◀── JSON header + binary Float32 chunks ────────│
+  │── run_module {id, params} ────────────────────▶│
+  │◀── progress ... module_result / module_field ──│
+  │── create_mosaic / run_multidoppler ───────────▶│
+  │◀── progress ... mosaic_volume / wind_volume ───│
+  │── export {format, ...} ───────────────────────▶│
+  │◀── file_saved {path} ──────────────────────────│
 ```
 
----
+The list of message types is in `python/server.py`. **Apache Arrow** is optional: `engine/arrow_bridge.py` and the
+`arrow` extra exist for scripts, but the app sends raw binary chunks, so pyarrow (about 55 MB) is not installed by
+default and is not bundled.
 
-## Technology Stack
+## Technology
 
-| Layer | Technology | Purpose |
+| Layer | Technology | Why |
 |---|---|---|
-| Desktop shell | **Tauri 2.0** (Rust) | Cross-platform window, native OS integration, ~15MB installer |
-| Frontend | **Svelte** | Smallest bundle size, fastest DOM updates |
-| Map / Radar view | **deck.gl** + Mapbox GL | GPU-accelerated radar overlays, 60fps pan/zoom |
-| IPC | **WebSocket** + **Apache Arrow IPC** | Zero-copy data transfer between Python and JS |
-| Data engine | **xradar** | Read/write all major radar formats |
-| Lazy compute | **xarray + Dask** | Out-of-core chunked loading, parallel processing |
-| Fast rendering | **Datashader** | Server-side rasterization, handles 10M+ points in ms |
-| Pub figures | **Datashader + Cairo** | Datashader @ high DPI + Cairo vector overlays for SVG/PDF/PNG |
-| Cloud access | **fsspec / s3fs** | Open S3, GCS, or HTTP URLs natively via xarray |
+| Desktop shell | **Tauri 2** (Rust) | native webview instead of a bundled browser; small shell binary (about 8 MB) |
+| Frontend | **Svelte 5** + TypeScript, Vite | small bundle, fine-grained reactivity |
+| Rendering | **own WebGL2 renderers** (PPI, ray-marched 3D volume, wind flow); canvas for charts | exact control of radar geometry (polar sweeps, sector scans, gaps), GPU colour scales, no generic map engine in the way |
+| Map background | raster tiles (OpenStreetMap, OpenTopoMap, or none); terrain + imagery for the realistic 3D ground | on request, cached, attributed; works offline without them |
+| Engine | **xradar** (readers), **xarray** (+ dask), **radarx** (QC, HID, KDP, QPE, multi-Doppler, gridding) | one data model for all formats; radarx is the algorithm library |
+| Figures | **matplotlib**, Pillow | PNG/SVG/PDF figures with colour bar, rings and title; GIF animations |
+| Colour | matplotlib / colorcet / cmweather maps, NWS-style tables | see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+| Packaging | **PyInstaller** (engine) inside Tauri bundles | installers need nothing else; [docs/BUNDLING.md](docs/BUNDLING.md), [docs/PACKAGING_AUDIT.md](docs/PACKAGING_AUDIT.md) |
+| Updates | Tauri updater, signature-checked, user-initiated | [docs/UPDATES.md](docs/UPDATES.md) |
 
----
-
-## Key Design Decisions
+## Key design decisions
 
 | Concern | Decision | Rationale |
 |---|---|---|
-| Large data | Dask-backed xarray | Out-of-core: only loads the chunks that are needed |
-| Interactive speed | Datashader rasterization | Server-side rendering avoids sending millions of points to the browser |
-| Publication output | Datashader + Cairo | Datashader rasterizes at high DPI; Cairo adds vector overlays (map, labels). Single rendering engine for both interactive and export — no matplotlib overhead |
-| Data transfer | Arrow IPC | Zero-copy serialization, ~0ms overhead for large arrays |
-| App size | Tauri over Electron | 15MB vs 150MB+, uses native webview instead of bundling Chromium |
-| Frontend framework | Svelte over React | Smaller bundle, no virtual DOM overhead, simpler reactivity |
-| No Rust rewrite | Keep xradar as-is | Dask + Datashader already solve the performance bottleneck |
+| Science first | Every layer has a provenance class; nothing invented; stylised looks opt-in and labelled | [docs/SCIENCE.md](docs/SCIENCE.md) |
+| Speed | Send data once, do colour/mask/smoothing on the GPU; cache decoded sweeps; lower 3D quality on its own when slow | interaction never waits for the engine; [docs/PERFORMANCE.md](docs/PERFORMANCE.md), [docs/PERFORMANCE_FRONTEND.md](docs/PERFORMANCE_FRONTEND.md) |
+| Stability | Engine in a separate process, supervised; modules time-limited; memory budget; cancellable requests | a bad file or module never takes the window down |
+| Same engine everywhere | GUI, `xrd` CLI, Python API and the web service share `engine/` | results are identical and scriptable ([docs/CLI.md](docs/CLI.md), [docs/API.md](docs/API.md)) |
+| Outputs | CF-1.8 + CfRadial 1.4 / FM-301 layout, provenance attributes, no local paths | files open elsewhere and can be reproduced ([docs/OUTPUT_STANDARDS.md](docs/OUTPUT_STANDARDS.md)) |
+| Algorithms | Plug-in modules: one Python file, generated UI | easy to extend ([docs/MODULES.md](docs/MODULES.md)) |
+| Size | Tauri over a bundled browser; slimmed engine bundle; optional heavy dependencies out | [docs/PACKAGING_AUDIT.md](docs/PACKAGING_AUDIT.md) |
+| Licences | Notices generated from the real dependency trees, allow-list in CI | [docs/LICENSES.md](docs/LICENSES.md) |
 
----
-
-## Project Structure
+## Project structure
 
 ```
 xradar-desktop/
-├── ARCHITECTURE.md
-├── src-tauri/              # Rust / Tauri shell
-│   ├── Cargo.toml
-│   ├── src/
-│   │   └── main.rs         # Tauri entry, IPC commands, sidecar management
-│   ├── tauri.conf.json
-│   └── icons/
-├── src/                    # Svelte frontend
-│   ├── App.svelte
-│   ├── lib/
-│   │   ├── components/
-│   │   │   ├── RadarViewer.svelte
-│   │   │   ├── DataInspector.svelte
-│   │   │   ├── ProcessingPanel.svelte
-│   │   │   └── ExportPanel.svelte
-│   │   ├── stores/
-│   │   │   ├── radarData.ts     # Reactive state for loaded datasets
-│   │   │   └── settings.ts
-│   │   └── utils/
-│   │       └── websocket.ts     # WebSocket client to Python sidecar
-│   ├── assets/
-│   └── main.ts
-├── python/                 # Python sidecar
-│   ├── pyproject.toml
-│   ├── server.py           # WebSocket server entry point
-│   ├── engine/
-│   │   ├── __init__.py
-│   │   ├── reader.py       # xradar file opening + lazy loading
-│   │   ├── processor.py    # QC, gridding, dual-pol pipelines
-│   │   ├── renderer.py     # Datashader rasterization
-│   │   ├── exporter.py     # Datashader + Cairo high-DPI figure export
-│   │   └── arrow_bridge.py # xarray → Arrow IPC serialization
-│   └── tests/
-├── package.json
-├── svelte.config.js
-├── vite.config.ts
-└── README.md
+├── ARCHITECTURE.md  CLAUDE.md  CONTRIBUTING.md  DCO  NOTICE  LICENSE  THIRD_PARTY_NOTICES.md  README.md
+├── src-tauri/               Rust shell: main.rs (engine supervision), updates.rs, tauri*.conf.json, icons/
+├── src/
+│   ├── App.svelte, main.ts
+│   └── lib/
+│       ├── components/      viewers (RadarViewer, Viewer3D, RhiViewer, CartesianViewer3D ...), panels, dialogs
+│       ├── stores/          reactive state (radarData, settings, volume3d, wind, updater ...)
+│       ├── utils/           WebSocket client, renderers, colormaps, geometry, caches (+ *.test.mjs)
+│       ├── workers/         binary decoding, mesh building
+│       └── styles/          tokens, theme, bundled IBM Plex fonts
+├── python/
+│   ├── server.py            WebSocket server (also --web)
+│   ├── engine/              reader, volume, derived, pipeline, mosaic, multidoppler, cells, tracking, rhi,
+│   │                        exporter, cfwrite, provenance, cloud, web, api, cli ...
+│   ├── modules/             plug-in algorithms (radarx_*.py, storm_detection.py ...)
+│   ├── packaging/           PyInstaller spec and build script
+│   ├── tests/  benchmarks/
+│   └── xrd/                 `import xrd` alias of engine.api
+├── docs/                    Sphinx sources (Read the Docs) and images
+├── scripts/                 perf/ (measurements), licenses/ (notices + policy), check_links.py
+├── tools/storm_clip/        offline storm-centred 3D clip renderer (docs/STORM_CLIP.md)
+└── .github/                 workflows (ci, docs, licenses, release), issue forms, PR template
 ```
 
----
+## Build and distribution
 
-## Build & Distribution
-
-| Platform | Packaging | Notes |
+| Platform | Package | Notes |
 |---|---|---|
-| macOS | `.dmg` via Tauri bundler | Universal binary (Intel + Apple Silicon) |
-| Windows | `.msi` / `.exe` via Tauri bundler | Includes WebView2 bootstrapper |
-| Linux | `.AppImage` / `.deb` via Tauri bundler | Uses system WebKitGTK |
-| Python sidecar | Bundled via **PyInstaller** or **Nuitka** | Frozen Python env with xradar + deps, ~50-80MB |
+| macOS | `.dmg` (Apple silicon and Intel builds) | not code-signed yet; first launch needs "Open Anyway" |
+| Windows | `.exe` (NSIS) | WebView2 is part of Windows 10/11 |
+| Linux | `.deb`, `.rpm` | uses the system WebKitGTK |
+| Engine | PyInstaller one-folder bundle inside the app resources | built on each OS by the Release workflow |
 
----
+Updates: signed Tauri updater artifacts on GitHub Releases for macOS and Windows; Linux packages are told that a
+new version exists. Details: [docs/UPDATES.md](docs/UPDATES.md).
 
-## Milestones
+## Where the work is going
 
-### Phase 1 — Skeleton
-- Tauri + Svelte scaffold
-- Python sidecar with WebSocket server
-- Open a single radar file, display metadata in Data Inspector
-
-### Phase 2 — Visualization
-- deck.gl radar viewer with Datashader-rendered tiles
-- Sweep selector, variable selector
-- Pan/zoom at 60fps
-
-### Phase 3 — Processing
-- QC pipeline UI (despeckle, velocity dealiasing)
-- Gridding via xradar/wradlib
-- Compositing multiple files
-
-### Phase 4 — Export
-- Datashader + Cairo publication figures (high-DPI raster + vector overlays)
-- CfRadial2 / Zarr / GeoTIFF export
-- GIF/MP4 animation from time series
-
-### Phase 5 — Polish & Distribution
-- Auto-update via Tauri updater
-- Installers for macOS, Windows, Linux
-- Cloud file access (S3, THREDDS, OPeNDAP)
+Shipped: viewers (2D, 3D, cross-section, RHI), modules and pipelines, mosaics and multi-Doppler winds with 3D
+flow, realistic ground and stylised looks (labelled), storm clips, CLI and Python API, standards-clean outputs,
+smaller installers, auto-update, licence notices and the science policy. Planned (provenance labels on every
+layer, environment data from HRRR/ERA5/soundings/MRMS, hydrology and flash-flood ML, winter weather, lightning,
+microphysics, domain packs, animation): the master list is the GitHub issue
+"Roadmap: the futuristic radar workbench (master list)" (#120), with one roadmap issue per area.

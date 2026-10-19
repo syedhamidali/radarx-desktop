@@ -51,6 +51,7 @@ from engine import derived, mosaic, pipeline, plugins, rhi, varmap, web
 from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
+    latest_scan_info,
     list_arco_scans,
     list_nexrad_l2_files,
     list_nexrad_stations,
@@ -1000,6 +1001,7 @@ class ConnectionHandler:
             "list_nexrad_l2_files": self._handle_list_nexrad_l2_files,
             "open_nexrad_l2": self._handle_open_nexrad_l2,
             "open_nexrad_realtime": self._handle_open_nexrad_realtime,
+            "get_nexrad_latest_info": self._handle_nexrad_latest_info,
             "list_arco_scans": self._handle_list_arco_scans,
             "open_arco_scan": self._handle_open_arco_scan,
             "get_scatter_data": self._handle_get_scatter_data,
@@ -1561,6 +1563,18 @@ class ConnectionHandler:
             await self._open_with_new_reader(lambda r: r.open_s3_file(s3_path))
         except Exception as exc:
             await self.send_error(f"open_nexrad_l2 failed: {exc}")
+
+    async def _handle_nexrad_latest_info(self, msg: dict[str, Any]) -> None:
+        """Radar-sites card: age/size/name of a station's newest Level II volume (one S3 listing,
+        metadata only, nothing is downloaded).  Always answers with ``nexrad_latest_info``;
+        ``status`` says ok / not_found / offline / error."""
+        station = msg.get("station", "")
+        if not isinstance(station, str) or not station:
+            await self.send_error("get_nexrad_latest_info: 'station' required")
+            return
+        loop = asyncio.get_running_loop()
+        info = await loop.run_in_executor(None, latest_scan_info, station)
+        await self.send({"type": "nexrad_latest_info", **info})
 
     async def _handle_open_nexrad_realtime(self, msg: dict[str, Any]) -> None:
         station = msg.get("station", "")
