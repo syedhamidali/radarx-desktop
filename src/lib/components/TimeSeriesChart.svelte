@@ -587,7 +587,7 @@
   }
 
   .ts-tooltip {
-    background: var(--glass-bg-heavy, rgba(8, 10, 20, 0.9));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     padding: 6px 8px;

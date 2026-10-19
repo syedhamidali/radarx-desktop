@@ -420,7 +420,7 @@
 
   .dp-ctrl-group input[type="range"] {
     width: 80px;
-    accent-color: var(--accent-primary, #5b6cf7);
+    accent-color: var(--accent-primary, var(--c-accent));
   }
 
   .dp-toggle {
@@ -432,7 +432,7 @@
   }
 
   .dp-toggle input[type="checkbox"] {
-    accent-color: var(--accent-primary, #5b6cf7);
+    accent-color: var(--accent-primary, var(--c-accent));
   }
 
   .dp-grid {
@@ -480,7 +480,7 @@
     text-transform: none;
     letter-spacing: 0;
     color: var(--accent-hover, #7b8aff);
-    background: rgba(91, 108, 247, 0.15);
+    background: rgba(var(--c-accent-rgb), 0.15);
   }
 
   .dp-cell-header {
@@ -513,7 +513,7 @@
     width: 12px;
     height: 12px;
     border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--c-line-rgb), 0.1);
   }
 
   .hid-name {
@@ -577,13 +577,13 @@
   }
 
   .dp-btn:hover:not(:disabled) {
-    background: var(--accent-primary, #5b6cf7);
+    background: var(--accent-primary, var(--c-accent));
     color: var(--text-primary, #e0e0f0);
-    border-color: var(--accent-primary, #5b6cf7);
+    border-color: var(--accent-primary, var(--c-accent));
   }
 
   .dp-btn.active {
-    border-color: var(--accent-primary, #5b6cf7);
+    border-color: var(--accent-primary, var(--c-accent));
     color: var(--accent-hover, #7b8aff);
   }
 

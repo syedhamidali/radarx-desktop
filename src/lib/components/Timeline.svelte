@@ -283,7 +283,7 @@
     gap: 8px;
     height: 36px;
     padding: 0 12px;
-    background: var(--glass-bg-heavy, rgba(8, 10, 20, 0.7));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.7));
     border-top: 1px solid var(--glass-border);
     flex-shrink: 0;
     user-select: none;
@@ -297,7 +297,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    background: rgba(8, 10, 20, 0.5);
+    background: rgba(var(--c-surface-0-rgb), 0.5);
     border: 1px solid var(--glass-border);
     color: var(--text-secondary);
     cursor: pointer;
@@ -309,14 +309,14 @@
   .tl-play-btn:hover {
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    background: rgba(91, 108, 247, 0.08);
+    background: rgba(var(--c-accent-rgb), 0.08);
   }
 
   .tl-play-btn.active {
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    background: rgba(91, 108, 247, 0.12);
-    box-shadow: 0 0 8px rgba(91, 108, 247, 0.15);
+    background: rgba(var(--c-accent-rgb), 0.12);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.15);
   }
 
   .tl-speed {
@@ -360,7 +360,7 @@
     position: relative;
     width: 100%;
     height: 4px;
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(var(--c-line-rgb), 0.08);
     border-radius: 2px;
     overflow: visible;
   }
@@ -373,7 +373,7 @@
     background: linear-gradient(90deg, var(--accent-primary), var(--accent-hover, #7B8AF9));
     border-radius: 2px;
     transition: width 100ms ease;
-    box-shadow: 0 0 6px rgba(91, 108, 247, 0.3);
+    box-shadow: 0 0 6px rgba(var(--c-accent-rgb), 0.3);
   }
 
   .tl-marker {
@@ -387,15 +387,15 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(var(--c-line-rgb), 0.15);
+    border: 1px solid rgba(var(--c-line-rgb), 0.08);
     transition: all var(--transition-fast);
   }
 
   .tl-marker.active .tl-marker-dot {
     background: var(--accent-primary);
     border-color: var(--accent-primary);
-    box-shadow: 0 0 6px rgba(91, 108, 247, 0.4);
+    box-shadow: 0 0 6px rgba(var(--c-accent-rgb), 0.4);
     width: 8px;
     height: 8px;
   }
@@ -421,7 +421,7 @@
     border-radius: 50%;
     background: var(--accent-primary);
     border: 2px solid rgba(255, 255, 255, 0.9);
-    box-shadow: 0 0 8px rgba(91, 108, 247, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
     transition: transform 100ms ease;
   }
 
@@ -439,7 +439,7 @@
   }
 
   .tl-tooltip-inner {
-    background: var(--glass-bg-heavy, rgba(8, 10, 20, 0.9));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     padding: 4px 8px;

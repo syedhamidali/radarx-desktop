@@ -229,12 +229,22 @@
     align-items: center;
     gap: 8px;
     padding: 4px 10px;
-    background: var(--glass-bg-heavy, rgba(15, 15, 26, 0.92));
-    border: 1px solid var(--border-color);
+    background: var(--c-overlay);
+    border: 1px solid var(--c-border-strong);
     border-radius: var(--radius-sm);
     backdrop-filter: blur(8px);
     z-index: 20;
     outline: none;
+  }
+  /* accent tick on the top-left edge, like the other HUD plates */
+  .colorbar-container::before {
+    content: '';
+    position: absolute;
+    left: -1px;
+    top: -1px;
+    width: 14px;
+    height: 2px;
+    background: var(--c-accent);
   }
   .colorbar-container:focus-visible {
     box-shadow: 0 0 0 2px var(--accent-primary, #6cf);
@@ -263,7 +273,7 @@
   .gradient {
     height: 12px;
     border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid var(--c-border-strong);
   }
 
   .ticks {
@@ -276,8 +286,8 @@
     position: absolute;
     transform: translateX(-50%);
     font-family: var(--font-mono);
-    font-size: 9px;
-    color: var(--text-muted);
+    font-size: 9.5px;
+    color: var(--text-secondary);
     white-space: nowrap;
   }
 
@@ -388,7 +398,7 @@
     height: 10px;
     border-radius: 2px;
     flex-shrink: 0;
-    border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.06));
+    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.06));
   }
 
   .cmap-name {

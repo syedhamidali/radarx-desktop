@@ -1,0 +1,234 @@
+/*
+ * xradar design tokens: the single source of truth for colour, type, space, radius, elevation and
+ * motion. See docs/DESIGN.md.
+ *
+ *   Theme "Mission control" (dark)  = :root            (default)
+ *   Theme "Clean room"      (light) = :root[data-theme="light"]
+ *
+ * The theme is chosen in Settings -> Appearance (dark / light / follow system) and applied by
+ * src/lib/utils/theme.ts, which sets data-theme on <html>.
+ *
+ * Rules of thumb
+ *   - New code uses the --c-* / --fs-* / --space-* / --dur-* tokens below.
+ *   - The old names (--bg-primary, --text-muted, --accent-success, --border-color ...) are kept as
+ *     ALIASES at the bottom of this file so older components keep working unchanged.
+ *   - Every --c-*-rgb is an "r, g, b" triplet for translucent tints: rgba(var(--c-accent-rgb), .12).
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- Surfaces: space-navy to near-black. 0 = canvas, 3 = most raised ---- */
+  --c-surface-0: #03060c;
+  --c-surface-1: #070c16;
+  --c-surface-2: #0b1322;
+  --c-surface-3: #121d33;
+  --c-surface-0-rgb: 3, 6, 12;
+  --c-surface-1-rgb: 7, 12, 22;
+  --c-surface-2-rgb: 11, 19, 34;
+  --c-surface-3-rgb: 18, 29, 51;
+
+  /* ---- Lines: hairlines are cool cyan at low alpha ---- */
+  --c-line-rgb: 94, 200, 235;
+  --c-border: rgba(var(--c-line-rgb), 0.15);
+  --c-border-strong: rgba(var(--c-line-rgb), 0.32);
+
+  /* ---- Text (all pass WCAG AA on surfaces 0-3) ---- */
+  --c-text: #e0ebf7;
+  --c-text-dim: #a6b9cd;
+  --c-muted: #7d95ae;
+
+  /* ---- Accent system ---- */
+  --c-accent: #2bd9f5; /* primary: electric cyan (interactive, selected, live) */
+  --c-accent-rgb: 43, 217, 245;
+  --c-accent-strong: #86ecfd; /* hover / emphasis */
+  --c-on-accent: #031720; /* text on a solid accent fill */
+  --c-derived: #b8a4ff; /* secondary: violet = derived / processed data */
+  --c-derived-rgb: 184, 164, 255;
+  --c-caution: #ffb92e; /* amber: caution */
+  --c-caution-rgb: 255, 185, 46;
+  --c-alarm: #ff6370; /* red: alarm, error, destructive */
+  --c-alarm-rgb: 255, 99, 112;
+  --c-nominal: #3ee3a4; /* green: nominal, success, connected */
+  --c-nominal-rgb: 62, 227, 164;
+
+  /* ---- Panel chrome ---- */
+  --c-panel: rgba(7, 12, 22, 0.86); /* sidebars, toolbars (translucent over the canvas) */
+  --c-panel-solid: #070c16;
+  --c-panel-head: rgba(11, 19, 34, 0.92);
+  --c-field: rgba(3, 6, 12, 0.7); /* inputs */
+  --c-overlay: rgba(7, 12, 22, 0.94); /* menus, popovers, dialogs */
+  --c-scrim: rgba(1, 3, 8, 0.72); /* behind modal dialogs */
+  --c-grid: rgba(var(--c-line-rgb), 0.055); /* faint graticule texture in empty areas */
+  --c-scanline: rgba(0, 0, 0, 0.18);
+
+  /* ---- Typography ---- */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  --font-display: var(--font-sans);
+  --fs-2xs: 10px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-2xl: 26px;
+  --ls-label: 0.12em; /* tracked small caps: RANGE, ELEV, DBZ */
+  --ls-wide: 0.2em;
+
+  /* ---- Space (4 px grid) ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  /* ---- Radius: crisp, instrument-like ---- */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-xl: 10px;
+
+  /* ---- Elevation and glow. Glow is only for active / focused elements. ---- */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 6px 18px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(var(--c-line-rgb), 0.08);
+  --shadow-3: 0 18px 48px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(var(--c-line-rgb), 0.12);
+  --glow-accent: 0 0 0 1px rgba(var(--c-accent-rgb), 0.55), 0 0 14px rgba(var(--c-accent-rgb), 0.28);
+  --glow-nominal: 0 0 8px rgba(var(--c-nominal-rgb), 0.7);
+  --glow-caution: 0 0 8px rgba(var(--c-caution-rgb), 0.7);
+  --glow-alarm: 0 0 8px rgba(var(--c-alarm-rgb), 0.75);
+  --focus-ring: 0 0 0 2px var(--c-surface-0), 0 0 0 3.5px var(--c-accent);
+
+  /* ---- Motion: short and purposeful; all of it is switched off by prefers-reduced-motion ---- */
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+  --dur-slow: 360ms;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* ---- Layout ---- */
+  --sidebar-width: 300px;
+  --toolbar-height: 48px;
+  --statusbar-height: 28px;
+
+  /* =====================================================================================
+   * LEGACY ALIASES. Older components use these names; keep them pointing at the tokens.
+   * ===================================================================================== */
+  --bg-primary: var(--c-surface-0);
+  --bg-secondary: var(--c-surface-1);
+  --bg-tertiary: var(--c-surface-2);
+  --bg-surface: var(--c-surface-3);
+  --bg-hover: rgba(var(--c-accent-rgb), 0.09);
+  --bg-active: rgba(var(--c-accent-rgb), 0.17);
+
+  --text-primary: var(--c-text);
+  --text-secondary: var(--c-text-dim);
+  --text-muted: var(--c-muted);
+  --text-accent: var(--c-accent);
+
+  --border-color: var(--c-border);
+  --border-light: var(--c-border-strong);
+  --border-subtle: var(--c-border);
+
+  --accent-primary: var(--c-accent);
+  --accent-hover: var(--c-accent-strong);
+  --accent-muted: rgba(var(--c-accent-rgb), 0.25);
+  --accent-success: var(--c-nominal);
+  --accent-warning: var(--c-caution);
+  --accent-danger: var(--c-alarm);
+  --accent: var(--c-accent);
+  --success: var(--c-nominal);
+  --warning: var(--c-caution);
+  --error: var(--c-alarm);
+  --color-error: var(--c-alarm);
+
+  --glass-bg: var(--c-panel);
+  --glass-bg-heavy: var(--c-overlay);
+  --glass-border: var(--c-border);
+  --glass-blur: 14px;
+  --glass-blur-heavy: 24px;
+  --field-bg: var(--c-field);
+  --overlay-bg: var(--c-overlay);
+  --card-bg: rgba(11, 19, 34, 0.6);
+  --panel-header-bg: var(--c-panel-head);
+  --glow-primary: rgba(var(--c-accent-rgb), 0.35);
+  --glow-success: rgba(var(--c-nominal-rgb), 0.35);
+  --glow-warning: rgba(var(--c-caution-rgb), 0.35);
+  --glow-danger: rgba(var(--c-alarm-rgb), 0.35);
+
+  --spacing-xs: var(--space-1);
+  --spacing-sm: var(--space-2);
+  --spacing-md: var(--space-3);
+  --spacing-lg: var(--space-4);
+  --spacing-xl: var(--space-5);
+  --spacing-2xl: var(--space-6);
+
+  --shadow-sm: var(--shadow-1);
+  --shadow-md: var(--shadow-2);
+  --shadow-lg: var(--shadow-3);
+  --shadow-glow: var(--glow-accent);
+
+  --transition-fast: var(--dur-fast) var(--ease-in-out);
+  --transition-normal: var(--dur-base) var(--ease-in-out);
+  --transition-slow: var(--dur-slow) var(--ease-in-out);
+}
+
+/* =========================================================================================
+ * Clean room: light theme for print, projectors and bright rooms.
+ * Same structure, same accent hue family, darker accents so text on them stays AA.
+ * ========================================================================================= */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --c-surface-0: #e8eef5;
+  --c-surface-1: #f8fafc;
+  --c-surface-2: #eef3f8;
+  --c-surface-3: #e0e8f1;
+  --c-surface-0-rgb: 232, 238, 245;
+  --c-surface-1-rgb: 248, 250, 252;
+  --c-surface-2-rgb: 238, 243, 248;
+  --c-surface-3-rgb: 224, 232, 241;
+
+  --c-line-rgb: 14, 62, 98;
+  --c-border: rgba(var(--c-line-rgb), 0.17);
+  --c-border-strong: rgba(var(--c-line-rgb), 0.36);
+
+  --c-text: #0a1a2a;
+  --c-text-dim: #33495f;
+  --c-muted: #536a80;
+
+  --c-accent: #00688a;
+  --c-accent-rgb: 0, 104, 138;
+  --c-accent-strong: #004d68;
+  --c-on-accent: #ffffff;
+  --c-derived: #6a3fd1;
+  --c-derived-rgb: 106, 63, 209;
+  --c-caution: #8a5600;
+  --c-caution-rgb: 196, 124, 0;
+  --c-alarm: #b3202f;
+  --c-alarm-rgb: 179, 32, 47;
+  --c-nominal: #087048;
+  --c-nominal-rgb: 8, 112, 72;
+
+  --c-panel: rgba(248, 250, 252, 0.92);
+  --c-panel-solid: #f8fafc;
+  --c-panel-head: rgba(232, 239, 246, 0.96);
+  --c-field: #ffffff;
+  --c-overlay: rgba(255, 255, 255, 0.98);
+  --c-scrim: rgba(20, 40, 60, 0.42);
+  --c-grid: rgba(var(--c-line-rgb), 0.07);
+  --c-scanline: rgba(0, 30, 60, 0.05);
+
+  --card-bg: rgba(255, 255, 255, 0.8);
+
+  --shadow-1: 0 1px 2px rgba(10, 40, 70, 0.12);
+  --shadow-2: 0 6px 18px rgba(10, 40, 70, 0.16), 0 0 0 1px rgba(var(--c-line-rgb), 0.1);
+  --shadow-3: 0 18px 48px rgba(10, 40, 70, 0.24), 0 0 0 1px rgba(var(--c-line-rgb), 0.14);
+  --glow-accent: 0 0 0 1px rgba(var(--c-accent-rgb), 0.55), 0 0 10px rgba(var(--c-accent-rgb), 0.18);
+  --glow-nominal: 0 0 6px rgba(var(--c-nominal-rgb), 0.45);
+  --glow-caution: 0 0 6px rgba(var(--c-caution-rgb), 0.5);
+  --glow-alarm: 0 0 6px rgba(var(--c-alarm-rgb), 0.5);
+  --focus-ring: 0 0 0 2px var(--c-surface-1), 0 0 0 3.5px var(--c-accent);
+}

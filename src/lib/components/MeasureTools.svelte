@@ -120,7 +120,7 @@
   }
 
   .measure-overlay {
-    --halo: rgba(8, 10, 20, 0.8);
+    --halo: rgba(var(--c-surface-0-rgb), 0.8);
   }
   :global(.theme-light) .measure-overlay {
     --halo: rgba(255, 255, 255, 0.88);
@@ -133,7 +133,7 @@
 
   .measure-line {
     fill: none;
-    stroke: var(--accent-primary, #5b6cf7);
+    stroke: var(--accent-primary, var(--c-accent));
     stroke-width: 2;
     stroke-dasharray: 6 3;
   }
@@ -148,15 +148,15 @@
   }
 
   .measure-polygon {
-    fill: rgba(91, 108, 247, 0.12);
-    stroke: var(--accent-primary, #5b6cf7);
+    fill: rgba(var(--c-accent-rgb), 0.12);
+    stroke: var(--accent-primary, var(--c-accent));
     stroke-width: 2;
     stroke-dasharray: 6 3;
   }
 
   .measure-dot {
-    fill: var(--accent-primary, #5b6cf7);
-    stroke: var(--bg-primary, #080a14);
+    fill: var(--accent-primary, var(--c-accent));
+    stroke: var(--bg-primary, var(--c-surface-0));
     stroke-width: 2;
   }
 

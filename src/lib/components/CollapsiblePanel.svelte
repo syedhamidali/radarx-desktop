@@ -51,109 +51,83 @@
   .embedded-badge {
     display: flex;
     justify-content: flex-end;
-    padding: 4px var(--spacing-md) 0;
+    padding: 6px var(--space-3) 0;
   }
 
-  .collapsible-panel.embedded {
-    border-bottom: none;
-  }
-
-  .collapsible-panel {
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
-  }
+  .collapsible-panel.embedded { border-bottom: none; }
+  .collapsible-panel { border-bottom: 1px solid var(--c-border); }
 
   .panel-header {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: var(--spacing-sm) var(--spacing-md);
+    padding: var(--space-2) var(--space-3);
     font-weight: 600;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-secondary);
-    background: var(--panel-header-bg);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    letter-spacing: var(--ls-label);
+    color: var(--c-text-dim);
+    background: var(--c-panel-head);
     border: none;
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--c-border);
     border-radius: 0;
     cursor: pointer;
-    transition: all var(--transition-fast);
-    height: 36px;
+    height: 34px;
+  }
+  .panel-header:hover { background: var(--bg-hover); color: var(--c-text); border-color: var(--c-border); }
+  .collapsible-panel:not(.collapsed) > .panel-header::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--c-accent);
   }
 
-  .panel-header:hover {
-    background: rgba(91, 108, 247, 0.06);
-    color: var(--text-primary);
-  }
-
-  .panel-header-left {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-  }
-
-  .panel-header-right {
-    display: flex;
-    align-items: center;
-    gap: var(--spacing-sm);
-  }
-
-  .panel-icon {
-    font-size: 12px;
-    opacity: 0.7;
-  }
-
-  .panel-title {
-    white-space: nowrap;
-  }
+  .panel-header-left,
+  .panel-header-right { display: flex; align-items: center; gap: var(--space-2); }
+  .panel-icon { font-size: var(--fs-sm); opacity: 0.8; }
+  .panel-title { white-space: nowrap; }
 
   .panel-badge {
     display: inline-flex;
     align-items: center;
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--accent-hover, var(--text-accent));
-    background: rgba(91, 108, 247, 0.1);
-    padding: 2px 7px;
-    border-radius: 10px;
-    min-width: 20px;
     justify-content: center;
-    border: 1px solid rgba(91, 108, 247, 0.1);
+    min-width: 20px;
+    height: 18px;
+    padding: 0 6px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+    color: var(--c-accent);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.28);
+    border-radius: var(--radius-sm);
   }
 
   .panel-chevron {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 250ms cubic-bezier(0.4, 0, 0.2, 1);
-    color: var(--text-muted);
+    transition: transform var(--dur-base) var(--ease-in-out);
+    color: var(--c-muted);
   }
-
-  .panel-chevron.open {
-    transform: rotate(0deg);
-  }
-
-  .panel-chevron:not(.open) {
-    transform: rotate(-90deg);
-  }
+  .panel-chevron.open { transform: rotate(0deg); }
+  .panel-chevron:not(.open) { transform: rotate(-90deg); }
 
   .panel-content {
     max-height: 0;
     overflow: hidden;
-    transition: max-height 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: max-height var(--dur-base) var(--ease-in-out);
   }
-
   .panel-content.visible {
     max-height: 2000px;
-    transition: max-height 350ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: max-height var(--dur-slow) var(--ease-in-out);
   }
-
-  .panel-body {
-    padding: var(--spacing-md);
-  }
+  .panel-body { padding: var(--space-3); }
 
   /* Inside PanelManager the outer panel owns collapsing and height. */
   .embedded .panel-content,

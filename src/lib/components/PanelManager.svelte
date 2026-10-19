@@ -31,6 +31,23 @@
     export: { component: ExportPanel, label: 'Export', icon: '\u21E9' },
   };
 
+  // Line icons for the panel headers (24x24, stroke). A panel without an entry here falls back to the
+  // `icon` text in PANEL_MAP, so a new panel needs no change to this table.
+  const PANEL_ICONS: Record<string, string> = {
+    cloud: '<path d="M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 8.5a4.5 4.5 0 0 1 0 9.5H7z"/>',
+    mosaic: '<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><path d="M13 17h8M17 13v8"/>',
+    wind: '<path d="M3 8h11a3 3 0 1 0-3-3M3 12h16a3 3 0 1 1-3 3M3 16h8a2.5 2.5 0 1 1-2.5 2.5"/>',
+    volume: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12L4 7.5M12 12v9"/>',
+    timeseries: '<path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/>',
+    crosssection: '<rect x="3" y="4" width="18" height="16"/><path d="M3 16l6-5 4 3 8-8"/>',
+    qc: '<path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z"/><path d="M8.5 12l2.5 2.5 4.5-5"/>',
+    storm: '<path d="M7 15a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 6.5a4.5 4.5 0 0 1 0 8.5"/><path d="M12.5 11l-3 5h4l-2 5"/>',
+    modules: '<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="14" y="14" width="6" height="6" transform="rotate(45 17 17)"/>',
+    pipeline: '<circle cx="5" cy="6" r="2"/><circle cx="19" cy="12" r="2"/><circle cx="5" cy="18" r="2"/><path d="M7 6h5a3 3 0 0 1 3 3v0M7 18h5a3 3 0 0 0 3-3v0M15 12h2"/>',
+    processing: '<path d="M4 7h10M18 7h2M4 17h2M10 17h10M4 12h6M14 12h6"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/><circle cx="12" cy="12" r="2"/>',
+    export: '<path d="M12 15V3M7.5 7.5L12 3l4.5 4.5"/><path d="M4 14v6h16v-6"/>',
+  };
+
   let panelOrder = $state<string[]>(Object.keys(PANEL_MAP));
   let panelCollapsed = $state<Record<string, boolean>>({});
   let dragTarget = $state<string | null>(null);
@@ -156,7 +173,12 @@
             </svg>
           </div>
           <button class="managed-panel-toggle" on:click={() => toggleCollapse(id)} aria-expanded={!panelCollapsed[id]} title="{panelCollapsed[id] ? 'Expand' : 'Collapse'} {panel.label}">
-            <span class="managed-panel-icon">{panel.icon}</span>
+            <span class="managed-panel-index mono">{String(panelOrder.indexOf(id) + 1).padStart(2, '0')}</span>
+            {#if PANEL_ICONS[id]}
+              <svg class="managed-panel-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{@html PANEL_ICONS[id]}</svg>
+            {:else}
+              <span class="managed-panel-icon">{panel.icon}</span>
+            {/if}
             <span class="managed-panel-label">{panel.label}</span>
             <span class="managed-panel-chevron" class:open={!panelCollapsed[id]}>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -182,25 +204,43 @@
   }
 
   .managed-panel {
-    border-bottom: 1px solid var(--glass-border);
-    transition: opacity var(--transition-fast);
+    border-bottom: 1px solid var(--c-border);
+    transition: opacity var(--dur-fast);
   }
+  .managed-panel.dragging { opacity: 0.4; }
+  .managed-panel.drag-over { box-shadow: inset 0 2px 0 var(--c-accent); }
 
-  .managed-panel.dragging {
-    opacity: 0.4;
-  }
-
-  .managed-panel.drag-over {
-    border-top: 2px solid var(--accent-primary);
-  }
-
+  /* Panel header: index, icon, tracked label. An open panel gets a cyan notch on its left edge and
+     a segmented hairline underneath; a collapsed one stays quiet. */
   .managed-panel-header {
+    position: relative;
     display: flex;
     align-items: center;
-    background: var(--panel-header-bg);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    border-bottom: 1px solid var(--glass-border);
+    background: var(--c-panel-head);
+    border-bottom: 1px solid var(--c-border);
+  }
+  .managed-panel:not(.collapsed) .managed-panel-header {
+    background: linear-gradient(90deg, rgba(var(--c-accent-rgb), 0.09), var(--c-panel-head) 55%);
+    border-bottom-color: transparent;
+  }
+  .managed-panel:not(.collapsed) .managed-panel-header::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--c-accent);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.55);
+  }
+  .managed-panel:not(.collapsed) .managed-panel-header::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 1px;
+    background: linear-gradient(90deg, var(--c-accent) 0 28px, transparent 28px 32px, var(--c-border-strong) 32px);
   }
 
   .drag-handle {
@@ -208,87 +248,61 @@
     align-items: center;
     justify-content: center;
     width: 20px;
-    height: 36px;
-    color: var(--text-muted);
+    height: 34px;
+    color: var(--c-muted);
     cursor: grab;
-    opacity: 0.4;
-    transition: opacity var(--transition-fast), color var(--transition-fast);
+    opacity: 0.35;
+    transition: opacity var(--dur-fast), color var(--dur-fast);
     flex-shrink: 0;
-    padding-left: 4px;
+    padding-left: 5px;
   }
-
-  .drag-handle:hover {
-    opacity: 1;
-    color: var(--accent-hover);
-  }
-
-  .drag-handle:active {
-    cursor: grabbing;
-  }
+  .drag-handle:hover { opacity: 1; color: var(--c-accent); }
+  .drag-handle:active { cursor: grabbing; }
 
   .managed-panel-toggle {
     display: flex;
     align-items: center;
-    gap: var(--spacing-sm);
+    gap: var(--space-2);
     flex: 1;
-    padding: 0 var(--spacing-sm) 0 var(--spacing-xs);
-    height: 36px;
+    padding: 0 var(--space-3) 0 var(--space-1);
+    height: 34px;
     font-weight: 600;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-secondary);
+    letter-spacing: var(--ls-label);
+    color: var(--c-text-dim);
     background: transparent;
     border: none;
     border-radius: 0;
     cursor: pointer;
-    transition: all var(--transition-fast);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
   }
+  .managed-panel-toggle:hover { background: var(--bg-hover); color: var(--c-text); border: none; }
+  .managed-panel:not(.collapsed) .managed-panel-toggle { color: var(--c-text); }
 
-  .managed-panel-toggle:hover {
-    background: rgba(91, 108, 247, 0.06);
-    color: var(--text-primary);
-    border: none;
-    box-shadow: none;
-  }
-
-  .managed-panel-icon {
-    font-size: 12px;
-    opacity: 0.7;
-  }
-
-  .managed-panel-label {
-    flex: 1;
-    text-align: left;
-    white-space: nowrap;
-  }
+  .managed-panel-index { font-size: 9.5px; font-weight: 400; letter-spacing: 0.04em; color: var(--c-muted); }
+  .managed-panel:not(.collapsed) .managed-panel-index { color: var(--c-accent); }
+  .managed-panel-svg { flex-shrink: 0; color: var(--c-muted); }
+  .managed-panel:not(.collapsed) .managed-panel-svg { color: var(--c-accent); }
+  .managed-panel-icon { font-size: var(--fs-sm); opacity: 0.8; }
+  .managed-panel-label { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .managed-panel-chevron {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: transform 250ms cubic-bezier(0.4, 0, 0.2, 1);
-    color: var(--text-muted);
+    transition: transform var(--dur-base) var(--ease-in-out);
+    color: var(--c-muted);
   }
-
-  .managed-panel-chevron.open {
-    transform: rotate(0deg);
-  }
-
-  .managed-panel-chevron:not(.open) {
-    transform: rotate(-90deg);
-  }
+  .managed-panel-chevron.open { transform: rotate(0deg); }
+  .managed-panel-chevron:not(.open) { transform: rotate(-90deg); }
 
   .managed-panel-content {
     max-height: 0;
     overflow: hidden;
-    transition: max-height 250ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: max-height var(--dur-base) var(--ease-in-out);
   }
-
   .managed-panel-content.visible {
     max-height: 5000px;
-    transition: max-height 350ms cubic-bezier(0.4, 0, 0.2, 1);
+    transition: max-height var(--dur-slow) var(--ease-in-out);
   }
 </style>

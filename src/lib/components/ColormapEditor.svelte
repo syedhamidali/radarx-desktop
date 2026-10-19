@@ -565,7 +565,7 @@
   .preview-bar {
     height: 20px;
     border-radius: 4px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--c-line-rgb), 0.1);
   }
 
   /* Gradient bar with handles */
@@ -580,7 +580,7 @@
     position: absolute;
     inset: 4px 0;
     border-radius: 3px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--c-line-rgb), 0.1);
   }
 
   .stop-handle {
@@ -756,7 +756,7 @@
     height: 12px;
     border-radius: 2px;
     flex-shrink: 0;
-    border: 1px solid rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(var(--c-line-rgb), 0.06);
   }
 
   .preset-name {

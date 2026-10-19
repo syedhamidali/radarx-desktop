@@ -68,6 +68,7 @@ BUNDLING
 :maxdepth: 2
 :caption: Project
 
+DESIGN
 RELIABILITY
 RESPONSIVENESS
 contributing

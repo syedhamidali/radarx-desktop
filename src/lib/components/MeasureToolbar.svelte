@@ -161,7 +161,7 @@
     align-items: center;
     gap: 6px;
     padding: 5px 8px;
-    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     backdrop-filter: blur(16px);
@@ -212,10 +212,10 @@
   }
 
   .tool-btn.active {
-    background: rgba(91, 108, 247, 0.18);
+    background: rgba(var(--c-accent-rgb), 0.18);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    box-shadow: 0 0 8px rgba(91, 108, 247, 0.15);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.15);
   }
 
   .tool-btn.action {
@@ -236,8 +236,8 @@
   .toolbar-result {
     margin-left: 4px;
     padding: 2px 8px;
-    background: rgba(91, 108, 247, 0.1);
-    border: 1px solid rgba(91, 108, 247, 0.2);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.2);
     border-radius: var(--radius-sm);
   }
 
@@ -258,7 +258,7 @@
     padding: 2px 8px;
     font-size: 10px;
     color: var(--text-secondary);
-    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
     border-radius: var(--radius-sm);
     font-style: italic;
     pointer-events: none;

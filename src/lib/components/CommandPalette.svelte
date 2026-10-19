@@ -280,7 +280,6 @@
               on:click={() => executeAction(action)}
               on:mouseenter={() => (selectedIndex = i)}
             >
-              <span class="cmd-item-icon">{action.icon}</span>
               <div class="cmd-item-body">
                 <span class="cmd-item-label">{action.label}</span>
                 <span class="cmd-item-category">{action.category}</span>
@@ -313,171 +312,105 @@
     position: fixed;
     inset: 0;
     z-index: 9999;
-    background: rgba(0, 0, 0, 0.55);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    background: var(--c-scrim);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     display: flex;
     align-items: flex-start;
     justify-content: center;
     padding-top: 15vh;
-    animation: fade-in 120ms ease-out;
+    animation: cmd-fade 120ms ease-out;
   }
-
-  @keyframes fade-in {
+  @keyframes cmd-fade {
     from { opacity: 0; }
     to { opacity: 1; }
   }
 
-  @keyframes slide-in {
-    from { opacity: 0; transform: translateY(-12px) scale(0.97); }
-    to { opacity: 1; transform: translateY(0) scale(1); }
-  }
-
   .cmd-palette {
-    width: 520px;
+    position: relative;
+    width: 560px;
     max-width: 90vw;
-    background: var(--overlay-bg);
-    backdrop-filter: blur(40px);
-    -webkit-backdrop-filter: blur(40px);
-    border: 1px solid rgba(140, 160, 250, 0.12);
-    border-radius: 14px;
-    box-shadow:
-      0 0 0 1px rgba(140, 160, 250, 0.06),
-      0 24px 80px rgba(0, 0, 0, 0.7),
-      0 0 60px rgba(91, 108, 247, 0.06);
+    max-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--c-overlay);
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-3);
     overflow: hidden;
-    animation: slide-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    animation: slide-down var(--dur-base) var(--ease-out);
+  }
+  /* accent hairline across the top edge */
+  .cmd-palette::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 64px;
+    height: 2px;
+    background: var(--c-accent);
+    box-shadow: 0 0 10px rgba(var(--c-accent-rgb), 0.7);
   }
 
   .cmd-input-wrap {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 16px;
-    border-bottom: 1px solid rgba(140, 160, 250, 0.08);
+    gap: var(--space-3);
+    padding: 0 var(--space-4);
+    border-bottom: 1px solid var(--c-border);
   }
-
-  .cmd-search-icon {
-    color: var(--text-muted);
-    flex-shrink: 0;
-    opacity: 0.6;
-  }
-
+  .cmd-search-icon { color: var(--c-accent); flex-shrink: 0; }
   .cmd-input {
     flex: 1;
+    height: 48px;
+    padding: 0;
+    font-size: var(--fs-lg);
+    color: var(--c-text);
     background: transparent;
     border: none;
+    border-radius: 0;
     outline: none;
-    font-size: 15px;
-    font-family: var(--font-sans);
-    color: var(--text-primary);
-    caret-color: var(--accent-primary);
+    box-shadow: none;
+    user-select: text;
   }
+  .cmd-input:focus { border: none; box-shadow: none; }
+  .cmd-input::placeholder { color: var(--c-muted); }
+  .cmd-esc-hint { flex-shrink: 0; }
 
-  .cmd-input::placeholder {
-    color: var(--text-muted);
-    opacity: 0.6;
-  }
-
-  .cmd-esc-hint {
-    font-size: 9px;
-    opacity: 0.5;
-  }
-
-  .cmd-results {
-    max-height: 360px;
-    overflow-y: auto;
-    padding: 6px;
-  }
-
-  .cmd-empty {
-    padding: 24px;
-    text-align: center;
-    color: var(--text-muted);
-    font-size: 13px;
-  }
+  .cmd-results { flex: 1; overflow-y: auto; padding: var(--space-1) 0; }
+  .cmd-empty { padding: var(--space-5); text-align: center; color: var(--c-muted); font-size: var(--fs-sm); }
 
   .cmd-item {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px;
-    border-radius: 8px;
+    gap: var(--space-3);
+    padding: 0 var(--space-4);
+    height: 38px;
     cursor: pointer;
-    transition: all 80ms ease;
+    border-left: 2px solid transparent;
   }
-
-  .cmd-item:hover,
   .cmd-item.selected {
-    background: rgba(91, 108, 247, 0.1);
+    background: rgba(var(--c-accent-rgb), 0.12);
+    border-left-color: var(--c-accent);
   }
-
-  .cmd-item.selected {
-    background: rgba(91, 108, 247, 0.14);
-    box-shadow: inset 0 0 0 1px rgba(91, 108, 247, 0.12);
-  }
-
-  .cmd-item-icon {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    font-size: 13px;
-    background: rgba(91, 108, 247, 0.08);
-    border-radius: 6px;
-    flex-shrink: 0;
-    color: var(--text-secondary);
-  }
-
-  .cmd-item-body {
-    flex: 1;
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    min-width: 0;
-  }
-
-  .cmd-item-label {
-    font-size: 13px;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
+  .cmd-item-body { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex: 1; min-width: 0; }
+  .cmd-item-label { font-size: var(--fs-md); color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cmd-item.selected .cmd-item-label { color: var(--c-accent-strong); }
   .cmd-item-category {
-    font-size: 11px;
-    color: var(--text-muted);
-    white-space: nowrap;
-    opacity: 0.7;
+    font-size: var(--fs-2xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: var(--ls-label);
+    color: var(--c-muted);
   }
-
-  .cmd-item-shortcut {
-    font-size: 10px;
-    opacity: 0.7;
-    flex-shrink: 0;
-  }
+  .cmd-item-shortcut { flex-shrink: 0; }
 
   .cmd-footer {
     display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px 16px;
-    border-top: 1px solid rgba(140, 160, 250, 0.06);
+    gap: var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    border-top: 1px solid var(--c-border);
+    background: var(--c-panel-head);
   }
-
-  .cmd-footer-hint {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    color: var(--text-muted);
-    opacity: 0.6;
-  }
-
-  .cmd-footer-hint :global(kbd) {
-    font-size: 9px;
-    padding: 1px 4px;
-  }
+  .cmd-footer-hint { display: flex; align-items: center; gap: 4px; font-size: var(--fs-xs); color: var(--c-muted); }
 </style>

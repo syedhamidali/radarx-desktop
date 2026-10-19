@@ -4,6 +4,7 @@
   import type { RecentFile } from '../stores/settings';
   import { workspaceStore, PRESET_WORKSPACES } from '../stores/workspace';
   import { webUi } from '../stores/webInfo';
+  import RadarSweep from './RadarSweep.svelte';
 
   const dispatch = createEventDispatcher<{
     'open-file': void;
@@ -54,25 +55,25 @@
     return d.toLocaleDateString();
   }
 
+  /** Short file-type tag shown in the recent list (extension, or RAW for extension-less volumes). */
   function getFileIcon(name: string): string {
-    const ext = name.split('.').pop()?.toLowerCase() ?? '';
-    if (['nc', 'ncf', 'cdf'].includes(ext)) return '\u{1F4CA}';
-    if (['h5', 'hdf5', 'hdf'].includes(ext)) return '\u{1F5C4}';
-    if (['gz', 'bz2'].includes(ext)) return '\u{1F4E6}';
-    return '\u{1F4C1}';
+    const m = /\.([A-Za-z0-9]{1,4})$/.exec(name);
+    return m ? m[1].toUpperCase() : 'RAW';
   }
 </script>
 
-<div class="welcome-screen">
+<div class="welcome-screen hud-grid">
   <div class="welcome-inner">
     <!-- Hero -->
     <div class="welcome-hero">
-      <div class="welcome-logo">
-        <span class="logo-x">x</span><span class="logo-rest">radar</span>
-        <span class="logo-desktop">desktop</span>
+      <RadarSweep size={176} period={6} />
+      <h1 class="welcome-logo"><span class="logo-x">X</span>RADAR</h1>
+      <p class="welcome-subtitle">Weather radar research workstation{$webUi ? ' in your browser' : ''}</p>
+      <div class="welcome-meta">
+        <span class="chip">v{APP_VERSION}</span>
+        <span class="chip derived">{$webUi ? 'web' : 'desktop'}</span>
+        <span class="chip nominal"><span class="led nominal"></span>engine online</span>
       </div>
-      <p class="welcome-subtitle">Open-source radar data visualization{$webUi ? ' in your browser' : ''}</p>
-      <span class="welcome-version">v{APP_VERSION}</span>
     </div>
 
     <!-- Quick actions -->
@@ -216,320 +217,207 @@
     width: 100%;
     height: 100%;
     overflow-y: auto;
-    background: radial-gradient(ellipse at 50% 30%, rgba(91, 108, 247, 0.06) 0%, transparent 70%);
   }
 
   .welcome-inner {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--spacing-xl);
-    padding: var(--spacing-2xl);
-    max-width: 780px;
+    gap: var(--space-5);
+    padding: var(--space-6);
+    max-width: 800px;
     width: 100%;
     margin: auto;
-    animation: fade-in 400ms ease-out;
+    animation: hud-rise var(--dur-slow) var(--ease-out);
   }
 
-  /* Hero */
+  /* ---- Hero ---- */
   .welcome-hero {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--spacing-sm);
-    padding-bottom: var(--spacing-md);
+    gap: var(--space-2);
+    text-align: center;
   }
-
   .welcome-logo {
-    font-size: 32px;
+    margin-top: var(--space-3);
+    font-size: 34px;
     font-weight: 600;
-    letter-spacing: -0.03em;
-    user-select: none;
+    letter-spacing: 0.34em;
+    padding-left: 0.34em; /* optically centre the tracked word */
+    color: var(--c-text);
+    line-height: 1.1;
   }
-
-  .logo-x {
-    color: var(--accent-primary);
-    font-weight: 700;
-    text-shadow: 0 0 24px rgba(91, 108, 247, 0.5);
-  }
-
-  .logo-rest {
-    color: var(--text-primary);
-  }
-
-  .logo-desktop {
-    color: var(--text-muted);
-    font-weight: 400;
-    margin-left: 6px;
-    font-size: 22px;
-  }
-
+  .logo-x { color: var(--c-accent); }
   .welcome-subtitle {
-    font-size: 13px;
-    color: var(--text-muted);
-    letter-spacing: 0.02em;
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: var(--ls-wide);
+    color: var(--c-text-dim);
   }
+  .welcome-meta { display: flex; gap: var(--space-2); margin-top: var(--space-1); }
 
-  .welcome-version {
-    font-size: 10px;
-    color: var(--text-muted);
-    background: rgba(91, 108, 247, 0.08);
-    border: 1px solid rgba(91, 108, 247, 0.12);
-    border-radius: 10px;
-    padding: 1px 8px;
-    font-family: var(--font-mono);
-  }
-
-  /* Quick actions */
+  /* ---- Quick actions ---- */
   .welcome-actions {
     display: flex;
-    gap: var(--spacing-md);
+    gap: var(--space-3);
     width: 100%;
-    max-width: 540px;
+    justify-content: center;
+    flex-wrap: wrap;
   }
-
   .action-card {
-    flex: 1;
+    position: relative;
     display: flex;
     align-items: center;
-    gap: var(--spacing-md);
-    padding: var(--spacing-lg);
-    background: var(--card-bg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg);
-    cursor: pointer;
-    transition: all var(--transition-normal);
-    text-align: left;
+    gap: var(--space-3);
+    flex: 1 1 280px;
+    max-width: 380px;
     height: auto;
+    padding: var(--space-3) var(--space-4);
+    text-align: left;
+    background: var(--c-panel);
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--radius-sm);
+    transition: border-color var(--dur-fast), box-shadow var(--dur-fast), background var(--dur-fast);
   }
-
+  .action-card::before,
+  .action-card::after {
+    content: '';
+    position: absolute;
+    width: 9px;
+    height: 9px;
+    border: 1px solid var(--c-accent);
+    pointer-events: none;
+  }
+  .action-card::before { top: -1px; left: -1px; border-right: 0; border-bottom: 0; }
+  .action-card::after { bottom: -1px; right: -1px; border-left: 0; border-top: 0; }
   .action-card:hover {
-    border-color: rgba(91, 108, 247, 0.25);
-    background: rgba(91, 108, 247, 0.06);
-    box-shadow: 0 0 30px rgba(91, 108, 247, 0.08), var(--shadow-md);
-    transform: translateY(-1px);
+    background: var(--c-panel);
+    border-color: var(--c-accent);
+    box-shadow: var(--glow-accent);
   }
-
   .action-icon {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 44px;
-    height: 44px;
-    border-radius: var(--radius-md);
-    background: rgba(91, 108, 247, 0.1);
-    border: 1px solid rgba(91, 108, 247, 0.15);
-    color: var(--accent-primary);
+    width: 40px;
+    height: 40px;
     flex-shrink: 0;
+    color: var(--c-accent);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.3);
+    border-radius: var(--radius-sm);
   }
+  .action-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+  .action-title { font-size: var(--fs-md); font-weight: 600; color: var(--c-text); letter-spacing: 0.02em; }
+  .action-desc { font-size: var(--fs-xs); color: var(--c-muted); font-weight: 400; white-space: normal; }
+  .action-card kbd { margin-left: auto; }
 
-  .action-text {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    flex: 1;
-  }
-
-  .action-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .action-desc {
-    font-size: 11px;
-    color: var(--text-muted);
-  }
-
-  .action-card kbd {
-    font-size: 9px;
-    opacity: 0.5;
-  }
-
-  /* Grid */
-  .welcome-grid.single {
-    grid-template-columns: minmax(0, 560px);
-    justify-content: center;
-  }
-
+  /* ---- Cards ---- */
   .welcome-grid {
     display: grid;
-    grid-template-columns: 1.2fr 1fr;
-    gap: var(--spacing-lg);
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
     width: 100%;
+    align-items: start;
   }
-
-  .welcome-right-col {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-lg);
-  }
-
-  /* Cards */
+  .welcome-grid.single { grid-template-columns: minmax(0, 480px); justify-content: center; }
+  .welcome-right-col { display: flex; flex-direction: column; gap: var(--space-3); }
   .welcome-card {
-    background: var(--card-bg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg);
+    background: var(--c-panel);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius-sm);
     overflow: hidden;
-    transition: border-color var(--transition-fast);
   }
-
-  .welcome-card:hover {
-    border-color: var(--border-light);
-  }
-
   .card-header {
     display: flex;
     align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-sm) var(--spacing-md);
-    font-size: 11px;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--fs-xs);
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--text-secondary);
-    border-bottom: 1px solid var(--glass-border);
-    background: var(--panel-header-bg);
+    letter-spacing: var(--ls-label);
+    color: var(--c-text-dim);
+    background: var(--c-panel-head);
+    border-bottom: 1px solid var(--c-border);
   }
+  .card-header svg { color: var(--c-accent); }
+  .card-body { padding: var(--space-2) var(--space-3); }
 
-  .card-body {
-    padding: var(--spacing-sm);
-  }
-
-  /* Recent files list */
-  .recent-list {
-    display: flex;
-    flex-direction: column;
-  }
-
+  /* Recent files */
+  .recent-list { display: flex; flex-direction: column; margin: 0 calc(-1 * var(--space-3)); }
   .recent-item {
     display: flex;
     align-items: center;
-    gap: var(--spacing-sm);
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    transition: all var(--transition-fast);
+    gap: var(--space-2);
+    width: 100%;
+    height: auto;
+    padding: 6px var(--space-3);
+    text-align: left;
     background: transparent;
     border: none;
-    text-align: left;
-    height: auto;
-    width: 100%;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
+    border-left: 2px solid transparent;
+    border-radius: 0;
   }
-
-  .recent-item:hover {
-    background: var(--bg-hover);
-    border: none;
-    box-shadow: none;
-  }
-
+  .recent-item:hover { background: var(--bg-hover); border-left-color: var(--c-accent); }
   .recent-icon {
-    font-size: 14px;
     flex-shrink: 0;
-  }
-
-  .recent-info {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-width: 0;
-  }
-
-  .recent-name {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .recent-path {
-    font-size: 10px;
-    color: var(--text-muted);
+    min-width: 34px;
+    padding: 1px 0;
+    text-align: center;
     font-family: var(--font-mono);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    font-size: 9.5px;
+    letter-spacing: 0.06em;
+    color: var(--c-accent);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.3);
+    border-radius: var(--radius-xs);
   }
+  .recent-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .recent-name { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-path { font-size: var(--fs-2xs); color: var(--c-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+  .recent-time { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--c-muted); flex-shrink: 0; }
 
-  .recent-time {
-    font-size: 10px;
-    color: var(--text-muted);
-    white-space: nowrap;
-    flex-shrink: 0;
-  }
-
-  /* Empty state */
   .empty-state {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: var(--spacing-xs);
-    padding: var(--spacing-xl) var(--spacing-md);
-    color: var(--text-muted);
-    font-size: 12px;
+    gap: var(--space-1);
+    padding: var(--space-5) 0;
+    font-size: var(--fs-sm);
+    color: var(--c-text-dim);
   }
-
-  .empty-icon {
-    opacity: 0.3;
-    margin-bottom: var(--spacing-xs);
-  }
-
-  .empty-hint {
-    font-size: 11px;
-    opacity: 0.6;
-  }
+  .empty-icon { color: var(--c-muted); margin-bottom: var(--space-1); }
+  .empty-hint { font-size: var(--fs-xs); color: var(--c-muted); }
 
   /* Tips */
-  .tips-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
-
+  .tips-list { list-style: none; display: flex; flex-direction: column; gap: 2px; }
   .tip-item {
-    font-size: 11px;
-    color: var(--text-secondary);
-    padding: var(--spacing-xs) var(--spacing-sm);
-    border-left: 2px solid rgba(91, 108, 247, 0.2);
-    transition: border-color var(--transition-fast);
+    position: relative;
+    padding: 5px 0 5px var(--space-4);
+    font-size: var(--fs-xs);
+    color: var(--c-text-dim);
   }
-
-  .tip-item:hover {
-    border-color: var(--accent-primary);
+  .tip-item::before {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    margin-top: -2.5px;
+    border: 1px solid var(--c-accent);
+    transform: rotate(45deg);
   }
 
   /* Shortcuts */
-  .shortcuts-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--spacing-xs);
-  }
+  .shortcuts-list { display: flex; flex-direction: column; gap: 6px; padding: var(--space-1) 0; }
+  .shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
+  .shortcut-key { white-space: nowrap; }
+  .shortcut-desc { font-size: var(--fs-xs); color: var(--c-text-dim); text-align: right; }
 
-  .shortcut-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 3px var(--spacing-sm);
-  }
-
-  .shortcut-key {
-    font-size: 10px;
-    min-width: 80px;
-  }
-
-  .shortcut-desc {
-    font-size: 11px;
-    color: var(--text-secondary);
+  @media (max-width: 900px) {
+    .welcome-grid { grid-template-columns: 1fr; }
   }
 </style>

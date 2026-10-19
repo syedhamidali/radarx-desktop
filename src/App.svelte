@@ -16,6 +16,8 @@
   import ShortcutsSheet from './lib/components/ShortcutsSheet.svelte';
   import AboutDialog from './lib/components/AboutDialog.svelte';
   import SettingsDialog from './lib/components/SettingsDialog.svelte';
+  import LogoMark from './lib/components/LogoMark.svelte';
+  import EngineBoot from './lib/components/EngineBoot.svelte';
   import FileTabs from './lib/components/FileTabs.svelte';
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
@@ -38,6 +40,9 @@
   import { isWebMode } from './lib/utils/env';
   import { webUi, engineState, engineStatusMessage } from './lib/stores/webInfo';
   import { uploadFiles } from './lib/utils/upload';
+  import { applyThemeMode } from './lib/utils/theme';
+  import { sidecarError } from './lib/stores/boot';
+  import { uiHealth } from './lib/utils/uiHealth';
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -45,10 +50,11 @@
   const currentSweep = $derived($selectedSweep);
   const variableCount = $derived($radarData.variables.length);
   const progress = $derived($processingProgress);
-  const statusColor = $derived(
-    $connectionStatus === 'connected' ? 'var(--accent-success)'
-    : $connectionStatus === 'connecting' ? 'var(--accent-warning)'
-    : 'var(--accent-danger)'
+  /** Status LED variant for the engine link (see .led in styles/theme.css). */
+  const ledClass = $derived(
+    $connectionStatus === 'connected' ? 'nominal pulse'
+    : $connectionStatus === 'connecting' ? 'caution blink'
+    : 'alarm'
   );
   const statusText = $derived(
     $connectionStatus === 'connected' ? 'Connected'
@@ -56,6 +62,33 @@
     : $connectionStatus === 'connecting' ? 'Connecting...'
     : 'Disconnected'
   );
+  const engineWord = $derived(
+    $connectionStatus === 'connected' ? 'NOMINAL'
+    : $connectionStatus === 'connecting' ? 'LINKING'
+    : 'OFFLINE'
+  );
+  // The boot panel replaces the welcome screen until the engine answers (and again if the link drops).
+  let everConnected = $state(false);
+  $effect(() => { if ($connectionStatus === 'connected') everConnected = true; });
+
+  // UTC mission clock (the radar world runs on UTC) and a few real system readouts.
+  let nowMs = $state(Date.now());
+  let heapMb = $state<number | null>(null);
+  const pad2 = (n: number) => String(n).padStart(2, '0');
+  const utc = $derived.by(() => {
+    const d = new Date(nowMs);
+    return {
+      date: `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`,
+      time: `${pad2(d.getUTCHours())}:${pad2(d.getUTCMinutes())}:${pad2(d.getUTCSeconds())}`,
+    };
+  });
+  let clockTimer: ReturnType<typeof setInterval> | null = null;
+  function tickClock() {
+    nowMs = Date.now();
+    // Chromium / WebView2 only; WKWebView has no heap stats and the readout is simply hidden there.
+    const mem = (performance as any).memory?.usedJSHeapSize;
+    heapMb = typeof mem === 'number' ? Math.round(mem / 1048576) : null;
+  }
   // Web mode only: why the remote engine is not reachable right now (null = nothing to say).
   const engineMsg = $derived(
     isWebMode() && $connectionStatus !== 'connected' ? engineStatusMessage($engineState) : null,
@@ -164,6 +197,8 @@
       }
     });
     startUiHealth();
+    tickClock();
+    clockTimer = setInterval(tickClock, 1000);
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('xradar:set-view-mode', handleSetViewMode);
@@ -248,11 +283,13 @@
     unsubOpenError?.();
     unsubConn?.();
     stopUiHealth();
+    if (clockTimer) clearInterval(clockTimer);
   });
 
   function reportSidecarError(message: string) {
     if (message === lastSidecarError) return;
     lastSidecarError = message;
+    sidecarError.set(message);
     addToast('error', `Analysis engine problem: ${message}`, 0);
   }
 
@@ -620,8 +657,8 @@
     if (last) openPaths([last.path]);
   }
 
-  // --- Theme: mode (dark / light / follow OS), accent colour and base font size ---
-  const DEFAULT_ACCENT = '#5b6cf7';
+  // --- Theme: mode (Mission control / Clean room / follow OS), accent colour and base font size ---
+  const DEFAULT_ACCENTS = ['#2bd9f5', '#5b6cf7']; // current default and the pre-redesign indigo (= "not customised")
 
   function adjust(hex: string, amount: number): string {
     // amount > 0 lightens toward white, < 0 darkens toward black.
@@ -632,25 +669,29 @@
     return `#${ch.map((c) => c.toString(16).padStart(2, '0')).join('')}`;
   }
 
+  /** Relative luminance (0..1) of a #rrggbb colour, to choose readable text on an accent fill. */
+  function luminance(hex: string): number {
+    const n = parseInt(hex.slice(1), 16);
+    const lin = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => {
+      const v = c / 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+  }
+
   function applyTheme(mode: 'dark' | 'light' | 'auto', accent: string, fontSize: number) {
     const root = document.documentElement;
-    root.classList.toggle('theme-light', mode === 'light');
-    root.classList.toggle('theme-auto', mode === 'auto');
-    root.style.colorScheme = mode === 'auto' ? 'light dark' : mode;
-    const isLight =
-      mode === 'light' || (mode === 'auto' && window.matchMedia?.('(prefers-color-scheme: light)').matches);
-    const props = ['--accent-primary', '--accent-hover', '--accent-muted', '--text-accent', '--bg-hover', '--bg-active'];
-    if (!/^#[0-9a-f]{6}$/i.test(accent) || accent.toLowerCase() === DEFAULT_ACCENT) {
+    const isLight = applyThemeMode(mode) === 'light';
+    // A custom accent overrides the token pair every alias derives from (see styles/tokens.css).
+    const props = ['--c-accent', '--c-accent-rgb', '--c-accent-strong', '--c-on-accent'];
+    if (!/^#[0-9a-f]{6}$/i.test(accent) || DEFAULT_ACCENTS.includes(accent.toLowerCase())) {
       props.forEach((p) => root.style.removeProperty(p));
     } else {
       const n = parseInt(accent.slice(1), 16);
-      const rgb = `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
-      root.style.setProperty('--accent-primary', accent);
-      root.style.setProperty('--accent-hover', adjust(accent, isLight ? -0.15 : 0.2));
-      root.style.setProperty('--text-accent', adjust(accent, isLight ? -0.15 : 0.25));
-      root.style.setProperty('--accent-muted', `rgba(${rgb}, 0.25)`);
-      root.style.setProperty('--bg-hover', `rgba(${rgb}, 0.08)`);
-      root.style.setProperty('--bg-active', `rgba(${rgb}, 0.15)`);
+      root.style.setProperty('--c-accent', accent);
+      root.style.setProperty('--c-accent-rgb', `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`);
+      root.style.setProperty('--c-accent-strong', adjust(accent, isLight ? -0.2 : 0.3));
+      root.style.setProperty('--c-on-accent', luminance(accent) > 0.35 ? '#04141c' : '#ffffff');
     }
     const px = Number.isFinite(fontSize) ? Math.min(18, Math.max(11, fontSize)) : 13;
     root.style.fontSize = `${px}px`;
@@ -777,8 +818,9 @@
 
   <header class="toolbar">
     <div class="toolbar-left">
-      <div class="app-title">
-        <span class="title-x">x</span><span class="title-rest">radar</span>
+      <div class="app-title" title="xradar {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
+        <LogoMark size={26} animate={$connectionStatus === 'connecting'} />
+        <span class="title-word"><span class="title-x">X</span>RADAR</span>
         <span class="title-desktop">{$webUi ? 'web' : 'desktop'}</span>
       </div>
       <WorkspaceSwitcher on:switch={handleWorkspaceSwitch} />
@@ -809,7 +851,7 @@
             <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
           {/if}
         </button>
-        <span class="sweep-counter">{#if totalSweeps > 0}{currentSweep + 1}/{totalSweeps}{:else}---{/if}</span>
+        <span class="sweep-counter" title="Sweep"><span class="hud-label">SWP</span><span class="mono">{#if totalSweeps > 0}{pad2(currentSweep + 1)}/{pad2(totalSweeps)}{:else}--/--{/if}</span></span>
         <div class="speed-group" title="Animation speed">
           <button class="speed-btn" class:active={animSpeed === 2000} on:click={() => setSpeed(2000)} disabled={totalSweeps === 0}>0.5x</button>
           <button class="speed-btn" class:active={animSpeed === 1000} on:click={() => setSpeed(1000)} disabled={totalSweeps === 0}>1x</button>
@@ -843,6 +885,12 @@
     </div>
 
     <div class="toolbar-right">
+      <div class="utc-clock" title="Coordinated Universal Time" aria-label="UTC time {utc.time}">
+        <span class="hud-label">UTC</span>
+        <span class="clock-date mono">{utc.date}</span>
+        <span class="clock-time mono">{utc.time}<span class="clock-z">Z</span></span>
+      </div>
+      <div class="toolbar-separator"></div>
       <NotificationCenter bind:open={notificationCenterOpen} />
       <div class="toolbar-separator"></div>
       <button class="toolbar-btn icon-btn" on:click={() => (shortcutsSheetVisible = true)} title="Keyboard Shortcuts (?)" aria-label="Keyboard shortcuts">
@@ -862,8 +910,8 @@
       </button>
       <div class="toolbar-separator"></div>
       <div class="connection-indicator" title={$webUi ? `${statusText} to the engine` : `${statusText} to Python sidecar`}>
-        <span class="status-dot" style="background: {statusColor}"></span>
-        <span class="status-text">{statusText}</span>
+        <span class="led {ledClass}"></span>
+        <span class="status-text hud-label">{engineWord}</span>
       </div>
     </div>
   </header>
@@ -913,6 +961,8 @@
           {:else}
             <DualPolDashboard />
           {/if}
+        {:else if $connectionStatus !== 'connected'}
+          <EngineBoot {everConnected} />
         {:else}
           <WelcomeScreen
             on:open-file={openFile}
@@ -952,26 +1002,38 @@
       <div class="statusbar-progress"><div class="statusbar-progress-fill" style="width: {progress.percent}%"></div></div>
     {/if}
     <div class="statusbar-left">
-      <span class="status-dot-sm" class:pulse={$connectionStatus === 'connected'} style="background: {statusColor}" title="{statusText}"></span>
-      <span>{statusText}</span>
+      <span class="led {ledClass}" title={statusText}></span>
+      <span class="hud-label sb-key">ENGINE</span>
+      <span class="sb-val mono" class:ok={$connectionStatus === 'connected'}>{engineWord}</span>
       {#if progress && progress.percent > 0 && progress.percent < 100}
-        <span class="statusbar-divider">|</span>
+        <span class="statusbar-divider">/</span>
         <span class="progress-text">{progress.message} ({Math.round(progress.percent)}%)</span>
       {/if}
     </div>
     <div class="statusbar-center">
       {#if filePath}
+        <span class="hud-label sb-key">FILE</span>
         <span class="file-path mono" title={filePath}>{filePath.split('/').pop() ?? filePath}</span>
-        {#if variableCount > 0}<span class="statusbar-divider">|</span><span class="text-muted">{variableCount} variables</span>{/if}
+        {#if variableCount > 0}<span class="statusbar-divider">/</span><span class="mono sb-dim">{variableCount} vars</span>{/if}
       {:else}
-        <span class="text-muted">No file loaded -- drag and drop or Ctrl+O</span>
+        <span class="sb-dim">No file loaded. Drag and drop, or {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+O</span>
       {/if}
     </div>
     <OperationsTray />
     <div class="statusbar-right">
-      <span class="text-muted">{typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+K commands</span>
-      <span class="statusbar-divider">|</span>
-      <span class="text-muted">? shortcuts</span>
+      <span class="hud-label sb-key">FILES</span><span class="mono sb-val">{pad2($openFiles.length)}</span>
+      {#if $uiHealth.fps}
+        <span class="statusbar-divider">/</span>
+        <span class="hud-label sb-key">FPS</span><span class="mono sb-val">{$uiHealth.fps}</span>
+      {/if}
+      {#if heapMb !== null}
+        <span class="statusbar-divider">/</span>
+        <span class="hud-label sb-key">MEM</span><span class="mono sb-val">{heapMb}M</span>
+      {/if}
+      <span class="statusbar-divider hint-part">/</span>
+      <span class="sb-dim hint-part">{typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+K commands</span>
+      <span class="statusbar-divider hint-part">/</span>
+      <span class="sb-dim hint-part">? shortcuts</span>
     </div>
   </footer>
 
@@ -1001,17 +1063,17 @@
   .visually-hidden-input { position: fixed; left: -9999px; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
   .web-banner {
     display: flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0;
-    padding: 3px var(--spacing-lg); font-size: 11px; color: var(--text-secondary);
-    background: var(--glass-bg-heavy); border-bottom: 1px solid var(--glass-border);
+    padding: 3px var(--space-4); font-size: var(--fs-xs); color: var(--c-text-dim);
+    background: var(--c-overlay); border-bottom: 1px solid var(--c-border);
   }
-  .engine-banner { color: var(--accent-warning); }
-  .engine-banner.bad { color: var(--accent-danger); }
-  .banner-dim { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .engine-banner { color: var(--c-caution); border-bottom-color: rgba(var(--c-caution-rgb), 0.4); }
+  .engine-banner.bad { color: var(--c-alarm); border-bottom-color: rgba(var(--c-alarm-rgb), 0.45); }
+  .banner-dim { color: var(--c-muted); font-variant-numeric: tabular-nums; }
   .banner-close {
-    background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+    background: transparent; border: none; color: var(--c-muted); cursor: pointer;
     font-size: 14px; line-height: 1; padding: 0 4px; height: auto; box-shadow: none;
   }
-  .banner-close:hover { color: var(--text-primary); }
+  .banner-close:hover { color: var(--c-text); background: transparent; }
   .spinner {
     width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor;
     border-right-color: transparent; animation: banner-spin 0.9s linear infinite;
@@ -1019,149 +1081,182 @@
   @keyframes banner-spin { to { transform: rotate(360deg); } }
   .app-layout {
     display: flex; flex-direction: column; height: 100vh; width: 100vw;
-    overflow: hidden; background: var(--bg-primary); position: relative;
+    overflow: hidden; background: var(--c-surface-0); position: relative;
   }
 
   .drop-overlay {
     position: fixed; inset: 0; z-index: 1000;
-    background: rgba(0, 0, 0, 0.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    background: var(--c-scrim); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
     display: flex; align-items: center; justify-content: center; pointer-events: none;
-    animation: fade-in 150ms ease-out;
+    animation: fade-in var(--dur-fast) ease-out;
   }
   .drop-overlay-inner {
     display: flex; flex-direction: column; align-items: center; gap: 16px;
-    padding: 48px 64px; border: 2px dashed var(--accent-primary); border-radius: 20px;
-    color: var(--accent-primary); background: rgba(91, 108, 247, 0.06);
-    box-shadow: 0 0 80px rgba(91, 108, 247, 0.1);
+    padding: 48px 64px; border: 1px dashed var(--c-accent); border-radius: var(--radius-md);
+    color: var(--c-accent); background: rgba(var(--c-accent-rgb), 0.06);
+    box-shadow: var(--glow-accent);
   }
-  .drop-label { font-size: 18px; font-weight: 600; color: var(--accent-primary); }
+  .drop-label { font-size: var(--fs-lg); font-weight: 600; letter-spacing: var(--ls-label); text-transform: uppercase; color: var(--c-accent); }
 
+  /* ---- Top bar ---- */
   .toolbar {
     display: flex; align-items: center; justify-content: space-between;
-    height: var(--toolbar-height); padding: 0 var(--spacing-lg);
-    background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));
-    border-bottom: 1px solid var(--glass-border); flex-shrink: 0;
+    height: var(--toolbar-height); padding: 0 var(--space-3);
+    background: linear-gradient(180deg, var(--c-surface-2), var(--c-panel-solid));
+    border-bottom: 1px solid var(--c-border-strong); flex-shrink: 0;
     -webkit-app-region: drag; position: relative; z-index: 10;
   }
-  .toolbar-left, .toolbar-center, .toolbar-right {
-    display: flex; align-items: center; gap: var(--spacing-sm); -webkit-app-region: no-drag;
+  /* segmented hairline under the bar: accent ticks at the corners */
+  .toolbar::after {
+    content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; pointer-events: none;
+    background: linear-gradient(90deg, var(--c-accent) 0 56px, transparent 56px calc(100% - 56px), var(--c-accent) calc(100% - 56px));
+    opacity: 0.8;
   }
-  .toolbar-left { min-width: 260px; gap: var(--spacing-md); }
+  .toolbar-left, .toolbar-center, .toolbar-right {
+    display: flex; align-items: center; gap: var(--space-2); -webkit-app-region: no-drag;
+  }
+  .toolbar-left { min-width: 260px; gap: var(--space-3); }
   .toolbar-right { min-width: 160px; justify-content: flex-end; }
 
-  .app-title { white-space: nowrap; font-size: 15px; font-weight: 600; letter-spacing: -0.02em; user-select: none; }
-  .title-x { color: var(--accent-primary); font-weight: 700; text-shadow: 0 0 12px rgba(91, 108, 247, 0.4); }
-  .title-rest { color: var(--text-primary); }
-  .title-desktop { color: var(--text-muted); font-weight: 400; margin-left: 4px; font-size: 13px; }
+  .app-title { display: flex; align-items: center; gap: 9px; white-space: nowrap; user-select: none; }
+  .title-word { font-size: var(--fs-lg); font-weight: 600; letter-spacing: 0.22em; color: var(--c-text); }
+  .title-x { color: var(--c-accent); }
+  .title-desktop {
+    font-family: var(--font-mono); font-size: var(--fs-2xs); letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--c-muted); padding: 1px 5px; border: 1px solid var(--c-border); border-radius: var(--radius-xs);
+  }
 
   .cmd-trigger {
     display: flex; align-items: center; gap: 6px; padding: 4px 10px; height: 28px;
-    font-size: 12px; color: var(--text-muted); background: var(--field-bg);
-    border: 1px solid var(--glass-border); border-radius: var(--radius-md);
-    cursor: pointer; transition: all var(--transition-fast); min-width: 140px;
+    font-size: var(--fs-sm); color: var(--c-muted); background: var(--c-field);
+    border: 1px solid var(--c-border); border-radius: var(--radius-sm);
+    cursor: pointer; min-width: 140px;
   }
-  .cmd-trigger:hover { border-color: var(--border-light); color: var(--text-secondary); background: rgba(91, 108, 247, 0.06); }
-  .cmd-trigger-label { flex: 1; text-align: left; opacity: 0.5; font-size: 11px; }
-  .cmd-trigger :global(kbd) { font-size: 9px; padding: 1px 4px; opacity: 0.6; }
+  .cmd-trigger:hover { border-color: var(--c-accent); color: var(--c-text-dim); background: var(--c-field); }
+  .cmd-trigger-label { flex: 1; text-align: left; font-size: var(--fs-xs); }
+  .cmd-trigger :global(kbd) { font-size: 9px; padding: 0 4px; }
 
-  .toolbar-btn { display: inline-flex; align-items: center; gap: 6px; padding: var(--spacing-xs) var(--spacing-md); font-size: 12px; }
-  .toolbar-btn.icon-btn { padding: var(--spacing-xs) var(--spacing-sm); }
-  .toolbar-btn.active { background: var(--bg-active); border-color: rgba(91, 108, 247, 0.2); color: var(--accent-hover); box-shadow: 0 0 8px rgba(91, 108, 247, 0.08); }
+  .toolbar-btn { display: inline-flex; align-items: center; gap: 6px; padding: var(--space-1) var(--space-3); font-size: var(--fs-sm); height: 28px; }
+  .toolbar-btn.icon-btn { padding: var(--space-1) var(--space-2); }
+  .toolbar-btn.active { background: rgba(var(--c-accent-rgb), 0.14); border-color: rgba(var(--c-accent-rgb), 0.55); color: var(--c-accent); }
   .toolbar-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-  .toolbar-separator { width: 1px; height: 18px; background: var(--glass-border); margin: 0 var(--spacing-xs); }
+  .toolbar-separator { width: 1px; height: 18px; background: var(--c-border-strong); margin: 0 var(--space-1); opacity: 0.6; }
 
-  .anim-controls { display: flex; align-items: center; gap: var(--spacing-xs); }
-  .anim-controls.disabled { opacity: 0.35; }
-  .sweep-counter { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-secondary); min-width: 36px; text-align: center; user-select: none; }
-  .speed-group { display: flex; align-items: center; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); overflow: hidden; }
+  .anim-controls { display: flex; align-items: center; gap: var(--space-2); }
+  .anim-controls.disabled { opacity: 0.4; }
+  .sweep-counter {
+    display: inline-flex; align-items: baseline; gap: 6px; min-width: 70px; justify-content: center;
+    font-size: var(--fs-sm); color: var(--c-text); user-select: none;
+  }
+  .speed-group { display: flex; align-items: center; border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; background: var(--c-field); }
   .speed-btn {
-    background: transparent; border: none; border-right: 1px solid var(--glass-border);
-    color: var(--text-secondary); font-size: 10px; padding: 2px 7px; cursor: pointer;
-    transition: all var(--transition-fast); white-space: nowrap; border-radius: 0;
-    backdrop-filter: none; -webkit-backdrop-filter: none; height: auto;
+    background: transparent; border: none; border-right: 1px solid var(--c-border);
+    color: var(--c-text-dim); font-family: var(--font-mono); font-size: var(--fs-2xs); padding: 0 7px; cursor: pointer;
+    white-space: nowrap; border-radius: 0; height: 26px;
   }
   .speed-btn:last-child { border-right: none; }
-  .speed-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-primary); }
-  .speed-btn.active { background: var(--bg-active); color: var(--accent-hover); }
+  .speed-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--c-text); }
+  .speed-btn.active { background: rgba(var(--c-accent-rgb), 0.16); color: var(--c-accent); box-shadow: inset 0 -2px 0 var(--c-accent); }
   .speed-btn:disabled { cursor: not-allowed; }
 
-  .view-toggle { display: flex; border: 1px solid var(--glass-border); border-radius: var(--radius-sm); overflow: hidden; }
+  .view-toggle { display: flex; border: 1px solid var(--c-border); border-radius: var(--radius-sm); overflow: hidden; background: var(--c-field); }
   .view-btn {
-    background: transparent; border: none; border-right: 1px solid var(--glass-border);
-    color: var(--text-secondary); font-size: 11px; font-weight: 600; padding: 3px 10px;
-    cursor: pointer; transition: all var(--transition-fast); border-radius: 0;
-    backdrop-filter: none; -webkit-backdrop-filter: none; height: auto;
+    background: transparent; border: none; border-right: 1px solid var(--c-border);
+    color: var(--c-text-dim); font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 0 11px; cursor: pointer; border-radius: 0; height: 26px;
   }
   .view-btn:last-child { border-right: none; }
-  .view-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-  .view-btn.active { background: var(--accent-primary); color: #fff; box-shadow: 0 0 12px rgba(91, 108, 247, 0.25); }
+  .view-btn:hover { background: var(--bg-hover); color: var(--c-text); }
+  .view-btn.active { background: rgba(var(--c-accent-rgb), 0.16); color: var(--c-accent); box-shadow: inset 0 -2px 0 var(--c-accent); }
 
-  .connection-indicator { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-secondary); }
-  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; transition: background var(--transition-normal); animation: pulse-glow 2.5s ease-in-out infinite; }
-  .status-text { white-space: nowrap; }
+  .utc-clock { display: flex; align-items: baseline; gap: 7px; padding: 0 var(--space-2); user-select: none; white-space: nowrap; }
+  .clock-date { font-size: var(--fs-xs); color: var(--c-muted); }
+  .clock-time { font-size: var(--fs-md); font-weight: 500; color: var(--c-text); letter-spacing: 0.02em; }
+  .clock-z { color: var(--c-accent); margin-left: 2px; font-size: var(--fs-xs); }
 
+  .connection-indicator { display: flex; align-items: center; gap: 7px; padding-left: var(--space-1); }
+  .status-text { white-space: nowrap; color: var(--c-text-dim); }
+
+  /* ---- Body ---- */
   .main-content { display: flex; flex: 1; overflow: hidden; }
   .sidebar {
     flex-shrink: 0; overflow: hidden;
-    background: var(--glass-bg); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));
-    transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1), opacity 250ms ease;
+    background: var(--c-panel);
+    transition: width 300ms var(--ease-in-out), opacity 250ms ease;
   }
   .sidebar.collapsed { width: 0 !important; opacity: 0; pointer-events: none; }
-  .sidebar-left { border-right: 1px solid var(--glass-border); }
-  .sidebar-right { border-left: 1px solid var(--glass-border); }
-  .viewer-and-timeline { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-width: 0; }
+  .sidebar-left { border-right: 1px solid var(--c-border); }
+  .sidebar-right { border-left: 1px solid var(--c-border); }
+  .viewer-and-timeline { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-width: 0; background: var(--c-surface-0); }
   .viewer-area { flex: 1; overflow: hidden; min-width: 0; }
-  .right-panel-stack { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
 
+  /* ---- Status bar ---- */
   .statusbar {
     display: flex; align-items: center; justify-content: space-between;
-    height: var(--statusbar-height); padding: 0 var(--spacing-lg);
-    background: var(--glass-bg-heavy); backdrop-filter: blur(var(--glass-blur)); -webkit-backdrop-filter: blur(var(--glass-blur));
-    border-top: 1px solid var(--glass-border); font-size: 11px; color: var(--text-muted);
-    flex-shrink: 0; gap: var(--spacing-lg); position: relative; overflow: hidden;
+    height: var(--statusbar-height); padding: 0 var(--space-3);
+    background: var(--c-panel-solid);
+    border-top: 1px solid var(--c-border-strong); font-size: var(--fs-xs); color: var(--c-muted);
+    flex-shrink: 0; gap: var(--space-4); position: relative; overflow: hidden;
   }
-  .statusbar-progress { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: rgba(91, 108, 247, 0.06); z-index: 1; }
-  .statusbar-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent-primary), var(--accent-hover)); transition: width var(--transition-normal); box-shadow: 0 0 8px var(--accent-primary), 0 0 20px rgba(91, 108, 247, 0.2); }
-  .progress-text { color: var(--accent-hover); font-size: 10px; animation: subtle-breathe 2s ease-in-out infinite; }
-  .statusbar-left, .statusbar-center, .statusbar-right { display: flex; align-items: center; gap: 6px; }
-  .statusbar-left { min-width: 120px; }
+  .statusbar-progress { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: rgba(var(--c-accent-rgb), 0.1); z-index: 1; }
+  .statusbar-progress-fill { height: 100%; background: linear-gradient(90deg, var(--c-accent), var(--c-accent-strong)); transition: width var(--dur-base) var(--ease-in-out); box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.6); }
+  .progress-text { color: var(--c-accent); font-family: var(--font-mono); font-size: var(--fs-2xs); }
+  .statusbar-left, .statusbar-center, .statusbar-right { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .statusbar-left { min-width: 140px; }
   .statusbar-center { flex: 1; justify-content: center; min-width: 0; overflow: hidden; }
-  @media (max-width: 900px) { .statusbar-right { display: none; } }
   .statusbar-right { min-width: 100px; justify-content: flex-end; }
-  .statusbar-divider { color: var(--glass-border); margin: 0 4px; }
-  .status-dot-sm { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; transition: background var(--transition-normal); }
-  .status-dot-sm.pulse { animation: pulse-glow 2.5s ease-in-out infinite; }
-  .file-path { font-size: 11px; color: var(--text-secondary); max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .statusbar-divider { color: var(--c-border-strong); margin: 0 3px; }
+  .sb-key { font-size: 9.5px; }
+  .sb-val { font-size: var(--fs-xs); color: var(--c-text-dim); margin-right: 2px; }
+  .sb-val.ok { color: var(--c-nominal); }
+  .sb-dim { color: var(--c-muted); }
+  .file-path { font-size: var(--fs-xs); color: var(--c-text); max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* Narrow windows: drop the secondary toolbar labels first, then let the sidebars shrink so the
      viewer keeps a usable width (sidebar px widths are a preference, not a minimum). */
-  @media (max-width: 1250px) {
-    .title-desktop, .cmd-trigger-label, .cmd-trigger :global(kbd), .status-text { display: none; }
+  @media (max-width: 1700px) {
+    .clock-date, .title-desktop { display: none; }
+  }
+  @media (max-width: 1500px) {
+    .cmd-trigger-label { display: none; }
     .cmd-trigger { min-width: 0; padding: 4px 8px; }
-    .toolbar { padding: 0 var(--spacing-sm); }
+    .toolbar-left { min-width: 0; }
+    .toolbar-right { min-width: 0; }
+  }
+  @media (max-width: 1250px) {
+    .title-word, .title-desktop, .cmd-trigger-label, .cmd-trigger :global(kbd), .status-text, .utc-clock .hud-label { display: none; }
+    .toolbar :global(.ws-name) { display: none; }
+    .toolbar-center { flex: 1 1 auto; min-width: 0; justify-content: center; overflow: hidden; }
+    .cmd-trigger { min-width: 0; padding: 4px 8px; }
+    .toolbar { padding: 0 var(--space-2); }
     .toolbar-left { min-width: 0; }
     .toolbar-right { min-width: 0; }
     .sidebar { max-width: 28vw; }
+    .hint-part { display: none; }
+  }
+  @media (max-width: 1180px) {
+    .speed-group { display: none; }
   }
   @media (max-width: 1000px) {
-    .speed-group, .toolbar-separator { display: none; }
-    .toolbar-btn { padding-left: var(--spacing-sm); padding-right: var(--spacing-sm); }
+    .toolbar-separator { display: none; }
+    .toolbar-btn { padding-left: var(--space-2); padding-right: var(--space-2); }
     .sidebar { max-width: 25vw; }
+    .statusbar-right { display: none; }
   }
 
   /* Resize handles */
   .resize-handle {
     width: 4px; cursor: col-resize; flex-shrink: 0; position: relative; z-index: 5;
-    background: transparent; transition: background var(--transition-fast);
+    background: transparent; transition: background var(--dur-fast);
   }
   .resize-handle:hover, .resize-handle:active {
-    background: var(--accent-primary);
-    box-shadow: 0 0 8px rgba(91, 108, 247, 0.3);
+    background: var(--c-accent);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.4);
   }
   .resize-handle::after {
     content: ''; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    width: 2px; height: 24px; border-radius: 1px; background: var(--text-muted); opacity: 0;
-    transition: opacity var(--transition-fast);
+    width: 2px; height: 24px; background: var(--c-muted); opacity: 0;
+    transition: opacity var(--dur-fast);
   }
   .resize-handle:hover::after { opacity: 0.5; }
 </style>

@@ -619,8 +619,8 @@
   }
 
   .algo-btn:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.06);
-    border-color: var(--border-color, rgba(255, 255, 255, 0.08));
+    background: rgba(var(--c-accent-rgb), 0.06);
+    border-color: var(--border-color, rgba(var(--c-line-rgb), 0.08));
     color: var(--text-primary);
   }
 
@@ -656,8 +656,8 @@
   }
 
   .pipeline-step {
-    background: var(--bg-secondary, rgba(255, 255, 255, 0.03));
-    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.06));
+    background: var(--bg-secondary, rgba(var(--c-line-rgb), 0.03));
+    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.06));
     border-radius: var(--radius-sm, 4px);
     transition: all var(--transition-fast, 150ms);
     cursor: grab;
@@ -665,12 +665,12 @@
 
   .pipeline-step.dragging {
     opacity: 0.4;
-    border-color: var(--accent-primary, #5b6cf7);
+    border-color: var(--accent-primary, var(--c-accent));
   }
 
   .pipeline-step.drop-target {
-    border-color: var(--accent-primary, #5b6cf7);
-    box-shadow: 0 0 8px rgba(91, 108, 247, 0.15);
+    border-color: var(--accent-primary, var(--c-accent));
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.15);
   }
 
   .step-header {
@@ -716,7 +716,7 @@
   }
 
   .step-name-btn:hover {
-    color: var(--accent-primary, #5b6cf7);
+    color: var(--accent-primary, var(--c-accent));
   }
 
   .step-remove-btn {
@@ -745,7 +745,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    border-top: 1px solid var(--border-color, rgba(255, 255, 255, 0.04));
+    border-top: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.04));
   }
 
   .param-row {
@@ -798,7 +798,7 @@
 
   .step-move-btn:hover:not(:disabled) {
     color: var(--text-primary);
-    background: rgba(91, 108, 247, 0.12);
+    background: rgba(var(--c-accent-rgb), 0.12);
   }
 
   .step-move-btn:disabled {
@@ -835,7 +835,7 @@
     padding: 0 4px;
     height: auto;
     font-size: inherit;
-    color: var(--accent-primary, #5b6cf7);
+    color: var(--accent-primary, var(--c-accent));
     background: transparent;
     border: none;
     text-decoration: underline;
@@ -872,9 +872,9 @@
   }
 
   .action-btn-sm.active {
-    background: var(--bg-active, rgba(91, 108, 247, 0.15));
-    border-color: rgba(91, 108, 247, 0.3);
-    color: var(--accent-primary, #5b6cf7);
+    background: var(--bg-active, rgba(var(--c-accent-rgb), 0.15));
+    border-color: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--accent-primary, var(--c-accent));
   }
 
   .spinner {
@@ -882,7 +882,7 @@
     width: 12px;
     height: 12px;
     border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
+    border-top-color: var(--c-on-accent);
     border-radius: 50%;
     animation: spin 600ms linear infinite;
   }
@@ -913,14 +913,14 @@
 
   .progress-bar {
     height: 3px;
-    background: var(--bg-secondary, rgba(255, 255, 255, 0.05));
+    background: var(--bg-secondary, rgba(var(--c-line-rgb), 0.05));
     border-radius: 2px;
     overflow: hidden;
   }
 
   .progress-bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--accent-primary, #5b6cf7), var(--accent-hover, #7b8cff));
+    background: linear-gradient(90deg, var(--accent-primary, var(--c-accent)), var(--accent-hover, #7b8cff));
     transition: width 300ms ease;
     border-radius: 2px;
   }
@@ -1010,8 +1010,8 @@
   }
 
   .preset-load-btn:hover {
-    background: rgba(91, 108, 247, 0.06);
-    border-color: var(--border-color, rgba(255, 255, 255, 0.08));
+    background: rgba(var(--c-accent-rgb), 0.06);
+    border-color: var(--border-color, rgba(var(--c-line-rgb), 0.08));
     color: var(--text-primary);
   }
 

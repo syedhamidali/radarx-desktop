@@ -239,7 +239,7 @@
   }
 
   .geo-overlay {
-    --halo: rgba(8, 10, 20, 0.8);
+    --halo: rgba(var(--c-surface-0-rgb), 0.8);
   }
   :global(.theme-light) .geo-overlay {
     --halo: rgba(255, 255, 255, 0.88);
@@ -259,20 +259,20 @@
 
   /* Radar site */
   .radar-crosshair {
-    stroke: var(--accent-primary, #5b6cf7);
+    stroke: var(--accent-primary, var(--c-accent));
     stroke-width: 2;
     stroke-opacity: 0.9;
   }
 
   .radar-dot {
-    fill: var(--accent-primary, #5b6cf7);
+    fill: var(--accent-primary, var(--c-accent));
     fill-opacity: 0.9;
     stroke: var(--text-primary, #e4e6f4);
     stroke-width: 1;
   }
 
   .radar-label {
-    fill: var(--accent-primary, #5b6cf7);
+    fill: var(--accent-primary, var(--c-accent));
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     font-weight: 700;
@@ -309,7 +309,7 @@
   .city-dot {
     fill: var(--text-secondary, #9da2c2);
     fill-opacity: 0.8;
-    stroke: rgba(8, 10, 20, 0.6);
+    stroke: rgba(var(--c-surface-0-rgb), 0.6);
     stroke-width: 1;
   }
 

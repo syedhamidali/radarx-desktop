@@ -214,7 +214,7 @@
     right: 8px;
     width: 200px;
     background: rgba(10, 10, 20, 0.92);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(var(--c-line-rgb), 0.1);
     border-radius: 6px;
     padding: 8px 10px;
     font-family: var(--font-mono, monospace);
@@ -273,7 +273,7 @@
 
   .perf-divider {
     height: 1px;
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(var(--c-line-rgb), 0.08);
     margin: 4px 0;
   }
 

@@ -135,7 +135,7 @@
   .tooltip-kbd {
     font-size: 10px;
     padding: 1px 5px;
-    background: rgba(8, 10, 20, 0.6);
+    background: rgba(var(--c-surface-0-rgb), 0.6);
     border: 1px solid var(--glass-border);
     border-radius: 3px;
     color: var(--text-accent);

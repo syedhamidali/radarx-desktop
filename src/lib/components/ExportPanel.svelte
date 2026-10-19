@@ -623,7 +623,7 @@
   .fmt-btn:hover:not(:disabled) {
     background: var(--accent-primary);
     border-color: var(--accent-primary);
-    color: #fff;
+    color: var(--c-on-accent);
   }
 
   .fmt-btn:disabled {

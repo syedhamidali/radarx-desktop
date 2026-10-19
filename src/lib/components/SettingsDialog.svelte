@@ -176,8 +176,8 @@
   }
 
   const accentPresets = [
-    '#5b6cf7', '#3b82f6', '#06b6d4', '#10b981',
-    '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899',
+    '#2bd9f5', '#3b82f6', '#8b5cf6', '#ec4899',
+    '#ef4444', '#f59e0b', '#a3e635', '#10b981',
   ];
 </script>
 
@@ -226,15 +226,15 @@
                   <button
                     class:active={s.theme.mode === 'dark'}
                     on:click={() => setThemeMode('dark')}
-                  >Dark</button>
+                   title="Mission control: dark, low glare for long sessions">Mission control</button>
                   <button
                     class:active={s.theme.mode === 'light'}
                     on:click={() => setThemeMode('light')}
-                  >Light</button>
+                   title="Clean room: light, for print, projectors and bright rooms">Clean room</button>
                   <button
                     class:active={s.theme.mode === 'auto'}
                     on:click={() => setThemeMode('auto')}
-                  >Auto</button>
+                   title="Follow the operating system setting">System</button>
                 </div>
               </div>
 
@@ -572,7 +572,7 @@
     position: fixed;
     inset: 0;
     z-index: 900;
-    background: rgba(0, 0, 0, 0.6);
+    background: var(--c-scrim);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -583,13 +583,24 @@
     width: 640px;
     max-width: 90vw;
     max-height: 80vh;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-lg);
+    position: relative;
+    background: var(--c-overlay);
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-3);
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+  .settings-dialog::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 64px;
+    height: 2px;
+    background: var(--c-accent);
+    box-shadow: 0 0 10px rgba(var(--c-accent-rgb), 0.7);
   }
 
   .settings-header {
@@ -601,8 +612,10 @@
   }
 
   .settings-header h2 {
-    font-size: 15px;
+    font-size: var(--fs-md);
     font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: var(--ls-wide);
     color: var(--text-primary);
     margin: 0;
   }
@@ -683,8 +696,8 @@
     font-size: 12px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-secondary);
+    letter-spacing: var(--ls-label);
+    color: var(--c-accent);
     margin-bottom: var(--spacing-md);
   }
 
@@ -775,7 +788,7 @@
 
   .btn-group button.active {
     background: var(--accent-primary);
-    color: #fff;
+    color: var(--c-on-accent);
   }
 
   /* ─── Color controls ─── */
@@ -977,7 +990,7 @@
   .recording-badge {
     font-size: 11px;
     color: var(--accent-warning);
-    background: rgba(230, 162, 60, 0.15);
+    background: rgba(var(--c-caution-rgb), 0.15);
     padding: 2px 8px;
     border-radius: var(--radius-sm);
     animation: pulse 1s ease-in-out infinite alternate;
@@ -989,7 +1002,7 @@
   }
 
   .conflict-warning {
-    background: rgba(230, 92, 92, 0.15);
+    background: rgba(var(--c-alarm-rgb), 0.15);
     color: var(--accent-danger);
     font-size: 11px;
     padding: var(--spacing-xs) var(--spacing-sm);
@@ -1026,7 +1039,7 @@
   .reset-btn:hover {
     color: var(--accent-danger);
     border-color: var(--accent-danger);
-    background: rgba(230, 92, 92, 0.1);
+    background: rgba(var(--c-alarm-rgb), 0.1);
   }
 
   .reset-btn.small {

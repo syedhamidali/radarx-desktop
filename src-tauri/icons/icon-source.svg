@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+  <!-- xradar app icon: the radar-scope mark (see public/logo.svg) on a space-navy tile.
+       Source for `npx tauri icon`; regenerate the PNG/ICNS/ICO from this file. -->
+  <defs>
+    <linearGradient id="tile" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#0f2140"/>
+      <stop offset="1" stop-color="#030812"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="512" cy="512" r="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2bd9f5" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#2bd9f5" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wedge" x1="52" y1="15" x2="22" y2="7" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2bd9f5" stop-opacity="0.9"/>
+      <stop offset="1" stop-color="#2bd9f5" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.1"/>
+    </filter>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="212" fill="url(#tile)"/>
+  <rect x="48" y="48" width="928" height="928" rx="212" fill="url(#halo)"/>
+  <rect x="49.5" y="49.5" width="925" height="925" rx="210.5" stroke="#5ec8eb" stroke-opacity="0.28" stroke-width="3"/>
+  <!-- glyph: 64-unit design space scaled to 640 px, centred -->
+  <g transform="translate(192 192) scale(10)">
+    <g filter="url(#glow)" opacity="0.8">
+      <circle cx="32" cy="32" r="27" stroke="#2bd9f5" stroke-width="2.5"/>
+      <path d="M32 32 L52.7 14.6" stroke="#2bd9f5" stroke-width="2.5" stroke-linecap="round"/>
+    </g>
+    <circle cx="32" cy="32" r="27" stroke="#2bd9f5" stroke-width="2.5"/>
+    <circle cx="32" cy="32" r="16" stroke="#2bd9f5" stroke-width="1.5" opacity="0.5"/>
+    <path d="M32 3v6M32 55v6M3 32h6M55 32h6" stroke="#2bd9f5" stroke-width="2" stroke-linecap="round"/>
+    <path d="M32 32 L22.8 6.6 A27 27 0 0 1 52.7 14.6 Z" fill="url(#wedge)"/>
+    <path d="M32 32 L52.7 14.6" stroke="#86ecfd" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="44" cy="21" r="3" fill="#86ecfd"/>
+    <circle cx="24" cy="42" r="2.4" fill="#b8a4ff"/>
+    <circle cx="32" cy="32" r="2.6" fill="#86ecfd"/>
+  </g>
+</svg>
