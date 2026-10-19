@@ -119,7 +119,11 @@ class TestExporterFailures:
         import matplotlib.figure
 
         monkeypatch.setattr(matplotlib.figure.Figure, "savefig", disk_full)
-        monkeypatch.setattr(pd.DataFrame, "to_csv", lambda self, target, **k: disk_full(0, target))
+        monkeypatch.setattr(
+            pd.DataFrame,
+            "to_csv",
+            lambda self, target, **k: disk_full(0, getattr(target, "name", target)),
+        )
         with pytest.raises(OSError) as exc:
             RadarExporter().export(
                 tree, fmt=fmt, output_path=str(dest), variable="DBZH", sweep=0, dpi=72
@@ -131,13 +135,13 @@ class TestExporterFailures:
     def test_netcdf_failure_leaves_nothing(
         self, tree: xr.DataTree, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        import xradar.io.export.cfradial1 as cf1
+        from engine import cfwrite
 
-        def broken(*, dtree, filename):
-            Path(filename).write_bytes(b"partial")
+        def broken(dtree, path, **_kw):
+            Path(path).write_bytes(b"partial")
             raise OSError(errno.ENOSPC, "No space left on device")
 
-        monkeypatch.setattr(cf1, "to_cfradial1", broken)
+        monkeypatch.setattr(cfwrite, "write_cfradial1", broken)
         with pytest.raises(OSError):
             RadarExporter().export(
                 tree, fmt="netcdf", output_path=str(tmp_path / "x.nc"), variable="DBZH", sweep=0
@@ -295,8 +299,9 @@ class TestExportMessages:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         def disk_full(self, target, **k):
-            Path(target).write_text("partial")
-            raise OSError(errno.ENOSPC, "No space left on device", str(target))
+            name = getattr(target, "name", target)  # an open file once the metadata block is out
+            Path(name).write_text("partial")
+            raise OSError(errno.ENOSPC, "No space left on device", str(name))
 
         monkeypatch.setattr(pd.DataFrame, "to_csv", disk_full)
         server._register_reader(_reader_with_tree())

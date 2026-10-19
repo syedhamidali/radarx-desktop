@@ -236,6 +236,8 @@ fn spawn_sidecar(port: u16, token: &str) -> Result<Child, SpawnError> {
         .arg("--port")
         .arg(port.to_string())
         .env("XRADAR_SESSION_TOKEN", token)
+        // the packaged engine has no package.json: it stamps this version into every file it writes
+        .env("XRADAR_DESKTOP_VERSION", env!("CARGO_PKG_VERSION"))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
     #[cfg(windows)]

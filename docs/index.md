@@ -39,6 +39,7 @@ usage
 opening-data
 viewing
 using-modules
+RHI
 export
 settings
 ```
@@ -62,6 +63,7 @@ MODULES
 CELLS
 MOSAIC
 MULTIDOPPLER
+OUTPUT_STANDARDS
 ```
 
 ```{toctree}

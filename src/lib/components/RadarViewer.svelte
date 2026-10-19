@@ -29,6 +29,8 @@
   import { windLayer } from '../stores/wind';
   import { dataSpaceToLatLon, latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
   import type { SweepInfo } from '../stores/radarData';
+  import RhiViewer from './RhiViewer.svelte';
+  import { sweepLabel } from '../utils/rhiGeometry';
 
   // ── State ──────────────────────────────────────────────────────────────────
   let isLoading = $state(false);
@@ -88,6 +90,8 @@
   let probeX = $state(0);
   let probeY = $state(0);
   let currentEntry: SweepDataEntry | null = $state(null);
+  /** Range-height sweep on screen (shown by RhiViewer instead of the map PPI). */
+  let rhiEntry: SweepDataEntry | null = $state.raw(null);
 
   // WebGL renderer
   let ppi: PPIRenderer | null = $state(null);
@@ -121,6 +125,9 @@
   const sweeps = $derived($radarData.sweeps);
   const variable = $derived($selectedVariable);
   const sweep = $derived($selectedSweep);
+  /** The selected sweep is an RHI (range-height scan): RhiViewer replaces the map view. */
+  const sweepMeta = $derived(sweeps.find((sw) => sw.index === sweep));
+  const isRhi = $derived(sweepMeta?.kind === 'rhi');
   const hasData = $derived($radarData.filePath !== null || $radarData.variables.length > 0);
   const isConnected = $derived($connectionStatus === 'connected');
   const zoomLabel = $derived(Math.round(scale * 100) + '%');
@@ -356,7 +363,24 @@
     return true;
   }
 
+  /** An RHI sweep goes to RhiViewer; the PPI renderer never sees it (its rays share one azimuth). */
+  function showRhi(entry: SweepDataEntry) {
+    rhiEntry = entry;
+    currentMaxRange = entry.maxRange;
+    currentUnits = entry.units;
+    if (!getDefaultRange(entry.variable)) {
+      currentVmin = entry.vmin;
+      currentVmax = entry.vmax;
+    }
+    isLoading = false;
+  }
+
   async function renderSweepData(entry: SweepDataEntry, field: DisplayedField | null = null) {
+    if (entry.kind === 'rhi') {
+      showRhi(entry);
+      return;
+    }
+    rhiEntry = null;
     // Wait for Svelte to flush DOM updates (canvas may not exist yet if hasData just became true)
     await tick();
 
@@ -697,7 +721,7 @@
         <select id="sweep-select" value={sweep} on:change={onSweepChange}
                 disabled={!isConnected} title={!isConnected ? 'Not connected' : 'Select sweep'}>
           {#each sweeps as s}
-            <option value={s.index}>Sweep {s.index} ({s.elevation != null ? s.elevation.toFixed(1) : '?'}°)</option>
+            <option value={s.index}>{sweepLabel(s)}</option>
           {/each}
           {#if sweeps.length === 0}
             <option value={0}>Sweep 0</option>
@@ -708,13 +732,15 @@
       {#if variable}
         <div class="control-info">
           <span class="active-var" title={variable}>{variableLabel}</span>
-          {#if sweeps[sweep]}
+          {#if isRhi && sweepMeta}
+            <span class="active-sweep">RHI {sweepMeta.azimuth?.toFixed(1) ?? '?'}°</span>
+          {:else if sweeps[sweep]}
             <span class="active-sweep">{sweeps[sweep]?.elevation?.toFixed(1) ?? '?'}°</span>
           {/if}
         </div>
       {/if}
 
-      {#if hasRendered}
+      {#if hasRendered && !isRhi}
         <div class="control-group map-controls">
           <label class="toggle-label" title="Toggle map background">
             <input type="checkbox" bind:checked={showMap} />
@@ -773,6 +799,7 @@
 
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
     <div class="viewer-canvas" class:dragging={isDragging} class:measure-active={measureActive}
+         style:display={isRhi ? 'none' : null}
          bind:this={canvasEl}
          on:wheel={onWheel} on:mousedown={onMouseDown} on:mousemove={onMouseMove}
          on:mouseup={onMouseUp} on:mouseleave={onMouseLeave} on:mouseenter={onMouseEnter}
@@ -980,6 +1007,25 @@
         </div>
       {/if}
     </div>
+
+    {#if isRhi}
+      <RhiViewer
+        entry={rhiEntry && rhiEntry.sweep === sweep && rhiEntry.variable === variable ? rhiEntry : null}
+        altitudeM={sweepMeta?.altitude ?? null}
+        variableLabel={variableLabel}
+        variable={variable ?? ""}
+        variables={sweepMeta?.variables ?? variables}
+        cmap={currentCmap}
+        vmin={currentVmin}
+        vmax={currentVmax}
+        units={currentUnits}
+        loading={isLoading}
+        error={loadError && !isLoading ? `Couldn't load ${loadError.variable} sweep ${loadError.sweep}: ${loadError.message}` : null}
+        onCmapChange={handleCmapChange}
+        onRangeChange={handleRangeChange}
+        onRetry={retryLoad}
+      />
+    {/if}
   {:else}
     <div class="viewer-empty">
       <div class="empty-icon">

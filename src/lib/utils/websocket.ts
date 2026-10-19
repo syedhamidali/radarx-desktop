@@ -414,7 +414,9 @@ class WebSocketManager {
         : (typeof header.n_az === 'number' && typeof header.n_range === 'number')
           ? header.n_az * header.n_range * 4
           : -1;
-      if (valBytes >= 0) expectedBytes = header.azimuth_bytes + header.range_bytes + valBytes;
+      // An RHI sweep appends its per-ray elevation array after the values.
+      const elBytes = typeof header.elevation_bytes === 'number' ? header.elevation_bytes : 0;
+      if (valBytes >= 0) expectedBytes = header.azimuth_bytes + header.range_bytes + valBytes + elBytes;
     } else if (typeof header.byte_length === 'number') {
       expectedBytes = header.byte_length;
     } else if (typeof header.png_bytes === 'number') {
@@ -856,11 +858,14 @@ class WebSocketManager {
     const isQc = msgType === 'qc_result';
     const key = `${header.variable}:${header.sweep}`;
 
-    const nValues = Math.floor((buffer.byteLength - azBytes - rngBytes) / 4);
+    // RHI sweeps carry a trailing per-ray elevation array (see engine _pack_field).
+    const elBytes = typeof header.elevation_bytes === 'number' && header.elevation_bytes > 0 ? header.elevation_bytes : 0;
+    const nValues = Math.floor((buffer.byteLength - azBytes - rngBytes - elBytes) / 4);
     if (
-      !Number.isInteger(azBytes) || !Number.isInteger(rngBytes) ||
-      azBytes < 0 || rngBytes < 0 || azBytes % 4 !== 0 || rngBytes % 4 !== 0 ||
-      nValues < 0 || nValues < header.n_az * header.n_range
+      !Number.isInteger(azBytes) || !Number.isInteger(rngBytes) || !Number.isInteger(elBytes) ||
+      azBytes < 0 || rngBytes < 0 || azBytes % 4 !== 0 || rngBytes % 4 !== 0 || elBytes % 4 !== 0 ||
+      nValues < 0 || nValues < header.n_az * header.n_range ||
+      (elBytes > 0 && elBytes / 4 !== header.n_az)
     ) {
       console.error(
         `[WS] Malformed '${msgType}' payload for ${key}: ${buffer.byteLength} bytes, ` +
@@ -883,6 +888,11 @@ class WebSocketManager {
       vmax: header.vmax,
       units: header.units,
     };
+    if (elBytes > 0 && header.sweep_kind === 'rhi') {
+      entry.kind = 'rhi';
+      entry.elevation = new Float32Array(buffer, buffer.byteLength - elBytes, elBytes / 4);
+      if (typeof header.rhi_azimuth === 'number') entry.rhiAzimuth = header.rhi_azimuth;
+    }
     if (header.derived === true) {
       // A derived variable (plugin module output) carries its own presentation. The registry normally
       // knows it already (derived_variables); register from the header when it does not, so the sweep

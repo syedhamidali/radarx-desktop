@@ -87,13 +87,43 @@ def _smooth(a: np.ndarray, sigma: float) -> np.ndarray:
     return np.where(ok & (den > 0.3), out, np.nan)
 
 
+def _char_labels(da: xr.DataArray) -> list[str]:
+    """Labels of a character-array coordinate (one row of characters per entry) or a text array."""
+    v = da.values
+    if v.dtype.kind in "US" and v.ndim == 2:
+        return [
+            "".join(c.decode() if isinstance(c, bytes) else str(c) for c in row).strip("\x00 ")
+            for row in v
+        ]
+    return [x.decode().strip("\x00 ") if isinstance(x, bytes) else str(x) for x in np.atleast_1d(v)]
+
+
 def _radar_xy(ds: xr.Dataset) -> list[tuple[str, float, float]]:
-    lat = np.atleast_1d(ds.attrs.get("radar_latitude", []))
-    lon = np.atleast_1d(ds.attrs.get("radar_longitude", []))
-    names = list(np.atleast_1d(ds.attrs.get("radar_names", [])))
+    """Radar sites as ``(name, x_km, y_km)``.
+
+    Read from the file's attributes (older files) or from the CF variables ``radar_latitude`` /
+    ``radar_longitude`` / ``radar_name`` and the ``crs`` origin.
+    """
+    if "radar_latitude" in ds.attrs:
+        lat = np.atleast_1d(ds.attrs["radar_latitude"])
+        lon = np.atleast_1d(ds.attrs.get("radar_longitude", []))
+        names = [str(n) for n in np.atleast_1d(ds.attrs.get("radar_names", []))]
+    elif "radar_latitude" in ds.variables and "radar_longitude" in ds.variables:
+        lat = np.atleast_1d(ds["radar_latitude"].values)
+        lon = np.atleast_1d(ds["radar_longitude"].values)
+        names = _char_labels(ds["radar_name"]) if "radar_name" in ds.variables else []
+    else:
+        return []
     if not lat.size or lat.size != lon.size:
         return []
-    proj = mdop._aeqd(float(ds.attrs["origin_latitude"]), float(ds.attrs["origin_longitude"]))
+    if "origin_latitude" in ds.attrs:
+        lat0, lon0 = float(ds.attrs["origin_latitude"]), float(ds.attrs["origin_longitude"])
+    elif "crs" in ds.variables and "latitude_of_projection_origin" in ds["crs"].attrs:
+        lat0 = float(ds["crs"].attrs["latitude_of_projection_origin"])
+        lon0 = float(ds["crs"].attrs["longitude_of_projection_origin"])
+    else:
+        return []
+    proj = mdop._aeqd(lat0, lon0)
     out = []
     for i, (la, lo) in enumerate(zip(lat, lon, strict=True)):
         x, y = proj(float(lo), float(la))

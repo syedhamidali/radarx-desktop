@@ -22,6 +22,11 @@ KTLX = Path.home() / "Downloads/Others/XRADAR_EXAMPLES/KTLX20130520_201643_V06.g
 MAYFIELD = Path("/Users/syed44/Downloads/SEVERE_CASES_TEST/mayfield")
 
 
+def _csv_header(path: Path) -> str:
+    """The column header line: exported CSV files start with a ``# `` metadata block."""
+    return next(ln for ln in path.read_text().splitlines() if not ln.startswith("#"))
+
+
 def _mayfield(radar: str) -> Path:
     files = sorted((MAYFIELD / radar).glob("*_V06")) if MAYFIELD.is_dir() else []
     if not files:
@@ -414,7 +419,7 @@ def test_plot_masks_no_echo_codes() -> None:
 
 def test_export_formats(vol: api.Volume, tmp_path: Path) -> None:
     csv = vol.export("csv", tmp_path / "a" / "dbz.csv", variable="reflectivity", sweep=1)
-    assert csv.read_text().splitlines()[0] == "azimuth_deg,range_m,DBZH"
+    assert _csv_header(csv) == "azimuth_deg,range_m,DBZH"
     png = vol.export(out=tmp_path / "x.png", variable="DBZH")
     assert png.stat().st_size > 1000
     zarr = vol.export(out=tmp_path / "v.zarr")
@@ -445,7 +450,7 @@ def test_export_zarr_with_derived(vol: api.Volume, tmp_path: Path) -> None:
     tree = xr.open_datatree(out, engine="zarr")
     assert derived.export_name(res.name) in tree["sweep_0"].to_dataset()
     csv = vol.export("csv", tmp_path / "d.csv", variable=res.name, sweep=0)
-    assert derived.export_name(res.name) in csv.read_text().splitlines()[0]
+    assert derived.export_name(res.name) in _csv_header(csv)
 
 
 def test_export_default_names_in_current_directory(

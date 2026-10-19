@@ -63,7 +63,8 @@ class TestExporterMasking:
             _coded_tree(), "csv", output_path=str(tmp_path / "o.csv"), variable="DBZH", sweep=0
         )
         with open(out) as fh:
-            vals = [float(r["DBZH"]) for r in csv.DictReader(fh)]
+            rows = (line for line in fh if not line.startswith("#"))  # metadata block
+            vals = [float(r["DBZH"]) for r in csv.DictReader(rows)]
         assert vals
         assert min(vals) > -33.0 + 1e-6
         assert len(vals) == 90 * 40  # only the real-echo gates
@@ -79,7 +80,8 @@ class TestExporterMasking:
             sweep=0,
         )
         with open(out) as fh:
-            assert len(list(csv.DictReader(fh))) == 100
+            rows = (line for line in fh if not line.startswith("#"))
+            assert len(list(csv.DictReader(rows))) == 100
 
 
 @pytest.mark.skipif(not KTLX.exists(), reason="KTLX sample not available")
@@ -136,6 +138,6 @@ class TestExporterMaskingRealFile:
             variable="DBZH",
             sweep=0,
         )
-        df = pd.read_csv(out)
+        df = pd.read_csv(out, comment="#")
         assert len(df) > 1000
         assert df["DBZH"].min() > -32.9

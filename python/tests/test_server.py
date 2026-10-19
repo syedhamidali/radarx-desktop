@@ -1059,7 +1059,7 @@ class TestMosaic:
         assert handler._sent[-1] == {"type": "file_saved", "path": str(nc)}
         with xr.open_dataset(nc) as ds:
             assert "DBZH_cappi" in ds and ds["DBZH_cappi"].attrs["units"] == "dBZ"
-            assert ds.sizes["lon"] == created["grid"]["nx"]
+            assert ds.sizes["x"] == created["grid"]["nx"]
         assert not list(tmp_path.glob(".*.tmp"))
         # existing file: refused until overwrite=true
         await handler.handle_message(
