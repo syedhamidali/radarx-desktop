@@ -77,18 +77,24 @@ jobs:
   publish:
     name: publish notebook outputs
     needs: [build]
-    # nothing to publish until notebooks exist; enabled by setting the repository variable
-    # DOCS_PUBLISH_CACHE to "true" (then docs-cache is force-pushed as an orphan branch)
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.DOCS_PUBLISH_CACHE == 'true'
+    # runs on main only; the steps do nothing until notebooks exist in docs/notebooks
+    # (then docs-cache is force-pushed as an orphan branch)
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Notebooks present?
+        id: nb
+        run: |
+          if ls docs/notebooks/*.md >/dev/null 2>&1; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/download-artifact@v4
+        if: steps.nb.outputs.present == 'true'
         with:
           name: jupyter-cache
       - name: Publish on the docs-cache branch
+        if: steps.nb.outputs.present == 'true'
         run: |
           mkdir cache && tar -xzf jupyter_cache.tar.gz -C cache
           cd cache
