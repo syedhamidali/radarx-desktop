@@ -1,5 +1,10 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { readFileSync } from "node:fs";
+
+// The app version shown in the UI comes from package.json (kept in step with tauri.conf.json and
+// Cargo.toml by the release bump), so it cannot go stale.
+const appVersion: string = JSON.parse(readFileSync("./package.json", "utf-8")).version;
 
 /**
  * Web build only (`vite build --mode web`): the desktop app gets its CSP from tauri.conf.json, a
@@ -50,6 +55,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   return {
     plugins: [svelte(), ...(mode === "web" ? [webCsp(env.VITE_ENGINE_URL)] : [])],
+    define: { __APP_VERSION__: JSON.stringify(appVersion) },
     clearScreen: false,
     server: {
       port: 1420,

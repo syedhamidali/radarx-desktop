@@ -6,7 +6,7 @@
   export let visible = false;
 
   const dispatch = createEventDispatcher();
-  const version = '0.1.0';
+  const version = __APP_VERSION__;
 
   function close() {
     visible = false;

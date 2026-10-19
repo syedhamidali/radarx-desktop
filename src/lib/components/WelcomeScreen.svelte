@@ -19,7 +19,7 @@
     Object.keys($workspaceStore.workspaces).filter((n) => !PRESET_WORKSPACES[n]),
   );
 
-  const APP_VERSION = '0.1.0';
+  const APP_VERSION = __APP_VERSION__;
 
   const shortcuts = [
     { keys: 'Ctrl/\u2318 + O', desc: 'Open file' },
