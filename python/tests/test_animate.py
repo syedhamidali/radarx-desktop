@@ -1165,7 +1165,7 @@ class TestFramesOnDisk:
 class TestOptionalDependencies:
     def test_missing_playwright_says_how_to_install(self, monkeypatch):
         monkeypatch.setattr(render, "have_module", lambda name: name != "playwright")
-        with pytest.raises(Exception, match=r"pip install 'xradar-desktop-engine\[video\]'") as e:
+        with pytest.raises(Exception, match=r"pip install 'radarx-desktop-engine\[video\]'") as e:
             render.require_playwright()
         assert "Playwright" in str(e.value) and "no browser is downloaded" in str(e.value)
         assert type(e.value).__name__ == "XrdDependencyError"
@@ -1425,7 +1425,7 @@ class TestCommand:
         code, _, err = run_cli(
             capsys, "animate", "-i", str(case), "--cache-dir", str(tmp_path / "c")
         )
-        assert code == 4 and "pip install 'xradar-desktop-engine[video]'" in err
+        assert code == 4 and "pip install 'radarx-desktop-engine[video]'" in err
         assert "g" not in synthetic  # failed before gridding
 
     def test_missing_frontend_is_exit_code_4(self, capsys, case, tmp_path, synthetic, monkeypatch):

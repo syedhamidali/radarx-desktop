@@ -1,8 +1,8 @@
-# xradar-desktop
+# radarx-desktop
 
-[![CI](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/syedhamidali/xradar-desktop)](https://github.com/syedhamidali/xradar-desktop/releases/latest)
-[![codecov](https://codecov.io/gh/syedhamidali/xradar-desktop/graph/badge.svg)](https://codecov.io/gh/syedhamidali/xradar-desktop)
+[![CI](https://github.com/syedhamidali/radarx-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/syedhamidali/radarx-desktop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/syedhamidali/radarx-desktop)](https://github.com/syedhamidali/radarx-desktop/releases/latest)
+[![codecov](https://codecov.io/gh/syedhamidali/radarx-desktop/graph/badge.svg)](https://codecov.io/gh/syedhamidali/radarx-desktop)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-orange.svg)](LICENSE)
 
 A desktop app for looking at weather radar data and working with it: open a file, see it in 2D and 3D, clean it,
@@ -21,8 +21,8 @@ labelled method applied to it, or a labelled picture, and nothing is invented. S
 <sub>Reflectivity from KTLX (Oklahoma City), 20 May 2013, 0.5° sweep. NEXRAD Level II, exported from the app.</sub>
 
 <p align="center">
-  <img src="docs/images/app-2d.png" width="49%" alt="xradar-desktop, dark theme: the same scan in the 2D view">
-  <img src="docs/images/app-2d-light.png" width="49%" alt="xradar-desktop, light theme: the same scan in the 2D view">
+  <img src="docs/images/app-2d.png" width="49%" alt="radarx-desktop, dark theme: the same scan in the 2D view">
+  <img src="docs/images/app-2d-light.png" width="49%" alt="radarx-desktop, light theme: the same scan in the 2D view">
 </p>
 
 <sub>The 2D view in the dark and light themes (screenshots taken offline, so the map basemap is switched off; the app
@@ -30,7 +30,7 @@ draws OpenStreetMap or OpenTopoMap under the scan when it is on).</sub>
 
 ## Download
 
-Get the installer for your system from the [latest release](https://github.com/syedhamidali/xradar-desktop/releases/latest). You only need one file.
+Get the installer for your system from the [latest release](https://github.com/syedhamidali/radarx-desktop/releases/latest). You only need one file.
 
 | System | File |
 |---|---|
@@ -44,9 +44,9 @@ The builds are not code-signed, so the first launch shows a warning:
 
 - **macOS:** drag the app to Applications. If macOS says it "cannot be opened" or is "damaged", open
   **System Settings → Privacy & Security** and click **Open Anyway**, or run
-  `xattr -cr /Applications/xradar-desktop.app` once in Terminal.
+  `xattr -cr /Applications/radarx-desktop.app` once in Terminal.
 - **Windows:** click **More info → Run anyway**.
-- **Linux:** `sudo apt install ./xradar-desktop_*.deb` (or `sudo dnf install ./*.rpm`).
+- **Linux:** `sudo apt install ./radarx-desktop_*.deb` (or `sudo dnf install ./*.rpm`).
 
 The first launch can take up to a minute while the OS scans the app; after that it starts in about a second.
 
@@ -55,7 +55,7 @@ and installs only when you say so; updates are signature-checked, never interrup
 Settings → Updates. Linux `.deb`/`.rpm` installs are told a new version exists and link to the release page. See
 [docs/UPDATES.md](docs/UPDATES.md).
 
-**Open files from the file manager:** right-click a radar file and choose **Open With → xradar-desktop**, or double-click it
+**Open files from the file manager:** right-click a radar file and choose **Open With → radarx-desktop**, or double-click it
 once you have chosen the app (Get Info → Open with → Change All on macOS). NetCDF/CfRadial, HDF5/ODIM and gzip files are
 registered by extension, including numbered copies such as `file.nc.1` or `file.h5.2`. On macOS the app is also offered
 for files with no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`). On Windows, files without an extension need **Open with → Choose another app** once.
@@ -175,7 +175,7 @@ machine, so a result can be repeated and opens in other tools. See
 Hydrology (radar rainfall to runoff and flash-flood indicators) and machine learning for flash floods, environment
 data from HRRR, ERA5, soundings and MRMS, winter weather, lightning, cloud microphysics and domain packs, all with
 the provenance of every layer shown (observed, model/analysis, retrieved, simulated). The master list of planned
-work is the GitHub issue [Roadmap: the futuristic radar workbench](https://github.com/syedhamidali/xradar-desktop/issues/120),
+work is the GitHub issue [Roadmap: the futuristic radar workbench](https://github.com/syedhamidali/radarx-desktop/issues/120),
 with one roadmap issue per area. Nothing there is promised for a date.
 
 ## How it works
@@ -195,8 +195,8 @@ You need Node.js 20+, Rust (stable), Python 3.10+ (3.12+ for radarx), and on Lin
 development packages.
 
 ```bash
-git clone https://github.com/syedhamidali/xradar-desktop.git
-cd xradar-desktop
+git clone https://github.com/syedhamidali/radarx-desktop.git
+cd radarx-desktop
 
 npm install
 
@@ -239,7 +239,7 @@ python scripts/check_links.py               # Markdown links
 ```
 
 ```
-xradar-desktop/
+radarx-desktop/
 ├── src/             Svelte frontend (2D and 3D viewers, WebGL2 renderers, panels, stores)
 ├── src-tauri/       Rust shell (starts and watches the engine, updater)
 ├── python/
@@ -264,7 +264,7 @@ xradar-desktop/
 
 ## License
 
-xradar-desktop is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): you may use, copy and
+radarx-desktop is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE): you may use, copy and
 modify it for **noncommercial purposes** (personal use, research, education, charities, public-interest and government
 use). **Commercial use is not permitted** without a separate written license from the copyright holder, who keeps all
 other rights. See [NOTICE](NOTICE) for how to ask for one.

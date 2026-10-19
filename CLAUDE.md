@@ -1,4 +1,4 @@
-# xradar-desktop
+# radarx-desktop
 
 A cross-platform desktop (and web) tool for weather radar data: open a file, see it in 2D and 3D, clean it, run
 algorithms, merge radars, export. Built with **Tauri 2** (Rust shell) + **Svelte 5** (frontend, its own WebGL2
@@ -38,7 +38,7 @@ See `ARCHITECTURE.md` for the system diagram, data flow and design decisions.
 
 ### Project structure
 ```
-xradar-desktop/
+radarx-desktop/
 ├── src-tauri/          # Rust shell (main.rs: engine supervision; updates.rs: updater), icons, tauri*.conf.json
 ├── src/                # Svelte frontend
 │   ├── App.svelte

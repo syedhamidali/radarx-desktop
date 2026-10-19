@@ -25,7 +25,7 @@ If you are offline, or GitHub does not answer within 10 seconds, nothing pops up
 ## What is checked (privacy)
 
 A check is **one HTTPS GET** to the release address in `src-tauri/tauri.conf.json` (`plugins.updater.endpoints`), by default
-`https://github.com/syedhamidali/xradar-desktop/releases/latest/download/latest.json`. The request is made by the
+`https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json`. The request is made by the
 app's Rust shell (the updater plugin), not by the web page. Measured on the wire (a local test server):
 
 ```

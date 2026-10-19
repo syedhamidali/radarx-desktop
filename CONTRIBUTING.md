@@ -1,4 +1,4 @@
-# Contributing to xradar-desktop
+# Contributing to radarx-desktop
 
 Thank you for helping. This page is the short version: how to set up, what to run before a pull request, how
 commits are written, how to add a module, and the terms your contribution comes under. The aim of the project is
@@ -22,8 +22,8 @@ You need Node.js 20+, Rust (stable), Python 3.10+ (3.12+ for radarx) and, on Lin
 packages (see the [README](README.md#build-from-source)).
 
 ```bash
-git clone https://github.com/syedhamidali/xradar-desktop.git
-cd xradar-desktop
+git clone https://github.com/syedhamidali/radarx-desktop.git
+cd radarx-desktop
 npm ci
 cd python && python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev,radarx]" && cd ..
 npm run tauri dev          # the desktop app (uses python/.venv automatically)
@@ -81,7 +81,7 @@ you (the maintainer may ask). *This section is to be reviewed by a lawyer.*
 
 ## Licence and contributor terms
 
-xradar-desktop is source-available under the
+radarx-desktop is source-available under the
 [PolyForm Noncommercial License 1.0.0](LICENSE); commercial use needs a separate written licence from the
 copyright holder (see [NOTICE](NOTICE)). By submitting a contribution you agree that it is licensed under the
 same terms as the project, and you confirm the [Developer Certificate of Origin](DCO) for it by signing off.
@@ -121,7 +121,7 @@ published. A new page must be added to a `toctree` in `docs/index.md`, or the bu
 
 ## Reporting problems
 
-Use the [issue forms](https://github.com/syedhamidali/xradar-desktop/issues/new/choose): *Bug report*, *Feature
+Use the [issue forms](https://github.com/syedhamidali/radarx-desktop/issues/new/choose): *Bug report*, *Feature
 request* and *Science question* (for "is this the right physics / the right number?"). Do not attach data you do
 not have the right to share, and never post tokens or keys. For a security problem, do not open a public issue:
 use the repository's private security advisory form (Security tab) if it is enabled, or contact the maintainer

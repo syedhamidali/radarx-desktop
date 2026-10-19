@@ -6,7 +6,7 @@
 
 ## The project licence
 
-xradar-desktop is source-available under the
+radarx-desktop is source-available under the
 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0) (`LICENSE`,
 with the required notice in `NOTICE`). Commercial use needs a separate written licence from the copyright
 holder. That licence is not changed by anything on this page.
@@ -72,7 +72,7 @@ Adding a dependency:
 
 * **Non-commercial imagery.** Sentinel-2 cloudless (EOX) is CC BY-NC-SA 4.0. It is used only when the user turns
   on *Realistic ground* and is not shipped. It is compatible with a non-commercial project, but a commercial
-  licence for xradar-desktop would have to remove that layer or license it from EOX. Images and clips made with it
+  licence for radarx-desktop would have to remove that layer or license it from EOX. Images and clips made with it
   inherit ShareAlike terms.
 * **Share-alike map data.** OpenStreetMap (ODbL 1.0) and OpenTopoMap (CC BY-SA) tiles need their attribution on
   screen (done) and the OSM tile usage policy applies.

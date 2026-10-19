@@ -12,7 +12,7 @@ Two optional Python packages are used, and only here (never imported by the rest
 * ``av`` (PyAV) encodes H.264. Without it the frames are still written as numbered PNG files and
   the command says how to encode them (``ffmpeg``).
 
-Install both with the ``video`` extra: ``pip install 'xradar-desktop-engine[video]'``.
+Install both with the ``video`` extra: ``pip install 'radarx-desktop-engine[video]'``.
 """
 
 # ruff: noqa: E501
@@ -39,7 +39,7 @@ from typing import Any
 from engine.animate_plan import AnimateConfigError
 from engine.animate_tiles import TileCache
 
-INSTALL_VIDEO = "pip install 'xradar-desktop-engine[video]'"
+INSTALL_VIDEO = "pip install 'radarx-desktop-engine[video]'"
 INSTALL_VIDEO_CHECKOUT = "pip install -e 'python/[video]'"
 
 
@@ -117,14 +117,17 @@ def frontend_candidates(explicit: str | None = None) -> list[Path]:
     # installed desktop app resources (the Tauri installers embed the frontend in the executable
     # today, so these only match a build that ships it as files)
     out += [
+        Path("/Applications/radarx-desktop.app/Contents/Resources/dist"),
+        Path.home() / "Applications/radarx-desktop.app/Contents/Resources/dist",
+        Path("/usr/lib/radarx-desktop/dist"),
+        Path("/opt/radarx-desktop/dist"),
+        # the app under its former name
         Path("/Applications/xradar-desktop.app/Contents/Resources/dist"),
         Path.home() / "Applications/xradar-desktop.app/Contents/Resources/dist",
-        Path("/usr/lib/xradar-desktop/dist"),
-        Path("/opt/xradar-desktop/dist"),
     ]
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        out.append(Path(local) / "xradar-desktop" / "dist")
+        out.append(Path(local) / "radarx-desktop" / "dist")
     seen: set[Path] = set()
     return [p for p in out if not (p in seen or seen.add(p))]
 

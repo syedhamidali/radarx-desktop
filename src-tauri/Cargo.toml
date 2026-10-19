@@ -1,5 +1,5 @@
 [package]
-name = "xradar-desktop"
+name = "radarx-desktop"
 version = "0.3.0"
 edition = "2021"
 license = "PolyForm-Noncommercial-1.0.0"
@@ -24,7 +24,7 @@ tauri-plugin-updater = "~2.10"
 tauri-build = { version = "2", features = [] }
 
 [[bin]]
-name = "xradar-desktop"
+name = "radarx-desktop"
 path = "src/main.rs"
 
 # Release builds: smaller and faster. panic = "abort" is deliberately NOT set: the panic hook in

@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         For questions about whether something the app shows or computes is scientifically right, labelled right, or
-        explained right. Policy: [docs/SCIENCE.md](https://github.com/syedhamidali/xradar-desktop/blob/main/docs/SCIENCE.md).
+        explained right. Policy: [docs/SCIENCE.md](https://github.com/syedhamidali/radarx-desktop/blob/main/docs/SCIENCE.md).
         This is not for crashes (use *Bug report*).
   - type: textarea
     id: question

@@ -1,6 +1,6 @@
 # Science policy
 
-xradar-desktop is a research tool. People read numbers, shapes and colours off the screen and put them in
+radarx-desktop is a research tool. People read numbers, shapes and colours off the screen and put them in
 papers, forecast discussions and reports. So there is one rule above all others:
 
 > **Everything the app shows or writes must follow the science: it is either data with a known source,

@@ -243,7 +243,7 @@ class TestProvenance:
         provenance.software_version.cache_clear()
         monkeypatch.setenv("XRADAR_DESKTOP_VERSION", "9.8.7")
         assert provenance.software_version() == "9.8.7"
-        assert provenance.software_string() == "xradar-desktop 9.8.7"
+        assert provenance.software_string() == "radarx-desktop 9.8.7"
         provenance.software_version.cache_clear()
         monkeypatch.delenv("XRADAR_DESKTOP_VERSION")
         monkeypatch.setattr(provenance, "_package_json_version", lambda: None)
@@ -292,7 +292,7 @@ class TestProvenance:
         for key in ("title", "institution", "source", "history", "references", "comment"):
             assert key in attrs and attrs[key] != "None"
         assert attrs["source_files"] == "c.nc, d.nc" and "/a/" not in json.dumps(attrs)
-        assert attrs["software"].startswith("xradar-desktop ") and attrs["date_created"].endswith(
+        assert attrs["software"].startswith("radarx-desktop ") and attrs["date_created"].endswith(
             "Z"
         )
 
@@ -305,7 +305,7 @@ class TestProvenance:
         meta = provenance.figure_metadata(
             title="T", source_files="/x/y.nc", variable="DBZH", sweep=0
         )
-        assert meta["Source"] == "y.nc" and meta["Software"].startswith("xradar-desktop")
+        assert meta["Source"] == "y.nc" and meta["Software"].startswith("radarx-desktop")
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +348,7 @@ class TestCfRadial1:
         assert g["time_coverage_start"] == "2024-05-01T20:00:00Z"
         assert g["time_coverage_end"].startswith("2024-05-01T20:01:")
         assert g["source_files"] == "KSYN20240501_200000_V06.gz"
-        assert g["software"].startswith("xradar-desktop ") and "xradar" in g["libraries"]
+        assert g["software"].startswith("radarx-desktop ") and "xradar" in g["libraries"]
         assert "added derived variables" in g["history"] and "export CfRadial1" in g["history"]
         assert g["ray_times_increase"] == "true" and g["platform_is_mobile"] == "false"
         assert g["mpda_vcp"] == 0  # a boolean attribute became an integer
@@ -615,7 +615,7 @@ class TestCsv:
         assert "range_m [m]" in joined
         assert re.search(r"# created: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", joined)
         assert re.search(r"# data_time: 2024-05-01T20:00:\d{2}Z", joined)
-        assert "# software: xradar-desktop" in joined and "KSYN20240501_200000_V06.gz" in joined
+        assert "# software: radarx-desktop" in joined and "KSYN20240501_200000_V06.gz" in joined
         assert "# missing_values:" in joined and "UTC" in joined
         assert HOME not in text and "/Users/someone" not in text
         import pandas as pd
@@ -637,18 +637,18 @@ class TestFigures:
             from PIL import Image
 
             info = Image.open(io.BytesIO(blob)).text
-            assert info["Software"].startswith("xradar-desktop ")
+            assert info["Software"].startswith("radarx-desktop ")
             assert info["Source"] == "KSYN20240501_200000_V06.gz"
             assert "DBZH" in info["Title"] and "UTC" in info["Title"]
             assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", info["Creation Time"])
             assert "xradar" in info["Comment"] and "dpi=72" in info["Comment"]
         elif fmt == "pdf":
-            assert b"xradar-desktop" in blob and b"/Creator" in blob and b"/Keywords" in blob
+            assert b"radarx-desktop" in blob and b"/Creator" in blob and b"/Keywords" in blob
             assert b"KSYN20240501_200000_V06.gz" in blob
         else:
             doc = xml.dom.minidom.parseString(blob)
             meta = doc.getElementsByTagName("metadata")
-            assert meta and "xradar-desktop" in meta[0].toxml()
+            assert meta and "radarx-desktop" in meta[0].toxml()
             assert "KSYN20240501_200000_V06.gz" in meta[0].toxml()
 
     def test_gif_comment(self, tmp_path, volume):
@@ -659,7 +659,7 @@ class TestFigures:
         from PIL import Image
 
         comment = Image.open(out).info.get("comment", b"").decode()
-        assert "xradar-desktop" in comment and HOME not in comment
+        assert "radarx-desktop" in comment and HOME not in comment
         assert "KSYN20240501_200000_V06.gz" in comment and len(comment) <= 255
 
 
@@ -680,7 +680,7 @@ class TestRecipeFiles:
         assert (
             doc["schema"] == "xradar-desktop/recipe" and doc["version"] == pipeline.RECIPE_VERSION
         )
-        assert doc["created_with"]["software"] == "xradar-desktop"
+        assert doc["created_with"]["software"] == "radarx-desktop"
         assert doc["created_with"]["software_version"] == provenance.software_version()
         assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", doc["created_with"]["created"])
         assert pipeline.parse_recipe(doc).name == "My QC"  # the extra keys are ignored on load
@@ -692,7 +692,7 @@ class TestRecipeFiles:
         base = {"name": "x", "target": "DBZH", "steps": [{"step_id": "snr_gate", "params": {}}]}
         with pytest.raises(ModuleError, match="newer"):
             pipeline.parse_recipe({**base, "version": pipeline.RECIPE_VERSION + 1})
-        with pytest.raises(ModuleError, match="Not an xradar-desktop recipe"):
+        with pytest.raises(ModuleError, match="Not a radarx-desktop recipe"):
             pipeline.parse_recipe({**base, "schema": "something/else"})
 
     def test_script_header_and_cf_output(self, tmp_path):
@@ -702,7 +702,7 @@ class TestRecipeFiles:
             {"name": "Clean", "target": "DBZH", "steps": [{"step_id": "snr_gate", "params": {}}]}
         )
         text = pipeline.recipe_to_script(recipe)
-        assert f"Generated by xradar-desktop {provenance.software_version()}" in text
+        assert f"Generated by radarx-desktop {provenance.software_version()}" in text
         assert "recipe format" in text and "python " in text
         assert 'Conventions": "CF-1.8"' in text and "os.path.basename(src)" in text
         compile(text, "<script>", "exec")
@@ -804,7 +804,7 @@ class TestMosaicFile:
         rec = mosaic_records["cappi"]
         data = mosaic.png_bytes(rec)
         with Image.open(io.BytesIO(data)) as im, Image.open(io.BytesIO(rec.png)) as ref:
-            assert im.text["Software"].startswith("xradar-desktop ")
+            assert im.text["Software"].startswith("radarx-desktop ")
             assert "LOW" in im.text["Comment"] and "EPSG:3857" in im.text["Comment"]
             np.testing.assert_array_equal(
                 np.asarray(im.convert("RGBA")), np.asarray(ref.convert("RGBA"))
@@ -903,7 +903,7 @@ class TestWindFile:
                 and g["total_cells"] > g["valid_cells"]
             )
             assert g["radars"] == "WESTR, EASTR" and g["radarx_version"]
-            assert g["software"].startswith("xradar-desktop") and "variational" in g["history"]
+            assert g["software"].startswith("radarx-desktop") and "variational" in g["history"]
             assert "de-aliasing" in g["comment"] and g["Conventions"] == "CF-1.8"
             assert list(
                 d["radar_name"][:].astype("S").tobytes().decode().replace("\x00", " ").split()

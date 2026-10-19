@@ -12,7 +12,7 @@ numbers will differ in absolute terms but the same files are removed.
 | macOS app (`.app`, engine + binary + frontend) | 361 MB | 229 MB |
 | macOS dmg, same compression for both (`hdiutil UDZO`) | 159 MB | 115 MB |
 | macOS dmg as Tauri builds it | ~156 MB (documented) | 101 MB |
-| Tauri binary (`target/release/xradar-desktop`) | 13.8 MB | 7.7 MB |
+| Tauri binary (`target/release/radarx-desktop`) | 13.8 MB | 7.7 MB |
 | Installed Python packages in the build environment | 97 | 70 |
 | Warm start, process start to `READY:<port>` | 0.78-0.90 s | 0.70-0.85 s (noise level; the machine was loaded) |
 | Cold start (first launch of a fresh copy) | 21-71 s | 22-71 s (no reliable change) |

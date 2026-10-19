@@ -257,7 +257,7 @@ def test_client_sends_an_honest_user_agent() -> None:
     client, _ = _client(server)
     assert client.get_bytes(BASE_URL + "a.bin") == b"abc"
     ua = server.requests[0][1]
-    assert ua.startswith("xradar-desktop/") and "github.com/syedhamidali/xradar-desktop" in ua
+    assert ua.startswith("radarx-desktop/") and "github.com/syedhamidali/radarx-desktop" in ua
 
 
 def test_client_retries_with_backoff_then_succeeds() -> None:
@@ -398,7 +398,7 @@ def test_real_http_stack_against_a_flaky_localhost_server(tmp_path: Path) -> Non
         n = client.download(url, tmp_path / "f.bin")
         assert n == 1600 and (tmp_path / "f.bin").read_bytes().startswith(b"real-socket-body")
         assert client.retries_made == 2
-        assert all(a.startswith("xradar-desktop/") for a in _Flaky.seen_agents)
+        assert all(a.startswith("radarx-desktop/") for a in _Flaky.seen_agents)
         # offline: the very same client refuses before opening a socket
         client._offline = lambda: True
         with pytest.raises(OfflineError):

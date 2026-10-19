@@ -1,4 +1,4 @@
-"""WebSocket server entry point for xradar-desktop Python sidecar."""
+"""WebSocket server entry point for radarx-desktop Python sidecar."""
 
 from __future__ import annotations
 
@@ -456,7 +456,7 @@ def _describe_open_error(path: str, exc: BaseException) -> str:
             return text
         return (
             f"Permission denied reading {name}. Check the file's permissions (on macOS, allow "
-            "xradar-desktop to access this folder under System Settings > Privacy & Security), "
+            "radarx-desktop to access this folder under System Settings > Privacy & Security), "
             "or copy the file to a folder you own."
         )
     if isinstance(exc, MemoryError):
@@ -542,7 +542,7 @@ def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
             tail = f"{detail}. Check that the file or folder is still available."
         return logging.ERROR, f"I/O error in {msg_type}: {tail}"
     if isinstance(exc, ImportError):
-        return logging.ERROR, f"Missing dependency: {detail}. Reinstall xradar-desktop's engine."
+        return logging.ERROR, f"Missing dependency: {detail}. Reinstall radarx-desktop's engine."
     return logging.ERROR, (
         f"Unexpected error in {msg_type}: {detail}. Try again; if it keeps happening, restart "
         "the app (details are in the engine log)."
@@ -4882,7 +4882,7 @@ async def _run_server(port: int, host: str | None = None) -> None:
         )
     bind_host = host or ("127.0.0.1" if web_mode else "localhost")
     async with websockets.serve(_handle_connection, bind_host, port, **serve_kwargs):
-        logger.info("xradar-desktop engine listening on ws://%s:%d", bind_host, port)
+        logger.info("radarx-desktop engine listening on ws://%s:%d", bind_host, port)
         print(f"READY:{port}", flush=True)
         # Import xradar while the user picks a file, so the first open does not pay for it.
         threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
@@ -4932,7 +4932,7 @@ def enable_crash_log() -> Path | None:
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="xradar-desktop engine server")
+    parser = argparse.ArgumentParser(description="radarx-desktop engine server")
     parser.add_argument(
         "--port", type=int, help="WebSocket port (web mode: defaults to the PORT environment)"
     )

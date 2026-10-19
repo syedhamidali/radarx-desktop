@@ -1,4 +1,4 @@
-# Licence policy for the dependencies xradar-desktop ships (checked by generate_notices.py --check, run in
+# Licence policy for the dependencies radarx-desktop ships (checked by generate_notices.py --check, run in
 # CI by .github/workflows/licenses.yml). This is an engineering allow-list, not legal advice; the final
 # wording is to be reviewed by a lawyer (see docs/LICENSES.md).
 #

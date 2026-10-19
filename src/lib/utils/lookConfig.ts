@@ -200,7 +200,7 @@ export function lookToJson(cfg: LookConfig, name?: string): string {
 }
 
 export function lookToToml(cfg: LookConfig): string {
-  const lines = ['# xradar-desktop look: every key is optional; the others keep their defaults'];
+  const lines = ['# radarx-desktop look: every key is optional; the others keep their defaults'];
   let group = '';
   const ch2 = changedLook(cfg);
   for (const q of CONTROLS) {

@@ -29,7 +29,7 @@ from typing import Any
 from engine.environment.errors import FetchCancelled, FetchFailed, OfflineError
 
 RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
-HOME_PAGE = "https://github.com/syedhamidali/xradar-desktop"
+HOME_PAGE = "https://github.com/syedhamidali/radarx-desktop"
 CHUNK = 256 * 1024
 
 Progress = Callable[[int, int | None], None]
@@ -42,7 +42,7 @@ def default_user_agent() -> str:
         version = provenance.software_version()
     except Exception:
         version = "unknown"
-    return f"xradar-desktop/{version} (+{HOME_PAGE})"
+    return f"radarx-desktop/{version} (+{HOME_PAGE})"
 
 
 class _NoDowngrade(urllib.request.HTTPRedirectHandler):

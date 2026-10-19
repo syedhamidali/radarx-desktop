@@ -1,4 +1,4 @@
-# PyInstaller spec for the xradar-desktop Python engine ("sidecar").
+# PyInstaller spec for the radarx-desktop Python engine ("sidecar").
 #
 # Produces dist/xradar-engine/ (one directory: the executable plus its libraries), which the Tauri
 # app ships as a resource and launches. Build with ``python packaging/build_engine.py``.

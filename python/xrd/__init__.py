@@ -1,4 +1,4 @@
-"""``xrd``: short import name for the xradar-desktop Python API.
+"""``xrd``: short import name for the radarx-desktop Python API.
 
 ::
 

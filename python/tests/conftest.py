@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for xradar-desktop engine tests."""
+"""Shared pytest fixtures for radarx-desktop engine tests."""
 
 from __future__ import annotations
 

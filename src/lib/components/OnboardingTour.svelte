@@ -14,7 +14,7 @@
 
   const steps: TourStep[] = [
     {
-      title: 'Welcome to xradar desktop',
+      title: 'Welcome to radarx desktop',
       description: 'Your weather radar research workstation. Let us show you around.',
       selector: '.app-title',
       position: 'bottom',

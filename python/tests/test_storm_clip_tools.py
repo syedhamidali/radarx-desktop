@@ -275,7 +275,7 @@ class TestTileCache:
         assert "FAILED hosts: tiles.maps.eox.at" in tc.summary()
 
     def test_requests_say_who_asks(self):
-        assert "xradar-desktop" in tilecache.USER_AGENT
+        assert "radarx-desktop" in tilecache.USER_AGENT
         assert tilecache.MIN_INTERVAL_S > 0
 
 

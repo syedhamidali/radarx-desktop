@@ -207,7 +207,7 @@ def observed_radar(
         resolution=", ".join(res),
         method="Radar moments as stored in the file"
         + (f" ({fmt})" if _clean(fmt) else "")
-        + "; no processing applied by xradar-desktop.",
+        + "; no processing applied by radarx-desktop.",
         uncertainty="Measurement uncertainty depends on the radar's calibration, beam "
         "geometry, attenuation and clutter; none of these is corrected unless a QC step "
         "says so." + (f" {nyquist}" if nyquist else ""),
@@ -228,7 +228,7 @@ def derived_field(
     """A field computed by an analysis module / pipeline step from the open radar data."""
     return LayerProvenance(
         kind="retrieved",
-        source=f"xradar-desktop module {module}"
+        source=f"radarx-desktop module {module}"
         + (
             f" (radarx {_prov.radarx_version()})"
             if module.startswith("radarx") and _prov.radarx_version()
@@ -297,7 +297,7 @@ def winds(
 def storm_cells(*, valid_time: Any, params: Mapping[str, Any] | None = None) -> LayerProvenance:
     return LayerProvenance(
         kind="retrieved",
-        source="xradar-desktop storm-cell identification",
+        source="radarx-desktop storm-cell identification",
         title="Storm cells",
         run_time=_prov.utc_stamp(),
         valid_time=valid_time,

@@ -1,5 +1,5 @@
 /**
- * Workspace management store for xradar-desktop.
+ * Workspace management store for radarx-desktop.
  *
  * Tracks layout state, sidebar widths, open files, panel ordering,
  * and provides save/load/delete plus built-in presets.

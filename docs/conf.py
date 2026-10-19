@@ -1,4 +1,4 @@
-"""Sphinx configuration for the xradar-desktop documentation.
+"""Sphinx configuration for the radarx-desktop documentation.
 
 Mirrors the setup of radarx: only sources live in the repository. The HTML, the API pages written by
 this file (``docs/_api/``) and executed notebook outputs are build products and are git-ignored.
@@ -18,7 +18,7 @@ ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "python"))  # the engine package, importable without installing
 
 # -- project information -----------------------------------------------------------------------
-project = "xradar-desktop"
+project = "radarx-desktop"
 author = "Hamid Ali Syed"
 copyright = f"2025-{dt.datetime.now(dt.timezone.utc).year}, {author}"
 html_title = project
@@ -56,8 +56,8 @@ myst_substitutions = {
 }
 
 extlinks = {
-    "issue": ("https://github.com/syedhamidali/xradar-desktop/issues/%s", "GH %s"),
-    "pull": ("https://github.com/syedhamidali/xradar-desktop/pull/%s", "PR %s"),
+    "issue": ("https://github.com/syedhamidali/radarx-desktop/issues/%s", "GH %s"),
+    "pull": ("https://github.com/syedhamidali/radarx-desktop/pull/%s", "PR %s"),
 }
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
@@ -147,14 +147,14 @@ nb_execution_raise_on_error = True
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"] if (HERE / "_static").exists() else []
 html_theme_options = {
-    "github_url": "https://github.com/syedhamidali/xradar-desktop",
+    "github_url": "https://github.com/syedhamidali/radarx-desktop",
     "show_toc_level": 2,
     "navigation_with_keys": False,
     "secondary_sidebar_items": ["page-toc", "edit-this-page"],
 }
 html_context = {
     "github_user": "syedhamidali",
-    "github_repo": "xradar-desktop",
+    "github_repo": "radarx-desktop",
     "github_version": "main",
     "doc_path": "docs",
 }

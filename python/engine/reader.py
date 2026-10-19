@@ -844,7 +844,7 @@ class RadarReader:
         if not os.access(path, os.R_OK):
             raise PermissionError(
                 f"Permission denied reading {p.name}. Check the file's permissions (on macOS, "
-                "allow xradar-desktop to access this folder under System Settings > Privacy & "
+                "allow radarx-desktop to access this folder under System Settings > Privacy & "
                 "Security), or copy the file to a folder you own."
             )
         try:

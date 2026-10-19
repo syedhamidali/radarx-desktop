@@ -60,7 +60,7 @@ def default_cache_dir() -> Path:
     env = os.environ.get("XRADAR_ANIMATE_CACHE")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".cache" / "xradar-desktop" / "animate"
+    return Path.home() / ".cache" / "radarx-desktop" / "animate"
 
 
 def default_cache_dir_for(explicit: str | Path | None) -> Path:

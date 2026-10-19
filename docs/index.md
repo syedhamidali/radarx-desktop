@@ -2,14 +2,14 @@
 myst:
   html_meta:
     "description lang=en": |
-      xradar-desktop: a desktop and web app for looking at weather radar data, cleaning it, running
+      radarx-desktop: a desktop and web app for looking at weather radar data, cleaning it, running
       algorithms on it (hydrometeor classification, storm cells, multi-Doppler winds, mosaics,
       rainfall accumulation with uncertainty)
       and exporting the results, with a Python API and command line for everything.
 html_theme.sidebar_secondary.remove: true
 ---
 
-# xradar-desktop
+# radarx-desktop
 
 **Release:** {{release}}\
 **Date:** {{today}}

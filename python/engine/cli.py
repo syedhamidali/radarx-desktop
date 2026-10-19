@@ -1,4 +1,4 @@
-"""``xrd``: the command line of xradar-desktop.
+"""``xrd``: the command line of radarx-desktop.
 
 Everything the desktop app does is available here without the GUI, on top of the same engine
 (:mod:`engine.api`). The commands follow the order a scientist works in::
@@ -390,7 +390,7 @@ GROUPS = (
 def overview() -> str:
     """The short, friendly text printed by plain ``xrd``."""
     lines = [
-        bold("xrd") + " - radar data from the command line (xradar-desktop, no GUI needed)",
+        bold("xrd") + " - radar data from the command line (radarx-desktop, no GUI needed)",
         "",
     ]
     for title, items in GROUPS:
@@ -423,7 +423,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=_Formatter,
         allow_abbrev=False,
         description=(
-            "xradar-desktop on the command line: look at radar files, clean them, run the\n"
+            "radarx-desktop on the command line: look at radar files, clean them, run the\n"
             "algorithms, combine radars and save the results, without the GUI.\n"
             "\n" + "\n".join(listing) + "\n\n"
             "The same options mean the same thing in every command:\n"
@@ -2271,9 +2271,17 @@ def prepare_argv(argv: Sequence[str]) -> list[str]:
 
 def _version() -> str:
     try:
-        from importlib.metadata import version
+        from importlib.metadata import PackageNotFoundError, version
 
-        return version("xradar-desktop-engine")
+        for name in (
+            "radarx-desktop-engine",
+            "xradar-desktop-engine",
+        ):  # the old name: older installs
+            try:
+                return version(name)
+            except PackageNotFoundError:
+                continue
+        return "0.1.0"
     except Exception:
         return "0.1.0"
 

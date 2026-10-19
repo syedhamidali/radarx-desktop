@@ -24,8 +24,8 @@ import urllib.request
 from pathlib import Path
 
 USER_AGENT = (
-    "xradar-desktop-storm-clip/0.1 (non-commercial research tool; "
-    "https://github.com/syedhamidali/xradar-desktop)"
+    "radarx-desktop-storm-clip/0.1 (non-commercial research tool; "
+    "https://github.com/syedhamidali/radarx-desktop)"
 )
 
 SOURCES: dict[str, dict[str, str]] = {
@@ -50,7 +50,7 @@ def default_cache_dir() -> Path:
     env = os.environ.get("XRADAR_TILE_CACHE")
     if env:
         return Path(env).expanduser()
-    return Path.home() / ".cache" / "xradar-desktop" / "tiles"
+    return Path.home() / ".cache" / "radarx-desktop" / "tiles"
 
 
 class TileCache:

@@ -33,7 +33,7 @@ DEM_VARIABLES = ("elevation", "dem", "z", "height", "topo", "topography", "altit
 
 NO_DEM = """\
 Beam blockage needs a terrain model (a digital elevation model, DEM) and none was given. \
-xradar-desktop never downloads terrain data. Get SRTM or Copernicus GLO-30 tiles that cover \
+radarx-desktop never downloads terrain data. Get SRTM or Copernicus GLO-30 tiles that cover \
 the radar (about 250 km around it) yourself and save them as a NetCDF file (variable of \
 terrain height in metres on latitude/longitude), an ESRI ASCII grid (.asc, degrees) or a \
 GeoTIFF (needs the rioxarray or rasterio package), then enter the path in 'DEM file'. \

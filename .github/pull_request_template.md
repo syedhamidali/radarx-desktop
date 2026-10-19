@@ -8,7 +8,7 @@
 
 ## Checklist
 
-### Science ([docs/SCIENCE.md](https://github.com/syedhamidali/xradar-desktop/blob/main/docs/SCIENCE.md))
+### Science ([docs/SCIENCE.md](https://github.com/syedhamidali/radarx-desktop/blob/main/docs/SCIENCE.md))
 - [ ] Not scientific / not visible to users (skip this block), **or**
 - [ ] The output has a **provenance class** (OBSERVED, MODEL/ANALYSIS, RETRIEVED, SIMULATED/STYLISED) and shows source, run/valid time, resolution, method, parameters and uncertainty as that class requires
 - [ ] The method is **cited** (docstring and docs); departures from the reference are written down
@@ -34,7 +34,7 @@
 
 ### Licences and housekeeping
 - [ ] New dependencies, fonts, colour maps, data or imagery are in `THIRD_PARTY_NOTICES.md` (`python scripts/licenses/generate_notices.py`) and pass `--check`; anything non-commercial or share-alike is flagged
-- [ ] Commits are signed off (`git commit -s`, see [DCO](https://github.com/syedhamidali/xradar-desktop/blob/main/DCO)) and carry **no AI attribution trailers**
+- [ ] Commits are signed off (`git commit -s`, see [DCO](https://github.com/syedhamidali/radarx-desktop/blob/main/DCO)) and carry **no AI attribution trailers**
 - [ ] Changelog fragment `docs/changes/<PR number>.md` added
 - [ ] No secrets, no radar data, no absolute local paths committed
 

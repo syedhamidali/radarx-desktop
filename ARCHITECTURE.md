@@ -1,4 +1,4 @@
-# xradar-desktop - Architecture
+# radarx-desktop - Architecture
 
 A desktop (and web) application for weather radar data, built on **xradar**, **xarray** and **radarx**. This page is
 the map: what the parts are, how data moves, and why it is built this way. Details live in `docs/`
@@ -120,7 +120,7 @@ default and is not bundled.
 ## Project structure
 
 ```
-xradar-desktop/
+radarx-desktop/
 ├── ARCHITECTURE.md  CLAUDE.md  CONTRIBUTING.md  DCO  NOTICE  LICENSE  THIRD_PARTY_NOTICES.md  README.md
 ├── src-tauri/               Rust shell: main.rs (engine supervision), updates.rs, tauri*.conf.json, icons/
 ├── src/

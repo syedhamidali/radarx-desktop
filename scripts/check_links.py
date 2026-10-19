@@ -72,7 +72,7 @@ def anchors(path: Path) -> set[str]:
 
 
 def check_external(url: str) -> str | None:
-    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "xradar-desktop-linkcheck"})
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "radarx-desktop-linkcheck"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:  # noqa: S310
             return None if resp.status < 400 else f"HTTP {resp.status}"
