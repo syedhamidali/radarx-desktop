@@ -39,6 +39,48 @@ export interface WindRadar {
   longitude: number;
   altitude_m: number;
   volume_time: string | null;
+  dealias?: WindDealiasInfo;
+}
+
+/** What the sidecar did about aliased velocities for one radar. */
+export interface WindDealiasInfo {
+  mode: 'auto' | 'always' | 'never';
+  /** Doppler sweeps used. */
+  sweeps: number;
+  looks_aliased: number;
+  dealiased: number;
+  left_aliased: number;
+  /** Aliased sweeps above the dealiasing elevation limit, left out of the analysis. */
+  dropped: number;
+  failed: number;
+  nyquist_ms: [number, number] | null;
+  nyquist_source: string | null;
+  jump_before_pct: number | null;
+  jump_after_pct: number | null;
+}
+
+/** Share (%) of the grid cells of one height with two radars, a retrieved wind, and a w. */
+export interface WindLevelCoverage {
+  z_m: number;
+  dual_pct: number;
+  wind_pct: number;
+  w_pct: number;
+}
+
+/** Output quality control: cells set to missing because the values are impossible. */
+export interface WindQc {
+  max_speed: number | null;
+  max_abs_w: number | null;
+  max_uncertainty: number | null;
+  wind_cells: number;
+  speed_masked: number;
+  uncertainty_masked: number;
+  masked_cells: number;
+  masked_pct: number;
+  w_cells: number;
+  w_masked: number;
+  w_masked_pct: number;
+  raw_kept: boolean;
 }
 
 export interface WindGrid {
@@ -76,6 +118,12 @@ export interface WindHeader {
   warnings: string[];
   method: string;
   boundary: string;
+  /** What was asked for ('auto' resolves to `boundary`). */
+  boundary_requested?: string;
+  /** Plain-language notes about automatic choices (lowest level, boundary, dealiasing). */
+  notes?: string[];
+  level_coverage?: WindLevelCoverage[];
+  qc?: WindQc;
   coverage_pct: number;
   dual_coverage_pct: number;
   w_valid_pct: number;
@@ -125,6 +173,24 @@ export interface WindLayer {
   minCrossing: number;
   maxUncertainty: number | null;
   radars: (WindRadar & { color: string })[];
+}
+
+// ── Arrow colours ──────────────────────────────────────────────────────────
+
+export type MapTheme = 'dark' | 'light';
+
+export interface ArrowColors {
+  /** Fill of the arrow: white on a dark basemap, dark on a light one. */
+  fill: string;
+  /** Outline of the opposite colour, so the arrow also reads over any raster colour. */
+  edge: string;
+}
+
+/** Arrow fill + edge for the basemap theme (fill contrasts the map, edge is its opposite). */
+export function arrowColors(theme: MapTheme): ArrowColors {
+  return theme === 'light'
+    ? { fill: '#10141c', edge: 'rgba(255, 255, 255, 0.92)' }
+    : { fill: '#ffffff', edge: 'rgba(10, 12, 24, 0.9)' };
 }
 
 // ── Colour scales ──────────────────────────────────────────────────────────
@@ -296,6 +362,7 @@ export function drawWindLayer(
   dpr: number,
   cw: number,
   ch: number,
+  theme: MapTheme = 'dark',
 ): void {
   const { res } = layer;
   const { nx, ny } = res.grid;
@@ -368,8 +435,8 @@ export function drawWindLayer(
     }
   }
 
-  if (layer.showVectors) drawArrows(c, layer, project, px, py, ok, k, cw, ch);
-  drawWindSites(c, layer, project);
+  if (layer.showVectors) drawArrows(c, layer, project, px, py, ok, k, cw, ch, theme);
+  drawWindSites(c, layer, project, theme);
 }
 
 function drawArrows(
@@ -382,10 +449,12 @@ function drawArrows(
   k: number,
   cw: number,
   ch: number,
+  theme: MapTheme,
 ): void {
   const { res } = layer;
   const { nx, ny } = res.grid;
   const nxn = nx + 1;
+  const colors = arrowColors(theme);
   const u = fieldSlice(res, 'u', k);
   const v = fieldSlice(res, 'v', k);
   const cross = fieldSlice(res, 'crossing_angle', k);
@@ -435,8 +504,9 @@ function drawArrows(
         c.moveTo(lx, ly);
         c.lineTo(x1, y1);
         c.lineTo(rx, ry);
+        // pass 0: the wide edge in the opposite colour; pass 1: the fill on top of it
         c.lineWidth = pass === 0 ? 3.4 : 1.5;
-        c.strokeStyle = pass === 0 ? 'rgba(10,12,24,0.85)' : '#f6f7ff';
+        c.strokeStyle = pass === 0 ? colors.edge : colors.fill;
         c.stroke();
       }
     }
@@ -444,7 +514,8 @@ function drawArrows(
   c.restore();
 }
 
-function drawWindSites(c: CanvasRenderingContext2D, layer: WindLayer, project: Project): void {
+function drawWindSites(c: CanvasRenderingContext2D, layer: WindLayer, project: Project, theme: MapTheme): void {
+  const { fill, edge } = arrowColors(theme);
   c.save();
   c.lineJoin = 'round';
   for (const r of layer.radars) {
@@ -454,14 +525,14 @@ function drawWindSites(c: CanvasRenderingContext2D, layer: WindLayer, project: P
     c.fillStyle = r.color;
     c.fill();
     c.lineWidth = 1.5;
-    c.strokeStyle = 'rgba(8, 10, 20, 0.95)';
+    c.strokeStyle = edge;
     c.stroke();
     c.font = '600 11px Inter, system-ui, sans-serif';
     c.textBaseline = 'middle';
     c.lineWidth = 3;
-    c.strokeStyle = 'rgba(8, 10, 20, 0.85)';
+    c.strokeStyle = edge;
     c.strokeText(r.name, x + 9, y);
-    c.fillStyle = '#f2f4ff';
+    c.fillStyle = fill;
     c.fillText(r.name, x + 9, y);
   }
   c.restore();

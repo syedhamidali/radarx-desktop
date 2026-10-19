@@ -155,7 +155,7 @@
             </li>
           {/each}
         </ul>
-        <p class="help">Needs dealiased radial velocity. Run a dealiasing module first if the velocities fold.</p>
+        <p class="help">Aliased (folded) velocities are unfolded automatically before the retrieval; see Advanced.</p>
       {/if}
     </section>
 
@@ -204,6 +204,7 @@
         <label class="field">
           <span>Vertical boundary</span>
           <select value={s.boundary} onchange={(e) => updateWindSettings({ boundary: e.currentTarget.value as WindSettings['boundary'] })}>
+            <option value="auto">Auto (from the coverage)</option>
             <option value="upward">Upward (w = 0 at bottom)</option>
             <option value="downward">Downward (w = 0 at top)</option>
             <option value="obrien">O'Brien adjusted</option>
@@ -264,9 +265,27 @@
         <span class="caret" class:open={showAdvanced}>&#9656;</span> Advanced
       </button>
       {#if showAdvanced}
+        <label class="field">
+          <span>Dealias velocities</span>
+          <select value={s.dealias} onchange={(e) => updateWindSettings({ dealias: e.currentTarget.value as WindSettings['dealias'] })}>
+            <option value="auto">Auto (only if a sweep looks aliased)</option>
+            <option value="always">Always (sweeps up to 12°)</option>
+            <option value="never">Never (use the velocities as stored)</option>
+          </select>
+        </label>
+        <div class="grid2">
+          <label class="field" title="Cells with a faster wind are set to missing (0 = no limit)">
+            <span>Max speed (m/s)</span>
+            <input type="number" min="0" max="300" step="5" value={s.maxSpeedMs} onchange={setNum('maxSpeedMs', 0, 300)} />
+          </label>
+          <label class="field" title="Vertical velocities beyond this are set to missing (0 = no limit)">
+            <span>Max |w| (m/s)</span>
+            <input type="number" min="0" max="200" step="5" value={s.maxAbsWMs} onchange={setNum('maxAbsWMs', 0, 200)} />
+          </label>
+        </div>
         <label class="check">
           <input type="checkbox" checked={s.zMinAuto} onchange={(e) => updateWindSettings({ zMinAuto: e.currentTarget.checked })} />
-          <span>Lowest level automatic <span class="muted">(where both radars' lowest beams reach)</span></span>
+          <span>Lowest level automatic <span class="muted">(first height where 5 % of the area has two radars)</span></span>
         </label>
         {#if !s.zMinAuto}
           <label class="field">
@@ -362,6 +381,38 @@
         {#each res.warnings as w}
           <p class="help warn-text">&#9888; {w}</p>
         {/each}
+        {#if res.notes && res.notes.length > 0}
+          <details class="notes">
+            <summary>What was chosen automatically ({res.notes.length})</summary>
+            {#each res.notes as n}<p class="help">{n}</p>{/each}
+          </details>
+        {/if}
+        {#if res.qc && (res.qc.masked_cells > 0 || res.qc.w_masked > 0)}
+          <p class="help" title="Impossible values (folded velocities, edge artefacts) are set to missing">
+            Quality control removed {res.qc.masked_cells} wind cell{res.qc.masked_cells === 1 ? '' : 's'}
+            ({fmt(res.qc.masked_pct, 1)}%) and {res.qc.w_masked} vertical velocit{res.qc.w_masked === 1 ? 'y' : 'ies'}
+            ({fmt(res.qc.w_masked_pct, 1)}%).
+          </p>
+        {/if}
+        {#if res.level_coverage && res.level_coverage.length > 0}
+          <h4>Coverage by height</h4>
+          <div class="cov" role="table" aria-label="Coverage by height">
+            <div class="cov-head" role="row">
+              <span>km</span><span title="Cells seen by two or more radars">2+ radars</span>
+              <span title="Cells with a retrieved horizontal wind">wind</span><span title="Cells with a vertical velocity">w</span>
+            </div>
+            {#each res.level_coverage as c, i (c.z_m)}
+              <button type="button" class="cov-row" class:cur={i === disp.level} role="row"
+                onclick={() => updateWindDisplay({ level: i })} title="Show this height on the map">
+                <span class="mono">{(c.z_m / 1000).toFixed(1)}</span>
+                <span class="cov-cell"><i class="bar dual" style="width: {Math.min(100, c.dual_pct)}%"></i><b class="mono">{fmt(c.dual_pct, 0)}%</b></span>
+                <span class="cov-cell"><i class="bar wind" style="width: {Math.min(100, c.wind_pct)}%"></i><b class="mono">{fmt(c.wind_pct, 0)}%</b></span>
+                <span class="cov-cell"><i class="bar wv" style="width: {Math.min(100, c.w_pct)}%"></i><b class="mono">{fmt(c.w_pct, 0)}%</b></span>
+              </button>
+            {/each}
+          </div>
+          <p class="help">Share of all grid cells at each height. A level is empty where the radars cannot see it (far radars cannot see low levels) or where the beams cross too flat.</p>
+        {/if}
 
         <h4>Map layer</h4>
         <div class="grid2">
@@ -482,6 +533,20 @@
   .muted { color: var(--text-muted, #5c6088); }
   .help { margin: 0; font-size: 11px; color: var(--text-muted, #5c6088); line-height: 1.35; }
   .warn-text { color: var(--accent-warning, #fbbf24); }
+  .notes { font-size: 11px; color: var(--text-muted, #5c6088); }
+  .notes summary { cursor: pointer; color: var(--text-secondary, #9da2c2); margin-bottom: 4px; }
+  .cov { display: flex; flex-direction: column; gap: 1px; max-height: 190px; overflow-y: auto; font-size: 10px; }
+  .cov-head, .cov-row { display: grid; grid-template-columns: 32px 1fr 1fr 1fr; gap: 6px; align-items: center; }
+  .cov-head { position: sticky; top: 0; padding: 0 4px; color: var(--text-muted, #5c6088); background: var(--bg-secondary, #10121f); text-transform: uppercase; letter-spacing: 0.04em; }
+  .cov-row { height: 16px; padding: 0 4px; color: var(--text-secondary, #9da2c2); background: transparent; border: none; border-radius: 3px; text-align: left; text-transform: none; letter-spacing: 0; font-size: 10px; }
+  .cov-row:hover { background: rgba(127, 127, 127, 0.14); }
+  .cov-row.cur { outline: 1px solid var(--accent-primary, #5b6cf7); }
+  .cov-cell { position: relative; display: block; height: 10px; background: rgba(127, 127, 127, 0.14); border-radius: 2px; overflow: hidden; }
+  .cov-cell .bar { position: absolute; top: 0; bottom: 0; left: 0; display: block; }
+  .cov-cell .bar.dual { background: #6b7a99; }
+  .cov-cell .bar.wind { background: var(--accent-primary, #5b6cf7); }
+  .cov-cell .bar.wv { background: #2fa88f; }
+  .cov-cell b { position: absolute; right: 3px; top: -1px; font-weight: 500; font-size: 9px; color: var(--text-primary, #e4e6f4); text-shadow: 0 0 2px rgba(0, 0, 0, 0.6); }
   .empty-hint { margin: 0; padding: var(--spacing-sm, 8px) 0; font-size: 12px; text-align: center; color: var(--text-muted, #5c6088); }
 
   .mini-btn {

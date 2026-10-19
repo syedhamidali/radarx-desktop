@@ -49,7 +49,8 @@ logger = logging.getLogger(__name__)
 ProgressFn = Callable[[int, str], None]
 
 METHODS = ("analytic", "variational")
-BOUNDARIES = ("upward", "downward", "obrien")
+BOUNDARIES = ("auto", "upward", "downward", "obrien")
+DEALIAS_MODES = ("auto", "always", "never")
 BACKGROUND_MODES = ("none", "vvp", "uniform", "manual")
 # Fields delivered to the client, in wire order (each a float32 (nz, ny, nx) block).
 FIELD_ORDER = (
@@ -84,6 +85,23 @@ MAX_RADARS = 8
 TIME_WARN_S = 300.0
 # Radars closer than this (ground distance, metres) cannot cross their beams.
 MIN_BASELINE_M = 5000.0
+# Dealiasing: only Doppler sweeps up to this elevation are unfolded (higher ones are either not
+# aliased or too short-ranged to matter); aliased sweeps above it are left out of the analysis.
+DEALIAS_MAX_ELEVATION_DEG = 12.0
+# A sweep "looks aliased" when more than this share of its valid gate-to-gate velocity steps
+# exceeds 1.2 x the Nyquist velocity (a fold line is a step of ~2 x Nyquist; real shear and noise
+# hardly ever make one).
+ALIAS_JUMP_FRACTION = 0.003
+ALIAS_MIN_GATES = 500
+NEXRAD_VELOCITY_FLAG = 63.0  # |v| at or above this is a Level II range-fold / no-data code
+# The automatic lowest level is the first one at which this share of the analysis columns has
+# two radars with a usable beam crossing.
+Z_MIN_COLUMN_FRACTION = 0.05
+# Automatic boundary: integrate w upward only if this share of the columns with data at any
+# height already has two radars in the lowest two levels.
+AUTO_UPWARD_MIN_LOW_COVERAGE = 0.6
+# radarx warns when w = 0 is imposed at a level this far above the highest radar (metres).
+W_BOTTOM_WARN_HEIGHT_M = 200.0
 CACHE_MAX_ITEMS = 3
 CACHE_MAX_BYTES = 500 * 1024 * 1024
 
@@ -196,7 +214,13 @@ class Options:
     fall_speed_correction: bool = True
     freezing_level: Any = "auto"  # "auto" / "rain" (rain law at all heights) or metres ASL
     melting_depth_m: float = 500.0
-    boundary: str = "upward"
+    boundary: str = "auto"  # auto | upward | downward | obrien
+    dealias: str = "auto"  # auto | always | never (unfold aliased velocities before gridding)
+    dealias_max_elevation: float = DEALIAS_MAX_ELEVATION_DEG
+    max_speed: float | None = 100.0  # output QC: cells with a faster wind (m/s) become NaN
+    max_abs_w: float | None = 40.0  # output QC: |w| above this (m/s) becomes NaN
+    max_uncertainty: float | None = None  # output QC: u/v/w NaN where the error is larger (m/s)
+    keep_raw: bool = False  # also keep the unmasked u, v, w (u_raw, v_raw, w_raw)
     w_bottom: float = 0.0
     obs_error: float = 1.0  # assumed radial-velocity error (m/s) of the uncertainty
     background: dict[str, Any] = field(default_factory=lambda: {"mode": "none"})
@@ -215,7 +239,18 @@ class Options:
             if d["boundary"] not in BOUNDARIES:
                 raise MultiDopplerError(f"options.boundary must be one of {', '.join(BOUNDARIES)}")
             o.boundary = d["boundary"]
+        if d.get("dealias") is not None:
+            if d["dealias"] is True:
+                d["dealias"] = "always"
+            elif d["dealias"] is False:
+                d["dealias"] = "never"
+            if d["dealias"] not in DEALIAS_MODES:
+                raise MultiDopplerError(
+                    f"options.dealias must be one of {', '.join(DEALIAS_MODES)}"
+                )
+            o.dealias = d["dealias"]
         for key, label in (
+            ("dealias_max_elevation", "dealias_max_elevation"),
             ("min_crossing_angle", "min_crossing_angle"),
             ("melting_depth_m", "melting_depth_m"),
             ("w_bottom", "w_bottom"),
@@ -225,11 +260,24 @@ class Options:
                 setattr(o, key, _number(d[key], f"options.{label}"))
         if not 0.0 <= o.min_crossing_angle <= 90.0:
             raise MultiDopplerError("options.min_crossing_angle must be between 0 and 90 degrees")
+        if not 0.0 < o.dealias_max_elevation <= 90.0:
+            raise MultiDopplerError(
+                "options.dealias_max_elevation must be between 0 and 90 degrees"
+            )
+        for key in ("max_speed", "max_abs_w", "max_uncertainty"):
+            if key in d:  # null switches that check off
+                if d[key] is None:
+                    setattr(o, key, None)
+                else:
+                    val = _number(d[key], f"options.{key}")
+                    if val <= 0:
+                        raise MultiDopplerError(f"options.{key} must be positive")
+                    setattr(o, key, val)
         if o.obs_error <= 0:
             raise MultiDopplerError("options.obs_error must be positive")
         if o.melting_depth_m < 0:
             raise MultiDopplerError("options.melting_depth_m must not be negative")
-        for key in ("fall_speed_correction", "uncertainty"):
+        for key in ("fall_speed_correction", "uncertainty", "keep_raw"):
             if d.get(key) is not None:
                 setattr(o, key, bool(d[key]))
         fl = d.get("freezing_level")
@@ -321,10 +369,11 @@ class WindRecord:
     summary: dict[str, Any]
     warnings: list[str]
     created: float = field(default_factory=time.time)
+    raw: dict[str, np.ndarray] | None = None  # unmasked u, v, w ``(z, y, x)`` (``keep_raw`` only)
 
     @property
     def nbytes(self) -> int:
-        return int(self.fields.nbytes)
+        return int(self.fields.nbytes) + sum(int(a.nbytes) for a in (self.raw or {}).values())
 
     def header(self) -> dict[str, Any]:
         """JSON-able description (without ``type`` / ``request_id`` / frame counts)."""
@@ -468,7 +517,7 @@ class _Volume:
     n_vel_sweeps: int
     min_elevation_deg: float = 0.5
     nyquist_ms: float | None = None
-    aliased_fraction: float = 0.0
+    dealias: dict[str, Any] = field(default_factory=dict)  # what was done about aliasing
 
 
 def _site(tree: xr.DataTree, ds0: xr.Dataset) -> tuple[float, float, float]:
@@ -529,8 +578,19 @@ def _unique(names: Sequence[str]) -> list[str]:
     return out
 
 
-def _prepare_volume(file_id: str | None, reader: Any, index: int) -> _Volume:
-    """In-memory radarx-ready tree of one open volume (``VRADH`` and, if present, ``DBZH``)."""
+def _prepare_volume(
+    file_id: str | None,
+    reader: Any,
+    index: int,
+    *,
+    dealias: str = "never",
+    dealias_max_elevation: float = DEALIAS_MAX_ELEVATION_DEG,
+) -> _Volume:
+    """In-memory radarx-ready tree of one open volume (``VRADH`` and, if present, ``DBZH``).
+
+    With ``dealias`` "auto" the Doppler sweeps up to ``dealias_max_elevation`` that look aliased
+    are unfolded (a copy: the opened file is not touched); "always" unfolds all of them.
+    """
     from engine.reader import sorted_sweep_names
 
     tree = getattr(reader, "datatree", None)
@@ -544,9 +604,23 @@ def _prepare_volume(file_id: str | None, reader: Any, index: int) -> _Volume:
     max_range = 0.0
     n_dbz = 0
     elevations: list[float] = []
-    nyq: list[float] = []
-    n_alias = 0
-    n_total = 0
+    info: dict[str, Any] = {
+        "mode": dealias,
+        "sweeps": 0,
+        "looks_aliased": 0,
+        "dealiased": 0,
+        "left_aliased": 0,
+        "dropped": 0,
+        "failed": 0,
+        "nyquist_ms": None,
+        "nyquist_source": None,
+        "jump_before_pct": None,
+        "jump_after_pct": None,
+        "_nyq": [],
+        "_src": set(),
+        "_before": [],
+        "_after": [],
+    }
     for i, _ in enumerate(names):
         ds = reader.get_sweep_dataset(i)
         if "azimuth" not in ds.coords or "range" not in ds.coords:
@@ -564,31 +638,44 @@ def _prepare_volume(file_id: str | None, reader: Any, index: int) -> _Volume:
             sub = sub.assign({"sweep_fixed_angle": ds["sweep_fixed_angle"]})
         sub = sub.load()
         rename = {}
-        if vel is not None and vel != "VRADH":
+        if vel != "VRADH":
             rename[vel] = "VRADH"
         if dbz is not None and dbz != "DBZH":
             rename[dbz] = "DBZH"
         if rename:
             sub = sub.rename(rename)
-        if vel is not None:
-            vals = np.asarray(sub["VRADH"].values, dtype=np.float32)
-            n_vel = int(np.isfinite(vals).sum())
-            ny = _nyquist(ds)
-            if ny is not None and n_vel:
-                nyq.append(ny)
-                n_total += n_vel
-                with np.errstate(invalid="ignore"):
-                    n_alias += int((np.abs(vals) > 0.98 * ny).sum())
+        elev = _sweep_elevation(ds)
+        sub, keep = _treat_aliasing(sub, ds, elev, dealias, dealias_max_elevation, info)
+        if not keep:
+            continue
+        info["sweeps"] += 1
         n_dbz += dbz is not None
-        elevations.append(_sweep_elevation(ds))
+        elevations.append(elev)
         max_range = max(max_range, float(np.nanmax(np.asarray(ds["range"].values))))
         nodes[f"/sweep_{len(nodes)}"] = sub
+    nyqs: list[float] = info.pop("_nyq")
+    sources: set[str] = info.pop("_src")
+    before: list[float] = info.pop("_before")
+    after: list[float] = info.pop("_after")
     n_vel_sweeps = len(nodes)
     if n_vel_sweeps == 0:
+        if info["dropped"]:
+            raise MultiDopplerError(
+                f"{label}: every Doppler sweep looks aliased and could not be used "
+                f"({info['dropped']} above {dealias_max_elevation:g} degrees were left out); "
+                "check the velocities or the Nyquist velocity"
+            )
         raise MultiDopplerError(
             f"{label} has no radial velocity (looked for {', '.join(_var_names('VRADH'))}); "
             "multi-Doppler needs dealiased radial velocity from every radar"
         )
+    if nyqs:
+        info["nyquist_ms"] = [min(nyqs), max(nyqs)]
+        info["nyquist_source"] = "file" if sources == {"file"} else "estimated from max |V|"
+    if before:
+        info["jump_before_pct"] = 100.0 * float(np.mean(before))
+    if after:
+        info["jump_after_pct"] = 100.0 * float(np.mean(after))
     has_dbz = n_dbz == n_vel_sweeps
     if not has_dbz and n_dbz:  # reflectivity on only some velocity sweeps: use none of it
         nodes = {k: (v.drop_vars("DBZH") if "DBZH" in v else v) for k, v in nodes.items()}
@@ -612,9 +699,105 @@ def _prepare_volume(file_id: str | None, reader: Any, index: int) -> _Volume:
         has_dbz=has_dbz,
         n_vel_sweeps=n_vel_sweeps,
         min_elevation_deg=min((e for e in elevations if math.isfinite(e)), default=0.5),
-        nyquist_ms=min(nyq) if nyq else None,
-        aliased_fraction=(n_alias / n_total) if n_total else 0.0,
+        nyquist_ms=min(nyqs) if nyqs else None,
+        dealias=info,
     )
+
+
+def _jump_fraction(vals: np.ndarray, nyquist: float) -> float:
+    """Share of valid gate-to-gate velocity steps (along azimuth and range) above 1.2 Nyquist."""
+    num = den = 0
+    with np.errstate(invalid="ignore"):
+        for axis in (0, 1):
+            d = np.abs(np.diff(vals, axis=axis))
+            ok = np.isfinite(d)
+            den += int(ok.sum())
+            num += int((d[ok] > 1.2 * nyquist).sum())
+    return num / den if den else 0.0
+
+
+def _sweep_nyquist_ms(ds: xr.Dataset, vals: np.ndarray) -> tuple[float | None, str]:
+    """Nyquist velocity of a sweep and its source ("file" or "estimated")."""
+    ny = _nyquist(ds)
+    if ny is not None:
+        return ny, "file"
+    v = np.abs(vals[np.isfinite(vals)])
+    v = v[v < NEXRAD_VELOCITY_FLAG]
+    if v.size < ALIAS_MIN_GATES or float(v.max()) < 5.0:
+        return None, "unknown"
+    # aliased velocities pile up at the Nyquist velocity: the largest value is a good estimate
+    return float(math.ceil(float(v.max()) * 2.0) / 2.0), "estimated"
+
+
+def _unfold(sub: xr.Dataset, nyquist: float) -> np.ndarray:
+    """Dealiased ``VRADH`` of a sweep (radarx region-based unfolding), as float32."""
+    from radarx.retrieve import dealias_velocity
+
+    with warnings.catch_warnings():
+        # radarx warns when the absolute fold is only assumed (partial azimuth coverage, no
+        # reference); that is checked afterwards against the other radars (_check_absolute_folds)
+        warnings.simplefilter("ignore", UserWarning)
+        out = dealias_velocity(sub, "VRADH", float(nyquist), method="region", threshold=0.3)
+    return np.asarray(out.transpose(*sub["VRADH"].dims).values, dtype=np.float32)
+
+
+def _treat_aliasing(
+    sub: xr.Dataset,
+    ds: xr.Dataset,
+    elev: float,
+    mode: str,
+    max_elevation: float,
+    info: dict[str, Any],
+) -> tuple[xr.Dataset, bool]:
+    """Unfold one velocity sweep if needed; returns ``(sweep, keep)`` and fills ``info``.
+
+    The private ``_nyq`` / ``_src`` / ``_before`` / ``_after`` entries of ``info`` collect the
+    Nyquist velocity, its source and the share of gate-to-gate jumps before / after for the
+    sweeps that were examined. A sweep above ``max_elevation`` that looks aliased is dropped
+    (``keep`` False) unless ``mode`` is "never".
+    """
+    vals = np.asarray(sub["VRADH"].values, dtype=np.float32)
+    if vals.size == 0:
+        return sub, True
+    nyq, source = _sweep_nyquist_ms(ds, vals)
+    if nyq is None or int(np.isfinite(vals).sum()) < ALIAS_MIN_GATES:
+        return sub, True
+    jumps = _jump_fraction(vals, nyq)
+    info["_nyq"].append(nyq)
+    info["_src"].add(source)
+    info["_before"].append(jumps)
+    info["_after"].append(jumps)  # replaced below when the sweep is unfolded
+    looks_aliased = jumps > ALIAS_JUMP_FRACTION
+    info["looks_aliased"] += int(looks_aliased)
+    if mode == "never":
+        return sub, True
+    low = not math.isfinite(elev) or elev <= max_elevation
+    if not low:
+        if looks_aliased:
+            info["dropped"] += 1
+            for key in ("_nyq", "_before", "_after"):
+                info[key].pop()
+            return sub, False
+        return sub, True
+    if mode == "auto" and not looks_aliased:
+        return sub, True
+    try:
+        unfolded = _unfold(sub, nyq)
+    except Exception:  # radarx refused this sweep (all-NaN, odd geometry...)
+        logger.exception("dealiasing of a velocity sweep failed")
+        info["failed"] += 1
+        info["left_aliased"] += int(looks_aliased)
+        return sub, True
+    jumps_after = _jump_fraction(unfolded, nyq)
+    if jumps_after > jumps:  # no better than the measured field: keep the measurement
+        info["left_aliased"] += int(looks_aliased)
+        return sub, True
+    attrs = {**sub["VRADH"].attrs, "dealias_nyquist": float(nyq)}
+    sub = sub.assign({"VRADH": (sub["VRADH"].dims, unfolded, attrs)})
+    info["dealiased"] += 1
+    info["left_aliased"] += int(jumps_after > ALIAS_JUMP_FRACTION)
+    info["_after"][-1] = jumps_after
+    return sub, True
 
 
 def _sweep_elevation(ds: xr.Dataset) -> float:
@@ -629,10 +812,18 @@ def _sweep_elevation(ds: xr.Dataset) -> float:
 
 
 def _nyquist(ds: xr.Dataset) -> float | None:
+    """Nyquist velocity stored in the file (variable, coordinate or attribute), else ``None``."""
     for key in ("nyquist_velocity", "nyquist_vel"):
         if key in ds.variables:
             with contextlib.suppress(TypeError, ValueError):
                 val = float(np.nanmean(np.asarray(ds[key].values, dtype=float)))
+                if math.isfinite(val) and val > 0:
+                    return val
+    vel = _find_var(ds, "VRADH")
+    for attrs in ((ds[vel].attrs if vel else {}), ds.attrs):
+        for key in ("nyquist_velocity", "nyquist_vel"):
+            with contextlib.suppress(TypeError, ValueError):
+                val = float(attrs.get(key))
                 if math.isfinite(val) and val > 0:
                     return val
     return None
@@ -774,30 +965,81 @@ def _plan_levels(
     x: np.ndarray,
     y: np.ndarray,
     min_crossing: float,
-) -> np.ndarray:
-    """Height levels ASL. ``z_min_m=None`` starts at the lowest level the beams reach.
+) -> tuple[np.ndarray, str | None]:
+    """Height levels ASL and, for the automatic start, a sentence saying which one and why.
 
-    The beam geometry decides (not the echo, which varies from storm to storm): the first level
-    is the lowest multiple of ``dz`` that lies above the lowest-tilt beam of both radars over
-    90 % of the cells with a usable beam crossing, so ``w = 0`` is imposed where there are data.
+    ``z_min_m=None`` starts at the lowest multiple of ``dz`` at which at least
+    :data:`Z_MIN_COLUMN_FRACTION` of the analysis columns have two radars whose lowest-tilt beams
+    reach that height and cross at the minimum angle. The beam geometry decides (not the echo,
+    which varies from storm to storm), and a level that few columns can see is not demanded to
+    be seen everywhere: far radars cannot see the low levels over a large box, and requiring
+    that left no usable levels at all.
     """
     z0 = spec.z_min_m
+    note: str | None = None
     if z0 is None:
-        reach = np.full(len(volumes), spec.max_range_km * 1000.0)
-        _, good = _dual_mask(xy, reach, x, y, min_crossing)
-        xx, yy = np.meshgrid(x, y)
-        need = np.zeros(xx.shape)
-        for vol, (rx, ry) in zip(volumes, xy, strict=True):
-            need = np.maximum(need, _lowest_beam_height(vol, np.hypot(xx - rx, yy - ry)))
-        floor = float(np.percentile(need[good], 90)) if good.any() else 0.0
-        z0 = max(math.ceil(floor / spec.dz_m) * spec.dz_m, max(v.altitude_m for v in volumes))
+        z0, note = _auto_z_min(spec, volumes, xy, x, y, min_crossing)
     z = np.arange(z0, spec.z_max_m + 0.5 * spec.dz_m, spec.dz_m)
     if z.size < MIN_CELLS_PER_AXIS:
         raise MultiDopplerError(
             f"Only {z.size} height levels between {z0:g} and {spec.z_max_m:g} m; "
             "decrease the vertical spacing or raise the maximum height"
         )
-    return z
+    return z, note
+
+
+def _auto_z_min(
+    spec: GridSpec,
+    volumes: Sequence[_Volume],
+    xy: np.ndarray,
+    x: np.ndarray,
+    y: np.ndarray,
+    min_crossing: float,
+) -> tuple[float, str]:
+    reach = spec.max_range_km * 1000.0
+    xx, yy = np.meshgrid(x, y)
+    dist = [np.hypot(xx - rx, yy - ry) for rx, ry in xy]
+    bearing = [np.arctan2(xx - rx, yy - ry) for rx, ry in xy]
+    need = [_lowest_beam_height(v, d) for v, d in zip(volumes, dist, strict=True)]
+    inside = [(d <= reach) & (d > 1000.0) for d in dist]
+    pairs = []
+    for i in range(len(volumes)):
+        for j in range(i + 1, len(volumes)):
+            ok = inside[i] & inside[j] & (_crossing_deg(bearing[i], bearing[j]) >= min_crossing)
+            pairs.append((i, j, ok))
+    floor = max(math.ceil(max(v.altitude_m for v in volumes) / spec.dz_m) * spec.dz_m, -500.0)
+    candidates = np.arange(floor, spec.z_max_m + 0.5 * spec.dz_m, spec.dz_m)
+    fractions = []
+    for zc in candidates:
+        seen = np.zeros(xx.shape, dtype=bool)
+        for i, j, ok in pairs:
+            seen |= ok & (need[i] <= zc) & (need[j] <= zc)
+        frac = float(seen.mean())
+        fractions.append(frac)
+        if frac >= Z_MIN_COLUMN_FRACTION:
+            break
+    want = 100.0 * Z_MIN_COLUMN_FRACTION
+    if not fractions or fractions[-1] < Z_MIN_COLUMN_FRACTION:
+        best = max(fractions, default=0.0)
+        raise MultiDopplerError(
+            f"At no height up to {spec.z_max_m:g} m do {want:g} % of the analysis columns have two "
+            f"radars with beams crossing at {min_crossing:g} degrees or more (best "
+            f"{100 * best:.1f} %). Use a smaller extent, a larger maximum range, a lower minimum "
+            "crossing angle, or radars closer together."
+        )
+    z0 = float(candidates[len(fractions) - 1])
+    prev = (
+        f"{100 * fractions[-2]:.1f} % at {candidates[len(fractions) - 2]:g} m"
+        if len(fractions) > 1
+        else "none lower"
+    )
+    note = (
+        f"Lowest analysis level {z0:g} m, chosen automatically: the first height where at least "
+        f"{want:g} % of the analysis columns ({100 * fractions[-1]:.1f} % there; {prev}) have "
+        f"two radars with beams crossing at {min_crossing:g} degrees or more. Below it the "
+        "radars cannot see enough of the area; give a lowest level to override."
+    )
+    return z0, note
 
 
 # ---------------------------------------------------------------------------
@@ -1008,19 +1250,26 @@ def run_multidoppler(
     # 1. volumes --------------------------------------------------------------------------
     report(5, "Preparing radar volumes")
     t0 = time.perf_counter()
-    volumes = [_prepare_volume(fid, rd, i) for i, (fid, rd) in enumerate(readers)]
+    volumes = [
+        _prepare_volume(
+            fid,
+            rd,
+            i,
+            dealias=opts.dealias,
+            dealias_max_elevation=opts.dealias_max_elevation,
+        )
+        for i, (fid, rd) in enumerate(readers)
+    ]
     names = _unique([v.name for v in volumes])
     for v, n in zip(volumes, names, strict=True):
         v.name = n
     timing["prepare_ms"] = (time.perf_counter() - t0) * 1000.0
     _check(cancel)
-    for v in volumes:
-        if v.aliased_fraction > 0.02:
-            notes.append(
-                f"{v.name}: {v.aliased_fraction:.0%} of the velocities are at the Nyquist limit "
-                f"(+/-{v.nyquist_ms:.1f} m/s); they may be aliased. Run a dealiasing module "
-                "first or the winds will be wrong."
-            )
+    infos, caveats = _dealias_notes(volumes, opts)
+    notes += caveats
+    if opts.dealias != "never" and len(volumes) >= 2:
+        z_prof = np.arange(500.0, spec.z_max_m + 1.0, max(spec.dz_m, 500.0))
+        infos += _check_absolute_folds(volumes, z_prof, spec)
     times = [v.time for v in volumes if not np.isnat(v.time)]
     analysis_time = None
     if len(times) >= 2:
@@ -1038,7 +1287,9 @@ def run_multidoppler(
     origin = _choose_origin(volumes, spec)
     x, y = _plan_axes(volumes, spec, origin, opts.min_crossing_angle)
     xy = _radar_xy(volumes, origin)
-    z = _plan_levels(spec, volumes, xy, x, y, opts.min_crossing_angle)
+    z, z_note = _plan_levels(spec, volumes, xy, x, y, opts.min_crossing_angle)
+    if z_note:
+        infos.append(z_note)
     if x.size * y.size * z.size > MAX_GRID_CELLS:
         raise MultiDopplerError(
             f"The analysis grid would have {x.size * y.size * z.size / 1e6:.1f} million cells "
@@ -1113,6 +1364,8 @@ def run_multidoppler(
                 "heights; this overestimates the fall speed in ice and biases w. Give a "
                 "freezing level to correct it."
             )
+    boundary, boundary_note = _resolve_boundary(opts, g, volumes)
+    infos.append(boundary_note)
     report(45, "Retrieving the wind (" + opts.method + ")")
     t0 = time.perf_counter()
     with warnings.catch_warnings(record=True) as caught:
@@ -1127,16 +1380,17 @@ def run_multidoppler(
                 fall_speed_correction=fall_speed,
                 freezing_level=freezing,
                 melting_depth=opts.melting_depth_m,
-                boundary=opts.boundary,
+                boundary=boundary,
                 w_bottom=opts.w_bottom,
                 n_threads=n_threads,
             )
         else:
             w_boundary = {
                 "upward": "bottom",
-                "downward": "top",
+                # an automatic downward choice also frees w only below each column's echo top
+                "downward": ("top", "echo_top") if opts.boundary == "auto" else "top",
                 "obrien": ("bottom", "obrien"),
-            }[opts.boundary]
+            }[boundary]
             res = md.multi_doppler(
                 g,
                 bg_ds,
@@ -1152,20 +1406,27 @@ def run_multidoppler(
                 error_samples=8,
                 n_threads=n_threads,
             )
-    notes += _radarx_warnings(caught)
+    notes += _tag_boundary_warnings(_radarx_warnings(caught))
     timing["retrieve_ms"] = (time.perf_counter() - t0) * 1000.0
     _check(cancel)
 
     # 5. masks, derived fields -------------------------------------------------------------
     report(85, "Computing derived fields")
-    fields, has_unc = _assemble_fields(res, g, opts, x, y)
+    fields, has_unc, qc, raw = _assemble_fields(res, g, opts, x, y)
     valid = np.isfinite(fields["u"]) & np.isfinite(fields["v"])
     if not valid.any():
+        if qc["masked_cells"]:
+            raise MultiDopplerError(
+                f"Quality control removed every retrieved wind ({qc['masked_cells']} cells "
+                f"faster than {opts.max_speed} m/s or too uncertain): the velocities are probably "
+                "aliased. Turn the dealiasing on or check the radars' velocity data."
+            )
         raise MultiDopplerError(
             "The retrieval produced no valid wind: no cell is observed by two radars at a "
             f"crossing angle of at least {opts.min_crossing_angle:g} degrees. Lower the minimum "
             "crossing angle, check the radars' velocity data or enlarge the grid."
         )
+    notes += qc.pop("warnings")
     stack = np.stack([fields[n] for n in FIELD_ORDER]).astype(np.float32)
 
     # 6. summary ---------------------------------------------------------------------------
@@ -1175,7 +1436,8 @@ def run_multidoppler(
     w_ok = np.isfinite(fields["w"])
     summary = {
         "method": opts.method,
-        "boundary": opts.boundary,
+        "boundary": boundary,
+        "boundary_requested": opts.boundary,
         "coverage_pct": 100.0 * float(valid.sum()) / valid.size,
         "dual_coverage_pct": 100.0 * n_seen / valid.size,
         "w_valid_pct": 100.0 * float(w_ok.sum()) / max(int(valid.sum()), 1),
@@ -1189,6 +1451,14 @@ def run_multidoppler(
             "max": float(crossing.max()) if crossing.size else None,
         },
         "field_stats": {n: _stats(fields[n]) for n in FIELD_ORDER},
+        "level_coverage": _level_coverage(fields, z),
+        "qc": qc,
+        "dealias": {
+            "mode": opts.dealias,
+            "max_elevation_deg": opts.dealias_max_elevation,
+            "radars": [{"name": v.name, **v.dealias} for v in volumes],
+        },
+        "notes": [n for n in dict.fromkeys(infos) if n],
         "has_uncertainty": has_unc,
         "background": bg_info,
         "fall_speed_correction": bool(fall_speed),
@@ -1208,6 +1478,7 @@ def run_multidoppler(
             "longitude": v.longitude,
             "altitude_m": v.altitude_m,
             "volume_time": _iso(v.time),
+            "dealias": v.dealias,
         }
         for v in volumes
     ]
@@ -1221,11 +1492,179 @@ def run_multidoppler(
         radars=radars,
         summary=summary,
         warnings=list(dict.fromkeys(notes)),
+        raw=raw,
     )
     if cache is not None:
         cache.put(record)
     report(95, "Done")
     return record
+
+
+def _check_absolute_folds(volumes: Sequence[_Volume], z: np.ndarray, spec: GridSpec) -> list[str]:
+    """Fix dealiased sweeps whose whole velocity field is off by a multiple of 2 x Nyquist.
+
+    Region-based unfolding is exact up to one constant per sweep (it assumes a zero mean radial
+    velocity when the azimuth coverage is partial). Every dealiased sweep is compared with the
+    wind profile the radars agree on (median of their layer fits); a sweep whose median offset is
+    clearly one or more Nyquist intervals (>= 75 % of 2 x Nyquist, which real wind differences do
+    not reach) and that fits better after the shift is shifted. Returns sentences for the notes.
+    """
+    todo = [v for v in volumes if v.dealias.get("dealiased")]
+    if not todo:
+        return []
+    try:
+        profiles = [_vvp_profile([v], z, spec)[:2] for v in volumes]
+    except MultiDopplerError:
+        return []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        u_ref = np.nanmedian(np.stack([p[0] for p in profiles]), axis=0)
+        v_ref = np.nanmedian(np.stack([p[1] for p in profiles]), axis=0)
+    out: list[str] = []
+    for vol in todo:
+        shifted = 0
+        for key in sorted(vol.tree.children):
+            ds = vol.tree[key].to_dataset()
+            nyq = ds["VRADH"].attrs.get("dealias_nyquist")
+            if not nyq or "sweep_fixed_angle" not in ds:
+                continue
+            el = math.radians(float(ds["sweep_fixed_angle"]))
+            az = np.radians(ds["azimuth"].values.astype(float))
+            rng = ds["range"].values.astype(float)
+            h = vol.altitude_m + rng * math.sin(el) + rng**2 / (2 * 4 / 3 * 6371e3)
+            ref = (
+                np.interp(h, z, u_ref)[None, :] * np.sin(az)[:, None]
+                + np.interp(h, z, v_ref)[None, :] * np.cos(az)[:, None]
+            ) * math.cos(el)
+            vr = ds["VRADH"].transpose("azimuth", "range").values.astype(np.float32)
+            ok = np.isfinite(vr) & (rng[None, :] <= spec.max_range_km * 1000.0)
+            if ok.sum() < ALIAS_MIN_GATES:
+                continue
+            diff = (vr - ref)[ok]
+            med = float(np.median(diff))
+            k = round(med / (2 * nyq))
+            if k == 0 or abs(med) < 0.75 * 2 * nyq:
+                continue
+            fixed = diff - k * 2 * nyq
+            if np.mean(np.abs(fixed)) >= 0.7 * np.mean(np.abs(diff)):
+                continue
+            ds = ds.assign(
+                VRADH=(
+                    ds["VRADH"].dims,
+                    (ds["VRADH"].values - k * 2 * nyq).astype(np.float32),
+                    ds["VRADH"].attrs,
+                )
+            )
+            vol.tree[key].dataset = ds
+            shifted += 1
+        vol.dealias["refolded"] = shifted
+        if shifted:
+            out.append(
+                f"{vol.name}: {shifted} dealiased sweeps were off by whole Nyquist intervals "
+                "compared with the other radars and were shifted to agree with them."
+            )
+    return out
+
+
+def _dealias_notes(volumes: Sequence[_Volume], opts: Options) -> tuple[list[str], list[str]]:
+    """``(info sentences, warnings)`` about what was done (or not) about aliased velocities."""
+    infos: list[str] = []
+    warn: list[str] = []
+    for v in volumes:
+        d = v.dealias
+        if not d or (not d.get("sweeps") and not d.get("dropped")):
+            continue
+        if opts.dealias == "never":
+            if d.get("looks_aliased"):
+                warn.append(
+                    f"{v.name}: {d['looks_aliased']} of {d['sweeps']} Doppler sweeps look aliased "
+                    "(velocity folds) and dealiasing is off, so the winds will be wrong where "
+                    "the velocity folds. Set dealias to auto."
+                )
+            continue
+        if d.get("dealiased"):
+            lo, hi = d["nyquist_ms"] or (None, None)
+            ny = f"{lo:g}" if lo == hi else f"{lo:g}-{hi:g}"
+            jump = ""
+            if d.get("jump_before_pct") is not None and d.get("jump_after_pct") is not None:
+                jump = (
+                    f"; gate-to-gate jumps above 1.2 x Nyquist {d['jump_before_pct']:.2f} % "
+                    f"-> {d['jump_after_pct']:.2f} %"
+                )
+            infos.append(
+                f"{v.name}: dealiased {d['dealiased']} of {d['sweeps']} Doppler sweeps "
+                f"(up to {opts.dealias_max_elevation:g} deg; Nyquist {ny} m/s, "
+                f"{d['nyquist_source']}){jump}."
+            )
+        elif d.get("nyquist_ms"):
+            infos.append(f"{v.name}: velocities do not look aliased, no dealiasing needed.")
+        if d.get("dropped"):
+            infos.append(
+                f"{v.name}: {d['dropped']} aliased sweeps above {opts.dealias_max_elevation:g} "
+                "deg were left out of the analysis."
+            )
+        if d.get("failed") or d.get("left_aliased"):
+            warn.append(
+                f"{v.name}: dealiasing could not unfold every aliased sweep "
+                f"({d.get('failed', 0)} failed, {d.get('left_aliased', 0)} still show folds); "
+                "winds there may be wrong."
+            )
+        if d.get("sweeps") and d.get("nyquist_ms") is None:
+            warn.append(
+                f"{v.name}: the Nyquist velocity is not in the file and could not be estimated, "
+                "so the velocities were used as stored."
+            )
+    return infos, warn
+
+
+def _resolve_boundary(
+    opts: Options, g: xr.Dataset, volumes: Sequence[_Volume]
+) -> tuple[str, str | None]:
+    """The vertical boundary to use and a sentence about it (``auto`` picks from the coverage).
+
+    Integrating ``w`` upward from ``w = 0`` at the lowest level only works where the columns are
+    covered by two radars from the bottom up. Otherwise (far radars cannot see the low levels)
+    ``w`` is integrated downward from the top, where ``w = 0`` at the echo top. The variational
+    ``w = 0`` at the bottom also needs that level to be at the radars' height.
+    """
+    if opts.boundary != "auto":
+        return opts.boundary, None
+    count = np.isfinite(g["VRADH"].transpose("radar", "z", "y", "x").values).sum(axis=0)
+    dual = count >= 2
+    columns = dual.any(axis=0)
+    z0 = float(g["z"].values[0])
+    above_radar = z0 - max(v.altitude_m for v in volumes)
+    if not columns.any():
+        return "upward", None
+    low = float(np.mean([dual[k][columns].mean() for k in range(min(2, dual.shape[0]))]))
+    too_high = opts.method == "variational" and above_radar > W_BOTTOM_WARN_HEIGHT_M
+    if low >= AUTO_UPWARD_MIN_LOW_COVERAGE and not too_high:
+        return "upward", (
+            f"Vertical boundary: upward (w = 0 at the lowest level, {z0:g} m); "
+            f"{100 * low:.0f} % of the columns with data are covered by two radars at the "
+            "lowest levels."
+        )
+    why = (
+        f"only {100 * low:.0f} % of the columns with data are covered by two radars at the "
+        "lowest levels"
+        if low < AUTO_UPWARD_MIN_LOW_COVERAGE
+        else f"the lowest level ({z0:g} m) is {above_radar:.0f} m above the highest radar"
+    )
+    top = "the echo top" if opts.method == "variational" else "the top of the grid"
+    return "downward", (
+        f"Vertical boundary: downward (w = 0 at {top}); {why}, so w = 0 at the bottom "
+        "would leave most columns without a vertical velocity."
+    )
+
+
+def _tag_boundary_warnings(texts: list[str]) -> list[str]:
+    """Put radarx's lower-boundary warning first-class: say plainly what it means."""
+    out = []
+    for text in texts:
+        if "w_boundary='bottom'" in text:
+            text = "Vertical boundary warning: " + text
+        out.append(text)
+    return out
 
 
 def _drop_variable(tree: xr.DataTree, name: str) -> xr.DataTree:
@@ -1266,8 +1705,13 @@ def _limit_range(g: xr.Dataset, max_range_m: float) -> xr.Dataset:
 
 def _assemble_fields(
     res: xr.Dataset, g: xr.Dataset, opts: Options, x: np.ndarray, y: np.ndarray
-) -> tuple[dict[str, np.ndarray], bool]:
-    """Mask the retrieval and add the derived fields; returns ``({name: (z,y,x) f32}, has_unc)``."""
+) -> tuple[dict[str, np.ndarray], bool, dict[str, Any], dict[str, np.ndarray] | None]:
+    """Mask and quality-control the retrieval and add the derived fields.
+
+    Returns ``({name: (z,y,x) f32}, has_uncertainty, qc, raw)``. ``qc`` counts the cells the
+    output checks (:attr:`Options.max_speed`, ``max_abs_w``, ``max_uncertainty``) set to NaN and
+    carries the warning text; ``raw`` holds the unchecked ``u, v, w`` when ``keep_raw`` is set.
+    """
 
     def arr(name: str) -> np.ndarray | None:
         return res[name].transpose("z", "y", "x").values.astype(np.float32) if name in res else None
@@ -1298,6 +1742,45 @@ def _assemble_fields(
         if has_unc
         else np.full(u.shape, nan, dtype=np.float32)
     )
+    raw = {"u": u.copy(), "v": v.copy(), "w": w.copy()} if opts.keep_raw else None
+
+    # output quality control: impossible values (folded velocities, edge artefacts) -> NaN
+    n_wind = int(good.sum())
+    with np.errstate(invalid="ignore"):
+        speed0 = np.hypot(u, v)
+        bad_speed = good & (speed0 > opts.max_speed) if opts.max_speed else np.zeros_like(good)
+        bad_unc = (
+            good & has_unc & (unc > opts.max_uncertainty)
+            if opts.max_uncertainty
+            else np.zeros_like(good)
+        )
+        kill = bad_speed | bad_unc
+        u = np.where(kill, nan, u)
+        v = np.where(kill, nan, v)
+        w = np.where(kill, nan, w)
+        unc = np.where(kill, nan, unc)
+        good = good & ~kill
+        n_w = int(np.isfinite(w).sum())
+        bad_w = (
+            np.isfinite(w) & (np.abs(w) > opts.max_abs_w) if opts.max_abs_w else np.zeros_like(good)
+        )
+        w = np.where(bad_w, nan, w)
+    qc = {
+        "max_speed": opts.max_speed,
+        "max_abs_w": opts.max_abs_w,
+        "max_uncertainty": opts.max_uncertainty,
+        "wind_cells": n_wind,
+        "speed_masked": int(bad_speed.sum()),
+        "uncertainty_masked": int((bad_unc & ~bad_speed).sum()),
+        "masked_cells": int(kill.sum()),
+        "masked_pct": 100.0 * int(kill.sum()) / max(n_wind, 1),
+        "w_cells": n_w,
+        "w_masked": int(bad_w.sum()),
+        "w_masked_pct": 100.0 * int(bad_w.sum()) / max(n_w, 1),
+        "raw_kept": opts.keep_raw,
+        "warnings": _qc_warnings(opts, n_wind, bad_speed, bad_unc, kill, n_w, bad_w),
+    }
+
     dx = float(x[1] - x[0])
     dy = float(y[1] - y[0])
     dudx = np.gradient(u, dx, axis=2)
@@ -1322,7 +1805,61 @@ def _assemble_fields(
         "n_radars": np.where(np.isfinite(n_rad), n_rad, nan),
         "dbz": dbz,
     }
-    return {k: np.asarray(v_, dtype=np.float32) for k, v_ in fields.items()}, has_unc
+    out = {k: np.asarray(v_, dtype=np.float32) for k, v_ in fields.items()}
+    return out, has_unc, qc, raw
+
+
+def _qc_warnings(
+    opts: Options,
+    n_wind: int,
+    bad_speed: np.ndarray,
+    bad_unc: np.ndarray,
+    kill: np.ndarray,
+    n_w: int,
+    bad_w: np.ndarray,
+) -> list[str]:
+    out = []
+    if int(kill.sum()):
+        parts = []
+        if int(bad_speed.sum()):
+            parts.append(f"{int(bad_speed.sum())} faster than {opts.max_speed:g} m/s")
+        if int((bad_unc & ~bad_speed).sum()):
+            parts.append(
+                f"{int((bad_unc & ~bad_speed).sum())} with an error above "
+                f"{opts.max_uncertainty:g} m/s"
+            )
+        out.append(
+            f"Quality control set {int(kill.sum())} wind cells "
+            f"({100 * int(kill.sum()) / max(n_wind, 1):.1f} % of the retrieved winds) to missing: "
+            + ", ".join(parts)
+            + ". Such values usually mean folded velocities or edge artefacts."
+        )
+    if int(bad_w.sum()):
+        out.append(
+            f"Quality control set {int(bad_w.sum())} vertical velocities "
+            f"({100 * int(bad_w.sum()) / max(n_w, 1):.1f} % of those retrieved) with "
+            f"|w| above {opts.max_abs_w:g} m/s to missing."
+        )
+    return out
+
+
+def _level_coverage(fields: dict[str, np.ndarray], z: np.ndarray) -> list[dict[str, float]]:
+    """Per height: share (%) of the cells with two or more radars, a wind, and a ``w``."""
+    cells = fields["u"][0].size
+    n_rad = fields["n_radars"]
+    wind = np.isfinite(fields["u"]) & np.isfinite(fields["v"])
+    w_ok = np.isfinite(fields["w"])
+    out = []
+    for k, zk in enumerate(z):
+        out.append(
+            {
+                "z_m": float(zk),
+                "dual_pct": 100.0 * float((n_rad[k] >= 2).sum()) / cells,
+                "wind_pct": 100.0 * float(wind[k].sum()) / cells,
+                "w_pct": 100.0 * float(w_ok[k].sum()) / cells,
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1343,6 +1880,12 @@ def to_dataset(rec: WindRecord) -> xr.Dataset:
         )
         for i, name in enumerate(FIELD_ORDER)
     }
+    for name, vals in (rec.raw or {}).items():
+        data[f"{name}_raw"] = (
+            ("z", "y", "x"),
+            vals,
+            {"units": "m/s", "long_name": f"{FIELD_INFO[name][1]} before quality control"},
+        )
     return xr.Dataset(
         data,
         coords={
@@ -1358,6 +1901,10 @@ def to_dataset(rec: WindRecord) -> xr.Dataset:
             "origin_latitude": rec.origin[0],
             "origin_longitude": rec.origin[1],
             "radars": ", ".join(r["name"] for r in rec.radars),
+            "radar_names": [str(r["name"]) for r in rec.radars],
+            "radar_latitude": [float(r["latitude"]) for r in rec.radars],
+            "radar_longitude": [float(r["longitude"]) for r in rec.radars],
+            "analysis_time": str(rec.summary.get("analysis_time") or ""),
             "Conventions": "CF-1.8",
         },
     )
@@ -1365,5 +1912,7 @@ def to_dataset(rec: WindRecord) -> xr.Dataset:
 
 def write_netcdf(rec: WindRecord, path: str | Path) -> None:
     ds = to_dataset(rec)
-    enc = {n: {"zlib": True, "complevel": 1, "_FillValue": np.float32(np.nan)} for n in FIELD_ORDER}
+    enc = {
+        n: {"zlib": True, "complevel": 1, "_FillValue": np.float32(np.nan)} for n in ds.data_vars
+    }
     ds.to_netcdf(path, engine="netcdf4", format="NETCDF4", encoding=enc)
