@@ -112,6 +112,9 @@ SAVE_TEXT_MAX_BYTES = 20 * 1024 * 1024
 WEB_SAVE_TEXT_MAX_BYTES = 5 * 1024 * 1024
 
 
+#: Identifies this engine process; reported by ``ping`` (see ``_handle_ping``).
+ENGINE_ID = uuid.uuid4().hex
+
 # True while the current message task has announced progress < 100 without closing it.
 _PROGRESS_OPEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "xradar_progress_open", default=False
@@ -1415,6 +1418,9 @@ class ConnectionHandler:
                 "status": "ok",
                 "file_open": has_file,
                 "memory": memory_status(),
+                # Differs after the engine process was restarted (crash, kill, update): the UI
+                # then knows its file ids are gone instead of failing on each request.
+                "engine_id": ENGINE_ID,
             }
         )
 

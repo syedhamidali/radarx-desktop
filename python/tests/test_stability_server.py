@@ -263,6 +263,38 @@ class TestDamagedDataOnRead:
         assert "I/O error" not in text
 
 
+class TestEngineIdentity:
+    @pytest.mark.asyncio
+    async def test_pong_carries_a_stable_engine_id(self) -> None:
+        """The UI compares it after a reconnect: same id = same engine, new id = it restarted."""
+        a, _ = _make_handler()
+        b, _ = _make_handler()
+        await _send(a, {"type": "ping"})
+        await _send(b, {"type": "ping"})
+        await _send(a, {"type": "ping"})
+        ids = {m["engine_id"] for h in (a, b) for m in h._sent if m["type"] == "pong"}
+        assert ids == {server.ENGINE_ID}
+        assert len(server.ENGINE_ID) == 32
+
+    def test_each_engine_process_has_its_own_id(self) -> None:
+        import subprocess
+
+        code = "import sys; sys.path.insert(0, '.'); import server; print(server.ENGINE_ID)"
+        out = [
+            subprocess.run(
+                [sys.executable, "-c", code], capture_output=True, text=True, cwd=server_dir()
+            ).stdout.strip()
+            for _ in range(2)
+        ]
+        assert out[0] and out[1] and out[0] != out[1] != server.ENGINE_ID
+
+
+def server_dir() -> str:
+    from pathlib import Path
+
+    return str(Path(server.__file__).resolve().parent)
+
+
 def test_synthetic_tree_helper_is_sane() -> None:
     assert len(make_synthetic_datatree(n_azimuth=4, n_range=4).children) == 3
     assert Result is not None
