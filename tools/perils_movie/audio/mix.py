@@ -17,10 +17,18 @@ from .wavio import read_wav, to_pcm, write_wav  # noqa: F401
 PRIORITY = ["thunder", "tornado", "hail", "rain", "wind", "convective", "ambient"]
 # by the ducking layer: (threshold dB re full scale of its 10 ms level, ratio, max reduction dB); a
 # layer is only ducked when the one above is within 3 dB of it or louder (they compete)
-DUCK = {"thunder": (-30.0, 0.5, 10.0), "tornado": (-32.0, 0.5, 6.0), "hail": (-36.0, 0.5, 4.0), "rain": (-42.0, 0.4, 3.0)}
+DUCK = {
+    "thunder": (-30.0, 0.5, 10.0),
+    "tornado": (-32.0, 0.5, 6.0),
+    "hail": (-36.0, 0.5, 4.0),
+    "rain": (-42.0, 0.4, 3.0),
+}
 
 # K-weighting at 48 kHz (ITU-R BS.1770-4)
-_K1 = ([1.53512485958697, -2.69169618940638, 1.19839281085285], [1.0, -1.69065929318241, 0.73248077421585])
+_K1 = (
+    [1.53512485958697, -2.69169618940638, 1.19839281085285],
+    [1.0, -1.69065929318241, 0.73248077421585],
+)
 _K2 = ([1.0, -2.0, 1.0], [1.0, -1.99004745483398, 0.99007225036621])
 
 
@@ -80,7 +88,9 @@ def _smooth_gain(red_db: np.ndarray, attack_s=0.02, release_s=0.4) -> np.ndarray
     return out
 
 
-def duck_layers(layers: dict[str, np.ndarray], sr: int) -> tuple[dict[str, np.ndarray], dict[str, float], dict[str, float]]:
+def duck_layers(
+    layers: dict[str, np.ndarray], sr: int
+) -> tuple[dict[str, np.ndarray], dict[str, float], dict[str, float]]:
     """Apply the priority sidechain. Returns (ducked layers, max reduction in dB per layer)."""
     env = {k: level_env_db(v, sr) for k, v in layers.items()}
     out, maxred, meanred = {}, {}, {}
@@ -115,7 +125,9 @@ def fade_curve(n: int, sr: int, fade_in_s=2.0, fade_out_s=2.5) -> np.ndarray:
     return g
 
 
-def limiter_gain(x: np.ndarray, sr: int, ceiling_db: float = -1.6, window_s: float = 0.01) -> np.ndarray:
+def limiter_gain(
+    x: np.ndarray, sr: int, ceiling_db: float = -1.6, window_s: float = 0.01
+) -> np.ndarray:
     """Look-ahead peak limiter as a gain curve (min filter, then an equal-length average: the
     smoothed gain can never exceed the requirement at any sample)."""
     ceil = 10 ** (ceiling_db / 20.0)
@@ -125,8 +137,15 @@ def limiter_gain(x: np.ndarray, sr: int, ceiling_db: float = -1.6, window_s: flo
     return uniform_filter1d(minimum_filter1d(req, w, mode="nearest"), w, mode="nearest")
 
 
-def master(layers: dict[str, np.ndarray], sr: int, target_lufs=-23.0, ceiling_db=-1.6, tp_max_db=-1.0,
-           fade_in_s=2.0, fade_out_s=2.5):
+def master(
+    layers: dict[str, np.ndarray],
+    sr: int,
+    target_lufs=-23.0,
+    ceiling_db=-1.6,
+    tp_max_db=-1.0,
+    fade_in_s=2.0,
+    fade_out_s=2.5,
+):
     """Duck, sum, fade, normalise to the target loudness, limit. Returns (stereo, info, stems)."""
     ducked, maxred, meanred = duck_layers(layers, sr)
     n = next(iter(layers.values())).shape[1]
@@ -168,7 +187,9 @@ def master(layers: dict[str, np.ndarray], sr: int, target_lufs=-23.0, ceiling_db
         "mono_compat": {
             "stereo_rms_dbfs": float(20 * np.log10(max(st_rms, 1e-12))),
             "mono_sum_rms_dbfs": float(20 * np.log10(max(np.sqrt(np.mean(mono**2)), 1e-12))),
-            "mono_loss_db": float(20 * np.log10(max(st_rms, 1e-12) / max(np.sqrt(np.mean(mono**2)), 1e-12))),
+            "mono_loss_db": float(
+                20 * np.log10(max(st_rms, 1e-12) / max(np.sqrt(np.mean(mono**2)), 1e-12))
+            ),
             "lr_correlation": corr,
         },
     }

@@ -27,6 +27,7 @@ from .scene import CTL_RATE, Scene
 
 # --------------------------------------------------------------------------- level curves
 
+
 def rain_level_db(rate_mmh):
     """Perceptual (log) loudness of rain vs rain rate: -58 dB at 0 mm/h, +14 dB per decade of
     (1 + R): 1 mm/h -> -54, 10 -> -44.5, 100 -> -30 dB (pre-master). Monotonic."""
@@ -79,6 +80,7 @@ def tornado_cutoff_hz(d_m):
 
 # --------------------------------------------------------------------------- ambient + convective
 
+
 def render_ambient(sr: int, n: int, seed: int, level_db: float = -64.0):
     """A very quiet pre-storm bed: low-passed pink-ish NOISE (clearly synthetic: no insects, no room
     tone, no music)."""
@@ -100,34 +102,53 @@ def render_convective(scene: Scene, sr: int, n: int, seed: int, max_db: float = 
     idx, source = scene.convective()
     rng = np.random.default_rng(seed)
     f = np.fft.rfftfreq(n, 1 / sr)
-    shape = (1.0 / np.maximum(f, 25.0)) * (f**2 / (f**2 + 25.0**2)) / np.sqrt(1.0 + (f / 160.0) ** 4)
+    shape = (
+        (1.0 / np.maximum(f, 25.0)) * (f**2 / (f**2 + 25.0**2)) / np.sqrt(1.0 + (f / 160.0) ** 4)
+    )
     out = np.zeros((2, n))
     for ch in (0, 1):
         x = np.fft.irfft(np.fft.rfft(rng.standard_normal(n)) * shape, n)
         out[ch] = x / x.std()
     slow = 1.0 + 0.3 * ctl_to_audio(
-        sosfilt(butter(2, 0.3, fs=CTL_RATE, output="sos"), rng.standard_normal(scene.n)) * 3.0, n, sr
+        sosfilt(butter(2, 0.3, fs=CTL_RATE, output="sos"), rng.standard_normal(scene.n)) * 3.0,
+        n,
+        sr,
     )
     out *= ctl_to_audio(idx, n, sr) * 10 ** (max_db / 20.0) * np.clip(slow, 0.4, 1.6)
-    return out, {"source": source, "convective_fraction_of_clip": float((idx > 0.05).mean()),
-                 "max_db_premaster": max_db}
+    return out, {
+        "source": source,
+        "convective_fraction_of_clip": float((idx > 0.05).mean()),
+        "max_db_premaster": max_db,
+    }
 
 
 # --------------------------------------------------------------------------- tornado
+
 
 def render_tornado(scene: Scene, sr: int, n: int, seed: int):
     """STYLISED 'freight train' roar + debris rattle. Level = f(distance listener -> observed
     tornado position) while the track / events say it exists; exactly zero without evidence."""
     dist, exist, srcs = scene.tornado()
     if not exist.any():
-        return np.zeros((2, n)), {"evidence": [], "active_seconds": 0.0, "stylised": True,
-                                  "note": "no tornado evidence in the window: silent"}
+        return np.zeros((2, n)), {
+            "evidence": [],
+            "active_seconds": 0.0,
+            "stylised": True,
+            "note": "no tornado evidence in the window: silent",
+        }
     rng = np.random.default_rng(seed)
     a = tornado_gain(dist) * exist
     bearing = scene.tornado_bearing()
     rel = rel_azimuth_deg(bearing, scene.heading)
-    roar = banded_stereo(n, sr, a, tornado_cutoff_hz(dist), seed + 3, rho=0.7,
-                         centers=(40.0, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0))
+    roar = banded_stereo(
+        n,
+        sr,
+        a,
+        tornado_cutoff_hz(dist),
+        seed + 3,
+        rho=0.7,
+        centers=(40.0, 63.0, 125.0, 250.0, 500.0, 1000.0, 2000.0),
+    )
     # a rotating throb (the structure of the roar), 1.5 to 2.5 Hz, ~25 %
     t = np.arange(n) / sr
     throb = 1.0 + 0.25 * np.sin(2 * np.pi * 2.0 * t + 0.4 * np.sin(2 * np.pi * 0.11 * t))
@@ -146,9 +167,12 @@ def render_tornado(scene: Scene, sr: int, n: int, seed: int):
         r = convolve_events(n, idx[sel], amps[sel], kern)
         out[ch] += r * ctl_to_audio(tornado_gain(dist) * prox, n, sr) * 0.6
     info = {
-        "evidence": srcs, "stylised": True,
+        "evidence": srcs,
+        "stylised": True,
         "active_seconds": float((exist > 0.5).mean() * scene.duration),
-        "nearest_distance_m": float(np.min(dist[np.isfinite(dist)])) if np.isfinite(dist).any() else None,
+        "nearest_distance_m": float(np.min(dist[np.isfinite(dist)]))
+        if np.isfinite(dist).any()
+        else None,
         "max_level_db_premaster": float(20 * np.log10(max(a.max(), 1e-9))),
         "note": "STYLISED sound; position from the survey / radar evidence, timbre invented",
     }

@@ -20,7 +20,9 @@ def thunder_delay_s(distance_m, speedup: float = 1.0):
     return np.asarray(distance_m, float) / SPEED_OF_SOUND_MS / float(speedup)
 
 
-def air_absorption_db_per_m(f_hz, temp_c: float = 15.0, rh_pct: float = 80.0, p_hpa: float = 1000.0):
+def air_absorption_db_per_m(
+    f_hz, temp_c: float = 15.0, rh_pct: float = 80.0, p_hpa: float = 1000.0
+):
     """Pure-tone atmospheric absorption coefficient, ISO 9613-1:1993 (dB per metre)."""
     f = np.asarray(f_hz, float)
     T = temp_c + 273.15
@@ -31,12 +33,16 @@ def air_absorption_db_per_m(f_hz, temp_c: float = 15.0, rh_pct: float = 80.0, p_
     frO = pa * (24.0 + 4.04e4 * h * (0.02 + h) / (0.391 + h))
     frN = pa * (T / T0) ** -0.5 * (9.0 + 280.0 * h * np.exp(-4.170 * ((T / T0) ** (-1 / 3) - 1.0)))
     f2 = f * f
-    a = 8.686 * f2 * (
-        1.84e-11 / pa * (T / T0) ** 0.5
-        + (T / T0) ** -2.5
+    a = (
+        8.686
+        * f2
         * (
-            0.01275 * np.exp(-2239.1 / T) / (frO + f2 / frO)
-            + 0.1068 * np.exp(-3352.0 / T) / (frN + f2 / frN)
+            1.84e-11 / pa * (T / T0) ** 0.5
+            + (T / T0) ** -2.5
+            * (
+                0.01275 * np.exp(-2239.1 / T) / (frO + f2 / frO)
+                + 0.1068 * np.exp(-3352.0 / T) / (frN + f2 / frN)
+            )
         )
     )
     return a
@@ -74,7 +80,9 @@ def binaural(mono: np.ndarray, sr: int, az_rel_deg: float, el_deg: float = 0.0) 
     th = np.arcsin(abs(p))
     itd = HEAD_RADIUS_M / SPEED_OF_SOUND_MS * (th + np.sin(th))
     d = round(itd * sr)
-    ang = (0.7 * p + 1.0) * np.pi / 4.0  # +-0.7: about 13 dB between the ears at 90 deg, not a hard pan
+    ang = (
+        (0.7 * p + 1.0) * np.pi / 4.0
+    )  # +-0.7: about 13 dB between the ears at 90 deg, not a hard pan
     gl, gr = np.cos(ang), np.sin(ang)
     x = mono.astype(np.float64)
     behind = abs(float(az_rel_deg)) > 90.0

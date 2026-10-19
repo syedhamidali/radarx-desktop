@@ -44,10 +44,12 @@ SR = 48000
 
 
 def cam(heading=0.0, dur=60.0):
-    return CameraPath([
-        {"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 0.0, "heading_deg": heading},
-        {"t_clip_s": dur, "lat": LAT0, "lon": LON0, "alt_m": 0.0, "heading_deg": heading},
-    ])
+    return CameraPath(
+        [
+            {"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 0.0, "heading_deg": heading},
+            {"t_clip_s": dur, "lat": LAT0, "lon": LON0, "alt_m": 0.0, "heading_deg": heading},
+        ]
+    )
 
 
 def flash_at(east, north, alt=3000.0, t=10.0, fid="f", n=1, power=5.0):
@@ -56,7 +58,9 @@ def flash_at(east, north, alt=3000.0, t=10.0, fid="f", n=1, power=5.0):
     return Flash(fid, t, t + 0.01 * n, (la, lo, alt), src, n)
 
 
-def station(rain=None, dm=None, wind=None, de=0.0, dn=0.0, events=None, wdir=270.0, dbz=None, sid="S"):
+def station(
+    rain=None, dm=None, wind=None, de=0.0, dn=0.0, events=None, wdir=270.0, dbz=None, sid="S"
+):
     la, lo = offset_ll(LAT0, LON0, de, dn)
     t = np.array([0.0, 100000.0])
     ser = {}
@@ -85,7 +89,7 @@ def rms(x):
     return float(np.sqrt(np.mean(np.asarray(x) ** 2)))
 
 
-# ----------------------------------------------------------------------------- thunder
+# ---------------------------------------------- thunder
 
 
 @pytest.mark.parametrize("speedup", [1.0, 5.0, 12.5])
@@ -96,14 +100,22 @@ def test_thunder_delay_is_distance_over_343_over_speedup_exactly(speedup):
     d = row["dist_nearest_m"]
     assert d == pytest.approx(5000.0, rel=2e-3)
     assert row["delay_nearest_clip_s"] == pytest.approx(d / SPEED_OF_SOUND_MS / speedup, abs=1e-9)
-    assert row["delay_nearest_clip_s"] == pytest.approx(float(thunder_delay_s(d, speedup)), abs=1e-9)
+    assert row["delay_nearest_clip_s"] == pytest.approx(
+        float(thunder_delay_s(d, speedup)), abs=1e-9
+    )
     t_flash = float(tl.data_to_clip(f.t_start_s))
-    assert row["first_arrival_clip_s"] == pytest.approx(t_flash + d / SPEED_OF_SOUND_MS / speedup, abs=1e-9)
+    assert row["first_arrival_clip_s"] == pytest.approx(
+        t_flash + d / SPEED_OF_SOUND_MS / speedup, abs=1e-9
+    )
 
 
 def test_thunder_delay_follows_a_varying_speedup():
-    tl = Timeline.from_dict({"clip_duration_s": 120, "speedup": [{"t_clip_s": 0, "speedup": 2.0},
-                                                                  {"t_clip_s": 120, "speedup": 10.0}]})
+    tl = Timeline.from_dict(
+        {
+            "clip_duration_s": 120,
+            "speedup": [{"t_clip_s": 0, "speedup": 2.0}, {"t_clip_s": 120, "speedup": 10.0}],
+        }
+    )
     f = flash_at(0.0, 6860.0, alt=0.0, t=float(tl.clip_to_data(40.0)))
     row = plan_flash(f, tl, cam(0.0, 120.0), 120.0, ThunderParams())
     # sound arrives at data time t + r/343: the clip delay is that, mapped through the clock
@@ -120,8 +132,10 @@ def test_audio_is_silent_before_the_arrival_and_loud_after():
     th = stems["thunder"]
     arr = rep["thunder"]["flashes"][0]["first_arrival_clip_s"]
     assert arr == pytest.approx(10.0 + 2.0, abs=0.01)
-    assert rms(th[:, : int((arr - 0.3) * SR)]) < 1e-4 * rms(th[:, int(arr * SR): int((arr + 1.5) * SR)])
-    assert rms(th[:, int(arr * SR): int((arr + 1.5) * SR)]) > 1e-3
+    assert rms(th[:, : int((arr - 0.3) * SR)]) < 1e-4 * rms(
+        th[:, int(arr * SR) : int((arr + 1.5) * SR)]
+    )
+    assert rms(th[:, int(arr * SR) : int((arr + 1.5) * SR)]) > 1e-3
 
 
 def test_a_long_flash_starts_at_its_nearest_part_and_rolls_on():
@@ -181,23 +195,34 @@ def test_pan_sign_matches_the_azimuth():
 
 @pytest.mark.parametrize(
     ("heading", "east", "north", "louder"),
-    [(0.0, -8000.0, 0.0, 0), (0.0, 8000.0, 0.0, 1), (90.0, 0.0, 8000.0, 0), (90.0, 0.0, -8000.0, 1)],
+    [
+        (0.0, -8000.0, 0.0, 0),
+        (0.0, 8000.0, 0.0, 1),
+        (90.0, 0.0, 8000.0, 0),
+        (90.0, 0.0, -8000.0, 1),
+    ],
 )
-def test_flash_to_the_left_of_the_heading_is_louder_in_the_left_channel(heading, east, north, louder):
+def test_flash_to_the_left_of_the_heading_is_louder_in_the_left_channel(
+    heading, east, north, louder
+):
     tl = Timeline.constant(30.0, 5.0)
     b = bundle(flashes=[flash_at(east, north, alt=0.0, t=50.0, n=30)])
     _, rep, stems = render_mix(b, tl, cam(heading, 30.0), layers={"thunder"})
     th = stems["thunder"]
     assert rms(th[louder]) > 1.2 * rms(th[1 - louder])
-    assert rep["thunder"]["flashes"][0]["az_rel_nearest_deg"] == pytest.approx(-90.0 if louder == 0 else 90.0, abs=1.0)
+    assert rep["thunder"]["flashes"][0]["az_rel_nearest_deg"] == pytest.approx(
+        -90.0 if louder == 0 else 90.0, abs=1.0
+    )
 
 
 def test_dense_bursts_are_thinned_and_counted():
     tl = Timeline.constant(30.0, 5.0)
     prm = ThunderParams()
     ang = np.radians(np.arange(12) * 30.0)
-    flashes = [flash_at(5000.0 * np.sin(a), 5000.0 * np.cos(a), alt=0.0, t=50.0, fid=f"f{i}")
-               for i, a in enumerate(ang)]
+    flashes = [
+        flash_at(5000.0 * np.sin(a), 5000.0 * np.cos(a), alt=0.0, t=50.0, fid=f"f{i}")
+        for i, a in enumerate(ang)
+    ]
     rows = [plan_flash(f, tl, cam(0.0, 30.0), 30.0, prm) for f in flashes]
     counts = select_flashes(rows, prm)
     assert counts["rendered"] <= prm.window_cap * 2
@@ -212,7 +237,7 @@ def test_air_absorption_is_iso_9613_like():
     assert a[0] < a[1] < a[2]
 
 
-# ----------------------------------------------------------------------------- rain / wind
+# ---------------------------------------------- rain / wind
 
 
 def test_rain_curve_and_rendered_level_rise_with_the_rain_rate():
@@ -236,11 +261,15 @@ def test_no_rain_means_silence_and_far_rain_is_only_a_quiet_hiss():
     n_out, _ = wx.render_rain(near, SR, 4 * SR, 3)
     f_out, _ = wx.render_rain(far, SR, 4 * SR, 3)
     assert rms(f_out) < 0.25 * rms(n_out)
-    assert spectral_centroid(f_out[0], SR) > spectral_centroid(n_out[0], SR) * 0.5  # hiss, not a rumble
+    assert (
+        spectral_centroid(f_out[0], SR) > spectral_centroid(n_out[0], SR) * 0.5
+    )  # hiss, not a rumble
 
 
 def test_rain_nearest_station_wins():
-    b = bundle([station(rain=2.0, de=500.0, sid="near"), station(rain=100.0, de=40000.0, sid="far")])
+    b = bundle(
+        [station(rain=2.0, de=500.0, sid="near"), station(rain=100.0, de=40000.0, sid="far")]
+    )
     sc = scene(b, dur=3.0)
     v, _d, ok = sc.blend("rain_rate_mmh")
     assert ok.all()
@@ -268,7 +297,7 @@ def test_wind_from_the_right_is_louder_on_the_right():
     assert rms(out[0]) > rms(out[1])
 
 
-# ----------------------------------------------------------------------------- tornado / hail
+# ---------------------------------------------- tornado / hail
 
 
 def test_tornado_roar_rises_with_proximity():
@@ -276,7 +305,7 @@ def test_tornado_roar_rises_with_proximity():
     for d in (9000.0, 3000.0, 1000.0, 400.0):
         sc = scene(bundle(tornadoes=[tor_track(d, 0.0)]), dur=6.0)
         out, info = ly.render_tornado(sc, SR, 6 * SR, 9)
-        levels.append(rms(out[:, 2 * SR:]))
+        levels.append(rms(out[:, 2 * SR :]))
         assert info["stylised"] is True
     assert all(b > a for a, b in itertools.pairwise(levels)), levels
     assert ly.tornado_cutoff_hz(8000.0) < ly.tornado_cutoff_hz(500.0)  # muffled when far
@@ -295,7 +324,7 @@ def test_tornado_is_silent_without_evidence_or_outside_its_track_time():
     ev = Event("tornado", None, 2.0, None, 4.0, None, None, 0.0, {})
     sc = scene(bundle(tornadoes=[tor_track(500.0, 0.0)]), dur=8.0, events=[ev])
     out, _ = ly.render_tornado(sc, SR, 8 * SR, 9)
-    assert rms(out[:, int(2.5 * SR): int(3.5 * SR)]) > 20 * rms(out[:, int(7.6 * SR):])
+    assert rms(out[:, int(2.5 * SR) : int(3.5 * SR)]) > 20 * rms(out[:, int(7.6 * SR) :])
 
 
 def test_hail_only_with_events_near_the_listener():
@@ -303,12 +332,18 @@ def test_hail_only_with_events_near_the_listener():
     out, info = wx.render_hail(sc, SR, 8 * SR, 11)
     assert np.all(out == 0.0)
     assert info["evidence"] == []
-    ev = {"type": "hail_candidate", "t_s": 10.0, "t_end_s": 30.0, "dm_mm": 15.0, "dbz": 62.0,
-          "rain_rate_mmh": 100.0}  # data 10..30 s = clip 2..6 s at speedup 5
+    ev = {
+        "type": "hail_candidate",
+        "t_s": 10.0,
+        "t_end_s": 30.0,
+        "dm_mm": 15.0,
+        "dbz": 62.0,
+        "rain_rate_mmh": 100.0,
+    }  # data 10..30 s = clip 2..6 s at speedup 5
     sc = scene(bundle([station(rain=60.0, dm=3.0, de=500.0, events=[ev])]), dur=8.0)
     out, info = wx.render_hail(sc, SR, 8 * SR, 11)
-    assert rms(out[:, 2 * SR: 6 * SR]) > 0
-    assert rms(out[:, 7 * SR:]) == 0.0
+    assert rms(out[:, 2 * SR : 6 * SR]) > 0
+    assert rms(out[:, 7 * SR :]) == 0.0
     assert info["events"] > 0
     # the same event but the station is 30 km away: no hail at the listener
     far = scene(bundle([station(rain=60.0, de=30000.0, events=[ev])]), dur=8.0)
@@ -317,7 +352,14 @@ def test_hail_only_with_events_near_the_listener():
 
 
 def _hail_scene(**ev_kw):
-    ev = {"type": "hail_candidate", "t_s": 0.0, "t_end_s": 100.0, "dm_mm": 8.0, "rain_rate_mmh": 80.0, **ev_kw}
+    ev = {
+        "type": "hail_candidate",
+        "t_s": 0.0,
+        "t_end_s": 100.0,
+        "dm_mm": 8.0,
+        "rain_rate_mmh": 80.0,
+        **ev_kw,
+    }
     return scene(bundle([station(rain=60.0, de=300.0, events=[ev])]), dur=6.0)
 
 
@@ -359,10 +401,15 @@ def test_hail_is_deterministic_and_marks_assumed_inputs():
 
 
 def test_events_json_is_parsed_with_clip_or_iso_times():
-    ev = parse_events({"events": [
-        {"type": "Tornado", "t_clip_s": 10, "t_end_clip_s": 40, "lat": 33.5, "lon": -88.5},
-        {"type": "hail", "time": "2022-03-30T20:01:00Z", "lat": 33.5, "lon": -88.5},
-    ]}, WINDOW_START)
+    ev = parse_events(
+        {
+            "events": [
+                {"type": "Tornado", "t_clip_s": 10, "t_end_clip_s": 40, "lat": 33.5, "lon": -88.5},
+                {"type": "hail", "time": "2022-03-30T20:01:00Z", "lat": 33.5, "lon": -88.5},
+            ]
+        },
+        WINDOW_START,
+    )
     assert ev[0].type == "tornado"
     assert ev[0].t_clip_s == 10
     assert ev[1].t_data_s == pytest.approx(60.0)
@@ -378,7 +425,7 @@ def test_convective_bed_follows_the_core_and_is_absent_in_stratiform():
     assert c_info["source"] == "station_dbz"
 
 
-# ----------------------------------------------------------------------------- mix
+# ---------------------------------------------- mix
 
 
 def test_lufs_meter_reads_a_reference_tone():
@@ -392,7 +439,7 @@ def test_priority_ducking_lowers_the_layers_below_a_loud_thunder_only():
     rng = np.random.default_rng(0)
     bed = 0.01 * rng.standard_normal((2, n))
     th = np.zeros((2, n))
-    th[:, 2 * SR: 3 * SR] = 0.3 * rng.standard_normal((2, SR))
+    th[:, 2 * SR : 3 * SR] = 0.3 * rng.standard_normal((2, SR))
     out, reduction, _ = mx.duck_layers({"thunder": th, "wind": bed.copy()}, SR)
     assert reduction["wind"] > 3.0
     assert rms(out["wind"][:, : SR // 2]) == pytest.approx(rms(bed[:, : SR // 2]), rel=0.02)
@@ -430,7 +477,13 @@ def test_synthetic_storm_is_mono_compatible_and_report_is_complete(storm):
     assert len(fl) == 40
     assert sum(rep["thunder"]["counts"].values()) == 40
     row = next(f for f in fl if f["status"] == "rendered")
-    for key in ("dist_nearest_m", "dist_farthest_m", "delay_nearest_clip_s", "first_arrival_clip_s", "az_rel_nearest_deg"):
+    for key in (
+        "dist_nearest_m",
+        "dist_farthest_m",
+        "delay_nearest_clip_s",
+        "first_arrival_clip_s",
+        "az_rel_nearest_deg",
+    ):
         assert key in row
     json.dumps(rep)  # serialisable
     # the rain peaks with the rain core, the wind with the gust front (data ~300 s = clip ~60 s)
@@ -462,7 +515,7 @@ def test_wav_roundtrip_24_and_16_bit(tmp_path):
         assert np.abs(y.T - x).max() < tol
 
 
-# ----------------------------------------------------------------------------- mux
+# ---------------------------------------------- mux
 
 _MUX_SCRIPT = """
 import json, sys
@@ -472,7 +525,9 @@ from perils_movie.audio.mux import mux_audio
 c = av.open(sys.argv[2], "w", options={"movflags": "+faststart"})
 s = c.add_stream("libx264", rate=30); s.width, s.height, s.pix_fmt = 64, 64, "yuv420p"
 for i in range(90):
-    for p in s.encode(av.VideoFrame.from_ndarray(np.full((64, 64, 3), i, np.uint8), format="rgb24")): c.mux(p)
+    frame = av.VideoFrame.from_ndarray(np.full((64, 64, 3), i, np.uint8), format="rgb24")
+    for p in s.encode(frame):
+        c.mux(p)
 for p in s.encode(): c.mux(p)
 c.close()
 print(json.dumps(mux_audio(sys.argv[2], sys.argv[3], sys.argv[4])))
@@ -499,8 +554,20 @@ def test_mux_keeps_the_video_frame_count_and_duration(tmp_path):
     script = tmp_path / "run.py"
     script.write_text(_MUX_SCRIPT)
     tools = str(Path(__file__).resolve().parents[2] / "tools")
-    r = subprocess.run([py, "-I", str(script), tools, str(tmp_path / "in.mp4"), str(wav), str(tmp_path / "out.mp4")],
-                       capture_output=True, text=True, check=True)
+    r = subprocess.run(
+        [
+            py,
+            "-I",
+            str(script),
+            tools,
+            str(tmp_path / "in.mp4"),
+            str(wav),
+            str(tmp_path / "out.mp4"),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
     res = json.loads(r.stdout.strip().splitlines()[-1])
     assert res["before"]["video_packets"] == res["after"]["video_packets"] == 90
     assert res["after"]["duration_s"] == pytest.approx(res["before"]["duration_s"], abs=0.05)
@@ -509,7 +576,7 @@ def test_mux_keeps_the_video_frame_count_and_duration(tmp_path):
     assert res["audio_samples"] == pytest.approx(3.0 * SR, abs=SR * 0.05)
 
 
-# ----------------------------------------------------------------------------- drop spectra, MRR, wind events, provenance
+# ---------------------------------------------- drop spectra, MRR, wind events, provenance
 
 
 def exp_dsd(dm, rate=20.0, nt=3):
@@ -539,14 +606,20 @@ def test_dsd_loader_reads_counts_and_concentrations(tmp_path):
     from perils_movie.audio.dsd import dm_from_fall_speed, fall_speed_ms, load_dsd
 
     d = np.linspace(0.3, 6.0, 20)
-    np.savez(tmp_path / "S_dsd.npz", t_s=np.arange(0.0, 300.0, 60.0), diameter_mm=d,
-             counts=np.full((5, 20), 50.0))
+    np.savez(
+        tmp_path / "S_dsd.npz",
+        t_s=np.arange(0.0, 300.0, 60.0),
+        diameter_mm=d,
+        counts=np.full((5, 20), 50.0),
+    )
     dsd = load_dsd(tmp_path / "S_dsd.npz")
     assert dsd is not None
     assert dsd.from_counts is True
     assert dsd.N.shape == (5, 20)
     assert dsd.rain_rate_mmh(dsd.N)[0] > 0
-    np.savez(tmp_path / "T_dsd.npz", time_s=np.arange(0.0, 300.0, 60.0), d_mm=d, nd=np.ones((5, 20)))
+    np.savez(
+        tmp_path / "T_dsd.npz", time_s=np.arange(0.0, 300.0, 60.0), d_mm=d, nd=np.ones((5, 20))
+    )
     assert load_dsd(tmp_path / "T_dsd.npz").from_counts is False
     assert load_dsd(tmp_path / "missing.npz") is None
     # the fall-speed inverse
@@ -650,8 +723,8 @@ def test_gust_front_swell_follows_the_observed_wind_jump_and_the_gust_series():
     s.series["wind_dir_deg"] = tseries(t, [180.0] * 4)
     sc = scene(bundle([s]), dur=12.0)
     out, info = wx.render_wind(sc, SR, 12 * SR, 5)
-    before = rms(out[:, SR: 4 * SR])
-    after = rms(out[:, 8 * SR: 11 * SR])
+    before = rms(out[:, SR : 4 * SR])
+    after = rms(out[:, 8 * SR : 11 * SR])
     assert after > 8 * before  # > 18 dB swell, from the data
     assert info["gust_fronts"]
     assert info["gust_fronts"][0]["wind_rise_ms"] >= 5.0
@@ -671,7 +744,9 @@ def test_report_provenance_names_the_stations_and_instruments_that_drove_each_la
     s1.type, s1.meta = "pips", {"network": "PIPS"}
     s2 = station(rain=5.0, wind=4.0, sid="STK", de=9000.0)
     s2.type = "sticknet"
-    s1.events = [{"type": "hail_candidate", "t_s": 0.0, "t_end_s": 60.0, "dmax_mm": 12.0, "counts": 30}]
+    s1.events = [
+        {"type": "hail_candidate", "t_s": 0.0, "t_end_s": 60.0, "dmax_mm": 12.0, "counts": 30}
+    ]
     tl = Timeline.constant(20.0, 5.0)
     _, rep, _ = render_mix(bundle([s1, s2], tornadoes=[tor_track(2000.0, 0.0)]), tl, cam(0.0, 20.0))
     prov = rep["provenance"]
@@ -689,12 +764,13 @@ def test_report_provenance_names_the_stations_and_instruments_that_drove_each_la
     json.dumps(rep)
 
 
-# ----------------------------------------------------------------------------- the data agent's bundle layout
+# ---------------------------------------------- the data agent's bundle layout
 
 
 def write_real_layout_bundle(d: Path) -> Path:
     """A tiny bundle in the layout written by tools/perils_movie/build_bundle.py (feat/perils-data):
-    stations with null values, a PIPS spectrum npz (fall-speed AXIS, counts matrix), hail_events.json,
+    stations with null values, a PIPS spectrum npz (fall-speed AXIS, counts matrix),
+    hail_events.json,
     an MRR profile npz, a tornado record with a null width, and one radar volume npz."""
     from perils_movie.audio.radar import aeqd_km  # noqa: F401
 
@@ -706,40 +782,120 @@ def write_real_layout_bundle(d: Path) -> Path:
     t = list(np.arange(0.0, 600.0, 10.0))
     nt = len(t)
     pips = {
-        "id": "PIPS1B", "name": "PIPS 1B", "type": "PIPS: Parsivel2 disdrometer + surface meteorology",
-        "lat": LAT0, "lon": LON0, "alt_m": 90.0, "credit": "Purdue / Penn State", "instrument": "Parsivel2",
+        "id": "PIPS1B",
+        "name": "PIPS 1B",
+        "type": "PIPS: Parsivel2 disdrometer + surface meteorology",
+        "lat": LAT0,
+        "lon": LON0,
+        "alt_m": 90.0,
+        "credit": "Purdue / Penn State",
+        "instrument": "Parsivel2",
         "series": {
-            "t_s": t, "rain_rate_mmh": [20.0] * nt, "dm_mm": [None] * 5 + [2.0] * (nt - 5),
-            "wind_speed_ms": [6.0] * nt, "wind_gust_ms": [11.0] * nt, "wind_dir_deg": [200.0] * nt,
-            "pressure_hpa": [1000.0] * nt, "temperature_c": [20.0] * nt,
+            "t_s": t,
+            "rain_rate_mmh": [20.0] * nt,
+            "dm_mm": [None] * 5 + [2.0] * (nt - 5),
+            "wind_speed_ms": [6.0] * nt,
+            "wind_gust_ms": [11.0] * nt,
+            "wind_dir_deg": [200.0] * nt,
+            "pressure_hpa": [1000.0] * nt,
+            "temperature_c": [20.0] * nt,
         },
     }
-    mob = {"id": "Mesonet_DOW7", "name": "DOW7 mesonet", "type": "mobile mesonet (vehicle mounted)",
-           "lat": LAT0 + 0.05, "lon": LON0, "alt_m": None, "credit": "UIUC FARM",
-           "series": {"t_s": t, "wind_speed_ms": [4.0] * nt, "wind_dir_deg": [180.0] * nt,
-                      "lat": [LAT0 + 0.05 - 0.0001 * k for k in range(nt)], "lon": [LON0] * nt}}
-    radaps = {"id": "RaDAPS_WXT", "name": "RaDAPS", "type": "mobile profiling site", "lat": LAT0 + 0.01,
-              "lon": LON0, "alt_m": 87.0, "credit": "UAH MAPNet",
-              "series": {"t_s": t, "rain_rate_mmh": [15.0] * nt, "hail_intensity_hits_cm2h": [0.0] * 30 + [40.0] * 10 + [0.0] * (nt - 40)}}
+    mob = {
+        "id": "Mesonet_DOW7",
+        "name": "DOW7 mesonet",
+        "type": "mobile mesonet (vehicle mounted)",
+        "lat": LAT0 + 0.05,
+        "lon": LON0,
+        "alt_m": None,
+        "credit": "UIUC FARM",
+        "series": {
+            "t_s": t,
+            "wind_speed_ms": [4.0] * nt,
+            "wind_dir_deg": [180.0] * nt,
+            "lat": [LAT0 + 0.05 - 0.0001 * k for k in range(nt)],
+            "lon": [LON0] * nt,
+        },
+    }
+    radaps = {
+        "id": "RaDAPS_WXT",
+        "name": "RaDAPS",
+        "type": "mobile profiling site",
+        "lat": LAT0 + 0.01,
+        "lon": LON0,
+        "alt_m": 87.0,
+        "credit": "UAH MAPNet",
+        "series": {
+            "t_s": t,
+            "rain_rate_mmh": [15.0] * nt,
+            "hail_intensity_hits_cm2h": [0.0] * 30 + [40.0] * 10 + [0.0] * (nt - 40),
+        },
+    }
     (d / "stations" / "stations.json").write_text(json.dumps([pips, mob, radaps]))
-    (d / "stations" / "hail_events.json").write_text(json.dumps([
-        {"station": "PIPS1B", "t_s": 200.0 + 10 * k, "kind": "hail_candidate", "max_d_mm": 11.0 + k, "n_large": 3}
-        for k in range(3)]))
+    (d / "stations" / "hail_events.json").write_text(
+        json.dumps(
+            [
+                {
+                    "station": "PIPS1B",
+                    "t_s": 200.0 + 10 * k,
+                    "kind": "hail_candidate",
+                    "max_d_mm": 11.0 + k,
+                    "n_large": 3,
+                }
+                for k in range(3)
+            ]
+        )
+    )
     diam = np.linspace(0.25, 12.0, 24)
-    fall = np.linspace(0.0, 20.0, 32)  # the fall-speed AXIS of the matrix: not one value per diameter
+    fall = np.linspace(
+        0.0, 20.0, 32
+    )  # the fall-speed AXIS of the matrix: not one value per diameter
     nd = np.exp(-1.8 * diam)[None, :].repeat(nt, axis=0) * 5000.0
-    np.savez_compressed(d / "stations" / "PIPS1B_dsd.npz", t_s=np.array(t), diameter_mm=diam,
-                        diameter_min_mm=diam - 0.2, diameter_max_mm=diam + 0.2, fallspeed_ms=fall,
-                        nd_m3mm=nd.astype(np.float32), counts=np.zeros((nt, 32, 24), np.float32),
-                        rain_rate_mmh=np.full(nt, 20.0), dm_mm=np.full(nt, 2.0))
-    np.savez_compressed(d / "profiles" / "mrr_RaDAPS.npz", t_s=np.array(t), height_m=np.array([100.0, 200.0, 300.0, 400.0, 900.0]),
-                        fall_speed_ms=np.full((nt, 5), -6.5), rain_rate_mmh=np.full((nt, 5), 14.0))
-    (d / "tornadoes" / "tornadoes.json").write_text(json.dumps([{
-        "id": "NSED_1", "rating": "EF2", "start": "2022-03-30T20:04:00Z", "end": "2022-03-30T20:08:00Z",
-        "path": [[240.0, LAT0, LON0 - 0.03], [480.0, LAT0 + 0.02, LON0 + 0.03]], "width_m": None,
-        "path_kind": "INTERPOLATED: straight line", "source": "NWS damage survey"}]))
-    flash = {"id": 7, "t_start_s": 100.0, "t_end_s": 100.5, "centroid": [LAT0 + 0.05, LON0, 6000.0], "n_sources": 3,
-             "sources": [[100.0 + 0.1 * k, LAT0 + 0.05, LON0, 6000.0, None if k == 1 else 8.0] for k in range(3)]}
+    np.savez_compressed(
+        d / "stations" / "PIPS1B_dsd.npz",
+        t_s=np.array(t),
+        diameter_mm=diam,
+        diameter_min_mm=diam - 0.2,
+        diameter_max_mm=diam + 0.2,
+        fallspeed_ms=fall,
+        nd_m3mm=nd.astype(np.float32),
+        counts=np.zeros((nt, 32, 24), np.float32),
+        rain_rate_mmh=np.full(nt, 20.0),
+        dm_mm=np.full(nt, 2.0),
+    )
+    np.savez_compressed(
+        d / "profiles" / "mrr_RaDAPS.npz",
+        t_s=np.array(t),
+        height_m=np.array([100.0, 200.0, 300.0, 400.0, 900.0]),
+        fall_speed_ms=np.full((nt, 5), -6.5),
+        rain_rate_mmh=np.full((nt, 5), 14.0),
+    )
+    (d / "tornadoes" / "tornadoes.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "NSED_1",
+                    "rating": "EF2",
+                    "start": "2022-03-30T20:04:00Z",
+                    "end": "2022-03-30T20:08:00Z",
+                    "path": [[240.0, LAT0, LON0 - 0.03], [480.0, LAT0 + 0.02, LON0 + 0.03]],
+                    "width_m": None,
+                    "path_kind": "INTERPOLATED: straight line",
+                    "source": "NWS damage survey",
+                }
+            ]
+        )
+    )
+    flash = {
+        "id": 7,
+        "t_start_s": 100.0,
+        "t_end_s": 100.5,
+        "centroid": [LAT0 + 0.05, LON0, 6000.0],
+        "n_sources": 3,
+        "sources": [
+            [100.0 + 0.1 * k, LAT0 + 0.05, LON0, 6000.0, None if k == 1 else 8.0] for k in range(3)
+        ],
+    }
     (d / "lma" / "flashes.json").write_text(json.dumps({"t0": WINDOW_START, "flashes": [flash]}))
     xs = list(np.arange(-5.0, 5.001, 0.5))
     nz, ny, nx = 8, len(xs), len(xs)
@@ -750,10 +906,12 @@ def write_real_layout_bundle(d: Path) -> Path:
     mesh = np.zeros((ny, nx), np.float32)
     mesh[8:13, 8:13] = 32.0
     np.savez_compressed(d / "volumes" / "step_0000.npz", conv_strat=conv, hid=hid, mesh_mm=mesh)
-    man = {"window": {"start": WINDOW_START, "end": "2022-03-30T20:10:00Z"},
-           "grid": {"origin_lat": LAT0, "origin_lon": LON0, "x_km": xs, "y_km": xs},
-           "steps": [{"index": 0, "time": "2022-03-30T20:05:00Z", "volume": "volumes/step_0000.npz"}],
-           "sources": [{"name": "PIPS", "credit": "Purdue"}]}
+    man = {
+        "window": {"start": WINDOW_START, "end": "2022-03-30T20:10:00Z"},
+        "grid": {"origin_lat": LAT0, "origin_lon": LON0, "x_km": xs, "y_km": xs},
+        "steps": [{"index": 0, "time": "2022-03-30T20:05:00Z", "volume": "volumes/step_0000.npz"}],
+        "sources": [{"name": "PIPS", "credit": "Purdue"}],
+    }
     (d / "manifest.json").write_text(json.dumps(man))
     return d
 
@@ -767,7 +925,9 @@ def test_loads_the_layout_written_by_the_data_agent(tmp_path):
     assert np.isnan(by["PIPS1B"].series["dm_mm"][1][0])  # null value -> NaN
     dsd = by["PIPS1B"].dsd
     assert dsd is not None
-    assert dsd.vt.shape == dsd.D.shape  # the fall-speed axis was not taken for one speed per diameter
+    assert (
+        dsd.vt.shape == dsd.D.shape
+    )  # the fall-speed axis was not taken for one speed per diameter
     assert dsd.dD[0] == pytest.approx(0.4)
     assert dsd.rain_rate_mmh(dsd.N)[0] > 0
     assert len(by["PIPS1B"].events) == 3
@@ -789,10 +949,17 @@ def test_loads_the_layout_written_by_the_data_agent(tmp_path):
 
 def test_end_to_end_on_the_real_layout_with_every_evidence_type(tmp_path):
     b_dir = write_real_layout_bundle(tmp_path / "bundle")
-    cam_path = [{"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 300.0, "heading_deg": 0.0},
-                {"t_clip_s": 40.0, "lat": LAT0, "lon": LON0, "alt_m": 300.0, "heading_deg": 0.0}]
-    tl = {"data_start": WINDOW_START, "data_end": "2022-03-30T20:10:00Z", "clip_duration_s": 40.0, "fps": 30,
-          "speedup": 15.0}
+    cam_path = [
+        {"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 300.0, "heading_deg": 0.0},
+        {"t_clip_s": 40.0, "lat": LAT0, "lon": LON0, "alt_m": 300.0, "heading_deg": 0.0},
+    ]
+    tl = {
+        "data_start": WINDOW_START,
+        "data_end": "2022-03-30T20:10:00Z",
+        "clip_duration_s": 40.0,
+        "fps": 30,
+        "speedup": 15.0,
+    }
     from perils_movie.audio.render import render_audio
 
     rep = render_audio(b_dir, tl, cam_path, tmp_path / "out" / "a.wav", seed=2)
@@ -807,7 +974,9 @@ def test_end_to_end_on_the_real_layout_with_every_evidence_type(tmp_path):
     assert merged["counts"] == 9
     assert merged["max_diameter_mm"] == 13.0
     assert lay["convective"]["source"].startswith("radar_volumes")
-    assert lay["convective"]["convective_fraction_of_clip"] == pytest.approx(0.3, abs=0.05)  # one volume, +-90 s of data = 12 s of clip
+    assert lay["convective"]["convective_fraction_of_clip"] == pytest.approx(
+        0.3, abs=0.05
+    )  # one volume, +-90 s of data = 12 s of clip
     assert lay["tornado"]["evidence"] == ["track:NSED_1"]
     assert rep["provenance"]["tornado"]["tracks"][0]["path_kind"].startswith("INTERPOLATED")
     assert rep["master"]["lufs_integrated"] == pytest.approx(-23.0, abs=0.5)
@@ -828,7 +997,7 @@ def test_a_moving_station_is_followed_by_its_position_series():
     assert sc.dist[0][-1] < 400.0
 
 
-# ----------------------------------------------------------------------------- the renderer's files
+# ---------------------------------------------- the renderer's files
 
 
 def test_timeline_reads_the_renderers_mapping_and_per_frame_speedup():
@@ -836,10 +1005,17 @@ def test_timeline_reads_the_renderers_mapping_and_per_frame_speedup():
     # speed 8x, slowed to 3x around clip 60 s (what the tornado shot does)
     sp = 8.0 - 5.0 * np.exp(-0.5 * ((t - 60.0) / 8.0) ** 2)
     d = np.concatenate([[0.0], np.cumsum(0.5 * (sp[1:] + sp[:-1]) * np.diff(t))])
-    tl = Timeline.from_dict({
-        "data_start": "2022-03-30T20:01:00Z", "data_end": "2022-03-30T20:17:00Z", "clip_duration_s": 120.0, "fps": 30,
-        "speedup": [float(v) for v in sp[:-1]],
-        "mapping": {"t_clip_s": [float(v) for v in t], "t_data_s": [float(v) for v in d]}}, WINDOW_START)
+    tl = Timeline.from_dict(
+        {
+            "data_start": "2022-03-30T20:01:00Z",
+            "data_end": "2022-03-30T20:17:00Z",
+            "clip_duration_s": 120.0,
+            "fps": 30,
+            "speedup": [float(v) for v in sp[:-1]],
+            "mapping": {"t_clip_s": [float(v) for v in t], "t_data_s": [float(v) for v in d]},
+        },
+        WINDOW_START,
+    )
     assert tl.data_offset_s == 60.0  # data_start is one minute after the window start
     assert float(tl.clip_to_data(0.0)) == pytest.approx(60.0)
     assert float(tl.clip_to_data(120.0)) == pytest.approx(60.0 + d[-1])
@@ -848,7 +1024,9 @@ def test_timeline_reads_the_renderers_mapping_and_per_frame_speedup():
     assert float(tl.speedup_at(60.0)) == pytest.approx(3.0, abs=0.1)
     assert float(tl.speedup_at(5.0)) > 7.5
     # without the mapping, the per-frame list of floats gives the same clock
-    tl2 = Timeline.from_dict({"clip_duration_s": 120.0, "fps": 30, "speedup": [float(v) for v in sp[:-1]]})
+    tl2 = Timeline.from_dict(
+        {"clip_duration_s": 120.0, "fps": 30, "speedup": [float(v) for v in sp[:-1]]}
+    )
     assert float(tl2.clip_to_data(120.0)) == pytest.approx(d[-1], rel=2e-3)
     # the thunder delay follows the speedup at the time: slower clock -> longer delay in the clip
     f_fast = flash_at(0.0, 6860.0, alt=0.0, t=float(tl.clip_to_data(10.0)))
@@ -861,11 +1039,28 @@ def test_timeline_reads_the_renderers_mapping_and_per_frame_speedup():
 def test_renderers_events_json_dict_is_parsed_and_gates_the_tornado_without_a_track():
     raw = {
         "flashes": [{"id": 1, "t_clip_s": 3.0, "lat": 33.5, "lon": -88.5}],
-        "tornado": {"id": "NSED_1", "rating": "EF2", "t_clip_start_s": 2.0, "t_clip_end_s": 6.0,
-                    "positions": [{"t_clip_s": 2.0, "lat": LAT0, "lon": LON0 + 0.01},
-                                  {"t_clip_s": 6.0, "lat": LAT0, "lon": LON0 + 0.02}]},
-        "hail": [{"station": "S", "t_clip_s": 4.0, "t_data_s": 20.0, "lat": LAT0, "lon": LON0, "max_d_mm": 12.0}],
-        "nearest_station": [], "shots": [],
+        "tornado": {
+            "id": "NSED_1",
+            "rating": "EF2",
+            "t_clip_start_s": 2.0,
+            "t_clip_end_s": 6.0,
+            "positions": [
+                {"t_clip_s": 2.0, "lat": LAT0, "lon": LON0 + 0.01},
+                {"t_clip_s": 6.0, "lat": LAT0, "lon": LON0 + 0.02},
+            ],
+        },
+        "hail": [
+            {
+                "station": "S",
+                "t_clip_s": 4.0,
+                "t_data_s": 20.0,
+                "lat": LAT0,
+                "lon": LON0,
+                "max_d_mm": 12.0,
+            }
+        ],
+        "nearest_station": [],
+        "shots": [],
     }
     ev = parse_events(raw, WINDOW_START)
     assert [e.type for e in ev] == ["tornado", "hail", "flash"]
@@ -882,8 +1077,16 @@ def test_renderers_events_json_dict_is_parsed_and_gates_the_tornado_without_a_tr
 def test_thunder_coverage_and_voice_limits_keep_the_mix_readable():
     prm = ThunderParams(max_voices=2, max_coverage=0.3)
     tl = Timeline.constant(60.0, 5.0)
-    rows = [plan_flash(flash_at(0.0, 4000.0 + 3000.0 * i, alt=0.0, t=50.0 + 10.0 * i, fid=f"f{i}"), tl,
-                       cam(0.0, 60.0), 60.0, prm) for i in range(30)]
+    rows = [
+        plan_flash(
+            flash_at(0.0, 4000.0 + 3000.0 * i, alt=0.0, t=50.0 + 10.0 * i, fid=f"f{i}"),
+            tl,
+            cam(0.0, 60.0),
+            60.0,
+            prm,
+        )
+        for i in range(30)
+    ]
     counts = select_flashes(rows, prm, 60.0)
     assert counts["rendered"] >= 1
     assert counts.get("skipped_coverage", 0) + counts.get("skipped_voices", 0) > 0
@@ -891,12 +1094,14 @@ def test_thunder_coverage_and_voice_limits_keep_the_mix_readable():
     occupied = np.zeros(601, bool)
     for r in rows:
         if r["status"] == "rendered":
-            occupied[int(r["first_arrival_clip_s"] * 10): int(r["last_arrival_clip_s"] * 10) + 1] = True
+            occupied[
+                int(r["first_arrival_clip_s"] * 10) : int(r["last_arrival_clip_s"] * 10) + 1
+            ] = True
     window = np.convolve(occupied.astype(float), np.ones(100) / 100, mode="valid")
     assert window.max() <= 0.3 + 1e-9  # in any 10 s of the clip
 
 
-# ----------------------------------------------------------------------------- radar rain, listener height
+# ---------------------------------------------- radar rain, listener height
 
 
 def _radar_bundle(tmp_path, dbz=45.0):
@@ -916,10 +1121,10 @@ def test_radar_reflectivity_gives_the_rain_where_no_instrument_is_near(tmp_path)
     b = _radar_bundle(tmp_path)
     s = b.radar_volumes.sample(np.array([300.0]), np.array([LAT0]), np.array([LON0]))
     assert s["dbz_low"][0] == pytest.approx(45.0, abs=0.1)
-    assert s["rain_mmh"][0] == pytest.approx((10 ** 4.5 / 300.0) ** (1 / 1.4), rel=0.02)
+    assert s["rain_mmh"][0] == pytest.approx((10**4.5 / 300.0) ** (1 / 1.4), rel=0.02)
     from perils_movie.audio.radar import zr_rain_rate
 
-    assert float(zr_rain_rate(10 ** 0.5)) == 0.0  # below 12 dBZ: no rain
+    assert float(zr_rain_rate(10**0.5)) == 0.0  # below 12 dBZ: no rain
     assert float(zr_rain_rate(1e9)) == 150.0  # capped
     # stations only far away (> 8 km): the radar over the listener decides
     for s_ in b.stations:
@@ -930,7 +1135,7 @@ def test_radar_reflectivity_gives_the_rain_where_no_instrument_is_near(tmp_path)
     mid = int(10.0 * 100 - 1)  # data ~300 s, the volume time
     assert plan["radar_used"][mid]
     assert plan["rate_src"][mid] == "radar_zr"
-    assert plan["R"][mid] == pytest.approx((10 ** 4.5 / 300.0) ** (1 / 1.4), rel=0.05)
+    assert plan["R"][mid] == pytest.approx((10**4.5 / 300.0) ** (1 / 1.4), rel=0.05)
     assert plan["wd"][mid] == 1.0
     # an instrument near the listener (< 8 km) is the rain: the radar is not used
     b.stations[0].lat, b.stations[0].lon = LAT0 + 0.02, LON0
@@ -943,14 +1148,20 @@ def test_radar_reflectivity_gives_the_rain_where_no_instrument_is_near(tmp_path)
     b0.stations = b.stations[:1]
     b0.stations[0].lat, b0.stations[0].lon = LAT0 + 0.3, LON0
     _out, info = wx.render_rain(scene(b0, dur=6.0, speedup=50.0), SR, 6 * SR, 3)
-    assert info["sources"]["rain_rate"]["radar_zr"] > 0.2  # the volume is valid +-90 s of data around its time
+    assert (
+        info["sources"]["rain_rate"]["radar_zr"] > 0.2
+    )  # the volume is valid +-90 s of data around its time
     assert info["radar_drivers"] == []
 
 
 def test_listener_is_the_camera_ground_track_capped_in_height():
     b, tl, _camera = synthetic_scenario()
-    high = CameraPath([{"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0},
-                       {"t_clip_s": 120.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0}])
+    high = CameraPath(
+        [
+            {"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0},
+            {"t_clip_s": 120.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0},
+        ]
+    )
     _, rep, _ = render_mix(b, tl, high, layers={"rain", "wind"})
     assert rep["params"]["listener"]["camera_altitude_max_m"] == 58000.0
     assert rep["params"]["listener"]["max_height_above_ground_m"] == 500.0

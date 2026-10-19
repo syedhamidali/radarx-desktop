@@ -34,7 +34,9 @@ from .layers import (
 from .scene import CTL_RATE, DROP_CLASS_MM, Scene
 
 RADAR_SWITCH_M = 8000.0  # a rain gauge / disdrometer nearer than this is the rain at the listener; farther, the radar is
-MRR_REACH_M = 3000.0  # an MRR / lidar site only drives the rain character when the listener is over it
+MRR_REACH_M = (
+    3000.0  # an MRR / lidar site only drives the rain character when the listener is over it
+)
 
 
 def _db(x):
@@ -70,7 +72,10 @@ def _fallback_shares(dm: np.ndarray) -> np.ndarray:
     """Number-flux share per drop class of an exponential spectrum with median volume diameter Dm
     (Lambda = 3.67 / Dm), flux ~ N(D) v(D) dD (dD ~ D for the log-spaced classes)."""
     lam = 3.67 / np.maximum(dm, 0.3)
-    f = np.exp(-np.outer(DROP_CLASS_MM, lam)) * (fall_speed_ms(DROP_CLASS_MM) * DROP_CLASS_MM)[:, None]
+    f = (
+        np.exp(-np.outer(DROP_CLASS_MM, lam))
+        * (fall_speed_ms(DROP_CLASS_MM) * DROP_CLASS_MM)[:, None]
+    )
     return f / f.sum(axis=0, keepdims=True)
 
 
@@ -108,9 +113,16 @@ def rain_plan(scene: Scene):
     covered = (R_eff > 0) | ok_r | use_dsd | use_radar
 
     dm_assumed = np.clip(0.9 * np.maximum(R_eff, 0.01) ** 0.21, 0.5, 3.0)
-    dm = np.where(use_dsd, dsd["dm"] if dsd is not None else 0.0,
-                  np.where(mrr_near, mrr_dm_eff, np.where(ok_dm & (dm_st > 0), dm_st, dm_assumed)))
-    dm_src = np.where(use_dsd, "dsd", np.where(mrr_near, "mrr", np.where(ok_dm & (dm_st > 0), "station", "assumed")))
+    dm = np.where(
+        use_dsd,
+        dsd["dm"] if dsd is not None else 0.0,
+        np.where(mrr_near, mrr_dm_eff, np.where(ok_dm & (dm_st > 0), dm_st, dm_assumed)),
+    )
+    dm_src = np.where(
+        use_dsd,
+        "dsd",
+        np.where(mrr_near, "mrr", np.where(ok_dm & (dm_st > 0), "station", "assumed")),
+    )
     shares = _fallback_shares(dm)
     if dsd is not None:
         tot = dsd["flux"].sum(axis=0)
@@ -120,12 +132,29 @@ def rain_plan(scene: Scene):
     if dsd is not None:
         d = np.where(~ok_r & use_dsd, dsd["dist"], d)
     d = np.where(use_radar, 0.0, d)  # the radar sees the rain over the listener
-    wd = np.where(covered & np.isfinite(d), rain_distance_weight(np.where(np.isfinite(d), d, 1e9)), 0.0)
-    lam_ctl = np.where(use_dsd, 4.0 * np.minimum(dsd["F"], 5000.0) ** 0.7 if dsd is not None else 0.0,
-                       60.0 * np.maximum(R_eff, 0.0) ** 0.6)
+    wd = np.where(
+        covered & np.isfinite(d), rain_distance_weight(np.where(np.isfinite(d), d, 1e9)), 0.0
+    )
+    lam_ctl = np.where(
+        use_dsd,
+        4.0 * np.minimum(dsd["F"], 5000.0) ** 0.7 if dsd is not None else 0.0,
+        60.0 * np.maximum(R_eff, 0.0) ** 0.6,
+    )
     lam_ctl = np.minimum(lam_ctl, 3000.0) * wd**2 * (R_eff > 0)
-    return {"R": R_eff, "dm": dm, "dm_src": dm_src, "rate_src": rate_src, "shares": shares, "wd": wd,
-            "lam": lam_ctl, "covered": covered, "dsd_used": use_dsd, "mrr_used": mrr_near, "dist": d, "radar_used": use_radar}
+    return {
+        "R": R_eff,
+        "dm": dm,
+        "dm_src": dm_src,
+        "rate_src": rate_src,
+        "shares": shares,
+        "wd": wd,
+        "lam": lam_ctl,
+        "covered": covered,
+        "dsd_used": use_dsd,
+        "mrr_used": mrr_near,
+        "dist": d,
+        "radar_used": use_radar,
+    }
 
 
 def _mostly(mask: np.ndarray, scene: Scene, clip_span) -> bool:
@@ -178,17 +207,27 @@ def render_rain(scene: Scene, sr: int, n: int, seed: int):
         "rain_rate_mmh": {"min": float(R.min()), "mean": float(R.mean()), "max": float(R.max())},
         "dm_mm": {"mean": float(dm.mean()), "max": float(dm.max())},
         "sources": {
-            "rain_rate": {k: float((p["rate_src"] == k).mean()) for k in ("station", "dsd", "mrr", "radar_zr", "none")},
-            "dm": {k: float((p["dm_src"] == k).mean()) for k in ("dsd", "mrr", "station", "assumed")},
+            "rain_rate": {
+                k: float((p["rate_src"] == k).mean())
+                for k in ("station", "dsd", "mrr", "radar_zr", "none")
+            },
+            "dm": {
+                k: float((p["dm_src"] == k).mean()) for k in ("dsd", "mrr", "station", "assumed")
+            },
             "assumed_dm_fraction": float((p["dm_src"] == "assumed").mean()),
         },
         "drop_spectrum_fraction": float(p["dsd_used"].mean()),
         "mrr_fraction": float(p["mrr_used"].mean()),
         "coverage": float(cov.mean()),
-        "mean_station_distance_m": float(np.mean(p["dist"][cov & np.isfinite(p["dist"])])) if (cov & np.isfinite(p["dist"])).any() else None,
+        "mean_station_distance_m": float(np.mean(p["dist"][cov & np.isfinite(p["dist"])]))
+        if (cov & np.isfinite(p["dist"])).any()
+        else None,
         "level_db_premaster": {"min": _db(level.min()), "max": _db(level.max())},
         "drivers": [s for s in segs if not _mostly(p["radar_used"], scene, s["clip_s"])],
-        "radar_drivers": scene.runs(p["radar_used"] & (R > 0), "radar volumes: lowest echo over the listener (Z = 300 R^1.4)"),
+        "radar_drivers": scene.runs(
+            p["radar_used"] & (R > 0),
+            "radar volumes: lowest echo over the listener (Z = 300 R^1.4)",
+        ),
         "radar_fraction": float(p["radar_used"].mean()),
         "drop_spectrum_drivers": dsd_segs,
         "note": "impacts: rate ~ number flux per drop size, amplitude ~ mass^(2/3); hiss from small drops",
@@ -227,10 +266,13 @@ def _station_ti(scene: Scene):
             ti = np.clip((gf - 1.0) / 2.5, 0.05, 0.5)
         else:
             k = 2
-            ti = np.array([
-                np.std(v[max(0, i - k): i + k + 1]) / max(np.mean(v[max(0, i - k): i + k + 1]), 1.0)
-                for i in range(len(v))
-            ])
+            ti = np.array(
+                [
+                    np.std(v[max(0, i - k) : i + k + 1])
+                    / max(np.mean(v[max(0, i - k) : i + k + 1]), 1.0)
+                    for i in range(len(v))
+                ]
+            )
             ti = np.clip(ti, 0.05, 0.5)
         resolved = float(np.clip(np.median(np.diff(t)) / 30.0, 0.25, 1.0))
         rows.append(np.interp(scene.tw, t, ti) * resolved)
@@ -246,30 +288,50 @@ def render_wind(scene: Scene, sr: int, n: int, seed: int, gust_hz: float = 0.8):
     # observed high-rate series are used directly (smoothed over 0.2 s of clip time)
     v = uniform_filter1d(v, 20, mode="nearest")
     ti = _station_ti(scene)
-    gk = "wind_gust_ms" if any("wind_gust_ms" in s.series for s in scene.bundle.stations) else "gust_ms"
+    gk = (
+        "wind_gust_ms"
+        if any("wind_gust_ms" in s.series for s in scene.bundle.stations)
+        else "gust_ms"
+    )
     gust, _, okg = scene.blend(gk)
     sos = butter(2, gust_hz, fs=CTL_RATE, output="sos")
     g = sosfilt(sos, rng.standard_normal(scene.n + 400))[400:]
     g = g / max(g.std(), 1e-9)
     if okg.any():
         # the observed gust is the top of the excursions: g = +2.2 reaches it, the mean stays v
-        veff = np.where(okg & (gust > v), v + (gust - v) * np.clip(g, -1.0, 2.2) / 2.2, v * (1.0 + ti * g))
+        veff = np.where(
+            okg & (gust > v), v + (gust - v) * np.clip(g, -1.0, 2.2) / 2.2, v * (1.0 + ti * g)
+        )
     else:
         veff = v * (1.0 + ti * g)
     veff = np.maximum(veff, 0.0)
-    wd = np.where(ok, np.maximum(1.0 / (1.0 + (np.where(np.isfinite(d), d, 1e9) / 20000.0) ** 2), 0.5), 0.0)
+    wd = np.where(
+        ok, np.maximum(1.0 / (1.0 + (np.where(np.isfinite(d), d, 1e9) / 20000.0) ** 2), 0.5), 0.0
+    )
     level = wind_gain(veff) * wd
     dirn, okd = scene.blend_wind_vector()
     rel = rel_azimuth_deg(dirn, scene.heading)  # wind FROM this side
-    out = banded_stereo(n, sr, level, wind_cutoff_hz(veff), seed + 1, rho=0.5, pan_ctl=np.where(okd, rel, 0.0))
+    out = banded_stereo(
+        n, sr, level, wind_cutoff_hz(veff), seed + 1, rho=0.5, pan_ctl=np.where(okd, rel, 0.0)
+    )
     # the pressure wave of a gust front: a low rumble, only where the station's pressure trace jumps
     jump, p_events = scene.pressure_jump()
     if (jump > 0).any():
-        out += banded_stereo(n, sr, jump * 10 ** (-38.0 / 20.0), np.full(scene.n, 90.0), seed + 2, rho=0.8,
-                             centers=(31.5, 63.0, 125.0))
+        out += banded_stereo(
+            n,
+            sr,
+            jump * 10 ** (-38.0 / 20.0),
+            np.full(scene.n, 90.0),
+            seed + 2,
+            rho=0.8,
+            centers=(31.5, 63.0, 125.0),
+        )
     w, _ = scene.station_weights("wind_speed_ms")
-    med_dt = [float(np.median(np.diff(s.series["wind_speed_ms"][0]))) for s in scene.bundle.stations
-              if "wind_speed_ms" in s.series and len(s.series["wind_speed_ms"][0]) > 1]
+    med_dt = [
+        float(np.median(np.diff(s.series["wind_speed_ms"][0])))
+        for s in scene.bundle.stations
+        if "wind_speed_ms" in s.series and len(s.series["wind_speed_ms"][0]) > 1
+    ]
     info = {
         "wind_speed_ms": {"min": float(v.min()), "mean": float(v.mean()), "max": float(v.max())},
         "effective_speed_ms_max": float(veff.max()),
@@ -281,7 +343,9 @@ def render_wind(scene: Scene, sr: int, n: int, seed: int, gust_hz: float = 0.8):
         "gust_fronts": scene.gust_fronts(),
         "pressure_jumps": p_events,
         "pressure_rumble_active_fraction": float((jump > 0.02).mean()),
-        "drivers": scene.dominant_segments(w, scene.bundle.stations, ["wind_speed_ms", "wind_gust_ms", "wind_dir_deg"]),
+        "drivers": scene.dominant_segments(
+            w, scene.bundle.stations, ["wind_speed_ms", "wind_gust_ms", "wind_dir_deg"]
+        ),
         "note": "level ~ speed^1.5, tilt follows speed; gust fine structure synthetic, amplitude observed",
     }
     return out, info
@@ -323,8 +387,13 @@ def render_hail(scene: Scene, sr: int, n: int, seed: int):
     maximum diameter (mass^(2/3)). Without evidence: silence."""
     h = scene.hail()
     if not (h["w"] > 0).any():
-        return np.zeros((2, n)), {"evidence": [], "rows": [], "active_seconds": 0.0, "events": 0,
-                                  "note": "no hail evidence: silent"}
+        return np.zeros((2, n)), {
+            "evidence": [],
+            "rows": [],
+            "active_seconds": 0.0,
+            "events": 0,
+            "note": "no hail evidence: silent",
+        }
     rng = np.random.default_rng(seed)
     w, dmax = h["w"], np.maximum(h["dmax_mm"], 4.0)
     lam_ctl = hail_rate_per_s(h["flux"]) * np.sqrt(w) * (w > 0)
@@ -332,7 +401,11 @@ def render_hail(scene: Scene, sr: int, n: int, seed: int):
     d_ev = ctl_to_audio(dmax, n, sr)[idx] * rng.uniform(0.4, 1.0, len(idx))
     amps = amps * 0.35 * ctl_to_audio(w, n, sr)[idx]
     kern = _hail_kernels(sr)
-    ref = np.abs(np.log(d_ev[:, None]) - np.log(HAIL_REF_MM)[None, :]).argmin(axis=1) if len(idx) else np.zeros(0, int)
+    ref = (
+        np.abs(np.log(d_ev[:, None]) - np.log(HAIL_REF_MM)[None, :]).argmin(axis=1)
+        if len(idx)
+        else np.zeros(0, int)
+    )
     pans = rng.uniform(-0.9, 0.9, len(idx))
     gl, gr = pan_gains(np.degrees(np.arcsin(pans)))
     out = np.zeros((2, n))
@@ -344,7 +417,9 @@ def render_hail(scene: Scene, sr: int, n: int, seed: int):
     out[np.abs(out) < 1e-12] = 0.0  # FFT round-off outside the events
     act = w > 0.02
     info = {
-        "evidence": h["sources"], "rows": h["rows"], "events": len(idx),
+        "evidence": h["sources"],
+        "rows": h["rows"],
+        "events": len(idx),
         "evidence_items": h["n_events"],
         "active_seconds": float(act.mean() * scene.duration),
         "max_diameter_mm": float(dmax[act].max()) if act.any() else None,

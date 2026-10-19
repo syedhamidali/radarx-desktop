@@ -31,7 +31,9 @@ sys.path.insert(0, str(_here.parents[1]))
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--bundle", help="bundle folder (manifest.json, lma/, stations/, ...)")
     ap.add_argument("--timeline", help="timeline.json of the renderer")
     ap.add_argument("--camera", help="camera_path.json of the renderer")
@@ -41,10 +43,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bits", type=int, default=24, choices=(16, 24))
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--target-lufs", type=float, default=-23.0)
-    ap.add_argument("--max-listener-height", type=float, default=500.0,
-                    help="the listener is the camera's ground track, at most this high above the ground (m; 0 = the camera's own altitude)")
+    ap.add_argument(
+        "--max-listener-height",
+        type=float,
+        default=500.0,
+        help="the listener is the camera's ground track, at most this high above the ground (m; 0 = the camera's own altitude)",
+    )
     ap.add_argument("--stems", help="also write one WAV per layer into this folder")
-    ap.add_argument("--synthetic", metavar="DIR", help="write and use a SYNTHETIC demo bundle in DIR")
+    ap.add_argument(
+        "--synthetic", metavar="DIR", help="write and use a SYNTHETIC demo bundle in DIR"
+    )
     ap.add_argument("--video-in", help="silent video to mux the audio into")
     ap.add_argument("--video-out", help="output MP4 with the AAC track")
     ap.add_argument("--wav", help="WAV to mux (default: --out)")
@@ -63,15 +71,27 @@ def main(argv: list[str] | None = None) -> int:
             a.timeline = str(d.parent / "timeline.json")
             a.camera = str(d.parent / "camera_path.json")
         if not (a.bundle and a.timeline and a.camera and a.out):
-            ap.error("--bundle, --timeline, --camera and --out are required (or --synthetic DIR and --out)")
+            ap.error(
+                "--bundle, --timeline, --camera and --out are required (or --synthetic DIR and --out)"
+            )
         rep = render_audio(
-            a.bundle, a.timeline, a.camera, a.out, report_path=a.report, events=a.events, bits=a.bits,
-            seed=a.seed, target_lufs=a.target_lufs, stems_dir=a.stems,
+            a.bundle,
+            a.timeline,
+            a.camera,
+            a.out,
+            report_path=a.report,
+            events=a.events,
+            bits=a.bits,
+            seed=a.seed,
+            target_lufs=a.target_lufs,
+            stems_dir=a.stems,
             max_listener_height_m=a.max_listener_height or None,
         )
         m = rep["master"]
-        print(f"wrote {a.out}: {rep['output']['duration_s']:.1f} s, {m['lufs_integrated']:.1f} LUFS, "
-              f"true peak {m['true_peak_dbfs']:.1f} dBFS, thunder {rep['thunder']['counts']}")
+        print(
+            f"wrote {a.out}: {rep['output']['duration_s']:.1f} s, {m['lufs_integrated']:.1f} LUFS, "
+            f"true peak {m['true_peak_dbfs']:.1f} dBFS, thunder {rep['thunder']['counts']}"
+        )
     if a.video_in and a.video_out:
         from perils_movie.audio.mux import mux_audio
 

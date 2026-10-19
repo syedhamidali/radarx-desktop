@@ -38,7 +38,9 @@ class Station:
     series: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
     dsd: Dsd | None = None
-    meta: dict = field(default_factory=dict)  # every non-series field of stations.json (network, instrument, ...)
+    meta: dict = field(
+        default_factory=dict
+    )  # every non-series field of stations.json (network, instrument, ...)
 
     def has(self, name: str) -> bool:
         return name in self.series and np.isfinite(self.series[name][1]).any()
@@ -154,10 +156,16 @@ def parse_flashes(raw, window_start: str) -> list[Flash]:
         if not src.size and np.isfinite(c[0]):
             # no source list: the centroid, spread over the flash duration, at a nominal power
             tt = np.linspace(ts, te, 8)
-            src = np.column_stack([tt, np.full(8, c[0]), np.full(8, c[1]), np.full(8, c[2]), np.full(8, 0.0)])
+            src = np.column_stack(
+                [tt, np.full(8, c[0]), np.full(8, c[1]), np.full(8, c[2]), np.full(8, 0.0)]
+            )
         out.append(
             Flash(
-                str(f.get("id", i)), ts, te, (float(c[0]), float(c[1]), float(c[2])), src,
+                str(f.get("id", i)),
+                ts,
+                te,
+                (float(c[0]), float(c[1]), float(c[2])),
+                src,
                 int(f.get("n_sources", len(src))),
             )
         )
@@ -178,8 +186,13 @@ def parse_stations(raw) -> list[Station]:
             ser[k] = (t, np.array([_num(x) for x in v], float))
         out.append(
             Station(
-                str(s.get("id", i)), str(s.get("name", s.get("id", i))), str(s.get("type", "")),
-                float(s["lat"]), float(s["lon"]), float(s.get("alt_m") or 0.0), ser,
+                str(s.get("id", i)),
+                str(s.get("name", s.get("id", i))),
+                str(s.get("type", "")),
+                float(s["lat"]),
+                float(s["lon"]),
+                float(s.get("alt_m") or 0.0),
+                ser,
                 list(s.get("events") or []),
                 meta={k: v for k, v in s.items() if k not in ("series", "events")},
             )
@@ -223,8 +236,12 @@ def parse_tornadoes(raw, window_start: str) -> list[TornadoTrack]:
         o = np.argsort(t)
         out.append(
             TornadoTrack(
-                str(tr.get("id", i)), str(tr.get("name", tr.get("id", i))), tr.get("ef", tr.get("rating")),
-                np.array(t, float)[o], np.array(la, float)[o], np.array(lo, float)[o],
+                str(tr.get("id", i)),
+                str(tr.get("name", tr.get("id", i))),
+                tr.get("ef", tr.get("rating")),
+                np.array(t, float)[o],
+                np.array(la, float)[o],
+                np.array(lo, float)[o],
                 float(tr.get("width_m") or 200.0),
                 {k: v for k, v in tr.items() if k not in ("path", "track", "points")},
             )
@@ -241,12 +258,23 @@ def parse_events(raw, window_start: str) -> list[Event]:
         return []
     ws = parse_iso(window_start)
     items: list[dict] = []
-    if isinstance(raw, dict) and ("tornado" in raw or "hail" in raw or "flashes" in raw) and "events" not in raw:
+    if (
+        isinstance(raw, dict)
+        and ("tornado" in raw or "hail" in raw or "flashes" in raw)
+        and "events" not in raw
+    ):
         tor = raw.get("tornado")
         if tor:
-            items.append({"type": "tornado", "t_clip_s": tor.get("t_clip_start_s"),
-                          "t_end_clip_s": tor.get("t_clip_end_s"), "id": tor.get("id"),
-                          "positions": tor.get("positions"), "rating": tor.get("rating")})
+            items.append(
+                {
+                    "type": "tornado",
+                    "t_clip_s": tor.get("t_clip_start_s"),
+                    "t_end_clip_s": tor.get("t_clip_end_s"),
+                    "id": tor.get("id"),
+                    "positions": tor.get("positions"),
+                    "rating": tor.get("rating"),
+                }
+            )
         items += [{"type": "hail", **h} for h in raw.get("hail") or []]
         items += [{"type": "flash", **f} for f in raw.get("flashes") or []]
     else:
@@ -257,12 +285,15 @@ def parse_events(raw, window_start: str) -> list[Event]:
         te = _time(e.get("t_end_s", e.get("end_time")), ws)
         out.append(
             Event(
-                str(e.get("type", "")).lower(), td,
+                str(e.get("type", "")).lower(),
+                td,
                 None if e.get("t_clip_s") is None else float(e["t_clip_s"]),
-                te, None if e.get("t_end_clip_s") is None else float(e["t_end_clip_s"]),
+                te,
+                None if e.get("t_end_clip_s") is None else float(e["t_end_clip_s"]),
                 None if e.get("lat") is None else float(e["lat"]),
                 None if e.get("lon") is None else float(e["lon"]),
-                float(e.get("alt_m", 0.0) or 0.0), e,
+                float(e.get("alt_m", 0.0) or 0.0),
+                e,
             )
         )
     return out
@@ -303,12 +334,16 @@ def attach_hail_events(stations: list[Station], raw) -> None:
         if s is None:
             continue
         t0 = float(e["t_s"])
-        s.events.append({
-            "type": str(e.get("kind", e.get("type", "hail_candidate"))),
-            "t_s": t0, "t_end_s": float(e.get("t_end_s", t0 + HAIL_SAMPLE_S)),
-            "dmax_mm": e.get("max_d_mm", e.get("dmax_mm")), "counts": e.get("n_large", e.get("counts")),
-            "evidence": e.get("evidence"),
-        })
+        s.events.append(
+            {
+                "type": str(e.get("kind", e.get("type", "hail_candidate"))),
+                "t_s": t0,
+                "t_end_s": float(e.get("t_end_s", t0 + HAIL_SAMPLE_S)),
+                "dmax_mm": e.get("max_d_mm", e.get("dmax_mm")),
+                "counts": e.get("n_large", e.get("counts")),
+                "evidence": e.get("evidence"),
+            }
+        )
 
 
 def attach_mrr(stations: list[Station], path: Path, site: str, window_start: str) -> None:
@@ -326,7 +361,10 @@ def attach_mrr(stations: list[Station], path: Path, site: str, window_start: str
     if len(gates) == 0 or "t_s" not in z.files:
         return
     t = np.asarray(z["t_s"], float)
-    for key, name, fn in (("fall_speed_ms", "mrr_fall_speed_ms", np.abs), ("rain_rate_mmh", "mrr_rain_rate_mmh", None)):
+    for key, name, fn in (
+        ("fall_speed_ms", "mrr_fall_speed_ms", np.abs),
+        ("rain_rate_mmh", "mrr_rain_rate_mmh", None),
+    ):
         if key in z.files:
             a = np.asarray(z[key], float)[:, gates]
             with np.errstate(all="ignore"):
@@ -342,8 +380,10 @@ def load_bundle(bundle_dir) -> Bundle:
     radar = _read(d / "radar" / "overhead_samples.json")
     stations = parse_stations(_read(d / "stations" / "stations.json"))
     attach_hail_events(stations, _read(d / "stations" / "hail_events.json"))
-    for site_file in sorted((d / "profiles").glob("mrr_*.npz")) if (d / "profiles").exists() else []:
-        attach_mrr(stations, site_file, site_file.stem[len("mrr_"):], ws)
+    for site_file in (
+        sorted((d / "profiles").glob("mrr_*.npz")) if (d / "profiles").exists() else []
+    ):
+        attach_mrr(stations, site_file, site_file.stem[len("mrr_") :], ws)
     for s in stations:
         safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in s.id)
         for cand in (d / "stations" / f"{s.id}_dsd.npz", d / "stations" / f"{safe}_dsd.npz"):

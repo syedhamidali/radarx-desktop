@@ -53,7 +53,9 @@ def flash_seed(seed: int, fid: str) -> int:
     return (seed * 1_000_003 + zlib.crc32(str(fid).encode())) & 0x7FFFFFFF
 
 
-def plan_flash(flash, timeline: Timeline, camera: CameraPath, duration: float, prm: ThunderParams) -> dict:
+def plan_flash(
+    flash, timeline: Timeline, camera: CameraPath, duration: float, prm: ThunderParams
+) -> dict:
     """Timing, distances and level of one flash for the camera as listener. No audio."""
     src = flash.sources
     row = {
@@ -87,8 +89,12 @@ def plan_flash(flash, timeline: Timeline, camera: CameraPath, duration: float, p
         r_cen = float(np.mean(r))
     row.update(
         t_flash_clip_s=float(tf),
-        listener={"lat": float(cam["lat"]), "lon": float(cam["lon"]), "alt_m": float(cam["alt_m"]),
-                  "heading_deg": float(cam["heading_deg"])},
+        listener={
+            "lat": float(cam["lat"]),
+            "lon": float(cam["lon"]),
+            "alt_m": float(cam["alt_m"]),
+            "heading_deg": float(cam["heading_deg"]),
+        },
         dist_nearest_m=float(r[k]),
         dist_farthest_m=float(r.max()),
         dist_centroid_m=r_cen,
@@ -104,7 +110,14 @@ def plan_flash(flash, timeline: Timeline, camera: CameraPath, duration: float, p
         level_floor_engaged=bool(floored.mean() > 0.5),
         power_dbw_median=float(pm),
         t_light_start_data_s=float(flash.t_start_s),
-        _r=r, _arr=arr, _q=q, _e=e, _n=n, _u=u, _w=w, _cam=cam,
+        _r=r,
+        _arr=arr,
+        _q=q,
+        _e=e,
+        _n=n,
+        _u=u,
+        _w=w,
+        _cam=cam,
     )
     if r[k] > prm.max_range_m:
         row["status"] = "skipped_out_of_range"
@@ -113,7 +126,9 @@ def plan_flash(flash, timeline: Timeline, camera: CameraPath, duration: float, p
     return row
 
 
-def select_flashes(rows: list[dict], prm: ThunderParams, duration: float | None = None) -> dict[str, int]:
+def select_flashes(
+    rows: list[dict], prm: ThunderParams, duration: float | None = None
+) -> dict[str, int]:
     """Thin out dense bursts, greedy by loudness. Sets row["status"] to "rendered" or one of
     "skipped_density" (too many flashes within a window), "skipped_masked" (far quieter than a louder
     one at the same time), "skipped_voices" (more than ``max_voices`` at once), "skipped_coverage"
@@ -132,14 +147,21 @@ def select_flashes(rows: list[dict], prm: ThunderParams, duration: float | None 
             r["status"] = "skipped_density"
             continue
         louder = [
-            k for k in kept
+            k
+            for k in kept
             if abs(k["first_arrival_clip_s"] - a) <= prm.mask_s
             and db(k["peak_amp"]) - db(r["peak_amp"]) > prm.mask_db
         ]
         if louder:
             r["status"] = "skipped_masked"
             continue
-        tail = float(np.clip(prm.tail_min_s + prm.tail_s_per_km * r["dist_nearest_m"] / 1000.0, prm.tail_min_s, prm.tail_max_s))
+        tail = float(
+            np.clip(
+                prm.tail_min_s + prm.tail_s_per_km * r["dist_nearest_m"] / 1000.0,
+                prm.tail_min_s,
+                prm.tail_max_s,
+            )
+        )
         i0 = max(0, int(np.floor(a / dt)))
         i1 = min(len(occ), int(np.ceil((r["last_arrival_clip_s"] + 2.0 * tail) / dt)) + 1)
         if i1 <= i0:
@@ -171,7 +193,9 @@ def _rumble_shape(f: np.ndarray) -> np.ndarray:
     return (1.0 / np.sqrt(1.0 + (f / 200.0) ** 2)) * (f**2 / (f**2 + 25.0**2))
 
 
-def _shaped_noise(rng, n: int, sr: int, r_m: float, temp_c: float, p_hpa: float, rh: float, base: str = "rumble"):
+def _shaped_noise(
+    rng, n: int, sr: int, r_m: float, temp_c: float, p_hpa: float, rh: float, base: str = "rumble"
+):
     """Unit-RMS noise with the source shape and the air absorption of ``r_m`` metres."""
     x = rng.standard_normal(n)
     X = np.fft.rfft(x)
@@ -185,13 +209,17 @@ def _shaped_noise(rng, n: int, sr: int, r_m: float, temp_c: float, p_hpa: float,
     return y / s if s > 0 else y
 
 
-def render_flash(row: dict, sr: int, seed: int, camera: CameraPath, prm: ThunderParams, air: tuple[float, float]):
+def render_flash(
+    row: dict, sr: int, seed: int, camera: CameraPath, prm: ThunderParams, air: tuple[float, float]
+):
     """Stereo audio of one planned flash: (start_sample, (2, L) array)."""
     rng = np.random.default_rng(flash_seed(seed, row["id"]))
     r, arr, q = row["_r"], row["_arr"], row["_q"]
     temp_c, p_hpa = air
     rmin_km = row["dist_nearest_m"] / 1000.0
-    tau = float(np.clip(prm.tail_min_s + prm.tail_s_per_km * rmin_km, prm.tail_min_s, prm.tail_max_s))
+    tau = float(
+        np.clip(prm.tail_min_s + prm.tail_s_per_km * rmin_km, prm.tail_min_s, prm.tail_max_s)
+    )
     t_a = float(arr.min()) - 0.05
     span = float(arr.max() - arr.min()) + 0.1 + 6.0 * tau
     rate = prm.env_rate

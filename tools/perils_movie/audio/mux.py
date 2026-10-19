@@ -29,8 +29,9 @@ def _probe(path) -> dict:
             "video_packets": n,
             "duration_s": dur,
             "fps": float(v.average_rate) if v.average_rate else None,
-            "audio": None if a is None else {"codec": a.codec_context.name, "rate": a.rate,
-                                             "channels": a.channels},
+            "audio": None
+            if a is None
+            else {"codec": a.codec_context.name, "rate": a.rate, "channels": a.channels},
         }
 
 
@@ -63,8 +64,9 @@ def mux_audio(video_in, wav, video_out, bitrate: int = 192_000) -> dict:
 
     apk = []
     for i0 in range(0, planar.shape[1], 1024):
-        fr = av.AudioFrame.from_ndarray(np.ascontiguousarray(planar[:, i0 : i0 + 1024]), format="fltp",
-                                        layout="stereo")
+        fr = av.AudioFrame.from_ndarray(
+            np.ascontiguousarray(planar[:, i0 : i0 + 1024]), format="fltp", layout="stereo"
+        )
         fr.sample_rate = sr
         fr.pts = i0
         fr.time_base = Fraction(1, sr)
@@ -86,5 +88,10 @@ def mux_audio(video_in, wav, video_out, bitrate: int = 192_000) -> dict:
     dst.close()
     src.close()
     after = _probe(out_path)
-    return {"before": before, "after": after, "audio_samples": int(planar.shape[1]), "sample_rate": sr,
-            "frames_kept": before["video_packets"] == after["video_packets"]}
+    return {
+        "before": before,
+        "after": after,
+        "audio_samples": int(planar.shape[1]),
+        "sample_rate": sr,
+        "frames_kept": before["video_packets"] == after["video_packets"],
+    }
