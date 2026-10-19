@@ -344,7 +344,9 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
 
     # ── everything else, in the scene frame ──
+    line = [line_geometry(colmax[k], xs, ys, (u, v)) for k in range(len(steps))]
     p: dict = {
+        "line": line, "track": [{"t": times_s[k], "x": track[k][0], "y": track[k][1]} for k in range(len(steps))],
         "version": 1, "time0": steps[0]["time"], "origin": {"lat": lat0, "lon": lon0},
         "window": man.get("window", {}), "title": man.get("title", ""), "case": man.get("case", ""),
         "grid": {"x0": float(xs[0]), "y0": float(ys[0]), "dx": cell, "nx": len(xs), "ny": len(ys), "zTop": float(zs[-1])},
@@ -410,6 +412,38 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     (out / "perils.json").write_text(json.dumps(p))
     log(f"wrote {out} ({len(steps)} steps, {sum(1 for m in p['mrms'] if m)} MRMS frames)")
     return p
+
+
+def line_geometry(colmax: np.ndarray, xs, ys, motion_xy: tuple[float, float], thr: float = 40.0) -> dict | None:
+    """Centre, axis and extent of the strong echo (column maximum >= ``thr`` dBZ) by principal axes.
+
+    ``axis_deg`` is the bearing of the long axis chosen so that the motion points to its right (the
+    line moves to the right of its own direction, as a squall line does when read from its south end
+    to its north end); ``front_km`` / ``back_km`` are the 97th / 3rd percentile of the strong
+    echo's position along the motion direction, measured from the centre.
+    """
+    jj, ii = np.nonzero(np.nan_to_num(colmax, nan=-99.0) >= thr)
+    if len(ii) < 30:
+        return None
+    px, py = xs[ii], ys[jj]
+    cx, cy = float(px.mean()), float(py.mean())
+    cov = np.cov(np.stack([px - cx, py - cy]))
+    w, v = np.linalg.eigh(cov)
+    ax = v[:, int(np.argmax(w))]
+    bearing = math.degrees(math.atan2(ax[0], ax[1])) % 180.0
+    mn = math.hypot(*motion_xy)
+    mdir = np.array(motion_xy) / mn if mn > 1e-9 else np.array([ax[1], -ax[0]])
+    perp = np.array([ax[1], -ax[0]])  # axis rotated 90 degrees clockwise
+    if float(perp @ mdir) < 0:
+        ax = -ax
+        perp = -perp
+    along = (px - cx) * ax[0] + (py - cy) * ax[1]
+    across = (px - cx) * perp[0] + (py - cy) * perp[1]
+    return {
+        "cx": cx, "cy": cy, "axis_deg": float(math.degrees(math.atan2(ax[0], ax[1])) % 360.0), "perp_deg": float(math.degrees(math.atan2(perp[0], perp[1])) % 360.0),
+        "half_len_km": float(np.percentile(np.abs(along), 97)), "front_km": float(np.percentile(across, 97)), "back_km": float(np.percentile(across, 3)),
+        "n_pixels": int(len(ii)),
+    }
 
 
 def _zdr_markers(zc: np.ndarray, xs, ys, thr_km: float = 1.0, cap: int = 60) -> list:
