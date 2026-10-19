@@ -165,6 +165,22 @@ segfault is a failed test):
 | 8 threads on 3-4 files, 3-6 s per run, 8 runs | 8/8 runs died (3 files) | 8/8 clean (4 files) |
 | the four new subprocess tests with the guard off | 4/4 fail | 4/4 pass |
 
+**Cost** (`python/benchmarks/bench_engine.py`, mean of 2 runs x 5 repeats, ms, `main` = before,
+Apple silicon, Python 3.14; `KTLX...V06.nc` is a lazily read CfRadial1 file, `KMOB...V06` is
+NEXRAD, which does not use the lock):
+
+| stage | NetCDF main | NetCDF fix | NEXRAD main | NEXRAD fix |
+|---|---|---|---|---|
+| open_file, warm | 73.4 | 76.8 | 1259.7 | 1248.3 |
+| open_file, first in process | 415.9 | 398.1 | 1463.4 | 1478.4 |
+| one sweep, wire format | 2.1 | 2.5 | 10.4 | 9.8 |
+| switch through all sweeps (data) | 22.6 | 24.7 | 72.9 | 67.9 |
+| PNG render, switch through all sweeps | 226.5 | 225.7 | 234.8 | 234.3 |
+| 3D volume, res=100 | 226.1 | 225.1 | 201.1 | 200.4 |
+| 3D volume, res=200 | 1446.6 | 1429.5 | 1005.7 | 1006.6 |
+
+All within run-to-run noise (the largest difference, NetCDF sweep switching, is 2 ms of 22).
+
 **If the engine still dies natively.** The engine now enables `faulthandler`
 (`server.enable_crash_log`): the Python stack of every thread goes to
 `~/.xradar-desktop/engine-crash.log` (web mode: stderr; the file is cut at 512 KB). The shell
