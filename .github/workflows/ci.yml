@@ -105,6 +105,16 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      - name: Unit tests
+        run: npm run test:unit
+
+      # Builds the app bundle (catches build-only errors) and, on the main repo, uploads its size
+      # breakdown to Codecov Bundle Analysis. Forks have no token: the plugin is then a no-op.
+      - name: Build
+        run: npm run build
+        env:
+          CODECOV_TOKEN: ${{ matrix.os == 'ubuntu-latest' && secrets.CODECOV_TOKEN || '' }}
+
   # ---------------------------------------------------------------
   # Rust: cargo check + clippy
   # ---------------------------------------------------------------
