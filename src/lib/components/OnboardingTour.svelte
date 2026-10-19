@@ -15,7 +15,7 @@
   const steps: TourStep[] = [
     {
       title: 'Welcome to xradar desktop',
-      description: 'Industry-grade weather radar visualization and research platform. Let us show you around.',
+      description: 'Your weather radar research workstation. Let us show you around.',
       selector: '.app-title',
       position: 'bottom',
     },
@@ -207,7 +207,7 @@
     ></div>
 
     <!-- Tooltip -->
-    <div class="tour-tooltip" style={tooltipStyle} transition:fly={{ y: 8, duration: 200 }} use:focusTrap={{ initial: '.tour-btn-primary' }}>
+    <div class="tour-tooltip brackets-4" style={tooltipStyle} transition:fly={{ y: 8, duration: 200 }} use:focusTrap={{ initial: '.tour-btn-primary' }}>
       <div class="tour-step-badge">Step {currentStep + 1} of {steps.length}</div>
       <h3 class="tour-title">{step.title}</h3>
       <p class="tour-desc">{step.description}</p>
@@ -262,19 +262,19 @@
   .spotlight-ring {
     position: absolute;
     border: 2px solid var(--accent-primary);
-    border-radius: 8px;
-    box-shadow: 0 0 0 4px rgba(91, 108, 247, 0.2), 0 0 30px rgba(91, 108, 247, 0.15);
+    border-radius: var(--radius-md);
+    box-shadow: 0 0 0 4px rgba(var(--c-accent-rgb), 0.2), 0 0 30px rgba(var(--c-accent-rgb), 0.15);
     pointer-events: none;
     transition: all 400ms cubic-bezier(0.4, 0, 0.2, 1);
   }
 
   .tour-tooltip {
     position: absolute;
-    background: var(--bg-secondary);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg);
+    background: var(--c-overlay);
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--radius-sm);
     padding: var(--spacing-lg);
-    box-shadow: var(--shadow-lg), 0 0 40px rgba(91, 108, 247, 0.1);
+    box-shadow: var(--shadow-3);
     z-index: 2001;
     transition: top 400ms cubic-bezier(0.4, 0, 0.2, 1),
                 left 400ms cubic-bezier(0.4, 0, 0.2, 1);
@@ -284,7 +284,7 @@
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: var(--ls-label);
     color: var(--accent-primary);
     margin-bottom: var(--spacing-xs);
   }
@@ -371,13 +371,13 @@
   .tour-btn-primary {
     background: var(--accent-primary);
     border: 1px solid var(--accent-primary);
-    color: #fff;
-    box-shadow: 0 0 12px rgba(91, 108, 247, 0.2);
+    color: var(--c-on-accent);
+    box-shadow: 0 0 12px rgba(var(--c-accent-rgb), 0.2);
   }
 
   .tour-btn-primary:hover {
     background: var(--accent-hover);
-    box-shadow: 0 0 20px rgba(91, 108, 247, 0.3);
+    box-shadow: 0 0 20px rgba(var(--c-accent-rgb), 0.3);
   }
 
   .tour-dismiss {

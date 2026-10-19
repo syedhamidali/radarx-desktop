@@ -251,7 +251,7 @@
     font-size: 10px;
     font-weight: 700;
     paint-order: stroke;
-    stroke: rgba(8, 10, 20, 0.85);
+    stroke: rgba(var(--c-surface-0-rgb), 0.85);
     stroke-width: 3px;
     stroke-linejoin: round;
     pointer-events: auto;

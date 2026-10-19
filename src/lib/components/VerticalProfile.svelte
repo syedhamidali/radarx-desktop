@@ -412,7 +412,7 @@
     position: absolute;
     padding: 5px 10px;
     background: rgba(15, 15, 26, 0.92);
-    border: 1px solid var(--accent-primary, #5b6cf7);
+    border: 1px solid var(--accent-primary, var(--c-accent));
     border-radius: 4px;
     font-family: var(--font-mono, monospace);
     font-size: 11px;

@@ -59,7 +59,7 @@ export const DEFAULT_BASEMAP_ID = 'osm';
 
 /** CSS filters that restyle standard (light) OSM-style tiles; 'light' leaves them untouched. */
 export const BASEMAP_THEME_FILTER: Record<'dark' | 'light', string> = {
-  dark: 'invert(1) hue-rotate(180deg) brightness(0.78) contrast(0.92) saturate(0.55)',
+  dark: 'invert(1) hue-rotate(196deg) brightness(0.74) contrast(0.95) saturate(0.62)',
   light: 'none',
 };
 

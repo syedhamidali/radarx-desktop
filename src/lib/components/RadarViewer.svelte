@@ -1031,8 +1031,9 @@
     color: var(--text-muted);
     white-space: nowrap;
     text-transform: uppercase;
-    letter-spacing: 0.03em;
-    font-weight: 600;
+    letter-spacing: var(--ls-label);
+    font-weight: 500;
+    font-size: var(--fs-2xs);
   }
 
   .control-group select { min-width: 110px; max-width: 200px; }
@@ -1047,10 +1048,10 @@
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--accent-primary);
-    background: rgba(91, 108, 247, 0.1);
+    background: rgba(var(--c-accent-rgb), 0.1);
     padding: 2px 8px;
     border-radius: var(--radius-sm);
-    border: 1px solid rgba(91, 108, 247, 0.2);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.2);
   }
 
   .active-sweep {
@@ -1113,10 +1114,10 @@
   }
 
   .measure-toggle.active {
-    background: rgba(91, 108, 247, 0.18);
+    background: rgba(var(--c-accent-rgb), 0.18);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    box-shadow: 0 0 8px rgba(91, 108, 247, 0.15);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.15);
   }
 
   .webgl-canvas {
@@ -1174,7 +1175,7 @@
     align-items: center;
     gap: 4px;
     padding: 4px 10px;
-    background: rgba(15, 15, 26, 0.82);
+    background: var(--c-overlay);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     font-family: var(--font-mono);
@@ -1210,7 +1211,7 @@
     gap: 8px;
     max-width: calc(100% - 160px);
     padding: 4px 6px 4px 10px;
-    background: rgba(15, 15, 26, 0.88);
+    background: var(--c-overlay);
     border: 1px solid var(--accent-primary);
     border-radius: var(--radius-sm);
     font-size: 11px;
@@ -1245,13 +1246,13 @@
     padding: 2px 8px;
     font-size: 11px;
     color: var(--text-primary);
-    background: rgba(91, 108, 247, 0.18);
+    background: rgba(var(--c-accent-rgb), 0.18);
     border: 1px solid var(--accent-primary);
     border-radius: 3px;
     cursor: pointer;
   }
 
-  .field-badge-back:hover { background: rgba(91, 108, 247, 0.35); }
+  .field-badge-back:hover { background: rgba(var(--c-accent-rgb), 0.35); }
 
   .cat-legend {
     display: flex;
@@ -1260,7 +1261,7 @@
     gap: 4px 12px;
     max-width: min(640px, 80vw);
     padding: 6px 10px;
-    background: rgba(15, 15, 26, 0.88);
+    background: var(--c-overlay);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     font-size: 11px;
@@ -1291,7 +1292,7 @@
   .probe-tooltip {
     position: fixed;
     padding: 3px 8px;
-    background: rgba(15, 15, 26, 0.92);
+    background: var(--c-overlay);
     border: 1px solid var(--accent-primary);
     border-radius: 3px;
     font-family: var(--font-mono);
@@ -1354,7 +1355,7 @@
     flex: none;
     padding: 2px 10px;
     font-size: 12px;
-    color: #fff;
+    color: var(--c-on-accent);
     background: var(--accent-primary);
     border: none;
     border-radius: 4px;

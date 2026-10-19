@@ -575,7 +575,7 @@
     width: 12px;
     height: 12px;
     border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
+    border-top-color: var(--c-on-accent);
     border-radius: 50%;
     animation: spin 600ms linear infinite;
   }
@@ -619,7 +619,7 @@
     padding: 0 4px;
     height: auto;
     font-size: inherit;
-    color: var(--accent-primary, #5b6cf7);
+    color: var(--accent-primary, var(--c-accent));
     background: transparent;
     border: none;
     text-decoration: underline;
@@ -667,9 +667,9 @@
   .result-card {
     margin-top: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--bg-surface, rgba(255, 255, 255, 0.05));
+    background: var(--bg-surface, rgba(var(--c-line-rgb), 0.05));
     border-radius: 6px;
-    border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.08));
+    border: 1px solid var(--border-subtle, rgba(var(--c-line-rgb), 0.08));
   }
 
   .result-title {

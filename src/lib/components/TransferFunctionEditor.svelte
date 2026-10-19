@@ -503,7 +503,7 @@
 
   /* Gradient bar */
   .tfe-gradient-wrapper {
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
     line-height: 0;
@@ -526,14 +526,14 @@
     width: 100%;
     height: 80px;
     background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
     border-radius: var(--radius-sm, 4px);
     cursor: crosshair;
     overflow: visible; /* end-point handles sit on the border: keep them whole and clickable */
   }
 
   .tfe-grid-line {
-    stroke: rgba(255, 255, 255, 0.04);
+    stroke: rgba(var(--c-line-rgb), 0.04);
     stroke-width: 0.5;
   }
 
@@ -550,7 +550,7 @@
 
   .tfe-control-point:focus-visible {
     outline: none;
-    stroke: var(--accent-primary, #5b6cf7);
+    stroke: var(--accent-primary, var(--c-accent));
     stroke-width: 3;
   }
 
@@ -607,7 +607,7 @@
     padding: 3px 8px;
     font-size: 10px;
     font-weight: 600;
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
     border-radius: var(--radius-sm, 4px);
     background: rgba(15, 15, 26, 0.6);
     color: var(--text-secondary, rgba(255,255,255,0.6));
@@ -617,8 +617,8 @@
   }
 
   .tfe-preset:hover {
-    background: rgba(91, 108, 247, 0.1);
-    border-color: rgba(91, 108, 247, 0.25);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border-color: rgba(var(--c-accent-rgb), 0.25);
     color: var(--text-primary, #fff);
   }
 </style>

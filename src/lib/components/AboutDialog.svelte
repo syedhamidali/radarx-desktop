@@ -2,6 +2,9 @@
   import { createEventDispatcher } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { focusTrap } from '../utils/focusTrap';
+  import LogoMark from './LogoMark.svelte';
+  import RadarSweep from './RadarSweep.svelte';
+  import { webUi } from '../stores/webInfo';
 
   export let visible = false;
 
@@ -44,44 +47,28 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="about-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
-    <div class="about-dialog" role="dialog" aria-modal="true" aria-label="About xradar desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
-      <!-- Logo area -->
+    <div class="about-dialog brackets-4" role="dialog" aria-modal="true" aria-label="About xradar desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
+      <!-- Logo area: the mark over a slow scope -->
       <div class="about-logo">
-        <div class="logo-icon">
-          <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-            <circle cx="24" cy="24" r="22" stroke="var(--accent-primary)" stroke-width="2" opacity="0.3" />
-            <circle cx="24" cy="24" r="16" stroke="var(--accent-primary)" stroke-width="1.5" opacity="0.5" />
-            <circle cx="24" cy="24" r="10" stroke="var(--accent-primary)" stroke-width="1.5" opacity="0.7" />
-            <circle cx="24" cy="24" r="4" fill="var(--accent-primary)" />
-            <line x1="24" y1="2" x2="24" y2="46" stroke="var(--accent-primary)" stroke-width="0.5" opacity="0.2" />
-            <line x1="2" y1="24" x2="46" y2="24" stroke="var(--accent-primary)" stroke-width="0.5" opacity="0.2" />
-          </svg>
-        </div>
-        <div class="logo-glow"></div>
+        <div class="logo-scope"><RadarSweep size={132} period={8} rings={2} labels={false} hub={false} /></div>
+        <div class="logo-icon"><LogoMark size={68} title="xradar" /></div>
       </div>
 
-      <!-- App name -->
       <div class="about-name">
-        <span class="name-x">x</span><span class="name-rest">radar</span>
-        <span class="name-desktop">desktop</span>
+        <span class="name-x">X</span>RADAR
       </div>
-
-      <div class="about-version">v{version}</div>
+      <div class="about-sub">{$webUi ? 'web' : 'desktop'} &middot; radar research workstation</div>
 
       <p class="about-desc">
-        Industry-grade weather radar visualization and research platform.
+        Weather radar visualization and research platform: open, inspect, process and export volumes from
+        NEXRAD, ODIM, CfRadial, IRIS and more.
       </p>
 
-      <!-- Tech stack -->
-      <div class="about-tech">
-        <span class="tech-label">Built with</span>
-        <div class="tech-badges">
-          <span class="tech-badge">Tauri 2.0</span>
-          <span class="tech-badge">Svelte</span>
-          <span class="tech-badge">xradar</span>
-          <span class="tech-badge">Python</span>
-        </div>
-      </div>
+      <dl class="about-specs">
+        <div><dt>VERSION</dt><dd>v{version}</dd></div>
+        <div><dt>SHELL</dt><dd>Tauri 2 / Svelte</dd></div>
+        <div><dt>ENGINE</dt><dd>Python / xradar</dd></div>
+      </dl>
 
       <!-- Links -->
       <div class="about-links">
@@ -115,161 +102,100 @@
     position: fixed;
     inset: 0;
     z-index: 950;
-    background: rgba(0, 0, 0, 0.65);
+    background: var(--c-scrim);
     display: flex;
     align-items: center;
     justify-content: center;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
   }
 
   .about-dialog {
-    width: 400px;
+    width: 420px;
     max-width: 90vw;
-    background: var(--bg-secondary);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-lg), 0 0 80px rgba(91, 108, 247, 0.08);
-    padding: var(--spacing-2xl) var(--spacing-xl);
+    background: var(--c-overlay);
+    border: 1px solid var(--c-border-strong);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-3);
+    padding: var(--space-6) var(--space-5) var(--space-5);
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
-    gap: var(--spacing-md);
+    gap: var(--space-3);
   }
 
   .about-logo {
     position: relative;
-    margin-bottom: var(--spacing-sm);
+    width: 132px;
+    height: 132px;
+    margin-bottom: var(--space-1);
   }
-
+  .logo-scope { position: absolute; inset: 0; opacity: 0.7; }
   .logo-icon {
-    position: relative;
-    z-index: 1;
-  }
-
-  .logo-glow {
     position: absolute;
-    inset: -20px;
-    background: radial-gradient(circle, rgba(91, 108, 247, 0.2) 0%, transparent 70%);
-    border-radius: 50%;
-    z-index: 0;
-    animation: about-glow 3s ease-in-out infinite alternate;
-  }
-
-  @keyframes about-glow {
-    from { opacity: 0.5; transform: scale(0.9); }
-    to { opacity: 1; transform: scale(1.1); }
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    filter: drop-shadow(0 0 10px rgba(var(--c-accent-rgb), 0.5));
   }
 
   .about-name {
-    font-size: 24px;
+    font-size: var(--fs-2xl);
     font-weight: 600;
-    letter-spacing: -0.02em;
+    letter-spacing: 0.3em;
+    padding-left: 0.3em;
     user-select: text;
   }
-
-  .name-x {
-    color: var(--accent-primary);
-    font-weight: 700;
-    text-shadow: 0 0 20px rgba(91, 108, 247, 0.5);
-  }
-
-  .name-rest {
-    color: var(--text-primary);
-  }
-
-  .name-desktop {
-    color: var(--text-muted);
-    font-weight: 400;
-    margin-left: 4px;
-    font-size: 18px;
-  }
-
-  .about-version {
-    font-size: 12px;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    background: rgba(91, 108, 247, 0.08);
-    padding: 2px 10px;
-    border-radius: 10px;
-    border: 1px solid rgba(91, 108, 247, 0.15);
+  .name-x { color: var(--c-accent); }
+  .about-sub {
+    margin-top: -6px;
+    font-size: var(--fs-2xs);
+    letter-spacing: var(--ls-wide);
+    text-transform: uppercase;
+    color: var(--c-muted);
   }
 
   .about-desc {
-    font-size: 13px;
-    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    color: var(--c-text-dim);
     line-height: 1.6;
-    margin: var(--spacing-sm) 0;
-    max-width: 320px;
+    max-width: 340px;
   }
 
-  .about-tech {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: var(--spacing-sm);
-    margin: var(--spacing-sm) 0;
+  .about-specs {
+    align-self: stretch;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    margin: var(--space-1) 0;
+    border: 1px solid var(--c-border);
+    background: var(--c-field);
   }
+  .about-specs > div { padding: var(--space-2) var(--space-2); border-right: 1px solid var(--c-border); }
+  .about-specs > div:last-child { border-right: 0; }
+  .about-specs dt { font-size: 9.5px; letter-spacing: var(--ls-label); color: var(--c-muted); }
+  .about-specs dd { margin-top: 2px; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-text); user-select: text; }
 
-  .tech-label {
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--text-muted);
-  }
-
-  .tech-badges {
-    display: flex;
-    gap: var(--spacing-xs);
-    flex-wrap: wrap;
-    justify-content: center;
-  }
-
-  .tech-badge {
-    font-size: 11px;
-    padding: 3px 10px;
-    background: rgba(91, 108, 247, 0.08);
-    border: 1px solid var(--glass-border);
-    border-radius: 12px;
-    color: var(--text-accent);
-    font-weight: 500;
-  }
-
-  .about-links {
-    display: flex;
-    gap: var(--spacing-sm);
-    margin: var(--spacing-sm) 0;
-  }
+  .about-links { display: flex; gap: var(--space-2); }
 
   .link-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
     padding: 6px 14px;
-    font-size: 12px;
-    color: var(--text-secondary);
+    font-size: var(--fs-sm);
+    color: var(--c-text-dim);
     background: transparent;
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
     height: auto;
-    transition: all var(--transition-fast);
   }
-
-  .link-btn:hover {
-    color: var(--accent-primary);
-    border-color: var(--accent-primary);
-    background: rgba(91, 108, 247, 0.06);
-  }
+  .link-btn:hover { color: var(--c-accent); border-color: var(--c-accent); background: rgba(var(--c-accent-rgb), 0.06); }
 
   .about-license {
-    font-size: 11px;
-    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+    user-select: text;
   }
 
-  .about-close-btn {
-    margin-top: var(--spacing-sm);
-    padding: 6px 24px;
-  }
+  .about-close-btn { margin-top: var(--space-1); padding: 6px 28px; }
 </style>

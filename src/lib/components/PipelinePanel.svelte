@@ -301,7 +301,7 @@
     font-size: 12px;
     padding: 3px 6px;
     color: var(--text-primary, #e4e6f4);
-    background: var(--bg-primary, #080a14);
+    background: var(--bg-primary, var(--c-surface-0));
     border: 1px solid var(--border-color, #2a2e4a);
     border-radius: 4px;
   }
@@ -419,7 +419,7 @@
     font-size: 9px;
     padding: 0 4px;
     border-radius: 3px;
-    background: var(--bg-primary, #080a14);
+    background: var(--bg-primary, var(--c-surface-0));
     color: var(--text-muted, #5c6088);
   }
   .kind.transform {
@@ -475,7 +475,7 @@
     padding: 0 4px;
     margin-left: 4px;
     border-radius: 3px;
-    background: var(--bg-primary, #080a14);
+    background: var(--bg-primary, var(--c-surface-0));
   }
   .skipped {
     margin: 4px 0 0;

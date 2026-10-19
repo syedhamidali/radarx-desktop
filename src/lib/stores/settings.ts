@@ -79,7 +79,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   },
   theme: {
     mode: 'dark',
-    accentColor: '#5b6cf7',
+    accentColor: '#2bd9f5',
     fontSize: 13,
   },
   data: {

@@ -643,7 +643,7 @@
   }
   .btn:hover { background: var(--bg-hover); color: var(--text-primary); }
   .btn.primary {
-    color: #fff;
+    color: var(--c-on-accent);
     background: var(--accent-primary);
     border-color: var(--accent-primary);
   }

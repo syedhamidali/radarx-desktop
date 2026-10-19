@@ -160,7 +160,7 @@
     padding: 0 5px;
     border-radius: 8px;
     font-size: 10px;
-    background: rgba(91, 108, 247, 0.14);
+    background: rgba(var(--c-accent-rgb), 0.14);
     color: var(--text-accent, inherit);
   }
 
@@ -169,7 +169,7 @@
     max-width: 140px;
     font-size: 11px;
     color: var(--text-secondary);
-    background: rgba(17, 22, 40, 0.5);
+    background: rgba(var(--c-surface-2-rgb), 0.5);
     border: 1px solid var(--glass-border, var(--border-color));
     border-radius: var(--radius-sm, 4px);
     padding: 2px 4px;

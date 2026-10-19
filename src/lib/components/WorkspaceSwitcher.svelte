@@ -311,7 +311,7 @@
   .ws-trigger:hover {
     border-color: var(--border-light);
     color: var(--text-primary);
-    background: rgba(91, 108, 247, 0.06);
+    background: rgba(var(--c-accent-rgb), 0.06);
   }
 
   .ws-name {
@@ -385,7 +385,7 @@
 
   .ws-item.active {
     color: var(--accent-hover);
-    background: rgba(91, 108, 247, 0.08);
+    background: rgba(var(--c-accent-rgb), 0.08);
   }
 
   .ws-item-icon {
@@ -447,7 +447,7 @@
   }
 
   .ws-delete-btn:hover {
-    background: rgba(248, 113, 113, 0.15);
+    background: rgba(var(--c-alarm-rgb), 0.15);
     color: var(--accent-danger);
     border: none;
     box-shadow: none;
@@ -478,13 +478,13 @@
   }
 
   .ws-btn-danger {
-    background: rgba(248, 113, 113, 0.15);
-    border-color: rgba(248, 113, 113, 0.3);
+    background: rgba(var(--c-alarm-rgb), 0.15);
+    border-color: rgba(var(--c-alarm-rgb), 0.3);
     color: var(--accent-danger);
   }
 
   .ws-btn-danger:hover {
-    background: rgba(248, 113, 113, 0.25);
+    background: rgba(var(--c-alarm-rgb), 0.25);
   }
 
   .ws-divider {

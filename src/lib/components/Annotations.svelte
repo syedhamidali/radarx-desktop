@@ -322,7 +322,7 @@
   }
 
   .annotation-overlay {
-    --halo: rgba(8, 10, 20, 0.8);
+    --halo: rgba(var(--c-surface-0-rgb), 0.8);
   }
   :global(.theme-light) .annotation-overlay {
     --halo: rgba(255, 255, 255, 0.88);
@@ -334,8 +334,8 @@
   }
 
   .annotation-text-bg {
-    fill: var(--glass-bg-heavy, rgba(8, 10, 20, 0.85));
-    stroke: var(--accent-primary, #5b6cf7);
+    fill: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.85));
+    stroke: var(--accent-primary, var(--c-accent));
     stroke-width: 1;
   }
 
@@ -352,7 +352,7 @@
   }
 
   .annotation-region {
-    fill: rgba(91, 108, 247, 0.08);
+    fill: rgba(var(--c-accent-rgb), 0.08);
     stroke: var(--accent-warning, #fbbf24);
     stroke-width: 1.5;
     stroke-dasharray: 5 3;
@@ -372,7 +372,7 @@
   .annotation-pending-dot {
     fill: var(--accent-success, #34d399);
     fill-opacity: 0.7;
-    stroke: var(--bg-primary, #080a14);
+    stroke: var(--bg-primary, var(--c-surface-0));
     stroke-width: 2;
   }
 
@@ -394,7 +394,7 @@
     align-items: center;
     gap: 4px;
     padding: 6px 8px;
-    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
@@ -412,7 +412,7 @@
 
   .badge {
     background: var(--accent-primary);
-    color: #fff;
+    color: var(--c-on-accent);
     font-size: 9px;
     font-weight: 700;
     padding: 1px 5px;
@@ -430,7 +430,7 @@
     z-index: 25;
     width: 280px;
     max-height: 360px;
-    background: var(--glass-bg-heavy, rgba(13, 16, 32, 0.9));
+    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     backdrop-filter: blur(20px);
@@ -513,7 +513,7 @@
     font-weight: 600;
     text-transform: uppercase;
     color: var(--accent-primary);
-    background: rgba(91, 108, 247, 0.1);
+    background: rgba(var(--c-accent-rgb), 0.1);
     padding: 1px 5px;
     border-radius: 3px;
     flex-shrink: 0;
@@ -552,6 +552,6 @@
 
   .item-delete:hover {
     color: var(--accent-danger);
-    background: rgba(248, 113, 113, 0.1);
+    background: rgba(var(--c-alarm-rgb), 0.1);
   }
 </style>

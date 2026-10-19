@@ -457,9 +457,9 @@
   }
 
   .action-btn.primary {
-    background: var(--accent-primary, #5b6cf7);
-    border-color: var(--accent-primary, #5b6cf7);
-    color: #fff;
+    background: var(--accent-primary, var(--c-accent));
+    border-color: var(--accent-primary, var(--c-accent));
+    color: var(--c-on-accent);
   }
 
   .action-btn.primary:hover:not(:disabled) {
@@ -479,7 +479,7 @@
     width: 12px;
     height: 12px;
     border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
+    border-top-color: var(--c-on-accent);
     border-radius: 50%;
     animation: spin 600ms linear infinite;
     display: inline-block;
@@ -578,7 +578,7 @@
 
   .cell-id-col {
     font-weight: 700;
-    color: var(--accent-primary, #5b6cf7) !important;
+    color: var(--accent-primary, var(--c-accent)) !important;
   }
 
   .mono {
@@ -598,7 +598,7 @@
   .detail-header {
     font-size: 11px;
     font-weight: 700;
-    color: var(--accent-primary, #5b6cf7);
+    color: var(--accent-primary, var(--c-accent));
     margin-bottom: var(--spacing-xs, 4px);
     text-transform: uppercase;
     letter-spacing: 0.04em;

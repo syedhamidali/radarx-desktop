@@ -1,6 +1,7 @@
 <script lang="ts">
   import { radarData } from '../stores/radarData';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+  import RadarSweep from './RadarSweep.svelte';
   import DataTable from './DataTable.svelte';
   import MetadataViewer from './MetadataViewer.svelte';
   import VariableMapping from './VariableMapping.svelte';
@@ -91,13 +92,9 @@
       </dl>
     </CollapsiblePanel>
   {:else}
-    <div class="empty-state">
+    <div class="empty-state hud-grid">
       <div class="empty-icon">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="7 10 12 15 17 10" />
-          <line x1="12" y1="15" x2="12" y2="3" />
-        </svg>
+        <RadarSweep size={96} period={7} rings={2} labels={false} />
       </div>
       <p class="empty-title">No file loaded</p>
       <p class="empty-hint">Open a radar file to inspect its contents</p>
@@ -128,7 +125,7 @@
     gap: var(--spacing-xs, 4px);
     padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
     border-bottom: 1px solid var(--glass-border, var(--border-color));
-    background: rgba(17, 22, 40, 0.3);
+    background: rgba(var(--c-surface-2-rgb), 0.3);
     flex-shrink: 0;
   }
 
@@ -140,8 +137,8 @@
     font-size: 11px;
     font-weight: 500;
     color: var(--text-secondary, #c9d1d9);
-    background: rgba(91, 108, 247, 0.06);
-    border: 1px solid rgba(91, 108, 247, 0.12);
+    background: rgba(var(--c-accent-rgb), 0.06);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.12);
     border-radius: var(--radius-sm, 4px);
     cursor: pointer;
     transition: all 120ms ease;
@@ -149,9 +146,9 @@
   }
 
   .toolbar-btn:hover {
-    background: rgba(91, 108, 247, 0.14);
+    background: rgba(var(--c-accent-rgb), 0.14);
     color: var(--text-primary, #e6edf3);
-    border-color: rgba(91, 108, 247, 0.3);
+    border-color: rgba(var(--c-accent-rgb), 0.3);
   }
 
   /* Dimensions table */
@@ -182,7 +179,7 @@
   }
 
   .dim-table tr:hover td {
-    background: rgba(91, 108, 247, 0.03);
+    background: rgba(var(--c-accent-rgb), 0.03);
   }
 
   .dim-size {
@@ -211,7 +208,7 @@
   }
 
   .attr-item:hover {
-    background: rgba(91, 108, 247, 0.03);
+    background: rgba(var(--c-accent-rgb), 0.03);
   }
 
   .attr-item dt {
@@ -252,9 +249,8 @@
   }
 
   .empty-state .empty-icon {
-    opacity: 0.2;
     margin-bottom: var(--spacing-sm);
-    color: var(--accent-primary);
+    opacity: 0.85;
   }
 
   .empty-title {
@@ -283,7 +279,7 @@
     padding: 2px 6px;
     font-family: var(--font-mono);
     font-size: 10px;
-    background: rgba(8, 10, 20, 0.6);
+    background: rgba(var(--c-surface-0-rgb), 0.6);
     border: 1px solid var(--glass-border, var(--border-color));
     border-radius: 4px;
     color: var(--text-secondary);

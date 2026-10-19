@@ -175,9 +175,9 @@
     background: var(--overlay-bg);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
-    border: 1px solid rgba(140, 160, 250, 0.15);
+    border: 1px solid rgba(var(--c-line-rgb), 0.15);
     border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-lg), 0 0 60px rgba(91, 108, 247, 0.08);
+    box-shadow: var(--shadow-lg), 0 0 60px rgba(var(--c-accent-rgb), 0.08);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -213,7 +213,7 @@
 
   .shortcuts-search:focus-within {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(91, 108, 247, 0.15);
+    box-shadow: 0 0 0 2px rgba(var(--c-accent-rgb), 0.15);
   }
 
   .search-input {
@@ -269,7 +269,7 @@
     color: var(--accent-primary);
     margin-bottom: var(--spacing-sm);
     padding-bottom: var(--spacing-xs);
-    border-bottom: 1px solid rgba(91, 108, 247, 0.15);
+    border-bottom: 1px solid rgba(var(--c-accent-rgb), 0.15);
   }
 
   .shortcut-item {

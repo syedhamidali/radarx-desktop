@@ -368,7 +368,7 @@
   .diff-select {
     font-size: 11px;
     padding: 4px 8px;
-    background: rgba(8, 10, 20, 0.5);
+    background: rgba(var(--c-surface-0-rgb), 0.5);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -397,7 +397,7 @@
   .diff-range-input {
     font-size: 11px;
     padding: 4px 6px;
-    background: rgba(8, 10, 20, 0.5);
+    background: rgba(var(--c-surface-0-rgb), 0.5);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -454,7 +454,7 @@
     justify-content: center;
     color: var(--text-muted);
     font-size: 12px;
-    background: rgba(8, 10, 20, 0.6);
+    background: rgba(var(--c-surface-0-rgb), 0.6);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     z-index: 2;
