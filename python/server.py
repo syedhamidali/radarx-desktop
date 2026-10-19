@@ -541,6 +541,11 @@ def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
     )
 
 
+def _blank_to_none(value: Any) -> Any:
+    """An empty path means "choose for me" -- not the engine's working directory."""
+    return None if isinstance(value, str) and not value.strip() else value
+
+
 def _cache_token(file_id: str | None) -> tuple[str, int] | None:
     """Identity of the data behind a reader: (file_id, generation)."""
     if file_id is None:
@@ -1814,7 +1819,7 @@ class ConnectionHandler:
     async def _handle_export(self, msg: dict[str, Any]) -> None:
         fmt = msg.get("format", "png")
         dpi = msg.get("dpi", 300)
-        output_path = msg.get("path")
+        output_path = _blank_to_none(msg.get("path"))
         variable = msg.get("variable")
         sweep = msg.get("sweep", 0)
         options = msg.get("options", {})
@@ -1903,7 +1908,7 @@ class ConnectionHandler:
         sweeps = msg.get("sweeps", [])
         fmt = msg.get("format", "png")
         dpi = msg.get("dpi", 300)
-        output_dir = msg.get("output_dir")
+        output_dir = _blank_to_none(msg.get("output_dir"))
         options = msg.get("options", {})
         file_id = msg.get("file_id")
 
@@ -2000,7 +2005,7 @@ class ConnectionHandler:
     async def _handle_export_animation(self, msg: dict[str, Any]) -> None:
         variable = msg.get("variable")
         sweeps = msg.get("sweeps", [])
-        output_path = msg.get("path")
+        output_path = _blank_to_none(msg.get("path"))
         frame_duration_ms = msg.get("frame_duration_ms", 500)
         dpi = msg.get("dpi", 150)
         options = msg.get("options", {})
@@ -2015,11 +2020,13 @@ class ConnectionHandler:
         if not sweeps:
             await self.send_error("export_animation: 'sweeps' must not be empty")
             return
-        if not isinstance(frame_duration_ms, int) or frame_duration_ms < 50:
-            await self.send_error("export_animation: 'frame_duration_ms' must be >= 50")
+        if not isinstance(frame_duration_ms, int) or not 50 <= frame_duration_ms <= 60_000:
+            await self.send_error(
+                "export_animation: 'frame_duration_ms' must be between 50 and 60000"
+            )
             return
-        if not isinstance(dpi, int) or dpi <= 0 or dpi > 600:
-            await self.send_error("export_animation: 'dpi' must be between 1 and 600")
+        if not isinstance(dpi, int) or not 72 <= dpi <= 600:  # below 72 matplotlib cannot set fonts
+            await self.send_error("export_animation: 'dpi' must be between 72 and 600")
             return
         if output_path is not None and not isinstance(output_path, str):
             await self.send_error("export_animation: 'path' must be a string")

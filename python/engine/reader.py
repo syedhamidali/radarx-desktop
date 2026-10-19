@@ -762,7 +762,8 @@ class RadarReader:
             raise FileNotFoundError(f"File not found: {path}")
         if p.is_dir():
             raise ValueError(
-                f"Could not open {p.name}: it is a folder, not a radar file. Open a file inside it."
+                f"Could not open {p.name or p}: it is a folder, not a radar file. "
+                "Open a file inside it."
             )
         if not os.access(path, os.R_OK):
             raise PermissionError(

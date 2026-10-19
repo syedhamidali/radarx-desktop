@@ -195,6 +195,34 @@ class TestDegenerateFigures:
         assert _listing(tmp_path) == []
 
 
+class TestAnimationLimits:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("field", "value", "needle"),
+        [
+            ("dpi", 1, "between 72 and 600"),
+            ("dpi", True, "between 72 and 600"),
+            ("frame_duration_ms", 10**30, "between 50 and 60000"),
+            ("frame_duration_ms", 70_000, "between 50 and 60000"),
+        ],
+    )
+    async def test_out_of_range_values_are_refused_up_front(
+        self, field: str, value, needle: str
+    ) -> None:
+        server._register_reader(_reader_with_tree())
+        try:
+            handler, _ = _make_handler()
+            await handler.handle_message(
+                json.dumps(
+                    {"type": "export_animation", "variable": "DBZH", "sweeps": [0], field: value}
+                )
+            )
+        finally:
+            server._file_readers.clear()
+        errs = [m["message"] for m in handler._sent if m["type"] == "error"]
+        assert len(errs) == 1 and needle in errs[0]
+
+
 class TestExportMessages:
     @pytest.mark.asyncio
     async def test_unwritable_folder_says_permission_denied(
@@ -227,6 +255,40 @@ class TestExportMessages:
         assert "permission denied" in errs[0] and "allowed to write" in errs[0]
         assert not any(m["type"] == "export_complete" for m in handler._sent)
         assert _listing(locked) == []
+
+    @pytest.mark.asyncio
+    async def test_blank_destination_means_the_default_folder_not_the_working_directory(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cwd, exports = tmp_path / "cwd", tmp_path / "exports"
+        cwd.mkdir()
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("XRADAR_EXPORT_DIR", str(exports))
+        server._register_reader(_reader_with_tree())
+        try:
+            handler, _ = _make_handler()
+            for path_key, extra in (
+                ("path", {}),
+                ("output_dir", {"variables": ["DBZH"], "sweeps": [0]}),
+            ):
+                kind = "export" if path_key == "path" else "batch_export"
+                await handler.handle_message(
+                    json.dumps(
+                        {
+                            "type": kind,
+                            "format": "csv",
+                            "variable": "DBZH",
+                            "sweep": 0,
+                            path_key: "  ",
+                            **extra,
+                        }
+                    )
+                )
+        finally:
+            server._file_readers.clear()
+        assert not any(m["type"] == "error" for m in handler._sent), handler._sent
+        assert _listing(cwd) == []
+        assert any(exports.rglob("*.csv"))
 
     @pytest.mark.asyncio
     async def test_disk_full_message_through_the_server(
