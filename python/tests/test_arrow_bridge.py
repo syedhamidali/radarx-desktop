@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.ipc as ipc
 import pytest
 import xarray as xr
 
-from engine.arrow_bridge import (
+# pyarrow is an optional extra (pip install ".[arrow]"): the app does not use it at run time.
+pa = pytest.importorskip("pyarrow")
+ipc = pytest.importorskip("pyarrow.ipc")
+
+from engine.arrow_bridge import (  # noqa: E402
     _to_flat_arrow,
     dataarray_to_arrow,
     dataset_to_arrow,
