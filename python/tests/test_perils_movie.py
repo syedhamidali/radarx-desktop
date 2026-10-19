@@ -467,4 +467,4 @@ def test_two_frames_render_in_chrome(tiny, tmp_path):
             "540",
         ]
     )
-    assert (root / "frames" / "frame_00000.png").stat().st_size > 10_000
+    assert rm.frame_path(root / "frames", 0).stat().st_size > 10_000

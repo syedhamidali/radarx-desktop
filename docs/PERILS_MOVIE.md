@@ -52,16 +52,22 @@ is drawn (and says so on screen).
   renderer's flash light. Panel: flashes in the last minute and the flash-rate series, all counted from the real
   flashes. Because one clip second is about eight data seconds, a flash (about a second of data) lasts a few
   frames and its afterglow is longer than the flash itself.
-* **Stations**: standing on the ground with a pole, a ring that grows with the rain rate, a wind arrow along
+* **Stations** (37 in the bundle: PIPS disdrometers, TTU StickNet, the RaDAPS site, mobile mesonets, FARM
+  Parsivels; vehicles are drawn along their tracks and are never the station nearest the camera): standing on the ground with a pole, a ring that grows with the rain rate, a wind arrow along
   the ground, the live read-out and a pulse when the disdrometer counts a hail candidate; the station nearest the
   camera is highlighted and has the card at the lower left (the audio uses the same one). Strip charts of its
   pressure, temperature and dew point, and wind and gust, with the gust front visible as a step; its drop-size
   spectrum with Dm; the fall-speed-versus-diameter evidence of large particles against the raindrop curve (a
   reference curve).
-* **Soundings**: sites with the balloon's drift track, the freezing level and the -10 / -20 degC heights as
-  ticks and as thin rings around the storm, and the app's own Skew-T and hodograph of the sounding nearest in time
-  (launch time and its offset from the clip time on the inset; there is no sounding inside the 16 minutes, the
-  nearest were launched two hours before), with the surface-based parcel path computed from the same profile.
+* **Soundings**: the environment is the PRE-storm radiosonde with the most instability that was launched near the
+  line (score: its CAPE in units of 100 J/kg minus its distance from the line in units of 40 km), shown with the
+  app's own Skew-T and hodograph and the surface-based parcel path computed from the same profile; where the same
+  site flew again after the storm (the cold pool) that profile is dashed over it. Launch times and their offset from
+  the moment on screen are written on the inset (there is no sounding inside the 16 minutes; the pre-storm one
+  was launched about three hours before). The balloon's drift track, the freezing level and the -10 / -20 degC
+  heights of that sounding stand at its launch site as ticks and as thin rings around the storm (an assumption of a
+  uniform environment, said on screen); the other 40 sounding sites are small dots. The environment panel gives
+  the engine's numbers for that sounding (CAPE, LCL, 0-6 km shear, 0-1 km helicity, freezing level).
 * **Ground**: a schematic map from Natural Earth (public domain) and the Census county lines, no imagery and
   no terrain (flat ground; there are no cached tiles for this region and the build has no network). MRMS
   composite reflectivity outside the radar box (inside it the 3-D volume is the truth), the surface temperature

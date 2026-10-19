@@ -35,6 +35,15 @@ DEFAULT_SEGMENTS = (
 )
 
 
+def frame_path(frames_dir: Path, i: int) -> Path | None:
+    """The file of frame ``i`` (PNG or JPEG), or None."""
+    for ext in ("png", "jpg"):
+        f = frames_dir / f"frame_{i:05d}.{ext}"
+        if f.exists():
+            return f
+    return None
+
+
 def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
     frames: list[int] = []
     for part in spec.split(","):
@@ -98,7 +107,7 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
     dist = Path(a.app_dist).expanduser().resolve()
     if not (dist / "index.html").exists():
         sys.exit(f"{dist}/index.html not found: run `npm run build` first (or pass --app-dist)")
-    todo = [i for i in frames if not (frames_dir / f"frame_{i:05d}.png").exists()]
+    todo = [i for i in frames if frame_path(frames_dir, i) is None]
     log(
         f"{len(frames)} frames wanted, {len(frames) - len(todo)} already on disk, {len(todo)} to draw"
     )
@@ -166,8 +175,14 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
         t0 = time.time()
         for n, i in enumerate(todo):
             await page.evaluate("(i) => window.__xrClip.renderFrame(i)", i)
-            (frames_dir / f"frame_{i:05d}.png.part").write_bytes(await page.screenshot(type="png"))
-            (frames_dir / f"frame_{i:05d}.png.part").rename(frames_dir / f"frame_{i:05d}.png")
+            ext = "jpg" if a.frame_format == "jpeg" else "png"
+            shot = (
+                await page.screenshot(type="jpeg", quality=a.jpeg_quality)
+                if ext == "jpg"
+                else await page.screenshot(type="png")
+            )
+            (frames_dir / f"frame_{i:05d}.{ext}.part").write_bytes(shot)
+            (frames_dir / f"frame_{i:05d}.{ext}.part").rename(frames_dir / f"frame_{i:05d}.{ext}")
             if n % 30 == 0 or n == len(todo) - 1:
                 el = time.time() - t0
                 log(
@@ -221,7 +236,7 @@ def encode(
     from PIL import Image
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    first = Image.open(frames_dir / f"frame_{frames[0]:05d}.png")
+    first = Image.open(frame_path(frames_dir, frames[0]))
     w, h = first.size
     container = av.open(str(out), "w", options={"movflags": "+faststart"})
     vs = container.add_stream("libx264", rate=fps)
@@ -252,7 +267,10 @@ def encode(
         aud_packets.extend(as_.encode())
         log(f"audio: {planar.shape[1] / sr:.2f} s from {audio.name} ({len(frames)} frames)")
     for k, i in enumerate(frames):
-        img = Image.open(frames_dir / f"frame_{i:05d}.png").convert("RGB")
+        fp = frame_path(frames_dir, i)
+        if fp is None:
+            raise SystemExit(f"frame {i} is missing in {frames_dir}")
+        img = Image.open(fp).convert("RGB")
         if img.size != (vs.width, vs.height):
             img = img.crop((0, 0, vs.width, vs.height))
         vf = av.VideoFrame.from_image(img)
@@ -317,6 +335,13 @@ def main(argv=None) -> None:
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument(
+        "--frame-format",
+        default="jpeg",
+        choices=["jpeg", "png"],
+        help="frame files (JPEG q95 by default: 8.5 GB of PNG do not fit next to everything else; the video is 4:2:0 H.264 anyway)",
+    )
+    ap.add_argument("--jpeg-quality", type=int, default=95)
     ap.add_argument("--crf", type=int, default=17)
     ap.add_argument(
         "--style",
