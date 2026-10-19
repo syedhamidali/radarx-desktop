@@ -107,6 +107,9 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
+          # actions/checkout turns an annotated tag into a plain pointer to its commit (the message
+          # is lost, %(contents) would give the commit message), so fetch the tag object itself.
+          git fetch --force --no-tags origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}" || true
           body="$(git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)' | head -c 15000)"
           [ -n "$body" ] || body="See the release page for details."
           {
