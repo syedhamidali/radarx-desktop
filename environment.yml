@@ -1,4 +1,4 @@
-name: xradar-desktop-docs
+name: radarx-desktop-docs
 channels:
   - conda-forge
   - nodefaults

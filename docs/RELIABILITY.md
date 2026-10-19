@@ -30,7 +30,7 @@ for it.
   away) `ctx.cancelled` turns true and `ctx.progress()` / `ctx.check_cancelled()` raise
   `ModuleCancelled`, so a module that reports progress or polls the flag stops by itself. Whatever
   a late-finishing module returns is discarded. A module that never checks keeps its thread until
-  it returns; after 3 such stuck runs new runs are refused with "Restart xradar-desktop".
+  it returns; after 3 such stuck runs new runs are refused with "Restart radarx-desktop".
   The thread is a daemon (it never blocks exit) and is not part of the shared executor pool.
 * **Output checks**: every field must be numeric and have the sweep's `(n_azimuth, n_range)` shape;
   +/-inf become NaN (with a `warnings` entry in the result); a field that is only infinities, or

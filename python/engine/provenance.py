@@ -8,10 +8,10 @@ user's machine.
 Public API (all pure functions, no server state, safe to call from a CLI)::
 
     software_version()                     # "0.2.1"
-    software_string()                      # "xradar-desktop 0.2.1"
+    software_string()                      # "radarx-desktop 0.2.1"
     library_versions()                     # {"python": ..., "xarray": ..., "xradar": ..., ...}
     utc_stamp()                            # "2026-10-19T11:21:00Z"
-    history_line("export netcdf", {...})   # "2026-...Z: xradar-desktop 0.2.1: export netcdf (...)"
+    history_line("export netcdf", {...})   # "2026-...Z: radarx-desktop 0.2.1: export netcdf (...)"
     append_history(existing, line)
     standard_global_attrs(...)             # title/institution/source/history/... (strings only)
     csv_comment_block(...)                 # "# key: value" lines for the head of a CSV
@@ -31,7 +31,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-SOFTWARE_NAME = "xradar-desktop"
+SOFTWARE_NAME = "radarx-desktop"
 #: Version of the layout of the provenance attributes written by this module.
 PROVENANCE_SCHEMA = 1
 #: Packages whose versions are recorded (name on PyPI -> key in the output).
@@ -77,13 +77,21 @@ def software_version() -> str:
     try:
         from importlib import metadata
 
-        return metadata.version("xradar-desktop-engine")
+        for name in (
+            "radarx-desktop-engine",
+            "xradar-desktop-engine",
+        ):  # the old name: older installs
+            try:
+                return metadata.version(name)
+            except metadata.PackageNotFoundError:
+                continue
+        return "unknown"
     except Exception:
         return "unknown"
 
 
 def software_string() -> str:
-    """``"xradar-desktop 0.2.1"``."""
+    """``"radarx-desktop 0.2.1"``."""
     return f"{SOFTWARE_NAME} {software_version()}"
 
 

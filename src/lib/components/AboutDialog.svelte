@@ -47,7 +47,7 @@
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div class="about-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
-    <div class="about-dialog brackets-4" role="dialog" aria-modal="true" aria-label="About xradar desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
+    <div class="about-dialog brackets-4" role="dialog" aria-modal="true" aria-label="About radarx desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
       <!-- Logo area: the mark over a slow scope -->
       <div class="about-logo">
         <div class="logo-scope"><RadarSweep size={132} period={8} rings={2} labels={false} hub={false} /></div>

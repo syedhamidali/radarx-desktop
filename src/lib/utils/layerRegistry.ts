@@ -102,7 +102,7 @@ export const STYLISED_LOOK: LayerKey & { provenance: Provenance } = {
   title: '3D realistic look',
   provenance: {
     kind: 'stylised',
-    source: 'xradar-desktop realistic 3D renderer',
+    source: 'radarx-desktop realistic 3D renderer',
     title: '3D realistic look',
     method:
       'Clouds, lighting, haze and ground are drawn for appearance. The radar values drive the density and colour, but the picture is not a measurement.',

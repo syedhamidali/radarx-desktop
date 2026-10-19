@@ -230,7 +230,7 @@ Your own looks: **Save** in the panel (stored in this browser, listed under "Sav
 
 ### Config file example (TOML; JSON has the same keys)
 ```toml
-# xradar-desktop look: every key is optional
+# radarx-desktop look: every key is optional
 [scene]
 light = "overcast"
 palette = "cyclone"

@@ -89,7 +89,7 @@ where = "Realistic ground in the 3D mosaic view and the offline storm clip; tile
 attribution = "Imagery: Sentinel-2 cloudless (c) EOX IT Services GmbH (contains modified Copernicus Sentinel data 2021), CC BY-NC-SA 4.0. Shown on screen while in use."
 url = "https://cloudless.eox.at"
 flag = "NON-COMMERCIAL, share-alike"
-note = "Free for non-commercial use with attribution; commercial use needs a licence from EOX. Images and videos made with it carry the same ShareAlike terms. The project licence is non-commercial too, so the two do not conflict today, but a commercial licence for xradar-desktop would have to switch this layer off or obtain a licence from EOX. Not redistributed in the installers (fetched on request)."
+note = "Free for non-commercial use with attribution; commercial use needs a licence from EOX. Images and videos made with it carry the same ShareAlike terms. The project licence is non-commercial too, so the two do not conflict today, but a commercial licence for radarx-desktop would have to switch this layer off or obtain a licence from EOX. Not redistributed in the installers (fetched on request)."
 
 [[entry]]
 kind = "imagery"

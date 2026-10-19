@@ -29,7 +29,7 @@ The files are grouped by radar and time; every time step takes each radar's near
 --tolerance-s (files that are not used are listed with the reason). The strongest storm is found
 and tracked, and a 3D camera flies around it in the app's own renderer (headless Chrome). Frames
 between two volumes are interpolated and are labelled so on the screen. Needs the optional extra:
-pip install 'xradar-desktop-engine[video]' (Playwright and PyAV), the system Chrome, and the built
+pip install 'radarx-desktop-engine[video]' (Playwright and PyAV), the system Chrome, and the built
 app (npm run build); --no-render needs none of them. Writes the MP4 at the end, atomically; an
 interrupted job resumes from its cache. docs/ANIMATE.md has the camera file and the look keys."""
 

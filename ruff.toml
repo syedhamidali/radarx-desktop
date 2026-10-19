@@ -1,4 +1,4 @@
-# ruff.toml — Python linting configuration for xradar-desktop engine
+# ruff.toml — Python linting configuration for radarx-desktop engine
 target-version = "py310"
 line-length = 100
 

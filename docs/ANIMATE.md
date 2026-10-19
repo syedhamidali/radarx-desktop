@@ -22,14 +22,14 @@ which has the details of the renderer, the realistic look and the cyclone flight
 ```bash
 pip install -e python/                      # the engine and the `xrd` command
 pip install -U radarx                       # gridding the radars (Python >= 3.12), needed for every run
-pip install -e 'python/[video]'             # the optional extra: Playwright and PyAV   (pip install 'xradar-desktop-engine[video]')
+pip install -e 'python/[video]'             # the optional extra: Playwright and PyAV   (pip install 'radarx-desktop-engine[video]')
 npm ci && npm run build                     # once, in a source checkout: the app that draws (dist/)
 ```
 
 | Needs | Why | When it is missing |
 |---|---|---|
 | `radarx` | merges the radars onto a 3D grid (`xrd mosaic` uses it too) | exit code 4 with the install line |
-| `playwright` (extra `video`) | drives Chrome | exit code 4: `pip install 'xradar-desktop-engine[video]'` |
+| `playwright` (extra `video`) | drives Chrome | exit code 4: `pip install 'radarx-desktop-engine[video]'` |
 | Google Chrome | the renderer runs in it (`channel="chrome"`: the system Chrome, nothing is downloaded) | exit code 4, says to install Chrome or use `--browser ''` after `python -m playwright install chromium` |
 | `av` / PyAV (extra `video`) | encodes H.264 | the frames are still written as numbered PNG files and the command prints the `ffmpeg` line that makes the MP4 |
 | the built app (`dist/`) | the renderer itself | exit code 4 with the build steps |

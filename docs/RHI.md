@@ -1,7 +1,7 @@
 # Range-height (RHI) scans
 
 An RHI keeps the antenna at one azimuth and sweeps it up in elevation, so the rays differ in *elevation*.
-Drawn as a PPI map such a sweep collapses onto one line. xradar-desktop detects RHI sweeps and shows them as
+Drawn as a PPI map such a sweep collapses onto one line. radarx-desktop detects RHI sweeps and shows them as
 what they are: a vertical cut through the storm, ground range along x and height along y.
 
 ![CPOL RHI, cleaned](images/rhi-cpol-dbz.png)

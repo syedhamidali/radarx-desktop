@@ -61,7 +61,7 @@ export default defineConfig(({ mode }) => {
       // Bundle size report to Codecov: CI only (needs CODECOV_TOKEN), always the last plugin.
       codecovVitePlugin({
         enableBundleAnalysis: Boolean(process.env.CODECOV_TOKEN),
-        bundleName: "xradar-desktop",
+        bundleName: "radarx-desktop",
         uploadToken: process.env.CODECOV_TOKEN,
       }),
     ],

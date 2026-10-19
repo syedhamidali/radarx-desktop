@@ -86,7 +86,7 @@ class LocalFilesProvider(Provider):
             valid_time=request.time_start or "",
             valid_end=request.time_end or "",
             method="Read in place from your computer. The data class was declared by the user; "
-            "xradar-desktop cannot verify it.",
+            "radarx-desktop cannot verify it.",
             attribution=str(request.params.get("attribution") or self.attribution),
             licence=str(request.params.get("licence") or ""),
         ).to_dict()

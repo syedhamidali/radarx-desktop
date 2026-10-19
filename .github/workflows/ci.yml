@@ -71,7 +71,7 @@ jobs:
         with:
           # Codecov requires an upload token (repository secret CODECOV_TOKEN)
           token: ${{ secrets.CODECOV_TOKEN }}
-          slug: syedhamidali/xradar-desktop
+          slug: syedhamidali/radarx-desktop
           files: python/coverage.xml
           flags: python-${{ runner.os }}
           name: python-${{ runner.os }}

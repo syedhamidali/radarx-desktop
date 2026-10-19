@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # ruff: noqa: E501
-"""Collect the licences of everything xradar-desktop ships and write ``THIRD_PARTY_NOTICES.md``.
+"""Collect the licences of everything radarx-desktop ships and write ``THIRD_PARTY_NOTICES.md``.
 
 What is collected
 -----------------
@@ -536,7 +536,7 @@ def render(
         "edit scripts/licenses/static.toml or allowed.toml and run it again -->\n"
     )
     w(
-        "xradar-desktop is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). It builds on, bundles "
+        "radarx-desktop is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). It builds on, bundles "
         "or loads at run time the third-party software, fonts, colour maps and map/terrain/imagery services listed "
         "below, each under its own terms. Those terms are not changed by the project licence.\n"
     )

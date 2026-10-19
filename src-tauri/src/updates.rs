@@ -175,8 +175,8 @@ mod tests {
     #[test]
     fn releases_page_follows_the_endpoint_so_a_rename_is_one_edit() {
         assert_eq!(
-            releases_page("https://github.com/syedhamidali/xradar-desktop/releases/latest/download/latest.json"),
-            Some("https://github.com/syedhamidali/xradar-desktop/releases/latest".into())
+            releases_page("https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json"),
+            Some("https://github.com/syedhamidali/radarx-desktop/releases/latest".into())
         );
         assert_eq!(
             releases_page("https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json"),
@@ -210,7 +210,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn only_an_appimage_can_update_itself_on_linux() {
-        assert_eq!(install_mode(Path::new("/usr/bin/xradar-desktop"), false).mode, "manual");
-        assert_eq!(install_mode(Path::new("/tmp/.mount_x/usr/bin/xradar-desktop"), true).mode, "auto");
+        assert_eq!(install_mode(Path::new("/usr/bin/radarx-desktop"), false).mode, "manual");
+        assert_eq!(install_mode(Path::new("/tmp/.mount_x/usr/bin/radarx-desktop"), true).mode, "auto");
     }
 }

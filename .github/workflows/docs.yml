@@ -45,7 +45,7 @@ jobs:
       - name: Install the Read the Docs conda environment
         uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462  # v2.0.7
         with:
-          environment-name: xradar-desktop-docs
+          environment-name: radarx-desktop-docs
           environment-file: environment.yml
           cache-environment: true
           cache-environment-key: "${{runner.os}}-${{runner.arch}}-docs-${{hashFiles('environment.yml')}}"

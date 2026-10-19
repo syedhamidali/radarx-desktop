@@ -797,7 +797,7 @@ export function csvMetadataBlock(meta: {
   const created = (meta.created ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const lines = [
     `# title: ${meta.title}`,
-    `# software: xradar-desktop ${appVersion()}`,
+    `# software: radarx-desktop ${appVersion()}`,
     `# created: ${created}`,
     `# module: ${meta.module}`,
     `# sweep: ${meta.sweep}`,
@@ -842,7 +842,7 @@ export function exportOverlayGeoJson(moduleId: string, res: ModuleResult): Promi
     ...overlayToGeoJson(res, site),
     // RFC 7946 allows foreign members: who made this, from what, with which parameters
     metadata: {
-      software: `xradar-desktop ${appVersion()}`,
+      software: `radarx-desktop ${appVersion()}`,
       created: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
       source_files: baseName(get(radarData).filePath),
       module: moduleId,

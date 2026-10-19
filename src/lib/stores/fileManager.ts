@@ -1,5 +1,5 @@
 /**
- * Multi-file manager store for xradar-desktop.
+ * Multi-file manager store for radarx-desktop.
  *
  * Tracks all open radar files, the active file, and synchronises changes
  * with the legacy radarData / selectedVariable / selectedSweep stores so

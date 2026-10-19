@@ -104,7 +104,7 @@ def test_builders_choose_the_right_class() -> None:
     assert lp.for_variable("DBZH", radar="KTLX").kind == "observed"
     assert lp.for_variable("radarx_hid:hydrometeor_class").kind == "retrieved"
     assert lp.for_variable("radarx_hid:hydrometeor_class").source.startswith(
-        "xradar-desktop module radarx_hid"
+        "radarx-desktop module radarx_hid"
     )
 
 

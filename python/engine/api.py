@@ -1,4 +1,4 @@
-"""Public Python API of xradar-desktop: everything the app does, from a script or a notebook.
+"""Public Python API of radarx-desktop: everything the app does, from a script or a notebook.
 
 The desktop app is a thin shell around this engine; this module exposes the same functions
 without the WebSocket server, so a workflow you built in the GUI can be repeated unattended.
@@ -2407,7 +2407,7 @@ def winds(
             elif dealias != "auto":
                 raise XrdArgumentError(
                     f"This engine version has no dealias option (asked for '{dealias}'). "
-                    "Update xradar-desktop or de-alias with vol.pipeline(...) first."
+                    "Update radarx-desktop or de-alias with vol.pipeline(...) first."
                 )
         record = md.run_multidoppler(
             _pairs(vols), grid, opts, progress=progress, cancel=cancel, cache=None

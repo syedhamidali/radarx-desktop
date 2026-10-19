@@ -5,7 +5,7 @@
 - **Open** button (or `Ctrl/⌘ + O`): pick one or several files. There is no file-type filter, because NEXRAD
   Level II files usually have no extension.
 - **Drag and drop** a file onto the window.
-- **Open With** from the file manager: right-click a radar file → *Open With → xradar-desktop*, or double-click it
+- **Open With** from the file manager: right-click a radar file → *Open With → radarx-desktop*, or double-click it
   once the app is the default for that type. This works for NetCDF/CfRadial, HDF5/ODIM, gzip files, numbered
   copies such as `file.nc.1` and, on macOS, for files with no extension.
 - **Cloud**: the *Cloud data* panel opens the latest NEXRAD Level II scan of a station from the public AWS archive,

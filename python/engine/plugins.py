@@ -1,4 +1,4 @@
-"""Plugin ("module") SDK for xradar-desktop.
+"""Plugin ("module") SDK for radarx-desktop.
 
 A module is a single Python file that declares what it needs, what knobs it
 exposes, and returns a :class:`Result`. The sidecar discovers it automatically
@@ -779,7 +779,7 @@ def _call_module(
     if _live_abandoned() >= _MAX_ABANDONED_RUNS:
         raise ModuleError(
             f"{_MAX_ABANDONED_RUNS} earlier module runs timed out and are still busy in the "
-            "background. Restart xradar-desktop to free them, then try again."
+            "background. Restart radarx-desktop to free them, then try again."
         )
     cancel = threading.Event()
     ctx._cancel_event = cancel

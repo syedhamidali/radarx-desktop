@@ -116,7 +116,7 @@
       },
       {
         id: 'about',
-        label: 'About xradar desktop',
+        label: 'About radarx desktop',
         category: 'App',
         icon: '\u2139',
         action: () => dispatch('action', { type: 'about' }),

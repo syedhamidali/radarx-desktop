@@ -685,9 +685,17 @@ def mp4_metadata(res: AnimateResult, video: Path) -> dict[str, str]:
 
 def _xrd_version() -> str:
     try:
-        from importlib.metadata import version
+        from importlib.metadata import PackageNotFoundError, version
 
-        return version("xradar-desktop-engine")
+        for name in (
+            "radarx-desktop-engine",
+            "xradar-desktop-engine",
+        ):  # the old name: older installs
+            try:
+                return version(name)
+            except PackageNotFoundError:
+                continue
+        return "unknown"
     except Exception:
         return "unknown"
 
@@ -742,7 +750,7 @@ def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) 
     doc["created_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     doc["command"] = o.command
     doc["versions"] = {
-        "xradar_desktop_engine": _xrd_version(),
+        "radarx_desktop_engine": _xrd_version(),
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "radarx": _module_version("radarx"),

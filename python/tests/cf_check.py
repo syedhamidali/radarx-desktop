@@ -33,7 +33,7 @@ from typing import Any
 import netCDF4
 import numpy as np
 
-_DEFAULT_TABLE = Path.home() / ".cache" / "xradar-desktop" / "cf-standard-name-table.xml"
+_DEFAULT_TABLE = Path.home() / ".cache" / "radarx-desktop" / "cf-standard-name-table.xml"
 _UDUNITS_XML = (
     "/opt/homebrew/share/udunits/udunits2.xml",
     "/usr/share/udunits/udunits2.xml",

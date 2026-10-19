@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Science policy
-    url: https://github.com/syedhamidali/xradar-desktop/blob/main/docs/SCIENCE.md
+    url: https://github.com/syedhamidali/radarx-desktop/blob/main/docs/SCIENCE.md
     about: What every feature must show (provenance, method, limits, tests). Read it before proposing a new data layer or algorithm.
   - name: Documentation
-    url: https://github.com/syedhamidali/xradar-desktop/tree/main/docs
+    url: https://github.com/syedhamidali/radarx-desktop/tree/main/docs
     about: Usage, command line, API, modules, performance and packaging notes.

@@ -1,15 +1,15 @@
 # Contributing
 
 The rules for contributors (set-up, checks, commit style, DCO sign-off, how to add a module, the science
-checklist) are in [CONTRIBUTING.md](https://github.com/syedhamidali/xradar-desktop/blob/main/CONTRIBUTING.md); every
+checklist) are in [CONTRIBUTING.md](https://github.com/syedhamidali/radarx-desktop/blob/main/CONTRIBUTING.md); every
 feature has to meet the {doc}`SCIENCE` policy, and dependencies and imagery are tracked as described in
 {doc}`LICENSES`. This page covers the documentation.
 
 ## Set up
 
 ```bash
-git clone https://github.com/syedhamidali/xradar-desktop.git
-cd xradar-desktop
+git clone https://github.com/syedhamidali/radarx-desktop.git
+cd radarx-desktop
 npm install
 cd python && python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev,radarx]" && cd ..
 npm run tauri dev                 # run the desktop app
