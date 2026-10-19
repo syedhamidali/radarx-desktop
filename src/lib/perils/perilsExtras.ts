@@ -393,6 +393,7 @@ export class PerilsExtras implements ClipExtras {
     else if (nowFlash > 0) sees = `Lightning: ${nowFlash} flash${nowFlash > 1 ? 'es' : ''} mapped now`;
     else sees = '';
     const sources = d.sources ?? [];
+    const highUp = info.eye[2] / Math.max(info.vexag, 1e-3) > 3.0; // the ground colours matter from above
     const gc = (d.ground as { credit?: string } | undefined)?.credit;
     const credits = [sources.length ? `Data: ${sources.map((s) => s.name).join(' · ')}` : '', gc ?? ''].filter(Boolean).join(' · ');
     return {
@@ -402,9 +403,9 @@ export class PerilsExtras implements ClipExtras {
       station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: d.environment,
       legendKinds: ['observed', 'model', 'analysis', 'retrieved', 'interpolated', 'stylised'], credits, shots: this.director.tl.shots, layersOn: [], vexag: info.vexag,
       groundKey: {
-        temp: this.surf.some(Boolean) && this.vis.at('surfaceModels', info.t) > 0.12 ? this.tRange : null,
-        mrms: this.mrmsCodes.some(Boolean) && this.vis.at('mrms', info.t) > 0.12,
-        swath: this.azCodes.some(Boolean) && this.vis.at('rotation', info.t) > 0.12,
+        temp: highUp && this.surf.some(Boolean) && this.vis.at('surfaceModels', info.t) > 0.12 ? this.tRange : null,
+        mrms: highUp && this.mrmsCodes.some(Boolean) && this.vis.at('mrms', info.t) > 0.12,
+        swath: highUp && this.azCodes.some(Boolean) && this.vis.at('rotation', info.t) > 0.12,
       },
     };
   }
@@ -441,8 +442,8 @@ export class PerilsExtras implements ClipExtras {
       this.rainStreaks = drawRainStreaks(ctx, W, H, u, ro.rain, ro.dm, info.t, m.vis('rainStreaks'));
     }
     drawStationCard(ctx, H, u, m, m.vis('stationCard'));
-    drawTornadoCard(ctx, u, m, 1);
-    drawGroundKey(ctx, u, m, 280 * u, m.vis('captions'));
+    const cardH = drawTornadoCard(ctx, u, m, 1, 280 * u);
+    drawGroundKey(ctx, u, m, 280 * u + (cardH ? cardH + 10 * u : 0), m.vis('captions'));
     drawCaption(ctx, W, H, u, m);
     drawTimeline(ctx, W, H, u, m);
     drawLegend(ctx, W, H, u, m);

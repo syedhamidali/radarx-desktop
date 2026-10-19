@@ -243,9 +243,9 @@ export function drawStationCard(ctx: CanvasRenderingContext2D, H: number, u: num
 }
 
 /** The tornado card: rating, rotation, debris signature, the radar and its resolution. */
-export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: HudModel, a: number): void {
+export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: HudModel, a: number, y: number): number {
   const t = m.tornado;
-  if (a <= 0.02 || !t || !t.active) return;
+  if (a <= 0.02 || !t || !t.active) return 0;
   const w = 372 * u;
   const rows: [string, string, ProvKind][] = [
     ['survey', `${t.rating}${t.widthM ? ` · path width ${Math.round(t.widthM)} m` : ''}`, 'observed'],
@@ -254,7 +254,6 @@ export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: Hud
   ];
   const h = (50 + rows.length * 38) * u;
   const x = 34 * u;
-  const y = 330 * u;
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
@@ -270,6 +269,7 @@ export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: Hud
     ctx.fill();
   });
   ctx.restore();
+  return h;
 }
 
 /** The caption strip: the feature in view (data-derived label) and the science caption of the latest event. */
