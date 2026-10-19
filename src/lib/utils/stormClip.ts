@@ -44,6 +44,7 @@ import { modelFlashes, makeFlash, mulberry32, type Flash, type FlashCandidate } 
 import { drawFlashes, flashLight } from './lightningFx';
 import { drawCompassStrip, drawInset } from './clipHud';
 import { renderSoundscape, AUDIO_LABEL, type SoundInput } from './soundscape';
+import type { ClipExtras, ClipApi, FrameInfo } from '../perils/clipExtras';
 
 export interface ClipManifest {
   version: number;
@@ -83,8 +84,10 @@ export interface ClipSettings {
    * track, 1 = locked on the storm). A partial follow lets the storm visibly travel across the map.
    */
   targetLag?: number;
-  /** 'map': the flat map (default). 'realistic': terrain with satellite imagery. */
-  ground?: 'map' | 'realistic';
+  /** 'map': the flat map (default). 'realistic': terrain with satellite imagery. 'custom': the extras set the ground themselves (no tiles). */
+  ground?: 'map' | 'realistic' | 'custom';
+  /** A film built on this renderer (the PERiLS movie): its clock, camera, lightning and display replace the single-storm ones. */
+  extras?: ClipExtras;
   /** 'scientific': the colour scale (default). 'realistic': the stylised precipitation look with sun light. */
   stormStyle?: 'scientific' | 'realistic';
   /**
@@ -104,7 +107,7 @@ export interface ClipSettings {
   preset?: 'storm' | 'cyclone';
   viewKm?: number;
   /** 'orbit' (default), 'observer' (a camera on the ground at a fixed place) or 'flight' (the cyclone tour: in through the eyewall). */
-  camera?: 'orbit' | 'observer' | 'flight';
+  camera?: 'orbit' | 'observer' | 'flight' | 'path';
   /** Flight keys; default: cycloneFlight(). */
   flightKeys?: FlightKey[];
   /** Detail noise frequency per km: horizontal and vertical (a cyclone is layered: vertical higher). */
@@ -202,6 +205,8 @@ export class StormClip {
   private surfB: Float32Array | null = null;
   private surfBuf: Float32Array | null = null;
   private povNow = { x: 0, y: 0, yawDeg: 0, altKm: 0, rKm: 0 };
+  /** Vertical exaggeration of the frame being drawn (a film may change it from shot to shot). */
+  private ve = 4;
 
   constructor(private container: HTMLElement, private overlay: HTMLCanvasElement) {
     this.ctx = overlay.getContext('2d')!;
@@ -217,7 +222,25 @@ export class StormClip {
 
   /** A first-person camera: the observer on the ground or the flight. */
   private get pov(): boolean {
-    return this.settings.camera === 'observer' || this.settings.camera === 'flight';
+    return this.settings.camera === 'observer' || this.settings.camera === 'flight' || this.settings.camera === 'path';
+  }
+
+  /** The hooks a film (the PERiLS movie) gives the renderer, or null. */
+  private get ex(): ClipExtras | null {
+    return this.settings.extras ?? null;
+  }
+
+  /** What a film may use of the renderer. */
+  private api(): ClipApi {
+    return {
+      renderer: this.renderer!, g0: this.g0, stepTimes: this.ts, baseUrl: this.baseUrl, width: this.overlay.width, height: this.overlay.height,
+      terrainKmAt: (x, y) => this.terrainKmAt(x, y), realistic: this.realistic,
+    };
+  }
+
+  private frameInfo(): FrameInfo {
+    const eye = this.lastCam?.eye ?? ([0, 0, 0] as [number, number, number]);
+    return { t: this.cur.t, td: this.cur.td, k: this.cur.k, s: this.cur.s, vexag: this.ve, eye, yawDeg: this.curPose.yawDeg, pitchDeg: this.curPose.pitchDeg };
   }
 
   /** Load the bundle served at `baseUrl`: the manifest, then every volume once (to summarise it) and the winds. */
@@ -225,6 +248,7 @@ export class StormClip {
     this.settings = { ...DEFAULTS, ...settings };
     if (this.observer && settings.vexag === undefined) this.settings.vexag = 1;
     if (this.settings.camera === 'flight' && settings.vexag === undefined) this.settings.vexag = 1;
+    this.ve = this.settings.vexag;
     this.look = this.resolveLook();
     this.look0 = this.look;
     this.baseUrl = baseUrl;
@@ -401,7 +425,10 @@ export class StormClip {
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
     const half = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2 + m.crop_half_km + 14;
     const [lat, lon] = this.latLonOf(cx, cy);
-    if (this.settings.ground === 'realistic') {
+    if (this.settings.ground === 'custom') {
+      // the film sets the ground itself (its extras.prepare); no tiles are asked for
+      r.setMapGain(1.0);
+    } else if (this.settings.ground === 'realistic') {
       await this.prepareRealisticGround(lat, lon, half + 35, [cx, cy]);
     } else {
       const bm = resolveBasemap(mapProvider, 'dark');
@@ -424,7 +451,12 @@ export class StormClip {
     // the observer stands on the terrain
     this.obsEyeKm = this.terrainKmAt(this.obs[0], this.obs[1]) + (this.settings.observer?.eyeM ?? OBSERVER_DEFAULTS.eyeM) / 1000;
     if (this.settings.sea) r.setSea(true, null);
-    this.prepareInset();
+    if (this.ex) {
+      await this.ex.prepare(this.api());
+      this.mapOk = this.renderer!.hasGroundMap;
+    } else {
+      this.prepareInset();
+    }
     this.prepareLightning();
   }
 
@@ -477,7 +509,7 @@ export class StormClip {
 
   /** The state of clip time `t`: data time, interval and position inside it, storm centre, camera. */
   stateAt(t: number) {
-    const td = dataTimeAt(t, this.settings.duration, this.ts[0], this.ts[this.ts.length - 1]);
+    const td = this.ex ? this.ts[0] + this.ex.dataTime(t) : dataTimeAt(t, this.settings.duration, this.ts[0], this.ts[this.ts.length - 1]);
     const { i: k, s } = locate(this.ts, td);
     const [cx, cy] = stormAt(this.track, td);
     // orbit camera target: the middle of the track plus a fraction of the storm's displacement from it
@@ -509,6 +541,10 @@ export class StormClip {
 
   /** The first-person camera at clip time `t`: position (km, eye height ASL in km, true), yaw and pitch. */
   private povAt(t: number, shake = false): { x: number; y: number; zKm: number; yawDeg: number; pitchDeg: number; rKm: number } {
+    if (this.ex) {
+      const p = this.ex.pose(t);
+      return { x: p.x, y: p.y, zKm: p.zKm, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg, rKm: 0 };
+    }
     const st = this.stateAt(t);
     if (this.settings.camera === 'flight') {
       const fp = flightPose(this.flightKeys, t, [st.cx, st.cy]);
@@ -758,7 +794,13 @@ export class StormClip {
       }
       r.setSea(true, { size: N, data: out });
     }
-    const ve = this.settings.vexag;
+    const exPose = this.ex ? this.ex.pose(t) : null;
+    const ve = exPose ? exPose.vexag : this.settings.vexag;
+    if (ve !== this.ve) {
+      this.ve = ve;
+      r.setParams({ vexag: ve });
+    }
+    if (exPose?.fov) r.setFov(exPose.fov);
     if (this.pov) {
       const pv = this.povAt(t, true);
       const eye: [number, number, number] = [pv.x, pv.y, pv.zKm * ve];
@@ -766,7 +808,13 @@ export class StormClip {
       this.curPose = { yawDeg: pv.yawDeg, pitchDeg: pv.pitchDeg };
       this.crop = this.fullBox;
       r.setCropBox(null);
-      const fl = flashLight(this.flashes, t, eye, ve);
+      let fl = flashLight(this.flashes, t, eye, ve);
+      if (this.ex) {
+        const info = this.frameInfo();
+        info.eye = eye;
+        this.ex.beforeFrame?.(info);
+        fl = this.ex.flashLight?.(info) ?? { points: [], sky: 0 };
+      }
       this.applyFlashLook(r, fl);
       r.exportRenderFP(eye, pv.yawDeg, pv.pitchDeg);
     } else {
@@ -784,6 +832,7 @@ export class StormClip {
       });
     }
     this.drawBanner();
+    if (this.ex?.settle) await this.ex.settle();
   }
 
   // ── Overlay ─────────────────────────────────────────────────────────────
@@ -797,7 +846,8 @@ export class StormClip {
     this.lastCam = cam;
     if (this.pov) {
       this.ctx.clearRect(0, 0, c.width, c.height);
-      drawCompassStrip(this.ctx, c.width, c.height, this.curPose.yawDeg, f.tanX, c.height / 1080);
+      if (this.ex) this.ex.drawScene?.(this.ctx, cam, { ...this.frameInfo(), eye: f.eye });
+      else drawCompassStrip(this.ctx, c.width, c.height, this.curPose.yawDeg, f.tanX, c.height / 1080);
     } else {
       drawCartesianOverlay(this.ctx, cam, {
         box: crop, vexag: this.settings.vexag, sites: this.g0.sites, lightScene: false, showFrame: this.settings.ground !== 'realistic',
@@ -966,6 +1016,10 @@ export class StormClip {
   // ── Banner ──────────────────────────────────────────────────────────────
 
   private drawBanner(): void {
+    if (this.ex?.drawHud) {
+      this.ex.drawHud(this.ctx, this.overlay.width, this.overlay.height, this.frameInfo());
+      return;
+    }
     const ctx = this.ctx;
     const W = this.overlay.width, H = this.overlay.height;
     const u = H / 1080;
@@ -1254,6 +1308,7 @@ export class StormClip {
       flow: { winds: this.windSource, steps: this.manifest.steps.length },
       observer: this.observer ? this.observerInfo() : null,
       cyclone: this.settings.camera === 'flight' ? { eyeRadiusKm: this.eyeR, windStats: this.windStats } : null,
+      extras: this.ex?.report?.() ?? null,
     };
   }
 
