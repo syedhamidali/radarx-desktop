@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import threading
+import weakref
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -66,6 +67,30 @@ def _unlink_quietly(path: str) -> None:
         pass
     except OSError:
         _LEFTOVER_TMP_FILES.add(path)
+
+
+def _unlink_all(paths: list[str]) -> None:
+    """Remove every file in *paths* (and empty the list). Used by the reader's finalizer."""
+    for path in list(paths):
+        _unlink_quietly(path)
+    paths.clear()
+
+
+def _reads_lazily(dtree: xr.DataTree) -> bool:
+    """True if some variable of *dtree* is still read from its file on demand.
+
+    A temporary decompressed copy must then stay on disk for as long as the tree is used:
+    NetCDF/HDF5 backends re-open the file by name (on another thread, after the handle was
+    evicted ...), so a copy that was already deleted makes every later read fail.
+    """
+    try:
+        for node in dtree.subtree:
+            for var in node.to_dataset().variables.values():
+                if not var._in_memory:
+                    return True
+        return False
+    except Exception:  # cannot tell: keeping the file is the safe answer
+        return True
 
 
 # ----------------------------------------------------------------------
@@ -483,6 +508,34 @@ def _diagnose_unreadable(open_path: str, original_path: str) -> str:
     )
 
 
+# Exception types that mean "xradar choked on bytes it did not expect" rather than "the file says
+# what is wrong": their text ("unsupported operand type(s) for +: 'NoneType' ...") helps nobody.
+_INTERNAL_ERRORS = (
+    TypeError,
+    AttributeError,
+    KeyError,
+    IndexError,
+    UnboundLocalError,
+    AssertionError,
+)
+
+
+def _backend_detail(errors: list[tuple[str, Exception]], *paths: str) -> str:
+    """`` (<format>: <what the backend said>, N formats tried)`` for the first meaningful error.
+
+    The file's own path is cut out of the text (the message already names the file).
+    """
+    for fmt, exc in errors:
+        if isinstance(exc, _INTERNAL_ERRORS):
+            continue
+        text = " ".join(str(exc).split())
+        for path in paths:
+            text = text.replace(f"'{path}'", "the file").replace(path, "the file")
+        if text:
+            return f" ({fmt}: {text[:200]}; {len(errors)} formats tried)"
+    return f" ({len(errors)} formats tried)" if errors else ""
+
+
 def _guess_formats_by_extension(path: str) -> list[str]:
     """Return a priority-ordered list of format names to try (each at most once)."""
     return _guess_formats(path)[0]
@@ -636,6 +689,10 @@ class RadarReader:
         # and a gzip file may not inflate beyond ``max_decompressed_bytes``.
         self.tmp_dir: str | None = None
         self.max_decompressed_bytes: int | None = None
+        # Decompressed copies the open tree still reads from (see ``_reads_lazily``): removed when
+        # the file is replaced or closed, when the reader is garbage collected, or at exit.
+        self._temp_files: list[str] = []
+        weakref.finalize(self, _unlink_all, self._temp_files)
 
     # ------------------------------------------------------------------
     # Memory accounting
@@ -704,7 +761,9 @@ class RadarReader:
         if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
         if p.is_dir():
-            raise ValueError(f"Path is a directory, not a radar file: {path}")
+            raise ValueError(
+                f"Could not open {p.name}: it is a folder, not a radar file. Open a file inside it."
+            )
         if not os.access(path, os.R_OK):
             raise PermissionError(
                 f"Permission denied reading {p.name}. Check the file's permissions (on macOS, "
@@ -725,6 +784,7 @@ class RadarReader:
 
         errors: list[tuple[str, Exception]] = []
         tried: set[str] = set()
+        committed: list[xr.DataTree] = []
 
         def attempt(fmt: str) -> dict[str, Any] | None:
             """Open *path* as *fmt*; commit and return the schema, or None on failure."""
@@ -745,6 +805,7 @@ class RadarReader:
                 errors.append((fmt, exc))
                 return None
             self._commit(dtree, path, fmt)
+            committed.append(dtree)
             logger.info("Opened %s as %s", path, fmt)
             return schema
 
@@ -783,18 +844,26 @@ class RadarReader:
                 errors.append(("generic_netcdf", exc))
             else:
                 self._commit(dtree, path, "generic_netcdf")
+                committed.append(dtree)
                 logger.info("Opened %s as generic NetCDF", path)
                 return schema
 
-            # Report the most informative failures (the sniffed/preferred formats come first).
-            detail = "; ".join(f"{fmt}: {exc}" for fmt, exc in errors[:3])
+            # Everything that was tried goes to the log; the message carries the diagnosis plus
+            # the backend's own words for the most likely format (the sniffed one comes first).
+            for fmt, exc in errors:
+                logger.info("open %s as %s failed: %s: %s", p.name, fmt, type(exc).__name__, exc)
             raise ValueError(
-                f"Could not open {p.name}: {_diagnose_unreadable(open_path, path)} "
-                f"({len(errors)} formats tried; first errors: {detail})"
+                f"Could not open {p.name}: {_diagnose_unreadable(open_path, path)}"
+                f"{_backend_detail(errors, path, open_path)}"
             ) from (errors[0][1] if errors else None)
         finally:
             if is_tmp:
-                _unlink_quietly(open_path)
+                # NEXRAD volumes keep their own open handle (and are the big ones: ~330 MB); the
+                # NetCDF/HDF5 based formats re-open the file by name.
+                if committed and self._format != "nexrad_level2" and _reads_lazily(committed[0]):
+                    self._temp_files.append(open_path)  # the open tree still reads from it
+                else:
+                    _unlink_quietly(open_path)
 
     def open_s3_file(self, s3_path: str) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).
@@ -980,6 +1049,7 @@ class RadarReader:
             self._path = None
             self._format = None
             self._reset_caches()
+        _unlink_all(self._temp_files)
 
     def get_schema(self) -> dict[str, Any]:
         """Extract metadata from the currently-open datatree.
@@ -1082,6 +1152,7 @@ class RadarReader:
             self._dtree = dtree
             self._path = path
             self._format = fmt
+        _unlink_all(self._temp_files)  # the previous file's decompressed copy is not needed now
 
     def _sweep_lock(self, sweep: int) -> threading.Lock:
         with self._lock:
