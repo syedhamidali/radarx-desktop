@@ -792,6 +792,54 @@ export function clearMosaic(): void {
   finishRun({ requestId: null, percent: 0, message: '', error: null });
 }
 
+/**
+ * Draw a georeferenced PNG built by another panel (the rainfall panel) with the mosaic map layer:
+ * same opacity, legend and hover probe (the engine registered the float grid under `mosaic_id`).
+ * `header` is an engine `MosaicRecord.header()`; `pngBase64` the image.
+ */
+export function showExternalLayer(header: Partial<MosaicHeader> & { mosaic_id: string }, pngBase64: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let bytes: Uint8Array;
+    try {
+      const bin = atob(pngBase64);
+      bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    } catch {
+      reject(new Error('The map image could not be decoded'));
+      return;
+    }
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/png' }));
+    const img = new Image();
+    img.onload = () => {
+      const old = get(mosaicResult);
+      const full = {
+        type: 'mosaic_result',
+        request_id: '',
+        elapsed_ms: 0,
+        png_bytes: bytes.length,
+        chunks: 1,
+        radars: [],
+        overlap_fraction: 0,
+        ...header,
+        url,
+        ringKm: 0,
+      } as MosaicResult;
+      mosaicResult.set(full);
+      mosaicImage.set({ url, image: img });
+      if (old) setTimeout(() => URL.revokeObjectURL(old.url), 2000);
+      mosaicProbe.set(null);
+      mosaicDisplay.update((d) => ({ ...d, visible: true, mosaicView: true }));
+      fitMapToMosaic();
+      resolve();
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('The map image could not be decoded'));
+    };
+    img.src = url;
+  });
+}
+
 // ── Export ─────────────────────────────────────────────────────────────────
 
 export function inTauri(): boolean {
