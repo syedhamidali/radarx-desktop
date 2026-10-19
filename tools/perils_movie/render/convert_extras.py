@@ -205,7 +205,7 @@ def convert_stations(raw, geo, bundle: Path, hail_events, log=print) -> list[dic
                 keep = np.arange(
                     0,
                     int(ok.sum()),
-                    max(1, int(round(10.0 / max(1e-6, np.median(np.diff(ts[ok])))))),
+                    max(1, round(10.0 / max(1e-6, np.median(np.diff(ts[ok]))))),
                 )
                 rec["track"] = [
                     [round(float(ts[ok][i]), 1), round(float(tx[i]), 3), round(float(ty[i]), 3)]
