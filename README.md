@@ -54,6 +54,16 @@ a transfer-function editor, a map ground plane and adjustable vertical exaggerat
 
 ![3D volume of the Oklahoma squall line over a map](docs/images/app-3d.png)
 
+### Cross-sections
+
+Draw a line on the PPI, or click an azimuth for an RHI-style cut out of the radar, and get a vertical section of the
+whole volume in a view you can make as large as you like: docked under the PPI (drag its height) or in a window that
+fills the screen. Real pixel size, axes in km, colour bar, hover read-out, vertical exaggeration, height range, mask
+and smoothing controls, and PNG export. Sector scans are not stretched across the part of the circle that was not
+scanned. See [docs/CROSSSECTION.md](docs/CROSSSECTION.md).
+
+![Cross-section docked under the PPI](docs/images/crosssection-dock.png)
+
 ### Run algorithms and see the result right away
 
 Algorithms are plug-in **modules** (a Python file with a decorator). A result is not just a table: it can be a new

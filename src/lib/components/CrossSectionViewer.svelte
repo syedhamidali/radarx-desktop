@@ -7,6 +7,11 @@
   import { COLORMAP_DATA } from '../utils/colormaps';
   import { getDefaultCmap, getDefaultRange, getColormapRGB } from '../utils/ppiRenderer';
   import type { CrossSectionData } from '../stores/crossSection';
+  import { smoothingStore } from '../stores/crossSectionSmoothing';
+  import { buildCells } from '../utils/crossSectionGeometry';
+  import { buildSectionGrid, isPlain, type Grid } from '../utils/crossSectionRaster';
+  import { maskOf, maskPredicate, valueMasks } from '../stores/valueMask';
+  import { drawRaster } from '../utils/crossSectionDraw';
 
   let { data = null, cmapName = 'turbo', vmin = 0, vmax = 60 }: {
     data?: CrossSectionData | null;
@@ -89,7 +94,7 @@
   // Redraw when any display setting changes. Each one is read explicitly: a short-circuiting
   // `a || b || c` only subscribes to the first truthy operand, so editing the range did nothing.
   $effect(() => {
-    const deps = [cmapName, vmin, vmax, scale, panX, panY, width, height];
+    const deps = [cmapName, vmin, vmax, scale, panX, panY, width, height, $smoothingStore, $valueMasks];
     if (canvasEl && deps.length) {
       requestAnimationFrame(() => draw());
     }
@@ -154,7 +159,33 @@
     const nPoints = data.distance_km.length;
     const nSweeps = data.n_sweeps;
 
-    for (let si = 0; si < nSweeps; si++) {
+    const masked = maskPredicate(maskOf($valueMasks, data.variable));
+
+    // Smoothing on: the shared smoothed picture instead of the blocky cells.
+    const smooth = $smoothingStore;
+    const smoothGrid = isPlain(smooth) ? null : gridFor(smooth);
+    if (smoothGrid) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(margin.left, margin.top, plotW, plotH);
+      ctx.clip();
+      drawRaster(
+        ctx,
+        { x: margin.left, y: margin.top, w: plotW, h: plotH },
+        {
+          grid: smoothGrid,
+          view: { d0: viewDistMin, d1: viewDistMax, h0: viewHMin, h1: viewHMax },
+          cmapName,
+          vmin,
+          vmax,
+          interp: smooth.interp,
+        },
+        dpr,
+      );
+      ctx.restore();
+    }
+
+    for (let si = 0; si < (smoothGrid ? 0 : nSweeps); si++) {
       const sweepH = data.height_km[si];
       const sweepV = data.values[si];
       if (!sweepH || !sweepV) continue;
@@ -163,6 +194,7 @@
         const val = sweepV[pi];
         if (val === null || val === undefined || !Number.isFinite(val)) continue;
         if (val < vmin) continue; // like the PPI: gates below the colour range are not drawn
+        if (masked && masked(val)) continue; // hidden by the value mask
 
         const d0 = data.distance_km[pi];
         const d1 = data.distance_km[pi + 1];
@@ -289,6 +321,25 @@
 
     // Draw colorbar
     drawColorbar(ctx, plotW, plotH);
+  }
+
+  let gridCache: { data: CrossSectionData; key: string; grid: Grid } | null = null;
+  /** The smoothed grid of this section (rebuilt only when the data or a setting changes). */
+  function gridFor(smooth: { interp: string; sigma: number; upsample: number }): Grid | null {
+    if (!data || data.distance_km.length < 2) return null;
+    const last = data.distance_km[data.distance_km.length - 1];
+    const maskNow = maskOf($valueMasks, data.variable);
+    const key = `${smooth.interp}|${smooth.sigma}|${smooth.upsample}|${last}|${hMax}|${JSON.stringify(maskNow)}`;
+    if (gridCache && gridCache.data === data && gridCache.key === key) return gridCache.grid;
+    const cells = buildCells(data, { fill: true, masked: maskPredicate(maskNow) });
+    const grid = buildSectionGrid(
+      cells.columns,
+      data.distance_km,
+      { d0: data.distance_km[0], d1: last, h0: 0, h1: hMax },
+      smooth as any,
+    );
+    gridCache = { data, key, grid };
+    return grid;
   }
 
   function drawColorbar(ctx: CanvasRenderingContext2D, plotW: number, plotH: number) {

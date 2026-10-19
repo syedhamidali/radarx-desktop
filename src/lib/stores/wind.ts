@@ -34,7 +34,8 @@ import {
 // ── Settings ───────────────────────────────────────────────────────────────
 
 export type WindMethod = 'analytic' | 'variational';
-export type WindBoundary = 'upward' | 'downward' | 'obrien';
+export type WindBoundary = 'auto' | 'upward' | 'downward' | 'obrien';
+export type WindDealias = 'auto' | 'always' | 'never';
 export type WindBackgroundMode = 'none' | 'vvp' | 'uniform' | 'manual';
 
 export interface WindSettings {
@@ -54,6 +55,11 @@ export interface WindSettings {
   method: WindMethod;
   minCrossing: number;
   boundary: WindBoundary;
+  /** Unfold aliased velocities before gridding (auto: only when a sweep looks aliased). */
+  dealias: WindDealias;
+  /** Output checks: cells above these values are set to missing. */
+  maxSpeedMs: number;
+  maxAbsWMs: number;
   fallSpeed: boolean;
   freezingManual: boolean;
   freezingLevelM: number;
@@ -84,7 +90,10 @@ export const DEFAULT_WIND_SETTINGS: WindSettings = {
   yMaxKm: 40,
   method: 'analytic',
   minCrossing: 30,
-  boundary: 'upward',
+  boundary: 'auto',
+  dealias: 'auto',
+  maxSpeedMs: 100,
+  maxAbsWMs: 40,
   fallSpeed: true,
   freezingManual: false,
   freezingLevelM: 4000,
@@ -99,7 +108,8 @@ export const DEFAULT_WIND_SETTINGS: WindSettings = {
   uncertainty: false,
 };
 
-const STORAGE_KEY = 'xradar.wind.settings.v1';
+// v2: the vertical boundary now defaults to 'auto' and dealiasing / output checks exist
+const STORAGE_KEY = 'xradar.wind.settings.v2';
 
 function loadSettings(): WindSettings {
   try {
@@ -112,7 +122,8 @@ function loadSettings(): WindSettings {
       if (k in parsed && typeof parsed[k] === typeof DEFAULT_WIND_SETTINGS[k]) out[k] = parsed[k];
     }
     if (!['analytic', 'variational'].includes(out.method)) out.method = 'analytic';
-    if (!['upward', 'downward', 'obrien'].includes(out.boundary)) out.boundary = 'upward';
+    if (!['auto', 'upward', 'downward', 'obrien'].includes(out.boundary)) out.boundary = 'auto';
+    if (!['auto', 'always', 'never'].includes(out.dealias)) out.dealias = 'auto';
     if (!['none', 'vvp', 'uniform', 'manual'].includes(out.bgMode)) out.bgMode = 'none';
     return out as WindSettings;
   } catch {
@@ -377,6 +388,9 @@ export function buildRequest(s: WindSettings, ids: string[], requestId: string):
     method: s.method,
     min_crossing_angle: s.minCrossing,
     boundary: s.boundary,
+    dealias: s.dealias,
+    max_speed: s.maxSpeedMs > 0 ? s.maxSpeedMs : null,
+    max_abs_w: s.maxAbsWMs > 0 ? s.maxAbsWMs : null,
     fall_speed_correction: s.fallSpeed,
     freezing_level: s.freezingManual ? s.freezingLevelM : 'auto',
     melting_depth_m: s.meltingDepthM,
