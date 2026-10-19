@@ -13,14 +13,14 @@
 import { basemapTileUrl, type BasemapProvider } from './basemaps';
 import { dataSpaceToLatLon, latLonToTile } from './geoProjection';
 import { yieldToMain } from './qualityGovernor';
+import { fetchTileBitmap } from './tileLoader';
 
 const TILE = 256;
 const MAX_TILES = 64;
 const CACHE_MAX = 160;
-const CONCURRENCY = 6;
-const TILE_TIMEOUT_MS = 9000;
+const CONCURRENCY = 4; // tile servers are shared: a few requests at once, nearest tiles first
 
-const tileCache = new Map<string, HTMLImageElement>();
+const tileCache = new Map<string, ImageBitmap>();
 
 export interface GroundMapRequest {
   lat: number;
@@ -31,6 +31,9 @@ export interface GroundMapRequest {
   provider: BasemapProvider;
   /** 'dark' restyles the (light) tiles for the dark 3D scene. */
   theme: 'dark' | 'light';
+  /** Highest tile zoom to use (default 10) and the most tiles to fetch (default 64): satellite imagery asks for more. */
+  maxZoom?: number;
+  maxTiles?: number;
 }
 
 export interface GroundMapResult {
@@ -40,7 +43,7 @@ export interface GroundMapResult {
   missing: number;
 }
 
-function loadTile(provider: BasemapProvider, z: number, x: number, y: number): Promise<HTMLImageElement | null> {
+function loadTile(provider: BasemapProvider, z: number, x: number, y: number): Promise<ImageBitmap | null> {
   const key = `${provider.id}/${z}/${x}/${y}`;
   const hit = tileCache.get(key);
   if (hit) {
@@ -48,23 +51,16 @@ function loadTile(provider: BasemapProvider, z: number, x: number, y: number): P
     tileCache.set(key, hit);
     return Promise.resolve(hit);
   }
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.decoding = 'async';
-    const timer = setTimeout(() => { img.src = ''; resolve(null); }, TILE_TIMEOUT_MS);
-    img.onload = () => {
-      clearTimeout(timer);
-      while (tileCache.size >= CACHE_MAX) {
-        const first = tileCache.keys().next().value;
-        if (first === undefined) break;
-        tileCache.delete(first);
-      }
-      tileCache.set(key, img);
-      resolve(img);
-    };
-    img.onerror = () => { clearTimeout(timer); resolve(null); };
-    img.src = basemapTileUrl(provider, z, x, y);
+  // persistent cache (Cache API) first, then the network; one fetch per tile
+  return fetchTileBitmap(basemapTileUrl(provider, z, x, y)).then((bmp) => {
+    if (!bmp) return null;
+    while (tileCache.size >= CACHE_MAX) {
+      const first = tileCache.keys().next().value;
+      if (first === undefined) break;
+      tileCache.delete(first);
+    }
+    tileCache.set(key, bmp);
+    return bmp;
   });
 }
 
@@ -100,7 +96,8 @@ export async function buildGroundMap(req: GroundMapRequest, isCancelled: () => b
   const texelM = (2 * R) / size;
   const mPerPx0 = (156543.03392 * Math.cos((lat * Math.PI) / 180));
   let z = Math.floor(Math.log2(mPerPx0 / texelM));
-  z = Math.max(Math.max(3, provider.minZoom), Math.min(Math.min(10, provider.maxZoom), z));
+  const maxTiles = req.maxTiles ?? MAX_TILES;
+  z = Math.max(Math.max(3, provider.minZoom), Math.min(Math.min(req.maxZoom ?? 10, provider.maxZoom), z));
 
   // Bounding box of the square in tile space (sample the whole boundary: the projection curves).
   const bounds = (zoom: number) => {
@@ -122,7 +119,7 @@ export async function buildGroundMap(req: GroundMapRequest, isCancelled: () => b
     };
   };
   let b = bounds(z);
-  while ((b.tx1 - b.tx0 + 1) * (b.ty1 - b.ty0 + 1) > MAX_TILES && z > 3) b = bounds(--z);
+  while ((b.tx1 - b.tx0 + 1) * (b.ty1 - b.ty0 + 1) > maxTiles && z > 3) b = bounds(--z);
 
   const nx = b.tx1 - b.tx0 + 1;
   const ny = b.ty1 - b.ty0 + 1;

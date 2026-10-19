@@ -53,6 +53,23 @@ export const BASEMAPS: readonly BasemapProvider[] = [
   },
 ];
 
+/**
+ * Satellite imagery for the 3D "Realistic ground" (not offered as a 2D basemap: it is draped on the
+ * terrain, unfiltered). Sentinel-2 cloudless by EOX, 2021 mosaic (10 m), Creative Commons
+ * Attribution-NonCommercial-ShareAlike 4.0: free for non-commercial use with the attribution below;
+ * commercial use needs a licence from EOX (https://cloudless.eox.at). WMTS tile order is
+ * {z}/{row}/{col}, i.e. {z}/{y}/{x}. Google Maps / Earth tiles are NOT used (terms of service).
+ */
+export const IMAGERY_EOX_S2: BasemapProvider = {
+  id: 'eox-s2cloudless-2021',
+  label: 'Sentinel-2 cloudless 2021 (EOX)',
+  url: 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg',
+  minZoom: 1,
+  maxZoom: 13,
+  attribution: 'Imagery: Sentinel-2 cloudless © EOX IT Services GmbH (contains modified Copernicus Sentinel data 2021), CC BY-NC-SA 4.0',
+  attributionUrl: 'https://cloudless.eox.at',
+};
+
 export type BasemapTheme = 'auto' | 'dark' | 'light';
 export const BASEMAP_THEMES: readonly BasemapTheme[] = ['auto', 'dark', 'light'];
 export const DEFAULT_BASEMAP_ID = 'osm';

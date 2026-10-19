@@ -1024,6 +1024,8 @@ class ConnectionHandler:
             "create_mosaic": self._handle_create_mosaic,
             "mosaic_probe": self._handle_mosaic_probe,
             "export_mosaic": self._handle_export_mosaic,
+            "get_mosaic_volume": self._handle_get_mosaic_volume,
+            "get_wind_volume": self._handle_get_wind_volume,
             "run_multidoppler": self._handle_run_multidoppler,
             "multidoppler_cancel": self._handle_multidoppler_cancel,
             "export_multidoppler": self._handle_export_multidoppler,
@@ -3805,6 +3807,7 @@ class ConnectionHandler:
                 vmax=msg.get("vmax"),
                 min_rhohv=msg.get("min_rhohv"),
                 progress=progress_sync,
+                keep_volume=msg.get("keep_volume"),
             )
 
         t0 = time.perf_counter()
@@ -3941,6 +3944,119 @@ class ConnectionHandler:
                 lambda tmp: tmp.write_text(mosaic.projection_wkt(), encoding="ascii"),
             )
         return target
+
+    # ==================================================================
+    # BEGIN 3-D volumes for the 3-D view (merged mosaic field, wind grids)
+    # ==================================================================
+
+    async def _handle_get_mosaic_volume(self, msg: dict[str, Any]) -> None:
+        """``{type: "get_mosaic_volume", request_id, mosaic_id}`` -> ``mosaic_volume`` + frames.
+
+        The header (grid geometry, levels, value range, radar sites, ``byte_length``, ``chunks``)
+        is followed by one uint8 array ``(nz, ny, nx)`` (x fastest; 0 = no echo). Failure:
+        ``mosaic_error`` (with ``request_id``).
+        """
+        mosaic_id = msg.get("mosaic_id")
+        try:
+            if not isinstance(mosaic_id, str) or not mosaic_id:
+                raise mosaic.MosaicError("get_mosaic_volume: missing 'mosaic_id'")
+            self._web_own_mosaic(mosaic_id)
+            header, volume = await asyncio.get_running_loop().run_in_executor(
+                None, mosaic.volume_message, mosaic_id
+            )
+        except mosaic.MosaicError as exc:
+            await self.send(
+                {
+                    "type": "mosaic_error",
+                    "request_id": msg.get("request_id"),
+                    "mosaic_id": mosaic_id,
+                    "message": str(exc),
+                    "for": "volume",
+                }
+            )
+            return
+        await self._send_binary_chunks(
+            [volume],
+            {"type": "mosaic_volume", "request_id": msg.get("request_id"), **header},
+            length_key="byte_length",
+        )
+
+    # Fields of a wind analysis the 3-D view needs (name order of the binary block).
+    _WIND_VOLUME_FIELDS = (
+        "u",
+        "v",
+        "w",
+        "speed",
+        "dbz",
+        "crossing_angle",
+        "uncertainty",
+        "n_radars",
+        "divergence",
+    )
+    # What the 3-D view shows next to the flow (QC limits, coverage, ...): copied from the header.
+    _WIND_VOLUME_SUMMARY = (
+        "method",
+        "boundary",
+        "coverage_pct",
+        "dual_coverage_pct",
+        "w_valid_pct",
+        "valid_cells",
+        "total_cells",
+        "min_crossing_angle",
+        "qc",
+        "notes",
+        "has_uncertainty",
+    )
+
+    async def _handle_get_wind_volume(self, msg: dict[str, Any]) -> None:
+        """``{type: "get_wind_volume", request_id, wind_id}`` -> ``wind_volume`` + frames.
+
+        Header: ``wind_id``, ``fields`` (name, units), ``shape`` = ``[n_fields, nz, ny, nx]``,
+        ``grid`` (as in ``multidoppler_result``), ``radars`` (with grid x_m / y_m), ``byte_length``
+        and ``chunks``; then one float32 block of ``shape`` (C order, NaN = no wind). Failure:
+        ``multidoppler_error`` (with ``request_id``).
+        """
+        wind_id = msg.get("wind_id")
+        try:
+            if not isinstance(wind_id, str) or not wind_id:
+                raise mdop.MultiDopplerError("get_wind_volume: missing 'wind_id'")
+            if self.session is not None and wind_id not in self.session.owned["winds"]:
+                raise mdop.MultiDopplerError(f"Unknown or expired wind analysis '{wind_id}'")
+            record = mdop.WIND_RESULTS.get(wind_id)
+            names = [n for n in self._WIND_VOLUME_FIELDS if n in mdop.FIELD_ORDER]
+            full = record.header()
+            info = {f["name"]: f for f in full["fields"]}
+            block = np.ascontiguousarray(
+                np.stack([record.fields[mdop.FIELD_ORDER.index(n)] for n in names])
+            )
+            proj = mdop._aeqd(*record.origin)
+            radars = []
+            for r in record.radars:
+                row = dict(r)
+                lat, lon = r.get("latitude"), r.get("longitude")
+                if isinstance(lat, (int, float)) and isinstance(lon, (int, float)):
+                    x, y = proj(lon, lat)
+                    row["x_m"], row["y_m"] = float(x), float(y)
+                radars.append(row)
+        except mdop.MultiDopplerError as exc:
+            await self._multidoppler_error(msg.get("request_id"), str(exc), wind_id=wind_id)
+            return
+        header = {
+            "type": "wind_volume",
+            "request_id": msg.get("request_id"),
+            "wind_id": wind_id,
+            "fields": [info[n] for n in names],
+            "shape": [len(names), *block.shape[1:]],
+            "grid": full["grid"],
+            "radars": radars,
+            "analysis_time": full.get("analysis_time"),
+            "summary": {k: full[k] for k in self._WIND_VOLUME_SUMMARY if k in full},
+        }
+        await self._send_binary_chunks([block], header, length_key="byte_length")
+
+    # ==================================================================
+    # END 3-D volumes for the 3-D view
+    # ==================================================================
 
     # ==================================================================
     # BEGIN multi-Doppler wind retrieval (engine/multidoppler.py, needs radarx)

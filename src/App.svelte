@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack, tick } from 'svelte';
   import PpiOnlyNotice from './lib/components/PpiOnlyNotice.svelte';
+  import { source3d } from './lib/stores/volume3d';
   import DataInspector from './lib/components/DataInspector.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
   import WorkspaceSwitcher from './lib/components/WorkspaceSwitcher.svelte';
@@ -37,7 +38,7 @@
   // does not wait for them; the 3D / dual-pol / diff views, dialogs and the command palette load
   // when first asked for.
   const radarViewer = lazy(() => import('./lib/components/RadarViewer.svelte'));
-  const viewer3d = lazy(() => import('./lib/components/RadarViewer3D.svelte'));
+  const viewer3d = lazy(() => import('./lib/components/Viewer3D.svelte'));
   const dualPol = lazy(() => import('./lib/components/DualPolDashboard.svelte'));
   const diffViewer = lazy(() => import('./lib/components/DiffViewer.svelte'));
   const timeline = lazy(() => import('./lib/components/Timeline.svelte'));
@@ -983,7 +984,7 @@
               <crossDock.component />
             {/if}
           {:else if viewMode === '3d'}
-            {#if rhiOnly}
+            {#if rhiOnly && $source3d === 'radar'}
               <PpiOnlyNotice title="3D needs PPI sweeps" />
             {:else if viewer3d.component}<viewer3d.component />{/if}
           {:else}
