@@ -3926,7 +3926,7 @@ class ConnectionHandler:
             )
         else:
             await loop.run_in_executor(
-                None, _atomic_write, target, lambda tmp: tmp.write_bytes(record.png)
+                None, _atomic_write, target, lambda tmp: tmp.write_bytes(mosaic.png_bytes(record))
             )
             await loop.run_in_executor(
                 None,

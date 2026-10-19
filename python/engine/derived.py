@@ -215,6 +215,7 @@ class DerivedStore:
                         "cmap": m.get("cmap"),
                         "categories": m.get("categories"),
                         "module": m.get("module"),
+                        "module_title": m.get("module_title"),
                         "field": m.get("field"),
                         "params": m.get("params"),
                         "computed_at": m.get("computed_at"),
@@ -571,6 +572,38 @@ def export_name(name: str) -> str:
     return name.replace(":", "__")
 
 
+def _provenance_comment(info: dict[str, Any]) -> str:
+    """How a derived variable was made: software, module, parameters, versions, time."""
+    from datetime import datetime, timezone
+
+    from engine import provenance
+
+    module = str(info.get("module") or "")
+    title = str(info.get("module_title") or module)
+    parts = [
+        f"Derived by {provenance.software_string()}, module '{module}'"
+        + (f" ({title})" if title and title != module else "")
+        + f", field '{info.get('field')}'."
+    ]
+    params = info.get("params")
+    if params:
+        text = (
+            provenance.format_params(params, limit=1500)
+            if isinstance(params, dict)
+            else provenance.redact_path(params)
+        )
+        parts.append(f"Parameters: {text}.")
+    if module.startswith("radarx") and provenance.radarx_version():
+        parts.append(f"radarx {provenance.radarx_version()}.")
+    stamp = info.get("computed_at")
+    if isinstance(stamp, (int, float)):
+        parts.append(
+            f"Computed {provenance.utc_stamp(datetime.fromtimestamp(stamp, timezone.utc))}."
+        )
+    parts.append("Gates without a result are _FillValue (NaN).")
+    return " ".join(parts)
+
+
 def tree_with_derived(
     datatree: Any,
     store: DerivedStore,
@@ -622,19 +655,27 @@ def tree_with_derived(
             attrs: dict[str, Any] = {
                 "long_name": str(info.get("label") or name),
                 "units": str(info.get("units") or ""),
-                "comment": (
-                    f"derived by xradar-desktop module {info.get('module')} "
-                    f"(field {info.get('field')}); params {info.get('params')}"
-                ),
+                "comment": _provenance_comment(info),
             }
             cats = info.get("categories")
             if cats:
-                attrs["flag_values"] = np.array([int(c["value"]) for c in cats], dtype=np.int32)
-                attrs["flag_meanings"] = " ".join(
-                    re.sub(r"[^A-Za-z0-9_]+", "_", str(c["label"])).strip("_") for c in cats
-                )
+                from engine.cfwrite import flag_attrs
+
+                attrs["flag_values"], attrs["flag_meanings"] = flag_attrs(cats)
             new[export_name(name)] = xr.DataArray(
                 np.asarray(arr, dtype=np.float32), dims=("azimuth", "range"), attrs=attrs
             )
         out[node_name].dataset = ds.assign(new) if new else ds
+    if chosen:
+        from engine import provenance
+
+        out.attrs = {
+            **out.attrs,
+            "history": provenance.append_history(
+                out.attrs.get("history"),
+                provenance.history_line(
+                    "added derived variables", {"variables": [export_name(n) for n in chosen]}
+                ),
+            ),
+        }
     return out

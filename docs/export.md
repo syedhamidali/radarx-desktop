@@ -15,4 +15,5 @@ exports a GIF through the sweeps.
 The desktop app asks where to save (the last folder is remembered); without a choice, files go to
 `~/Downloads/xradar-exports`. In the web version exports are browser downloads. Mosaics export as an image with a
 world file (`.pgw`) and projection (`.prj`) so they open georeferenced in GIS software, or as a NetCDF with all
-gridded fields ({doc}`MOSAIC`).
+gridded fields ({doc}`MOSAIC`). Every file records the software version, creation time (UTC), source file *names* and the
+settings used, and follows CF / CfRadial conventions: see {doc}`OUTPUT_STANDARDS`.

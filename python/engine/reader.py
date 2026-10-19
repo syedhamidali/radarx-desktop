@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import logging
 import math
 import os
@@ -1245,6 +1246,9 @@ class RadarReader:
     def _commit(self, dtree: xr.DataTree, path: str, fmt: str) -> None:
         """Atomically make *dtree* the open file and drop everything derived from the old one."""
         dtree = _with_scalar_site(dtree)
+        with contextlib.suppress(Exception):  # provenance of exports (file names only)
+            dtree.encoding["source_path"] = path
+            dtree.encoding["source_format"] = fmt
         with self._lock:
             self._reset_caches()
             self._dtree = dtree

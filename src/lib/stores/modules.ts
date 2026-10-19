@@ -762,12 +762,72 @@ export async function saveTextExport(
   }
 }
 
+/** File name only (never the folder), so exports do not reveal the user's directory layout. */
+function baseName(path: string | null | undefined): string {
+  return path ? (String(path).split(/[\\/]/).pop() ?? '') : '';
+}
+
+function appVersion(): string {
+  return typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : 'unknown';
+}
+
+/** Compact one-line text of a parameter object: `a=1, b=[1, 2]`. */
+function paramsText(params: Record<string, any> | undefined): string {
+  if (!params) return '';
+  return Object.entries(params)
+    .filter(([, v]) => v !== null && v !== undefined)
+    .map(([k, v]) => `${k}=${typeof v === 'object' ? JSON.stringify(v) : String(v)}`)
+    .join(', ');
+}
+
+/**
+ * `# key: value` lines for the head of a CSV (read with `comment="#"` in pandas / R): what the
+ * table is, the module and parameters that made it, the source file name, the units of each
+ * column, how missing values are written and the time standard. The column row follows.
+ */
+export function csvMetadataBlock(meta: {
+  title: string;
+  module: string;
+  sweep: number;
+  params?: Record<string, any>;
+  source?: string;
+  columns: TableColumn[];
+  created?: Date;
+}): string {
+  const created = (meta.created ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const lines = [
+    `# title: ${meta.title}`,
+    `# software: xradar-desktop ${appVersion()}`,
+    `# created: ${created}`,
+    `# module: ${meta.module}`,
+    `# sweep: ${meta.sweep}`,
+  ];
+  if (meta.source) lines.push(`# source_files: ${meta.source}`);
+  const p = paramsText(meta.params);
+  if (p) lines.push(`# parameters: ${p}`);
+  lines.push(
+    '# columns: ' +
+      meta.columns.map((c) => `${c.key} [${c.unit && c.unit.trim() ? c.unit : '1'}]`).join('; '),
+  );
+  lines.push('# missing_values: empty field');
+  lines.push('# time_standard: UTC (ISO 8601)');
+  return lines.map((l) => l.replace(/[\r\n]+/g, ' ')).join('\r\n') + '\r\n';
+}
+
 export function exportTableCsv(
   moduleId: string,
   res: ModuleResult,
   block: { title?: string; columns: TableColumn[]; rows: Record<string, any>[] },
 ): Promise<boolean> {
-  const csv = tableToCsv(block.columns ?? [], block.rows ?? []);
+  const header = csvMetadataBlock({
+    title: `${moduleId}: ${block.title ?? 'table'}`,
+    module: moduleId,
+    sweep: res.sweep,
+    params: res.params,
+    source: baseName(get(radarData).filePath),
+    columns: block.columns ?? [],
+  });
+  const csv = header + tableToCsv(block.columns ?? [], block.rows ?? []);
   const name = `${moduleId}_sweep${res.sweep}_${block.title ?? 'table'}`;
   return saveTextExport(name, csv, { label: 'CSV', ext: 'csv', mime: 'text/csv' });
 }
@@ -778,7 +838,19 @@ export function exportOverlayGeoJson(moduleId: string, res: ModuleResult): Promi
     addToast('error', 'Radar site location unknown: cannot georeference the overlay');
     return Promise.resolve(false);
   }
-  const fc = overlayToGeoJson(res, site);
+  const fc = {
+    ...overlayToGeoJson(res, site),
+    // RFC 7946 allows foreign members: who made this, from what, with which parameters
+    metadata: {
+      software: `xradar-desktop ${appVersion()}`,
+      created: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      source_files: baseName(get(radarData).filePath),
+      module: moduleId,
+      sweep: res.sweep,
+      parameters: res.params ?? {},
+      crs: 'EPSG:4326 (WGS 84, longitude/latitude in degrees)',
+    },
+  };
   const name = `${moduleId}_sweep${res.sweep}_overlay`;
   return saveTextExport(name, JSON.stringify(fc), {
     label: 'GeoJSON',

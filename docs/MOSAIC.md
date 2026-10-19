@@ -32,7 +32,7 @@ merge:
    - **Extent:** all radars, or the current map view. Resolution 250 m - 5 km.
 3. The result is drawn on the map. Hover for the merged value and each radar's contribution
    (value, range, beam elevation). Use opacity, **Mosaic view**, **Fit to mosaic**.
-4. **Export** NetCDF (lon/lat grid + per-radar variables, CF attributes) or PNG (+ `.pgw`/`.prj`).
+4. **Export** NetCDF (CF-1.10 grid in Web-Mercator metres with 2-D lat/lon, `crs`, time, per-radar variables and the merge parameters) or PNG (+ `.pgw`/`.prj`); see {doc}`OUTPUT_STANDARDS`.
 
 Typical cost for two 16-sweep volumes: ~0.4 s at 1 km, ~1.3-2.2 s at 500 m.
 
