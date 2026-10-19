@@ -40,6 +40,7 @@ test('no hard-coded colours in the components (allow-list: scripts/color-allowli
 
 const tokens = read('src/lib/styles/tokens.css');
 const theme = read('src/lib/styles/theme.css');
+const provenance = read('src/lib/styles/provenance.css'); // provenance chip aliases of the base tokens
 const darkBlock = tokens.slice(tokens.indexOf(':root {'), tokens.indexOf(":root[data-theme='light']"));
 const lightBlock = tokens.slice(tokens.indexOf(":root[data-theme='light']"));
 const defs = (block) => new Set([...block.matchAll(/^\s*(--[a-zA-Z0-9-]+)\s*:/gm)].map((m) => m[1]));
@@ -47,7 +48,7 @@ const dark = defs(darkBlock);
 const light = defs(lightBlock);
 
 test('every var(--token) used by a component is defined', () => {
-  const known = new Set([...dark, ...defs(theme)]);
+  const known = new Set([...dark, ...defs(theme), ...defs(provenance)]);
   const missing = new Map();
   for (const file of svelteFiles(join(root, 'src'))) {
     const src = readFileSync(file, 'utf8');
