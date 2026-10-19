@@ -1,0 +1,74 @@
+name: Bug report
+description: Something crashes, looks wrong, is slow or gives a wrong number
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you. A wrong **number** or a wrong **physical result** is the most serious kind of bug: please say so below.
+        Do not attach data you do not have the right to share, and never paste tokens, keys or private paths.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what you got. A screenshot helps (dark or light does not matter).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. See ...
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of problem
+      options:
+        - Crash or freeze
+        - Wrong display (looks wrong)
+        - Wrong number or wrong science
+        - Slow or uses too much memory
+        - Cannot open or export a file
+        - Installer or update
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: file
+    attributes:
+      label: Data (format, radar, scan time, link to a public copy if there is one)
+      placeholder: "NEXRAD Level II, KTLX 2013-05-20 20:16 UTC (public archive)"
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the About dialog (or `xrd --version`).
+      placeholder: "0.2.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: System
+      options:
+        - macOS (Apple silicon)
+        - macOS (Intel)
+        - Windows 10 / 11
+        - Linux (Ubuntu / Debian)
+        - Linux (Fedora / Red Hat)
+        - Web build
+        - Command line / Python API only
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Messages or log
+      description: The text of the error message or the engine log (Settings, or the terminal when run from source). Remove anything private.
+      render: text

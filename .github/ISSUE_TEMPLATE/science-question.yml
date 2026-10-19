@@ -1,0 +1,54 @@
+name: Science question
+description: "Is this the right physics, the right number, the right label?"
+title: "[science] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For questions about whether something the app shows or computes is scientifically right, labelled right, or
+        explained right. Policy: [docs/SCIENCE.md](https://github.com/syedhamidali/xradar-desktop/blob/main/docs/SCIENCE.md).
+        This is not for crashes (use *Bug report*).
+  - type: textarea
+    id: question
+    attributes:
+      label: The question
+      description: What looks wrong or unclear, and what you expected from the science.
+    validations:
+      required: true
+  - type: dropdown
+    id: class
+    attributes:
+      label: Which provenance class is involved
+      options:
+        - OBSERVED (a measurement, as read from the file)
+        - MODEL / ANALYSIS
+        - RETRIEVED (algorithm output: HID, KDP, QPE, winds, cells, ...)
+        - SIMULATED / STYLISED
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where in the app, module or file
+      placeholder: "Modules > Hail (MESH); python/modules/radarx_hail.py"
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: References, an analytic or hand-calculated value, a comparison with another tool, a screenshot, a public file (name and scan time).
+  - type: textarea
+    id: params
+    attributes:
+      label: Parameters and settings used
+      description: Everything that could change the result (module parameters, smoothing, colour scale, mosaic merge, ...).
+  - type: checkboxes
+    id: kind
+    attributes:
+      label: This might be
+      options:
+        - label: a wrong number
+        - label: a missing or misleading label (provenance, units, time, height reference)
+        - label: a missing citation or missing statement of limits
+        - label: an interpolation, smoothing or model that is not declared
