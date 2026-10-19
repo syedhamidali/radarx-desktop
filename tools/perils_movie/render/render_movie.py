@@ -315,7 +315,9 @@ def main(argv=None) -> None:
     )
     ap.add_argument("--look-preset", default=None)
     ap.add_argument("--set", action="append", default=None, metavar="KEY=VALUE")
-    ap.add_argument("--title", default="PERiLS IOP2: squall line and EF2 tornado", help="title at the top left")
+    ap.add_argument(
+        "--title", default="PERiLS IOP2: squall line and EF2 tornado", help="title at the top left"
+    )
     ap.add_argument(
         "--subtitle",
         default="Mississippi / Alabama, 30 March 2022 local evening · real radar, lightning, surface and sounding data",

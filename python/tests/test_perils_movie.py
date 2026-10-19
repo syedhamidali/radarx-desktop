@@ -66,15 +66,21 @@ def test_robust_motion_ignores_what_does_not_move_and_uses_long_baselines():
     # blobs move 1.5 cells per minute; a strong feature fixed in place (a coverage edge, a range ring) is added
     static = np.zeros((128, 128))
     static[10:30, 100:120] = 50.0
-    frames = [np.fmax(_blobs(1.5 * k, 0.5 * k), np.where(static > 0, static, np.nan)) for k in range(9)]
-    mo = convert_bundle.estimate_motion_robust(frames, 1.0, [60.0 * k for k in range(9)], span_s=300.0)
+    frames = [
+        np.fmax(_blobs(1.5 * k, 0.5 * k), np.where(static > 0, static, np.nan)) for k in range(9)
+    ]
+    mo = convert_bundle.estimate_motion_robust(
+        frames, 1.0, [60.0 * k for k in range(9)], span_s=300.0
+    )
     assert len(mo) == 8 and mo[0]["pairs"] >= 3
     assert abs(mo[0]["u_ms"] - 1.5 * 1000 / 60) < 3.0 and abs(mo[0]["v_ms"] - 0.5 * 1000 / 60) < 3.0
     assert mo[0]["u_ms"] == mo[5]["u_ms"]  # one translation for the window
     # without any usable pair the prior is used and flagged
     rng = np.random.default_rng(0)
     noise = [rng.uniform(0, 50, (64, 64)) for _ in range(5)]
-    mo = convert_bundle.estimate_motion_robust(noise, 1.0, [0, 120, 240, 360, 480], prior=(10.0, 0.0))
+    mo = convert_bundle.estimate_motion_robust(
+        noise, 1.0, [0, 120, 240, 360, 480], prior=(10.0, 0.0)
+    )
     assert mo[0]["fallback"] and mo[0]["u_ms"] == 10.0
 
 
@@ -175,6 +181,112 @@ def test_the_v11_parts_are_converted(tiny):
     assert {e["kind"] for e in p["science"]} >= {"gust_front", "tornado"}
     assert p["profiles"]["mrr"]["fields"]["dbz"]["codes"]
     assert sum(1 for h in p["hail"] if h) >= 1
+
+
+def test_only_tornadoes_inside_the_window_and_the_area_are_kept_longest_first():
+    from convert_extras import convert_tornadoes
+
+    geo = convert_bundle.Geo(33.5, -88.5)
+    rel = lambda iso: 0.0  # noqa: E731
+
+    def tor(tid, t0, t1, lat, lon):
+        return {
+            "id": tid,
+            "rating": "EF1",
+            "path": [[t0, lat, lon], [t1, lat + 0.05, lon + 0.05]],
+            "path_kind": "INTERPOLATED: straight line",
+        }
+
+    raw = [
+        tor("before", -3000, -2000, 33.5, -88.5),  # dead before the window
+        tor("far", 100, 900, 30.0, -88.5),  # alive in the window but 390 km south
+        tor("short", 100, 200, 33.5, -88.5),
+        tor("long", 50, 900, 33.4, -88.4),
+        tor("after", 2000, 3000, 33.5, -88.5),
+    ]
+    out = convert_tornadoes(raw, geo, rel, window_s=960.0, bounds_km=130.0)
+    assert [t["id"] for t in out] == ["long", "short"]
+    assert out[0]["seconds_in_window"] == 850.0 and out[0]["path_interpolated"] is True
+
+
+def test_station_labels_vehicle_tracks_and_science_events():
+    from convert_extras import convert_science, convert_stations, science_kind, station_label
+
+    assert station_label("StickNet_0102A", "StickNet surface station (about 2 m)") == (
+        "StickNet 0102A",
+        "StickNet",
+    )
+    assert station_label("PIPS1A", "x")[1] == "PIPS disdrometer"
+    geo = convert_bundle.Geo(33.0, -88.0)
+    ts = [0.0, 10.0, 20.0, 30.0]
+    mov = {
+        "id": "Mesonet_DOW7",
+        "lat": 33.0,
+        "lon": -88.0,
+        "series": {
+            "t_s": ts,
+            "lat": [33.0, 33.01, 33.02, 33.03],
+            "lon": [-88.0] * 4,
+            "temperature_c": [20.0] * 4,
+        },
+    }
+    fixed = {
+        "id": "StickNet_1",
+        "lat": 33.0,
+        "lon": -88.0,
+        "series": {"t_s": ts, "lat": [33.0] * 4, "lon": [-88.0] * 4},
+    }
+    st = convert_stations([mov, fixed], geo, Path("."), [])
+    assert st[0]["moving"] is True and len(st[0]["track"]) >= 3 and "lat" not in st[0]["series"]
+    assert st[1]["moving"] is False
+    ev = {
+        "events": [
+            {
+                "kind": "hail_signature",
+                "t_s": 5,
+                "in_window": True,
+                "class": "retrieved",
+                "caption": "c",
+                "evidence": {"mesh_max_mm": 16},
+            },
+            {
+                "kind": "hail_signature",
+                "t_s": 6,
+                "in_window": True,
+                "class": "retrieved",
+                "evidence": {"zdr_column_max_km_series": []},
+            },
+            {
+                "kind": "hail_signature",
+                "t_s": 7,
+                "in_window": True,
+                "class": "candidate",
+                "evidence": {"rows": []},
+            },
+            {
+                "kind": "gust_front_passage",
+                "t_s": 8,
+                "in_window": True,
+                "class": "observed",
+                "caption": "Outflow",
+                "evidence": {"x_km": 4, "y_km": 5, "station": "S"},
+            },
+            {"kind": "cold_pool_sounding", "t_s": 3000, "in_window": False, "class": "observed"},
+        ]
+    }
+    out = convert_science(ev, lambda iso: 0.0, geo)
+    assert [e["kind"] for e in out] == ["hail", "zdr_column", "debris_signature", "gust_front"]
+    assert out[2]["candidate"] is True and out[2]["class"] == "retrieved"
+    assert (out[3]["x"], out[3]["y"], out[3]["where"], out[3]["caption"]) == (
+        4.0,
+        5.0,
+        "S",
+        "Outflow",
+    )
+    assert (
+        science_kind("rain_dsd", {}) == "rain_dsd"
+        and science_kind("updraft_maximum", {}) == "updraft"
+    )
 
 
 def test_line_geometry_axis_is_perpendicular_to_the_motion(tiny):

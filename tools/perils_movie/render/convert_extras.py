@@ -425,7 +425,12 @@ def convert_science(raw, rel, geo=None) -> list[dict]:
         if isinstance(nums, dict):
             nums = [f"{k} {v}" for k, v in nums.items()]
         x, y = _num(ev.get("x_km")), _num(ev.get("y_km"))
-        if (x is None or y is None) and geo is not None and _num(ev.get("lat")) is not None and _num(ev.get("lon")) is not None:
+        if (
+            (x is None or y is None)
+            and geo is not None
+            and _num(ev.get("lat")) is not None
+            and _num(ev.get("lon")) is not None
+        ):
             gx, gy = geo.xy(ev["lat"], ev["lon"])
             x, y = float(gx), float(gy)
         cls = str(e.get("class") or e.get("provenance") or "")
@@ -438,7 +443,11 @@ def convert_science(raw, rel, geo=None) -> list[dict]:
                 "caption": e.get("caption"),
                 "numbers": [str(n) for n in (nums or [])],
                 "text": e.get("text") or e.get("summary"),
-                "class": "retrieved" if cls.startswith("candidate") else cls.split(" ")[0] if cls else None,
+                "class": "retrieved"
+                if cls.startswith("candidate")
+                else cls.split(" ")[0]
+                if cls
+                else None,
                 "candidate": cls.startswith("candidate"),
                 "where": e.get("where") or e.get("station") or ev.get("station"),
                 "x": x,
