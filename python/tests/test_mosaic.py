@@ -16,10 +16,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import xarray as xr
-from engine import mosaic
-from engine.reader import RadarReader
 from PIL import Image
 
+from engine import mosaic
+from engine.reader import RadarReader
 from tests import radar_data
 
 HAS_RADARX = importlib.util.find_spec("radarx") is not None
@@ -619,7 +619,13 @@ class TestProbeAndExport:
         hi = make_reader(make_volume(*B, flat(40.0), name="HIGH"))
         mask = {"mode": "below", "min": 30.0, "max": None, "inclusive": False}
         masked = mosaic.build_mosaic(
-            [("a", lo), ("b", hi)], "DBZH", "cappi", GRID, height_m=2000, cache=cache, value_mask=mask
+            [("a", lo), ("b", hi)],
+            "DBZH",
+            "cappi",
+            GRID,
+            height_m=2000,
+            cache=cache,
+            value_mask=mask,
         )
         both = np.isfinite(rec.image) & np.isfinite(masked.image)
         assert (masked.image[both] >= 30.0).all()

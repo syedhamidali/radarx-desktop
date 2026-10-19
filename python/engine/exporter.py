@@ -974,7 +974,12 @@ def render_publication_figure(
 
         if mask_note:
             fig.text(
-                0.5, 0.004, mask_note, ha="center", va="bottom", color="gray",
+                0.5,
+                0.004,
+                mask_note,
+                ha="center",
+                va="bottom",
+                color="gray",
                 fontsize=font_size - 3,
             )
             fig.tight_layout(rect=(0, 0.035, 1, 1))
