@@ -11,9 +11,9 @@
  *   bottom centre caption strip ("what you see" and the science caption), timeline bar, legend, credits
  */
 import {
-  type PerilsData, type ProvKind, type Station, type Readout, clockUtc, fmtOffset, compass16, seriesAt,
+  type PerilsData, type ProvKind, type Station, type Readout, clockUtc, fmtOffset, compass16,
 } from './perilsData.ts';
-import { PROV, type RGB, chip, drawText, fit, measure, panel, provColour, rgba, ui, FONT, MONO } from './perilsStyle.ts';
+import { PROV, chip, drawText, fit, measure, panel, provColour, rgba, ui } from './perilsStyle.ts';
 import { wrapText } from './perilsCaptions.ts';
 import { tempColour } from './perilsSurface.ts';
 import { COLORMAP_DATA } from '../utils/colormaps';
@@ -439,5 +439,3 @@ export function drawEndCard(ctx: CanvasRenderingContext2D, W: number, H: number,
   ctx.restore();
 }
 
-export { FONT, MONO, seriesAt };
-export type { RGB };

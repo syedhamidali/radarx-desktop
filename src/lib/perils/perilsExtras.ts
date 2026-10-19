@@ -11,7 +11,7 @@ import '../styles/provenance.css';
 import type { ClipApi, ClipExtras, ExtrasPose, FrameInfo, OverlayCam } from './clipExtras';
 import { COLORMAP_DATA } from '../utils/colormaps';
 import {
-  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, chooseEnvironmentPair, type SoundingRec, observedStepAt, seriesAt, stationReadout, tornadoAt, rotationAt, interpWeights,
+  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, chooseEnvironmentPair, type SoundingRec, observedStepAt, stationReadout, tornadoAt, rotationAt, interpWeights,
 } from './perilsData';
 import { Director, type CamEntry, type TimelineFile, nearestStation } from './perilsDirector';
 import { LayerVis, crossfade, type LayerId } from './perilsLayers';
@@ -590,5 +590,3 @@ export class PerilsExtras implements ClipExtras {
   }
 }
 
-export type { ProvKind };
-export { seriesAt };

@@ -10,9 +10,9 @@
  */
 import type { OverlayCam } from './clipExtras';
 import {
-  type PerilsData, type RotationTrack, type Station, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
+  type PerilsData, type RotationTrack, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
 } from './perilsData.ts';
-import { type RGB, drawText, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR, GRAUPEL_COLOUR } from './perilsStyle.ts';
+import { type RGB, drawText, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR } from './perilsStyle.ts';
 import { recentHail } from './perilsInsets.ts';
 
 export interface SceneEnv {
@@ -769,7 +769,6 @@ export function drawIsotherms(e: SceneEnv, a: number, centre: [number, number], 
   ctx.restore();
 }
 
-export { GRAUPEL_COLOUR };
 
 /** Projection of an already-exaggerated scene point with the 20 m near plane (the signature `drawLma` wants). */
 export function projRaw(cam: OverlayCam, p: [number, number, number]): [number, number, number] | null {

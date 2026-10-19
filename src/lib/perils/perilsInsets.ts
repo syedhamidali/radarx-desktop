@@ -6,8 +6,8 @@
  * ground-level view. Each says what it is made of; stations' numbers are OBSERVED, the reference
  * curves are labelled. Pure drawing, no state.
  */
-import { type Station, type TimeHeight, type ProvKind, codeValue, dsdColumn, raindropFall, seriesAt } from './perilsData.ts';
-import { chip, drawText, fit, panel, provColour, rgba, ui, type RGB } from './perilsStyle.ts';
+import { type Station, type TimeHeight, type ProvKind, codeValue, dsdColumn, raindropFall } from './perilsData.ts';
+import { chip, drawText, fit, panel, rgba, ui, type RGB } from './perilsStyle.ts';
 
 const line = (ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, w: number, c: string) => {
   ctx.strokeStyle = c;
@@ -321,4 +321,3 @@ export function recentHail(st: Station, td: number, windowS = 20): { maxD: numbe
   return best;
 }
 
-export { seriesAt, provColour };
