@@ -453,6 +453,32 @@ fn generate_sidecar_token() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+/// Plain-words description of how the engine process ended ("crashed (segmentation fault)").
+fn describe_exit(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            let name = match sig {
+                11 => "segmentation fault",
+                10 | 7 => "bus error",
+                6 => "aborted",
+                9 => "killed",
+                15 => "terminated",
+                4 => "illegal instruction",
+                8 => "arithmetic error",
+                _ => "signal",
+            };
+            return format!("crashed ({}, signal {})", name, sig);
+        }
+    }
+    match status.code() {
+        Some(0) => "exited normally".to_string(),
+        Some(code) => format!("exited with an error (code {})", code),
+        None => format!("ended ({})", status),
+    }
+}
+
 /// How often the monitor looks at the sidecar process.
 const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -477,11 +503,13 @@ struct MonitorMemory {
     /// When the pending restart may be attempted.
     due: Option<Instant>,
     crash_window: Duration,
+    /// How the last engine process ended, in plain words (for messages).
+    last_exit: String,
 }
 
 impl Default for MonitorMemory {
     fn default() -> Self {
-        Self { failures: 0, due: None, crash_window: CRASH_LOOP_WINDOW }
+        Self { failures: 0, due: None, crash_window: CRASH_LOOP_WINDOW, last_exit: String::new() }
     }
 }
 
@@ -520,7 +548,12 @@ fn monitor_step(state: &SidecarState, mem: &mut MonitorMemory) -> MonitorOutcome
             Some(child) => match child.try_wait() {
                 Ok(Some(status)) => {
                     if mem.due.is_none() {
-                        eprintln!("[sidecar-monitor] Sidecar exited with status: {}", status);
+                        mem.last_exit = describe_exit(&status);
+                        eprintln!(
+                            "[sidecar-monitor] The analysis engine stopped: {}. A native crash is \
+                             logged in ~/.xradar-desktop/engine-crash.log",
+                            describe_exit(&status)
+                        );
                     }
                     true
                 }
@@ -555,7 +588,9 @@ fn monitor_step(state: &SidecarState, mem: &mut MonitorMemory) -> MonitorOutcome
         mem.due = Some(Instant::now() + delay);
         if !delay.is_zero() {
             let text = format!(
-                "The analysis engine keeps stopping right after it starts; trying again in {} s.",
+                "The analysis engine keeps stopping right after it starts (last time it {}); \
+                 trying again in {} s.",
+                mem.last_exit,
                 delay.as_secs()
             );
             eprintln!("[sidecar-monitor] {}", text);
@@ -933,6 +968,17 @@ mod tests {
         let secs: Vec<u64> = (1..=8).map(|n| restart_delay(n).as_secs()).collect();
         assert_eq!(secs, vec![5, 10, 20, 40, 60, 60, 60, 60]);
         assert_eq!(restart_delay(u32::MAX), Duration::from_secs(60));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_descriptions_are_plain_words() {
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+        assert_eq!(describe_exit(&ExitStatus::from_raw(11)), "crashed (segmentation fault, signal 11)");
+        assert_eq!(describe_exit(&ExitStatus::from_raw(9)), "crashed (killed, signal 9)");
+        assert_eq!(describe_exit(&ExitStatus::from_raw(3 << 8)), "exited with an error (code 3)");
+        assert_eq!(describe_exit(&ExitStatus::from_raw(0)), "exited normally");
     }
 
     #[cfg(unix)]

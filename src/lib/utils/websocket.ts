@@ -1448,8 +1448,8 @@ class WebSocketManager {
     addToast(
       'error',
       had > 0
-        ? 'The analysis engine stopped unexpectedly and was restarted, so your open files were closed. Open them again; if the same file stops the engine again, it may be damaged.'
-        : 'The analysis engine stopped unexpectedly and was restarted.',
+        ? 'The analysis engine crashed and was restarted, so your open files were closed. Open them again; if the same file crashes it again, please report it (details are in ~/.xradar-desktop/engine-crash.log).'
+        : 'The analysis engine crashed and was restarted (details are in ~/.xradar-desktop/engine-crash.log).',
       15000,
     );
   }

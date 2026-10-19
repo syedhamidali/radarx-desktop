@@ -4696,6 +4696,41 @@ async def _run_server(port: int, host: str | None = None) -> None:
     logger.info("Server shut down cleanly")
 
 
+_CRASH_LOG_MAX_BYTES = 512 * 1024
+_crash_log_file: Any = None  # kept open for faulthandler
+
+
+def enable_crash_log() -> Path | None:
+    """Make a native crash (SIGSEGV, SIGBUS, SIGABRT ...) leave a trace.
+
+    A crash inside netCDF-C / HDF5 kills the process without any Python traceback, and the
+    packaged engine has no console: the app only saw "connection lost". ``faulthandler`` writes the
+    Python stack of every thread to ``~/.xradar-desktop/engine-crash.log`` (web mode: to stderr, a
+    service must not write into a home folder). Returns the log path, or None.
+    """
+    import faulthandler
+
+    global _crash_log_file
+    if web.is_web_mode():
+        faulthandler.enable(all_threads=True)
+        return None
+    path = Path.home() / ".xradar-desktop" / "engine-crash.log"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > _CRASH_LOG_MAX_BYTES:
+            path.unlink()  # keep it small: only the newest crashes matter
+        _crash_log_file = open(path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
+        _crash_log_file.write(
+            f"--- engine {ENGINE_ID} pid {os.getpid()} started "
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} (a crash report follows if it crashes) ---\n"
+        )
+        faulthandler.enable(file=_crash_log_file, all_threads=True)
+        return path
+    except OSError:  # read-only home, no disk ...: stderr still reaches the shell's log
+        faulthandler.enable(all_threads=True)
+        return None
+
+
 def main() -> None:
     import argparse
 
@@ -4713,6 +4748,7 @@ def main() -> None:
     if args.web:
         os.environ["XRADAR_WEB"] = "1"
         web.reload_settings()
+    enable_crash_log()
     port = args.port
     if port is None and web.is_web_mode() and os.environ.get("PORT", "").strip().isdigit():
         port = int(os.environ["PORT"])
