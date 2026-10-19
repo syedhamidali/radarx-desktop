@@ -42,7 +42,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine import varmap
+from engine import valuemask, varmap
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +261,9 @@ class MosaicRecord:
     volume_z_m: np.ndarray | None = None  # level heights (m ASL)
     volume_range: tuple[float, float] | None = None
     volume_note: str | None = None  # why there is no volume (when volume is None)
+    # value mask the product was built with (None = none) and its wording ("hide below 0 dBZ")
+    value_mask: dict[str, Any] | None = None
+    value_mask_text: str | None = None
 
     @property
     def nbytes(self) -> int:
@@ -300,6 +303,8 @@ class MosaicRecord:
             "has_volume": self.volume is not None,
             "volume_shape": list(self.volume.shape) if self.volume is not None else None,
             "volume_note": self.volume_note,
+            "value_mask": self.value_mask,
+            "value_mask_text": self.value_mask_text,
         }
 
 
@@ -883,6 +888,7 @@ def build_mosaic(
     engine: str = "auto",
     cache: MosaicCache | None = MOSAICS,
     keep_volume: bool | None = None,
+    value_mask: dict[str, Any] | None = None,
 ) -> MosaicRecord:
     """Build a mosaic of the volumes behind ``readers`` (``[(file_id, RadarReader), ...]``).
 
@@ -894,6 +900,10 @@ def build_mosaic(
     ``keep_volume`` keeps the merged 3-D field (all levels) for the 3-D view: ``None`` (default)
     keeps it when it fits :data:`VOLUME_MAX_VOXELS`, ``False`` never, ``True`` whenever it fits.
     A ``cappi`` normally grids a single level; keeping the volume grids every level as well.
+
+    ``value_mask`` hides values of the finished product (and each radar's own value) the way the
+    viewer's value mask does (:mod:`engine.valuemask`): hidden cells become NaN in the image, the
+    statistics, probes and exports. The 3-D volume is not changed: the 3-D view masks it live.
     """
     t_start = time.perf_counter()
     report = progress or (lambda _p, _m: None)
@@ -1094,6 +1104,11 @@ def build_mosaic(
     vmax_f = float(hi_default if vmax is None else _number(vmax, "vmax"))
     if vmax_f <= vmin_f:
         raise MosaicError("vmax must be greater than vmin")
+    vmask = valuemask.normalize(value_mask)
+    vmask_text = valuemask.describe(vmask, units_out) if vmask else None
+    if vmask is not None:
+        image, _ = valuemask.apply(image, vmask)
+        acc.radars, _ = valuemask.apply(acc.radars, vmask)
     cmap_name = _ECHO_TOP_CMAP if product == "echo_top" else _CMAPS.get(canon, _FALLBACK_CMAP)
     report(92, "Rendering PNG")
     t0 = time.perf_counter()
@@ -1206,6 +1221,8 @@ def build_mosaic(
         volume_z_m=volume_z,
         volume_range=volume_rng,
         volume_note=volume_note,
+        value_mask=vmask,
+        value_mask_text=vmask_text,
     )
     if cache is not None:
         cache.put(record)
@@ -1660,6 +1677,7 @@ def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
         "calibrate": m.get("calibrate"),
         "advect": m.get("advect"),
         "radars": names,
+        "value_mask": rec.value_mask_text,
     }
     attrs = provenance.standard_global_attrs(
         title=f"Multi-radar mosaic: {rec.product} of {rec.variable}",
@@ -1694,6 +1712,8 @@ def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
         geospatial_lon_min=float(west),
         geospatial_lon_max=float(east),
     )
+    if rec.value_mask_text:
+        attrs["value_mask"] = rec.value_mask_text
     if rec.height_m is not None:
         attrs["height_m"] = float(rec.height_m)
     if rec.threshold_dbz is not None:

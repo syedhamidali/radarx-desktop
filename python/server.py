@@ -3815,6 +3815,7 @@ class ConnectionHandler:
                 min_rhohv=msg.get("min_rhohv"),
                 progress=progress_sync,
                 keep_volume=msg.get("keep_volume"),
+                value_mask=msg.get("value_mask"),
             )
 
         t0 = time.perf_counter()

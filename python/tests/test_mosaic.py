@@ -612,6 +612,36 @@ class TestProbeAndExport:
         assert 0.5 < low["elevation_deg"] < 2.5 and 0.5 < high["elevation_deg"] < 2.5
         assert 20.0 < res["value"] < 40.0
 
+    def test_value_mask_hides_cells_in_image_png_probe_and_netcdf(self, rec, cache, tmp_path):
+        """The mosaic honours the viewer's value mask (engine/valuemask.py): hidden cells are NaN
+        in the product, transparent in the PNG, empty for the probe, and the file says so."""
+        lo = make_reader(make_volume(*A, flat(20.0), name="LOW"))
+        hi = make_reader(make_volume(*B, flat(40.0), name="HIGH"))
+        mask = {"mode": "below", "min": 30.0, "max": None, "inclusive": False}
+        masked = mosaic.build_mosaic(
+            [("a", lo), ("b", hi)], "DBZH", "cappi", GRID, height_m=2000, cache=cache, value_mask=mask
+        )
+        both = np.isfinite(rec.image) & np.isfinite(masked.image)
+        assert (masked.image[both] >= 30.0).all()
+        assert np.isfinite(rec.image).sum() > np.isfinite(masked.image).sum() > 0
+        # cells at or above the limit are unchanged
+        keep = both & (rec.image >= 30.0)
+        np.testing.assert_allclose(masked.image[keep], rec.image[keep])
+        assert masked.header()["value_mask_text"] == "hide below 30 dBZ"
+        assert rec.header()["value_mask"] is None
+        # the PNG is transparent where the product is hidden
+        alpha = decode(masked.png)[..., 3]
+        assert (alpha[~np.isfinite(masked.image)] == 0).all()
+        # the probe reports nothing for a hidden cell and each radar's own hidden value
+        res = mosaic.probe(masked.mosaic_id, -96.45, 35.2, cache)
+        for r in res["radars"]:
+            assert r["value"] is None or r["value"] >= 30.0
+        path = tmp_path / "masked.nc"
+        mosaic.write_netcdf(masked, path)
+        with xr.open_dataset(path) as ds:
+            assert ds.attrs["value_mask"] == "hide below 30 dBZ"
+            assert np.nanmin(ds["DBZH_cappi"].values) >= 30.0
+
     def test_probe_unknown_mosaic(self, cache):
         with pytest.raises(mosaic.MosaicError, match="Unknown or expired"):
             mosaic.probe("nope", 0.0, 0.0, cache)
