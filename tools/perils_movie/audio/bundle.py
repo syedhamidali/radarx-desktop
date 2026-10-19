@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .dsd import Dsd, load_dsd
 from .timeline import parse_iso
 
 
@@ -35,6 +36,8 @@ class Station:
     alt_m: float
     series: dict[str, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
+    dsd: Dsd | None = None
+    meta: dict = field(default_factory=dict)  # every non-series field of stations.json (network, instrument, ...)
 
     def has(self, name: str) -> bool:
         return name in self.series and np.isfinite(self.series[name][1]).any()
@@ -68,6 +71,7 @@ class TornadoTrack:
     lat: np.ndarray
     lon: np.ndarray
     width_m: float = 200.0
+    meta: dict = field(default_factory=dict)
 
     def position(self, t_data):
         """(lat, lon, exists) at data time(s); the tornado exists only inside its surveyed track."""
@@ -175,6 +179,7 @@ def parse_stations(raw) -> list[Station]:
                 str(s.get("id", i)), str(s.get("name", s.get("id", i))), str(s.get("type", "")),
                 float(s["lat"]), float(s["lon"]), float(s.get("alt_m", 0.0)), ser,
                 list(s.get("events") or []),
+                meta={k: v for k, v in s.items() if k not in ("series", "events")},
             )
         )
     return out
@@ -219,6 +224,7 @@ def parse_tornadoes(raw, window_start: str) -> list[TornadoTrack]:
                 str(tr.get("id", i)), str(tr.get("name", tr.get("id", i))), tr.get("ef", tr.get("rating")),
                 np.array(t, float)[o], np.array(la, float)[o], np.array(lo, float)[o],
                 float(tr.get("width_m", 200.0)),
+                {k: v for k, v in tr.items() if k not in ("path", "track", "points")},
             )
         )
     return out
@@ -274,11 +280,18 @@ def load_bundle(bundle_dir) -> Bundle:
     fl_raw = _read(d / "lma" / "flashes.json")
     ws, we = _window(manifest, fl_raw)
     radar = _read(d / "radar" / "overhead_samples.json")
+    stations = parse_stations(_read(d / "stations" / "stations.json"))
+    for s in stations:
+        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in s.id)
+        for cand in (d / "stations" / f"{s.id}_dsd.npz", d / "stations" / f"{safe}_dsd.npz"):
+            if cand.exists():
+                s.dsd = load_dsd(cand)
+                break
     return Bundle(
         window_start=ws,
         window_end=we,
         flashes=parse_flashes(fl_raw, ws),
-        stations=parse_stations(_read(d / "stations" / "stations.json")),
+        stations=stations,
         tornadoes=parse_tornadoes(_read(d / "tornadoes" / "tornadoes.json"), ws),
         events=parse_events(_read(d / "events.json"), ws),
         radar_samples=parse_radar_samples(radar, ws),

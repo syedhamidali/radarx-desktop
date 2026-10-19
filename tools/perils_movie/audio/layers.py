@@ -1,4 +1,4 @@
-"""The continuous layers: rain, wind, ambient bed, convective rumble, tornado roar, hail.
+"""Level curves and the ambient bed, convective rumble and tornado roar (rain, wind and hail are in weather.py).
 
 Each ``render_*`` returns ``(stereo (2, N) array, info dict)``. Levels are in "pre-master" units
 (1.0 = full scale before the loudness normalisation); the relative levels between layers are fixed
@@ -11,7 +11,7 @@ tornado track, the hail events. Artistic: the timbre of every layer and the curv
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import butter, lfilter, sosfilt
+from scipy.signal import butter, sosfilt
 
 from .dsp import (
     banded_stereo,
@@ -19,7 +19,6 @@ from .dsp import (
     ctl_to_audio,
     damped_sine,
     impulse_train,
-    local_rms_normalise,
     pan_gains,
     sum_kernels,
 )
@@ -37,6 +36,11 @@ def rain_level_db(rate_mmh):
 def rain_gain(rate_mmh):
     r = np.maximum(np.asarray(rate_mmh, float), 0.0)
     return 10 ** (rain_level_db(r) / 20.0) * r / (r + 0.1)  # gate: no rain, no sound
+
+
+def rain_dm_offset_db(dm_mm):
+    """Bigger drops hit harder: +3 dB per doubling of Dm around 1.5 mm (limited to -4.5 / +6 dB)."""
+    return 3.0 * np.clip(np.log2(np.maximum(np.asarray(dm_mm, float), 0.3) / 1.5), -1.5, 2.0)
 
 
 def rain_distance_weight(d_m, d0_m=5000.0, floor=0.08):
@@ -71,125 +75,6 @@ def tornado_cutoff_hz(d_m):
     """Muffled when far: 3.5 kHz close, 120 Hz floor at long range."""
     d = np.where(np.isfinite(d_m), d_m, 1e6)
     return np.maximum(120.0, 3500.0 / (1.0 + d / 1500.0))
-
-
-# --------------------------------------------------------------------------- rain
-
-DROP_D_MM = np.array([0.6, 1.2, 2.0, 3.2, 5.0])
-
-
-def render_rain(scene: Scene, sr: int, n: int, seed: int):
-    rng = np.random.default_rng(seed)
-    R, d, ok = scene.blend("rain_rate_mmh")
-    R = np.where(ok, np.maximum(R, 0.0), 0.0)
-    dm, _, okd = scene.blend("dm_mm")
-    dm_assumed = ~okd
-    dm = np.where(okd & (dm > 0), dm, np.clip(0.9 * np.maximum(R, 0.01) ** 0.21, 0.5, 3.0))
-    wd = np.where(ok, rain_distance_weight(np.where(np.isfinite(d), d, 1e9)), 0.0)
-    level = rain_gain(R) * wd
-    # patter: Poisson drop impacts; class mix from an exponential drop-size distribution with median
-    # volume diameter Dm (Lambda = 3.67 / Dm), energy weighted (D^3)
-    lam_ctl = 60.0 * np.maximum(R, 0.0) ** 0.6 * wd**2
-    lam = ctl_to_audio(lam_ctl, n, sr) / sr
-    idx, amps = impulse_train(rng, n, lam)
-    L = 3.67 / np.maximum(dm, 0.3)
-    w_c = np.exp(-np.outer(DROP_D_MM, L)) * (DROP_D_MM**3)[:, None]  # (C, nctl)
-    w_c /= w_c.sum(axis=0, keepdims=True)
-    cum = np.cumsum(w_c, axis=0)  # (C, nctl)
-    ci = np.clip((idx / sr * CTL_RATE).astype(int), 0, cum.shape[1] - 1)
-    u = rng.random(len(idx))
-    cls = (u[None, :] > cum[:, ci]).sum(axis=0).clip(0, len(DROP_D_MM) - 1)
-    patter = np.zeros((2, n))
-    for c, D in enumerate(DROP_D_MM):
-        k = damped_sine(sr, 5500.0 / D**0.7, 0.0015 + 0.0008 * D) * D**1.5
-        for ch in (0, 1):
-            sel = (cls == c) & (rng.random(len(idx)) < 0.5)  # each impact is heard mostly at one ear
-            patter[ch] += convolve_events(n, idx[sel], amps[sel] * 1.4, k)
-    # hiss: fine drops and the sum of many small impacts
-    hb, ha = butter(1, 2500.0, btype="high", fs=sr)
-    hiss = lfilter(hb, ha, rng.standard_normal((2, n)), axis=1)
-    pw = np.clip((dm - 0.4) / 1.6, 0.1, 0.9) * wd**2
-    pw_a = ctl_to_audio(pw, n, sr)
-    out = np.zeros((2, n))
-    for ch in (0, 1):
-        pn = local_rms_normalise(patter[ch], sr)
-        hn = local_rms_normalise(hiss[ch], sr, floor=1e-2)
-        out[ch] = (np.sqrt(pw_a) * pn + np.sqrt(1.0 - pw_a) * hn) * ctl_to_audio(level, n, sr)
-    info = {
-        "rain_rate_mmh": {"min": float(R.min()), "mean": float(R.mean()), "max": float(R.max())},
-        "dm_mm": {"mean": float(dm.mean()), "max": float(dm.max()), "assumed_fraction": float(dm_assumed.mean())},
-        "coverage": float(ok.mean()),
-        "mean_station_distance_m": float(np.mean(d[ok])) if ok.any() else None,
-        "level_db_premaster": {"min": float(20 * np.log10(max(level.min(), 1e-9))),
-                               "max": float(20 * np.log10(max(level.max(), 1e-9)))},
-    }
-    return out, info
-
-
-# --------------------------------------------------------------------------- wind
-
-def _station_ti(scene: Scene):
-    """Turbulence intensity (std / mean of the observed speed over +-2 samples), or from the gust
-    column when a station has one; blended like the speed."""
-    w, _ = scene.station_weights("wind_speed_ms")
-    rows = []
-    for s in scene.bundle.stations:
-        if "wind_speed_ms" not in s.series:
-            rows.append(np.full(scene.n, np.nan))
-            continue
-        t, v = s.series["wind_speed_ms"]
-        m = np.isfinite(v)
-        t, v = t[m], v[m]
-        if len(t) < 3:
-            rows.append(np.full(scene.n, 0.15))
-            continue
-        gust = s.series.get("wind_gust_ms")
-        if gust is not None:
-            gt, gv = gust
-            gm = np.isfinite(gv)
-            gf = np.interp(t, gt[gm], gv[gm]) / np.maximum(v, 0.5) if gm.any() else None
-        else:
-            gf = None
-        if gf is not None:
-            ti = np.clip((gf - 1.0) / 2.5, 0.05, 0.5)
-        else:
-            k = 2
-            ti = np.array([
-                np.std(v[max(0, i - k): i + k + 1]) / max(np.mean(v[max(0, i - k): i + k + 1]), 1.0)
-                for i in range(len(v))
-            ])
-            ti = np.clip(ti, 0.05, 0.5)
-        rows.append(np.interp(scene.tw, t, ti))
-    ti = np.array(rows) if rows else np.zeros((0, scene.n))
-    sw = np.maximum(w.sum(axis=0), 1e-12)
-    return np.clip((w * np.nan_to_num(ti, nan=0.15)).sum(axis=0) / sw, 0.08, 0.45)
-
-
-def render_wind(scene: Scene, sr: int, n: int, seed: int, gust_hz: float = 0.8):
-    rng = np.random.default_rng(seed)
-    v, d, ok = scene.blend("wind_speed_ms")
-    v = np.where(ok, np.maximum(v, 0.0), 0.0)
-    ti = _station_ti(scene)
-    # gusts: slow noise, unit variance (the amplitude from the observed variability, the fine
-    # structure is synthetic)
-    sos = butter(2, gust_hz, fs=CTL_RATE, output="sos")
-    g = sosfilt(sos, rng.standard_normal(scene.n + 400))[400:]
-    g = g / max(g.std(), 1e-9)
-    veff = np.maximum(v * (1.0 + ti * g), 0.0)
-    wd = np.where(ok, np.maximum(1.0 / (1.0 + (np.where(np.isfinite(d), d, 1e9) / 20000.0) ** 2), 0.5), 0.0)
-    level = wind_gain(veff) * wd
-    dirn, okd = scene.blend_wind_vector()
-    rel = rel_azimuth_deg(dirn, scene.heading)  # wind FROM this side
-    out = banded_stereo(n, sr, level, wind_cutoff_hz(veff), seed + 1, rho=0.5, pan_ctl=np.where(okd, rel, 0.0))
-    info = {
-        "wind_speed_ms": {"min": float(v.min()), "mean": float(v.mean()), "max": float(v.max())},
-        "turbulence_intensity_mean": float(ti.mean()),
-        "coverage": float(ok.mean()),
-        "level_db_premaster": {"min": float(20 * np.log10(max(level.min(), 1e-9))),
-                               "max": float(20 * np.log10(max(level.max(), 1e-9)))},
-        "gust_front_max_rise_ms_per_clip_s": float(np.max(np.diff(v)) * CTL_RATE) if len(v) > 1 else 0.0,
-    }
-    return out, info
 
 
 # --------------------------------------------------------------------------- ambient + convective
@@ -266,40 +151,5 @@ def render_tornado(scene: Scene, sr: int, n: int, seed: int):
         "nearest_distance_m": float(np.min(dist[np.isfinite(dist)])) if np.isfinite(dist).any() else None,
         "max_level_db_premaster": float(20 * np.log10(max(a.max(), 1e-9))),
         "note": "STYLISED sound; position from the survey / radar evidence, timbre invented",
-    }
-    return out, info
-
-
-# --------------------------------------------------------------------------- hail
-
-def render_hail(scene: Scene, sr: int, n: int, seed: int):
-    """Hail impacts (ground / car roofs) only where hail events / radar hail class say so near the
-    listener. Density and loudness scale with Dm and rain rate. Without evidence: silence."""
-    h = scene.hail()
-    if not (h["w"] > 0).any():
-        return np.zeros((2, n)), {"evidence": [], "active_seconds": 0.0, "events": 0,
-                                  "note": "no hail evidence: silent"}
-    rng = np.random.default_rng(seed)
-    w, dm, rr = h["w"], np.maximum(h["dm_mm"], 2.0), np.maximum(h["rr_mmh"], 5.0)
-    lam_ctl = 35.0 * w * np.clip(dm / 10.0, 0.3, 2.0) * (rr / 50.0) ** 0.4
-    idx, amps = impulse_train(rng, n, ctl_to_audio(lam_ctl, n, sr) / sr, 0.6)
-    amp_ctl = 0.22 * (dm / 10.0) ** 1.5 * w
-    amps = amps * ctl_to_audio(amp_ctl, n, sr)[idx]
-    big = ctl_to_audio(np.clip((dm - 5.0) / 20.0, 0.0, 1.0), n, sr)[idx] > rng.random(len(idx))
-    pans = rng.uniform(-0.9, 0.9, len(idx))
-    gl, gr = pan_gains(np.degrees(np.arcsin(pans)))
-    out = np.zeros((2, n))
-    for sel, k in (
-        (~big, sum_kernels(damped_sine(sr, 3200.0, 0.004), 0.4 * damped_sine(sr, 1500.0, 0.008))),
-        (big, sum_kernels(damped_sine(sr, 1500.0, 0.009), 0.5 * damped_sine(sr, 700.0, 0.015))),
-    ):
-        out[0] += convolve_events(n, idx[sel], (amps * gl)[sel], k)
-        out[1] += convolve_events(n, idx[sel], (amps * gr)[sel], k)
-    out[np.abs(out) < 1e-12] = 0.0  # FFT round-off outside the events
-    info = {
-        "evidence": h["sources"], "events": len(idx), "evidence_events": h["n_events"],
-        "active_seconds": float((w > 0.02).mean() * scene.duration),
-        "dm_mm_mean_active": float(dm[w > 0.02].mean()),
-        "note": "impact transients; only where hail events / radar hail class were reported",
     }
     return out, info

@@ -14,18 +14,12 @@ import numpy as np
 from . import LABEL
 from .acoustics import SPEED_OF_SOUND_MS
 from .bundle import Bundle, load_bundle, parse_events
-from .layers import (
-    render_ambient,
-    render_convective,
-    render_hail,
-    render_rain,
-    render_tornado,
-    render_wind,
-)
+from .layers import render_ambient, render_convective, render_tornado
 from .mix import PRIORITY, level_env_db, lufs, master, write_wav
 from .scene import Scene
 from .thunder import ThunderParams, add_at, plan_flash, render_flash, select_flashes
 from .timeline import Timeline, load_camera, load_timeline
+from .weather import render_hail, render_rain, render_wind
 
 VERSION = 1
 LAYER_NAMES = PRIORITY
@@ -133,6 +127,7 @@ def render_mix(
             **{kk: vv for kk, vv in info[k].items() if kk != "counts"},
         }
     shown = [_public(r) for r in rows]
+    provenance = _provenance(b, info, scene, rows)
     report = {
         "label": LABEL,
         "version": VERSION,
@@ -161,6 +156,7 @@ def render_mix(
             "skipped": {k: v for k, v in counts.items() if k != "rendered"},
             "flashes": shown,
         },
+        "provenance": provenance,
         "priority": PRIORITY,
         "assumptions": [
             "sound speed 343 m/s, constant; delay in the clip = distance / 343 / speedup",
@@ -172,6 +168,52 @@ def render_mix(
         ],
     }
     return y, report, stems
+
+
+def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
+    """Which station / instrument drove which layer and when (for the end card). Times are clip
+    seconds and data seconds since the window start."""
+    drivers = {
+        "rain": info["rain"].get("drivers", []) + info["rain"].get("drop_spectrum_drivers", []),
+        "wind": info["wind"].get("drivers", []),
+    }
+    used: dict[str, dict] = {}
+    for layer, segs in drivers.items():
+        for s in segs:
+            u = used.setdefault(s["station_id"], {"station_id": s["station_id"], "name": s["station_name"],
+                                                  "type": s["station_type"], "network": s.get("network"),
+                                                  "layers": set(), "clip_seconds": 0.0})
+            u["layers"].add(layer)
+            u["clip_seconds"] += s["clip_s"][1] - s["clip_s"][0]
+    for row in info["hail"].get("rows", []):
+        if row.get("station_id"):
+            u = used.setdefault(row["station_id"], {"station_id": row["station_id"], "name": row["station_name"],
+                                                    "type": None, "network": None, "layers": set(),
+                                                    "clip_seconds": 0.0})
+            u["layers"].add("hail")
+    for u in used.values():
+        u["layers"] = sorted(u["layers"])
+        u["clip_seconds"] = round(u["clip_seconds"], 2)
+    n_src = int(sum(r["n_sources"] for r in rows if r["status"] == "rendered"))
+    return {
+        "label": LABEL,
+        "thunder": {"instrument": "lightning mapping array (LMA) VHF sources", "flashes_total": len(rows),
+                    "flashes_rendered": sum(r["status"] == "rendered" for r in rows),
+                    "sources_in_rendered_flashes": n_src},
+        "rain": drivers["rain"],
+        "wind": drivers["wind"],
+        "wind_events": {"gust_fronts": info["wind"].get("gust_fronts", []),
+                        "pressure_jumps": info["wind"].get("pressure_jumps", [])},
+        "hail": info["hail"].get("rows", []),
+        "tornado": {"evidence": info["tornado"].get("evidence", []),
+                    "tracks": [{"id": t.id, "name": t.name, "ef": t.ef,
+                                "data_s": [float(t.t[0]), float(t.t[-1])],
+                                "source": t.meta.get("source") or t.meta.get("survey")} for t in b.tornadoes],
+                    "stylised": True},
+        "convective": {"source": info["convective"].get("source")},
+        "stations_used": sorted(used.values(), key=lambda u: -u["clip_seconds"]),
+        "manifest_sources": b.manifest.get("sources"),
+    }
 
 
 def _per_second_db(x: np.ndarray, sr: int) -> np.ndarray:

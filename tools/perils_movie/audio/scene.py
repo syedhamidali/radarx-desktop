@@ -9,10 +9,38 @@ from dataclasses import dataclass
 import numpy as np
 
 from .bundle import Bundle, Event
+from .dsd import SENSOR_AREA_M2
 from .geo import enu, slant_distance
 from .timeline import CameraPath, Timeline
 
 CTL_RATE = 100  # Hz
+# drop classes of the rain sound (mm): every spectrum bin goes to the nearest class (in log D)
+DROP_CLASS_MM = np.array([0.4, 0.8, 1.2, 1.8, 2.5, 3.5, 5.0, 7.0])
+
+
+def _class_of(d_mm) -> np.ndarray:
+    """Class index of each bin diameter; bins above 8 mm (hail-sized) are -1: not rain."""
+    d = np.asarray(d_mm, float)
+    c = np.abs(np.log(d[:, None]) - np.log(DROP_CLASS_MM)[None, :]).argmin(axis=1)
+    return np.where(d > 8.0, -1, c)
+
+
+def _first(d: dict, keys):
+    for k in keys:
+        if d.get(k) is not None:
+            return float(d[k])
+    return None
+
+
+def _dsd_tail(dsd, t0: float, t1: float, d_min: float = 6.0):
+    """(mean flux of particles >= d_min mm per m2 per s, largest occupied bin) over [t0, t1]."""
+    m = (dsd.t >= t0 - 30) & (dsd.t <= t1 + 30)
+    big = d_min <= dsd.D
+    if not m.any() or not big.any():
+        return None, None
+    f = dsd.flux(dsd.N[m])[:, big].sum(axis=1)
+    occ = (dsd.N[m][:, big] > 0).any(axis=0)
+    return float(f.mean()), (float(dsd.D[big][occ].max()) if occ.any() else None)
 
 
 def smooth_edges(mask: np.ndarray, ramp: int) -> np.ndarray:
@@ -173,30 +201,50 @@ class Scene:
         return None
 
     def hail(self, reach_m: float = 5000.0):
-        """Hail evidence at the listener per control step: dict with ``w`` (0..1 proximity-weighted
-        evidence), ``dm_mm`` and ``rr_mmh`` (weighted), ``n_events`` and ``sources``. Evidence =
-        station hail events (hail_candidate in stations.json), hail events of events.json with a
-        position, radar hail samples. Without any of them, ``w`` is zero everywhere."""
+        """Hail evidence at the listener per control step. Evidence = station hail events
+        (``hail_candidate`` in stations.json: time span, max diameter, counts), hail events of
+        events.json with a position, radar hail samples. Returns a dict with ``w`` (0..1 proximity
+        weighted evidence), ``dmax_mm``, ``flux`` (large particles per m2 per s, from the event counts
+        or the tail of the station's drop spectrum), ``n_events``, ``sources`` and ``rows`` (one per
+        evidence item, for the report). Without any evidence ``w`` is zero everywhere."""
         if "hail" in self._cache:
             return self._cache["hail"]
-        w = np.zeros(self.n)
-        dm_acc = np.zeros(self.n)
-        rr_acc = np.zeros(self.n)
-        wsum = np.zeros(self.n)
-        n_ev = 0
+        n = self.n
+        w = np.zeros(n)
+        best = np.zeros(n)
+        dmax = np.zeros(n)
+        flux = np.zeros(n)
+        dm_acc = np.zeros(n)
+        rr_acc = np.zeros(n)
+        wsum = np.zeros(n)
+        rows: list[dict] = []
         srcs: set[str] = set()
 
-        def add(mask, dist_m, dm, rr, label):
-            nonlocal w, dm_acc, rr_acc, wsum, n_ev
-            prox = np.clip(1.0 - dist_m / reach_m, 0.0, 1.0) ** 2
+        def add(label, sid, name, mask, dist_m, dmx, flx, dm, rr, ev_span, assumed, counts=None):
+            nonlocal w, best, dmax, flux, dm_acc, rr_acc, wsum
+            dist_a = np.broadcast_to(np.asarray(dist_m, float), (n,))
+            prox = np.clip(1.0 - dist_a / reach_m, 0.0, 1.0) ** 2
             ww = smooth_edges(mask, int(0.5 * CTL_RATE)) * prox
             if not (ww > 0).any():
                 return
             w = np.maximum(w, ww)
             wsum += ww
+            flux += ww * flx
             dm_acc += ww * dm
             rr_acc += ww * rr
-            n_ev += 1
+            top = ww > best
+            dmax = np.where(top, dmx, dmax)
+            best = np.where(top, ww, best)
+            act = ww > 0.02
+            clip_t = self.tc[act]
+            rows.append({
+                "evidence": label, "station_id": sid, "station_name": name,
+                "event_data_s": ev_span, "clip_s": [float(clip_t.min()), float(clip_t.max())],
+                "max_diameter_mm": float(dmx), "counts": counts, "large_particle_flux_m2s": float(flx),
+                "dm_mm": float(dm), "rain_rate_mmh": float(rr),
+                "min_listener_distance_m": float(dist_a[act].min()),
+                "assumed": assumed,
+            })
             srcs.add(label)
 
         for s_i, s in enumerate(self.bundle.stations):
@@ -207,9 +255,31 @@ class Scene:
                 t1 = float(ev.get("t_end_s", t0 + 60.0))
                 if not np.isfinite(t0):
                     continue
+                assumed = []
                 mask = (self.tw >= t0) & (self.tw <= t1)
-                add(mask, self.dist[s_i], float(ev.get("dm_mm", 8.0)), float(ev.get("rain_rate_mmh", 50.0)),
-                    "station_event")
+                dmx = _first(ev, ("dmax_mm", "max_diameter_mm", "d_max_mm", "max_d_mm"))
+                tail_f = tail_dmax = None
+                if s.dsd is not None:
+                    tail_f, tail_dmax = _dsd_tail(s.dsd, t0, t1)
+                if dmx is None:
+                    dmx = tail_dmax
+                if dmx is None:
+                    dmx = 15.0
+                    assumed.append("max_diameter_mm")
+                counts = _first(ev, ("counts", "n_large", "n_particles", "n_large_particles"))
+                dur = max(t1 - t0, 1.0)
+                if counts is not None:
+                    flx = float(counts) / (SENSOR_AREA_M2 * dur)
+                elif tail_f is not None:
+                    flx = tail_f
+                else:
+                    flx = 2.0
+                    assumed.append("large_particle_flux")
+                dm = float(ev.get("dm_mm", 8.0))
+                rr = float(ev.get("rain_rate_mmh", 50.0))
+                if "dm_mm" not in ev:
+                    assumed.append("dm_mm")
+                add("station_event", s.id, s.name, mask, self.dist[s_i], dmx, flx, dm, rr, [t0, t1], assumed, counts)
         for e in self.events:
             if e.type != "hail" or e.lat is None:
                 continue
@@ -219,23 +289,151 @@ class Scene:
                 continue
             b = a + 4.0 if b is None else b
             d = slant_distance(self.lat, self.lon, self.alt, e.lat, e.lon, self.ground_alt_m)
-            add((self.tc >= a) & (self.tc <= b), d, float(e.props.get("dm_mm", 8.0)),
-                float(e.props.get("rain_rate_mmh", 50.0)), "events.json")
+            counts = _first(e.props, ("counts", "n_large"))
+            dmx = _first(e.props, ("dmax_mm", "max_diameter_mm"))
+            assumed = [k for k, v in (("max_diameter_mm", dmx), ("large_particle_flux", counts)) if v is None]
+            dur_data = max(b - a, 1.0) * float(self.timeline.speedup_at(a))
+            flx = float(counts) / (SENSOR_AREA_M2 * dur_data) if counts else 2.0
+            add("events.json", None, None, (self.tc >= a) & (self.tc <= b), d, float(dmx or 15.0), flx,
+                float(e.props.get("dm_mm", 8.0)), float(e.props.get("rain_rate_mmh", 50.0)),
+                [float(self.timeline.clip_to_data(a)), float(self.timeline.clip_to_data(b))], assumed, counts)
         rs = self.bundle.radar_samples
         if rs is not None:
             h = self._radar_lookup(rs, "hail")
             m = h > 0.5
             if m.any():
-                add(m, np.zeros(self.n), 8.0, 50.0, "radar_hail_class")
+                add("radar_hail_class", None, "radar volume", m, np.zeros(n), 20.0, 2.0, 8.0, 50.0, None,
+                    ["max_diameter_mm", "large_particle_flux", "dm_mm"])
         res = {
             "w": w,
-            "dm_mm": np.where(w > 0, dm_acc / np.maximum(wsum, 1e-9), 0.0) if n_ev else np.zeros(self.n),
-            "rr_mmh": np.where(w > 0, rr_acc / np.maximum(wsum, 1e-9), 0.0) if n_ev else np.zeros(self.n),
-            "n_events": n_ev,
+            "dmax_mm": dmax,
+            "flux": flux,
+            "dm_mm": np.where(w > 0, dm_acc / np.maximum(wsum, 1e-9), 0.0),
+            "rr_mmh": np.where(w > 0, rr_acc / np.maximum(wsum, 1e-9), 0.0),
+            "n_events": len(rows),
             "sources": sorted(srcs),
+            "rows": rows,
         }
         self._cache["hail"] = res
         return res
+
+    # -- drop-size distributions -------------------------------------------------------------
+    def dsd_state(self):
+        """Rain from the real drop spectra: per control step the number flux per drop class
+        (``flux`` (C, n), drops per m2 per s), the total ``F``, the DSD ``rr`` (mm/h) and ``dm``
+        (mm), the distance and the weights of the nearest stations that have a spectrum, or None when
+        no station has one."""
+        if "dsd" in self._cache:
+            return self._cache["dsd"]
+        st = [(i, s) for i, s in enumerate(self.bundle.stations) if s.dsd is not None]
+        if not st:
+            self._cache["dsd"] = None
+            return None
+        nc = len(DROP_CLASS_MM)
+        fl = np.zeros((len(st), nc, self.n))
+        rr = np.zeros((len(st), self.n))
+        dm = np.zeros((len(st), self.n))
+        valid = np.zeros((len(st), self.n), bool)
+        for j, (_i, s) in enumerate(st):
+            d = s.dsd
+            N = d.at(self.tw)
+            valid[j] = np.isfinite(N).all(axis=1)
+            N = np.nan_to_num(N)
+            f = d.flux(N)  # (n, nd)
+            cls = _class_of(d.D)
+            for c in range(nc):
+                fl[j, c] = f[:, cls == c].sum(axis=1)
+            rr[j] = d.rain_rate_mmh(N)
+            dm[j] = d.dm_mm(N)
+        dist = np.array([self.dist[i] for i, _ in st])
+        w = self._weights(valid, dist)
+        sw = np.maximum(w.sum(axis=0), 1e-12)
+        res = {
+            "ok": w.sum(axis=0) > 0,
+            "flux": (w[:, None, :] * fl).sum(axis=0) / sw,
+            "rr": (w * rr).sum(axis=0) / sw,
+            "dm": (w * dm).sum(axis=0) / sw,
+            "dist": (w * dist).sum(axis=0) / sw,
+            "weights": w,
+            "stations": [s for _, s in st],
+        }
+        res["F"] = res["flux"].sum(axis=0)
+        self._cache["dsd"] = res
+        return res
+
+    def _weights(self, valid: np.ndarray, dist: np.ndarray) -> np.ndarray:
+        d = np.where(valid, dist, np.inf)
+        dmin = d.min(axis=0)
+        with np.errstate(invalid="ignore"):
+            w = np.where(valid, np.exp(-(dist - dmin) / self.station_decay_m), 0.0)
+        return np.where(np.isfinite(dmin), w, 0.0)
+
+    # -- provenance ---------------------------------------------------------------------------
+    def dominant_segments(self, w: np.ndarray, stations, variables, min_s: float = 0.25):
+        """Runs of control steps during which one station has the largest weight: what drove a layer
+        and when (clip and data time). ``w`` (S, n), ``stations`` the matching Station list."""
+        if w.shape[0] == 0:
+            return []
+        ok = w.sum(axis=0) > 0
+        dom = np.where(ok, w.argmax(axis=0), -1)
+        out = []
+        i = 0
+        while i < self.n:
+            j = i
+            while j + 1 < self.n and dom[j + 1] == dom[i]:
+                j += 1
+            if dom[i] >= 0 and (j - i + 1) / CTL_RATE >= min_s:
+                s = stations[dom[i]]
+                k = self.bundle.stations.index(s)
+                out.append({
+                    "station_id": s.id, "station_name": s.name, "station_type": s.type,
+                    "network": s.meta.get("network") or s.meta.get("source") or s.meta.get("instrument"),
+                    "variables": list(variables),
+                    "clip_s": [float(self.tc[i]), float(self.tc[j])],
+                    "data_s": [float(self.tw[i]), float(self.tw[j])],
+                    "mean_listener_distance_m": float(self.dist[k, i : j + 1].mean()),
+                })
+            i = j + 1
+        return out
+
+    # -- surface wind / pressure events ---------------------------------------------------------
+    def pressure_jump(self, window_s: float = 120.0, thresh_hpa: float = 0.8, full_hpa: float = 2.3):
+        """Gust-front pressure jump at the listener: (index 0..1, events). Per station the rise of
+        its OWN pressure series over ``window_s`` of data time (so a calibration offset between
+        stations is never a jump); only rises above ``thresh_hpa`` count. Blended like the wind."""
+        if "pjump" in self._cache:
+            return self._cache["pjump"]
+        st = self.bundle.stations
+        w, _ = self.station_weights("pressure_hpa")
+        rows, events = [], []
+        for s in st:
+            dp = s.at("pressure_hpa", self.tw + window_s / 2) - s.at("pressure_hpa", self.tw - window_s / 2)
+            j = np.clip((dp - thresh_hpa) / (full_hpa - thresh_hpa), 0.0, 1.0)
+            rows.append(np.nan_to_num(j))
+            m = np.where(np.isfinite(dp), dp, -9.0)
+            if m.max() >= thresh_hpa:
+                k = int(m.argmax())
+                events.append({"station_id": s.id, "data_s": float(self.tw[k]), "clip_s": float(self.tc[k]),
+                               "pressure_rise_hpa": float(dp[k]), "window_s": window_s})
+        if not rows:
+            res = (np.zeros(self.n), [])
+        else:
+            sw = np.maximum(w.sum(axis=0), 1e-12)
+            res = (np.clip((w * np.array(rows)).sum(axis=0) / sw, 0.0, 1.0), events)
+        self._cache["pjump"] = res
+        return res
+
+    def gust_fronts(self, window_s: float = 120.0, rise_ms: float = 5.0):
+        """Sharp surface wind rises (>= rise_ms within window_s of data time) at any station."""
+        out = []
+        for s in self.bundle.stations:
+            dv = s.at("wind_speed_ms", self.tw + window_s / 2) - s.at("wind_speed_ms", self.tw - window_s / 2)
+            m = np.where(np.isfinite(dv), dv, -9.0)
+            if m.max() >= rise_ms:
+                k = int(m.argmax())
+                out.append({"station_id": s.id, "data_s": float(self.tw[k]), "clip_s": float(self.tc[k]),
+                            "wind_rise_ms": float(m[k]), "window_s": window_s})
+        return out
 
     # -- convective core ----------------------------------------------------------------------
     def _radar_lookup(self, rs, key, max_km=8.0, max_dt=300.0):

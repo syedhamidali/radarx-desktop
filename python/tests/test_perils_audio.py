@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 
 from perils_movie.audio import layers as ly
 from perils_movie.audio import mix as mx
+from perils_movie.audio import weather as wx
 from perils_movie.audio.acoustics import (
     SPEED_OF_SOUND_MS,
     air_absorption_db_per_m,
@@ -220,19 +221,19 @@ def test_rain_curve_and_rendered_level_rise_with_the_rain_rate():
     levels = []
     for r in (1.0, 5.0, 20.0, 80.0):
         sc = scene(bundle([station(rain=r, dm=1.5)]), dur=6.0)
-        out, _ = ly.render_rain(sc, SR, int(6 * SR), 3)
+        out, _ = wx.render_rain(sc, SR, int(6 * SR), 3)
         levels.append(rms(out[:, SR:]))
     assert all(b > a for a, b in itertools.pairwise(levels))
 
 
 def test_no_rain_means_silence_and_far_rain_is_only_a_quiet_hiss():
     sc = scene(bundle([station(rain=0.0)]), dur=4.0)
-    out, _ = ly.render_rain(sc, SR, 4 * SR, 3)
+    out, _ = wx.render_rain(sc, SR, 4 * SR, 3)
     assert rms(out) < 1e-6
     near = scene(bundle([station(rain=30.0, dm=2.0)]), dur=4.0)
     far = scene(bundle([station(rain=30.0, dm=2.0, de=30000.0)]), dur=4.0)
-    n_out, _ = ly.render_rain(near, SR, 4 * SR, 3)
-    f_out, _ = ly.render_rain(far, SR, 4 * SR, 3)
+    n_out, _ = wx.render_rain(near, SR, 4 * SR, 3)
+    f_out, _ = wx.render_rain(far, SR, 4 * SR, 3)
     assert rms(f_out) < 0.25 * rms(n_out)
     assert spectral_centroid(f_out[0], SR) > spectral_centroid(n_out[0], SR) * 0.5  # hiss, not a rumble
 
@@ -250,7 +251,7 @@ def test_wind_level_and_brightness_rise_with_the_speed():
     levels, cents = [], []
     for v in (2.0, 6.0, 12.0, 25.0):
         sc = scene(bundle([station(wind=v)]), dur=6.0)
-        out, _ = ly.render_wind(sc, SR, 6 * SR, 5)
+        out, _ = wx.render_wind(sc, SR, 6 * SR, 5)
         levels.append(rms(out[:, SR:]))
         cents.append(spectral_centroid(out[0, SR:], SR))
     assert all(b > a for a, b in itertools.pairwise(levels))
@@ -259,10 +260,10 @@ def test_wind_level_and_brightness_rise_with_the_speed():
 
 def test_wind_from_the_right_is_louder_on_the_right():
     sc = scene(bundle([station(wind=15.0, wdir=90.0)]), dur=4.0, heading=0.0)  # from the east
-    out, _ = ly.render_wind(sc, SR, 4 * SR, 5)
+    out, _ = wx.render_wind(sc, SR, 4 * SR, 5)
     assert rms(out[1]) > rms(out[0])
     sc = scene(bundle([station(wind=15.0, wdir=270.0)]), dur=4.0, heading=0.0)
-    out, _ = ly.render_wind(sc, SR, 4 * SR, 5)
+    out, _ = wx.render_wind(sc, SR, 4 * SR, 5)
     assert rms(out[0]) > rms(out[1])
 
 
@@ -298,30 +299,62 @@ def test_tornado_is_silent_without_evidence_or_outside_its_track_time():
 
 def test_hail_only_with_events_near_the_listener():
     sc = scene(bundle([station(rain=60.0, dm=3.0, dbz=50.0)]), dur=8.0)
-    out, info = ly.render_hail(sc, SR, 8 * SR, 11)
+    out, info = wx.render_hail(sc, SR, 8 * SR, 11)
     assert np.all(out == 0.0)
     assert info["evidence"] == []
     ev = {"type": "hail_candidate", "t_s": 10.0, "t_end_s": 30.0, "dm_mm": 15.0, "dbz": 62.0,
           "rain_rate_mmh": 100.0}  # data 10..30 s = clip 2..6 s at speedup 5
     sc = scene(bundle([station(rain=60.0, dm=3.0, de=500.0, events=[ev])]), dur=8.0)
-    out, info = ly.render_hail(sc, SR, 8 * SR, 11)
+    out, info = wx.render_hail(sc, SR, 8 * SR, 11)
     assert rms(out[:, 2 * SR: 6 * SR]) > 0
     assert rms(out[:, 7 * SR:]) == 0.0
     assert info["events"] > 0
     # the same event but the station is 30 km away: no hail at the listener
     far = scene(bundle([station(rain=60.0, de=30000.0, events=[ev])]), dur=8.0)
-    out, _ = ly.render_hail(far, SR, 8 * SR, 11)
+    out, _ = wx.render_hail(far, SR, 8 * SR, 11)
     assert np.all(out == 0.0)
 
 
-def test_hail_gets_denser_and_louder_with_dm():
-    levels = []
-    for dm in (6.0, 12.0, 25.0):
-        ev = {"type": "hail_candidate", "t_s": 0.0, "t_end_s": 100.0, "dm_mm": dm, "rain_rate_mmh": 80.0}
-        sc = scene(bundle([station(rain=60.0, de=300.0, events=[ev])]), dur=6.0)
-        out, _ = ly.render_hail(sc, SR, 6 * SR, 11)
+def _hail_scene(**ev_kw):
+    ev = {"type": "hail_candidate", "t_s": 0.0, "t_end_s": 100.0, "dm_mm": 8.0, "rain_rate_mmh": 80.0, **ev_kw}
+    return scene(bundle([station(rain=60.0, de=300.0, events=[ev])]), dur=6.0)
+
+
+def test_hail_rate_rises_monotonically_with_the_observed_counts():
+    from perils_movie.audio.dsd import SENSOR_AREA_M2
+
+    assert np.all(np.diff(wx.hail_rate_per_s([0.0, 0.1, 1.0, 10.0, 100.0])) > 0)
+    rates = []
+    for counts in (2, 20, 200, 2000):
+        sc = _hail_scene(dmax_mm=15.0, counts=counts)
+        _out, info = wx.render_hail(sc, SR, 6 * SR, 11)
+        rates.append(info["events"])
+        row = info["rows"][0]
+        assert row["counts"] == counts
+        assert row["large_particle_flux_m2s"] == pytest.approx(counts / (SENSOR_AREA_M2 * 100.0))
+        assert row["max_diameter_mm"] == 15.0
+        assert row["station_id"] == "S"
+    assert rates == sorted(rates)
+    assert rates[0] < rates[-1]
+
+
+def test_hail_gets_louder_and_lower_pitched_with_the_diameter():
+    levels, pitch = [], []
+    for dmax in (7.0, 14.0, 30.0):
+        sc = _hail_scene(dmax_mm=dmax, counts=300)
+        out, _ = wx.render_hail(sc, SR, 6 * SR, 11)
         levels.append(rms(out[:, SR:]))
+        pitch.append(float(wx.hail_ring_hz(dmax)))
     assert levels[0] < levels[1] < levels[2]
+    assert pitch[0] > pitch[1] > pitch[2]
+
+
+def test_hail_is_deterministic_and_marks_assumed_inputs():
+    a, ia = wx.render_hail(_hail_scene(), SR, 6 * SR, 11)
+    b, _ = wx.render_hail(_hail_scene(), SR, 6 * SR, 11)
+    assert np.array_equal(a, b)
+    assert "max_diameter_mm" in ia["rows"][0]["assumed"]
+    assert "large_particle_flux" in ia["rows"][0]["assumed"]
 
 
 def test_events_json_is_parsed_with_clip_or_iso_times():
@@ -473,3 +506,183 @@ def test_mux_keeps_the_video_frame_count_and_duration(tmp_path):
     assert res["after"]["audio"]["codec"] == "aac"
     assert res["after"]["audio"]["rate"] == SR
     assert res["audio_samples"] == pytest.approx(3.0 * SR, abs=SR * 0.05)
+
+
+# ----------------------------------------------------------------------------- drop spectra, MRR, wind events, provenance
+
+
+def exp_dsd(dm, rate=20.0, nt=3):
+    """An exponential drop-size distribution (m^-3 mm^-1) with median volume diameter dm, scaled to
+    the given rain rate."""
+    from perils_movie.audio.dsd import Dsd, fall_speed_ms
+
+    d = np.linspace(0.25, 9.0, 36)
+    dd = np.full_like(d, d[1] - d[0])
+    n = np.exp(-3.67 / dm * d)[None, :].repeat(nt, axis=0)
+    dsd = Dsd(np.linspace(0.0, 100000.0, nt), d, dd, n, fall_speed_ms(d))
+    n = n * rate / dsd.rain_rate_mmh(n)[:, None]
+    return Dsd(dsd.t, d, dd, n, dsd.vt)
+
+
+def dsd_station(dm, rate=20.0, **kw):
+    s = station(rain=rate, **kw)
+    s.dsd = exp_dsd(dm, rate)
+    return s
+
+
+def tseries(t, v):
+    return (np.asarray(t, float), np.asarray(v, float))
+
+
+def test_dsd_loader_reads_counts_and_concentrations(tmp_path):
+    from perils_movie.audio.dsd import dm_from_fall_speed, fall_speed_ms, load_dsd
+
+    d = np.linspace(0.3, 6.0, 20)
+    np.savez(tmp_path / "S_dsd.npz", t_s=np.arange(0.0, 300.0, 60.0), diameter_mm=d,
+             counts=np.full((5, 20), 50.0))
+    dsd = load_dsd(tmp_path / "S_dsd.npz")
+    assert dsd is not None
+    assert dsd.from_counts is True
+    assert dsd.N.shape == (5, 20)
+    assert dsd.rain_rate_mmh(dsd.N)[0] > 0
+    np.savez(tmp_path / "T_dsd.npz", time_s=np.arange(0.0, 300.0, 60.0), d_mm=d, nd=np.ones((5, 20)))
+    assert load_dsd(tmp_path / "T_dsd.npz").from_counts is False
+    assert load_dsd(tmp_path / "missing.npz") is None
+    # the fall-speed inverse
+    assert float(dm_from_fall_speed(fall_speed_ms(2.0))) == pytest.approx(2.0, abs=0.05)
+
+
+def test_rain_from_the_drop_spectrum_bigger_drops_are_fatter_lower_and_louder():
+    out = {}
+    for dm in (0.9, 2.8):
+        sc = scene(bundle([dsd_station(dm)]), dur=6.0)
+        plan = wx.rain_plan(sc)
+        assert plan["dsd_used"].all()
+        o, info = wx.render_rain(sc, SR, 6 * SR, 3)
+        out[dm] = (o[:, SR:], plan, info)
+    assert spectral_centroid(out[2.8][0][0], SR) < spectral_centroid(out[0.9][0][0], SR)
+    assert rms(out[2.8][0]) > rms(out[0.9][0])
+    big = out[2.8][1]["shares"][4:].sum(axis=0).mean()
+    small = out[0.9][1]["shares"][4:].sum(axis=0).mean()
+    assert big > small  # more of the flux is in the large-drop classes
+    assert out[2.8][2]["drop_spectrum_fraction"] == 1.0
+    assert out[2.8][2]["drop_spectrum_drivers"][0]["station_id"] == "S"
+
+
+def test_rain_fallback_with_dm_only_bigger_is_lower_and_louder():
+    res = {}
+    for dm in (1.0, 3.0):
+        sc = scene(bundle([station(rain=20.0, dm=dm)]), dur=6.0)
+        o, info = wx.render_rain(sc, SR, 6 * SR, 3)
+        res[dm] = o[:, SR:]
+        assert info["drop_spectrum_fraction"] == 0.0
+    assert spectral_centroid(res[3.0][0], SR) < spectral_centroid(res[1.0][0], SR)
+    assert rms(res[3.0]) > rms(res[1.0])
+
+
+def test_rain_level_still_rises_with_the_rate_when_spectra_are_present():
+    levels = []
+    for rate in (2.0, 10.0, 50.0):
+        sc = scene(bundle([dsd_station(1.8, rate)]), dur=5.0)
+        o, _ = wx.render_rain(sc, SR, 5 * SR, 3)
+        levels.append(rms(o[:, SR:]))
+    assert levels[0] < levels[1] < levels[2]
+
+
+def test_mrr_lowest_gate_drives_the_drop_size_only_over_the_site():
+    def run(distance):
+        mrr = station(rain=15.0, sid="MRR", de=distance)
+        mrr.type = "mrr"
+        mrr.series["mrr_dm_mm"] = tseries([0.0, 1e5], [2.6, 2.6])
+        return wx.rain_plan(scene(bundle([mrr]), dur=4.0))
+
+    near = run(400.0)
+    far = run(8000.0)
+    assert near["mrr_used"].all()
+    assert near["dm"].mean() == pytest.approx(2.6, abs=0.01)
+    assert (near["dm_src"] == "mrr").all()
+    assert not far["mrr_used"].any()
+    assert far["dm"].mean() != pytest.approx(2.6, abs=0.2)
+    # a fall speed alone is enough: 6.5 m/s is a ~2 mm drop
+    s = station(rain=15.0, sid="MRR2")
+    s.series["mrr_fall_speed_ms"] = tseries([0.0, 1e5], [6.5, 6.5])
+    plan = wx.rain_plan(scene(bundle([s]), dur=3.0))
+    assert plan["dm"].mean() == pytest.approx(2.0, abs=0.2)
+
+
+def _low_energy(x):
+    sp = np.abs(np.fft.rfft(x[0])) ** 2
+    f = np.fft.rfftfreq(len(x[0]), 1 / SR)
+    return float(sp[f < 100].sum())
+
+
+def test_pressure_rumble_only_with_a_real_pressure_jump():
+    t = np.array([0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 200.0])
+    flat = station(wind=5.0, sid="A")
+    flat.series["pressure_hpa"] = tseries(t, [1000, 1000, 1000.1, 1000.1, 1000, 1000, 1000])
+    jump, ev = scene(bundle([flat]), dur=20.0).pressure_jump()
+    assert np.all(jump == 0.0)
+    assert ev == []
+    # two stations with a constant calibration offset are not a jump either
+    other = station(wind=5.0, sid="B", de=900.0)
+    other.series["pressure_hpa"] = tseries(t, [1010] * 7)
+    jump, ev = scene(bundle([flat, other]), dur=20.0).pressure_jump()
+    assert np.all(jump == 0.0)
+    # a real 2.5 hPa rise around data 40..60 s (clip 8..12 s at speedup 5)
+    real = station(wind=5.0, sid="C")
+    real.series["pressure_hpa"] = tseries(t, [1000, 1000, 1000.5, 1002.5, 1003, 1003, 1003])
+    sc = scene(bundle([real]), dur=20.0)
+    jump, ev = sc.pressure_jump()
+    assert jump.max() > 0.8
+    assert ev[0]["station_id"] == "C"
+    assert ev[0]["pressure_rise_hpa"] >= 2.0
+    quiet, _ = wx.render_wind(scene(bundle([flat]), dur=20.0), SR, 20 * SR, 5)
+    loud, info = wx.render_wind(sc, SR, 20 * SR, 5)
+    assert _low_energy(loud) > 3 * _low_energy(quiet)
+    assert info["pressure_jumps"]
+
+
+def test_gust_front_swell_follows_the_observed_wind_jump_and_the_gust_series():
+    t = np.array([0.0, 25.0, 35.0, 200.0])
+    s = station(sid="G")
+    s.series["wind_speed_ms"] = tseries(t, [3.0, 3.0, 20.0, 20.0])  # data 25..35 s = clip 5..7 s
+    s.series["wind_dir_deg"] = tseries(t, [180.0] * 4)
+    sc = scene(bundle([s]), dur=12.0)
+    out, info = wx.render_wind(sc, SR, 12 * SR, 5)
+    before = rms(out[:, SR: 4 * SR])
+    after = rms(out[:, 8 * SR: 11 * SR])
+    assert after > 8 * before  # > 18 dB swell, from the data
+    assert info["gust_fronts"]
+    assert info["gust_fronts"][0]["wind_rise_ms"] >= 5.0
+    # the observed gust column lifts the peaks above the mean
+    s2 = station(sid="G2")
+    s2.series["wind_speed_ms"] = tseries([0.0, 1e5], [10.0, 10.0])
+    s2.series["wind_dir_deg"] = tseries([0.0, 1e5], [180.0, 180.0])
+    base = wx.render_wind(scene(bundle([s2]), dur=10.0), SR, 10 * SR, 5)
+    s2.series["wind_gust_ms"] = tseries([0.0, 1e5], [22.0, 22.0])
+    with_gust = wx.render_wind(scene(bundle([s2]), dur=10.0), SR, 10 * SR, 5)
+    assert with_gust[1]["observed_gust_used"] is True
+    assert with_gust[1]["effective_speed_ms_max"] > base[1]["effective_speed_ms_max"] + 3.0
+
+
+def test_report_provenance_names_the_stations_and_instruments_that_drove_each_layer():
+    s1 = dsd_station(2.0, 15.0, wind=8.0, sid="PIPS1", de=300.0)
+    s1.type, s1.meta = "pips", {"network": "PIPS"}
+    s2 = station(rain=5.0, wind=4.0, sid="STK", de=9000.0)
+    s2.type = "sticknet"
+    s1.events = [{"type": "hail_candidate", "t_s": 0.0, "t_end_s": 60.0, "dmax_mm": 12.0, "counts": 30}]
+    tl = Timeline.constant(20.0, 5.0)
+    _, rep, _ = render_mix(bundle([s1, s2], tornadoes=[tor_track(2000.0, 0.0)]), tl, cam(0.0, 20.0))
+    prov = rep["provenance"]
+    assert rep["label"].lower().startswith("synthesised from the data")
+    ids = {u["station_id"]: u for u in prov["stations_used"]}
+    assert "PIPS1" in ids
+    assert {"rain", "wind", "hail"} <= set(ids["PIPS1"]["layers"])
+    assert ids["PIPS1"]["type"] == "pips"
+    assert prov["rain"][0]["clip_s"][0] == 0.0
+    assert prov["hail"][0]["max_diameter_mm"] == 12.0
+    assert prov["tornado"]["stylised"] is True
+    assert prov["tornado"]["tracks"][0]["id"] == "T"
+    for layer in ("thunder", "tornado", "hail", "rain", "wind"):
+        assert layer in rep["layers"]
+    json.dumps(rep)
