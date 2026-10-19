@@ -40,6 +40,11 @@ def _frames():
     return m, a
 
 
+def bow_at(along: float) -> float:
+    """How far (km) the made-up line bows ahead at the along-line position ``along``."""
+    return 14.0 * math.exp(-(((along + 5) / 38.0) ** 2))
+
+
 def smooth_noise(shape, seed, scale):
     from scipy.ndimage import gaussian_filter
 
@@ -65,7 +70,7 @@ def make_field(xs, ys, zs, t_s, seed=3):
         return nf[j, i]
 
     noise, noise2 = pick(n1), pick(n2)
-    bow = 14.0 * np.exp(-(((along + 5) / 38.0) ** 2))
+    bow = 14.0 * np.exp(-(((along + 5) / 38.0) ** 2))  # = bow_at(along)
     w = across - bow
     conv = 52 + 6 * noise + 3 * noise2 - 0.0009 * along**2
     conv_mask = np.exp(-(((w - 0.5) / 3.2) ** 2))
@@ -87,13 +92,13 @@ def make_field(xs, ys, zs, t_s, seed=3):
     return out
 
 
-def write(out: Path, n_steps: int, step_s: float) -> None:
+def write(out: Path, n_steps: int, step_s: float, res_km: float = 0.5, dz_km: float = 0.25) -> None:
     out = Path(out)
     for d in ("volumes", "context", "lma", "stations", "soundings", "tornadoes"):
         (out / d).mkdir(parents=True, exist_ok=True)
-    xs = np.arange(-90, 90.01, 0.5)
-    ys = np.arange(-90, 90.01, 0.5)
-    zs = np.arange(0, 10.01, 0.25)
+    xs = np.arange(-90, 90.01, res_km)
+    ys = np.arange(-90, 90.01, res_km)
+    zs = np.arange(0, 10.01, dz_km)
     t0 = datetime(2022, 3, 30, 22, 0, 0, tzinfo=timezone.utc)
     radars = [
         {"name": "KBMX", "lat": 33.172, "lon": -86.770, "alt_m": 197, "type": "WSR-88D"},
@@ -150,7 +155,7 @@ def write(out: Path, n_steps: int, step_s: float) -> None:
     for i in range(int(dur * 0.35)):
         ts = float(rng.uniform(0, dur - 3))
         al = float(rng.normal(0, 28))
-        lead = SPEED_MS * ts / 1000.0 - 6.0 + rng.normal(0, 3)
+        lead = SPEED_MS * ts / 1000.0 - 6.0 + bow_at(al) + 0.5 + rng.normal(0, 2.5)
         x = lead * m[0] + al * a[0]
         y = lead * m[1] + al * a[1]
         n = int(rng.integers(25, 140))
@@ -213,7 +218,7 @@ def write(out: Path, n_steps: int, step_s: float) -> None:
     # tornado path: along the leading line from 40% to 80% of the window
     pts = []
     for tt_ in np.arange(0.4 * dur, 0.8 * dur + 1, 20.0):
-        lead = SPEED_MS * tt_ / 1000.0 - 5.5
+        lead = SPEED_MS * tt_ / 1000.0 - 6.0 + bow_at(6.0) + 0.2
         la, lo = xy_to_ll(lead * m[0] + 6 * a[0], lead * m[1] + 6 * a[1])
         pts.append({"t_s": float(tt_), "lat": la, "lon": lo})
     (out / "tornadoes" / "tornadoes.json").write_text(
@@ -240,8 +245,10 @@ def main(argv=None) -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--steps", type=int, default=7)
     ap.add_argument("--step-s", type=float, default=120.0)
+    ap.add_argument("--res-km", type=float, default=0.5, help="horizontal grid spacing (a coarse one makes a small test bundle)")
+    ap.add_argument("--dz-km", type=float, default=0.25)
     a = ap.parse_args(argv)
-    write(Path(a.out), a.steps, a.step_s)
+    write(Path(a.out), a.steps, a.step_s, a.res_km, a.dz_km)
 
 
 if __name__ == "__main__":

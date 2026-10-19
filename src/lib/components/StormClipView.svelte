@@ -23,6 +23,13 @@
     clip = new StormClip(el, ov);
     (window as any).__xrClip = {
       load: (base: string, settings?: any) => clip!.load(base, settings),
+      // the PERiLS movie (tools/perils_movie/render): its clock, camera, lightning and display are extras of the renderer
+      loadPerils: async (base: string, o?: { settings?: any; perils?: any }) => {
+        const { PerilsExtras } = await import('../perils/perilsExtras');
+        const ex = await PerilsExtras.load(base, o?.perils ?? {});
+        const s = { ...(o?.settings ?? {}), camera: 'path', ground: 'custom', lightning: 'off', extras: ex, duration: ex.director.duration, fps: ex.director.tl.fps, audio: false };
+        return clip!.load(base, s);
+      },
       prepare: (provider?: string) => clip!.prepare(provider),
       frameCount: () => clip!.frameCount,
       renderFrame: (i: number) => clip!.renderFrame(i),

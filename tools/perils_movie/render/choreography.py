@@ -218,10 +218,10 @@ def plan_shots(scene: Scene, tl: dict, duration: float, tor_c: float | None, sta
         u = np.clip((t - b0) / max(1e-6, b1 - b0), 0, 1)
         s = (-0.62 + 1.24 * smoothstep(u)) * L  # along-line position (km): from the south end to the north end
         c = cen(t)
-        d = front + 13.0 + 3.0 * np.sin(u * math.pi)
+        d = front + 24.0 + 4.0 * np.sin(u * math.pi)
         P = c + col(s) * a[None, :] + col(d) * m[None, :]
-        look = c + col(s + 0.28 * L) * a[None, :] + (front - 4.0) * m[None, :]
-        return P, 1.5 + 1.0 * np.sin(u * math.pi), look, _pad(2.6, len(t))
+        look = c + col(s + 0.22 * L) * a[None, :] + (front - 6.0) * m[None, :]
+        return P, 2.2 + 1.3 * np.sin(u * math.pi), look, _pad(3.2, len(t))
 
     shots = [Shot("establishing", "Establishing view of the whole line", 0.0, b0, estab, 2.4), Shot("flyby", "Low flyby along the line", b0, b1, fly, 2.4)]
     t_after = b1
@@ -308,7 +308,8 @@ def build_camera(scene: Scene, tl: dict, shots: list[Shot]) -> list[dict]:
     d = T - P
     horiz = np.hypot(d[:, 0], d[:, 1])
     heading = bearing_deg(d[:, 0], d[:, 1])
-    pitch = np.degrees(np.arctan2(tz - alt, np.maximum(horiz, 1e-6)))
+    # the renderer stretches heights by the vertical exaggeration of the frame: so does the pitch
+    pitch = np.degrees(np.arctan2((tz - alt) * vex, np.maximum(horiz, 1e-6)))
     pitch = np.clip(pitch, -86.0, 86.0)
     lat, lon = scene.geo.latlon(P[:, 0], P[:, 1])
     out = []

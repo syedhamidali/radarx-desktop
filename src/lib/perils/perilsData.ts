@@ -187,6 +187,27 @@ export function balloonAt(snd: SoundingRec, t: number): [number, number, number]
   return [lerpAt(ts, d.map((q) => q[1]), t), lerpAt(ts, d.map((q) => q[2]), t), lerpAt(ts, d.map((q) => q[3]), t)];
 }
 
+/**
+ * Height (m ASL) where a sounding first crosses temperature `tC` going up (linear between levels),
+ * or null when the profile never does. Used for the freezing level and the -10 / -20 C heights.
+ */
+export function heightOfTemp(levels: SoundingLevels | null, tC: number): number | null {
+  if (!levels) return null;
+  const z = levels.height_msl_m;
+  const t = levels.temperature_c;
+  let pz: number | null = null;
+  let pt: number | null = null;
+  for (let i = 0; i < z.length; i++) {
+    const zi = z[i];
+    const ti = t[i];
+    if (zi == null || ti == null) continue;
+    if (pz !== null && pt !== null && (pt - tC) * (ti - tC) <= 0 && pt !== ti) return pz + ((tC - pt) / (ti - pt)) * (zi - pz);
+    pz = zi;
+    pt = ti;
+  }
+  return null;
+}
+
 // ─── tornado ────────────────────────────────────────────────────────────────
 
 /** Position of tornado `tor` at time `t`: only inside its surveyed span, `interpolated` between survey points. */

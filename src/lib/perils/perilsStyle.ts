@@ -86,7 +86,7 @@ export function drawText(ctx: CanvasRenderingContext2D, str: string, x: number, 
   ctx.textAlign = o.align ?? 'left';
   ctx.textBaseline = 'alphabetic';
   ctx.lineJoin = 'round';
-  const halo = (o.halo ?? 4) * u;
+  const halo = (o.halo ?? 3) * u;
   if (halo > 0) {
     ctx.lineWidth = halo;
     ctx.strokeStyle = 'rgba(4,8,16,0.82)';
