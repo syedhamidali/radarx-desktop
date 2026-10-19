@@ -10,7 +10,7 @@ import xarray as xr
 pa = pytest.importorskip("pyarrow")
 ipc = pytest.importorskip("pyarrow.ipc")
 
-from engine.arrow_bridge import (  # noqa: E402
+from engine.arrow_bridge import (
     _to_flat_arrow,
     dataarray_to_arrow,
     dataset_to_arrow,
