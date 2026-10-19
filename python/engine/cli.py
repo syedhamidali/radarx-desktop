@@ -77,6 +77,7 @@ COMMANDS = (
     "run",
     "modules",
     "cells",
+    "sounding",
     "mosaic",
     "winds",
     "animate",
@@ -371,7 +372,8 @@ GROUPS = (
     ("Clean", (("pipeline", "apply a QC recipe: clutter, dealiasing, speckle ... (list | show | run | script)"),)),
     ("Analyse", (("run", "run an algorithm: hydrometeor classes, shear, rain rate ... (= modules run)"),
                  ("modules", "list | show the algorithms and their parameters"),
-                 ("cells", "find storm cells; several files are tracked in time"))),
+                 ("cells", "find storm cells; several files are tracked in time"),
+                 ("sounding", "read a radiosonde file: CAPE, CIN, shear, helicity, freezing level"))),
     ("Combine", (("mosaic", "merge several radars onto one map"),
                  ("winds", "3-D winds from two or more radars (multi-Doppler)"),
                  ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
@@ -645,6 +647,38 @@ def build_parser() -> argparse.ArgumentParser:
     _add_plot(p, "also write a figure (cell outlines, or tracks)")
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.set_defaults(func=cmd_cells)
+
+    # -- sounding ------------------------------------------------------------------------
+    p = command(
+        "sounding",
+        "Read a radiosonde file and print its thermodynamic and wind parameters, labelled.",
+        "examples:\n"
+        "  xrd sounding -i KJAN_2022033000.txt\n"
+        "  xrd sounding -i BMX_20220330_00Z.csv --wind-units kt -v\n"
+        "  xrd sounding -i sonde.csv --json\n"
+        "  xrd sounding -i sonde.csv -o profile.csv\n"
+        "\n"
+        "Reads University of Wyoming text lists and CSV, SPC / SHARPpy text, IEM JSON, IGRA2 and any\n"
+        "CSV whose header names the columns (units in the header are honoured). Every number says\n"
+        "which parcel it is (surface-based, mixed-layer 100 hPa, most-unstable 300 hPa), its height\n"
+        "reference (m AGL) and its definition (-v). A value that cannot be computed is n/a; a\n"
+        "wind speed with no unit is read as m/s and the output says so (--wind-units kt).\n"
+        "Needs radarx for the parcel thermodynamics (pip install radarx). Nothing is downloaded.",
+    )
+    _add_input(p, "sounding file")
+    _add_format(p, "wyoming_text, sharppy, iem_json, csv or igra2 (default: detected)")
+    p.add_argument(
+        "--wind-units",
+        metavar="UNIT",
+        help="unit of a wind speed column without one in the header: m/s (default), kt, mph, km/h",
+    )
+    p.add_argument(
+        "--no-virtual-temperature",
+        action="store_true",
+        help="leave out the virtual-temperature correction in CAPE/CIN (not recommended)",
+    )
+    _add_output(p, "write the full result (.json) or the profile levels (.csv); repeatable")
+    p.set_defaults(func=cmd_sounding)
 
     # -- mosaic --------------------------------------------------------------------------
     p = command(
@@ -1684,6 +1718,82 @@ def _print_cells(res: Any, file: str, out: Out) -> None:
 # ---------------------------------------------------------------------------
 
 
+def cmd_sounding(args: argparse.Namespace, out: Out) -> int:
+    from engine import provenance, sounding
+    from engine.api_results import XrdDependencyError, XrdInputError
+
+    (path,) = _inputs(args, maximum=1)
+    try:
+        snd = sounding.read_sounding_file(path, (args.format or "auto").lower(), args.wind_units)
+        result = sounding.analyse(snd)
+        if args.no_virtual_temperature:
+            result["diagnostics"] = sounding.diagnose(snd, virtual=False)
+    except sounding.SoundingError as exc:
+        raise XrdInputError(f"{Path(path).name}: {exc}") from exc
+    except sounding.RadarxMissing as exc:
+        raise XrdDependencyError(str(exc)) from exc
+    diag = result["diagnostics"]
+    for target in args.output:
+        suffix = Path(target).suffix.lower()
+        if suffix == ".json":
+            Path(target).write_text(dumps(result) + "\n", encoding="utf-8")
+        elif suffix == ".csv":
+            lv = snd.levels(None)
+            lines = [
+                provenance.csv_comment_block(
+                    title=f"Sounding {snd.station or ''} {snd.launch_time or ''}".strip(),
+                    columns={
+                        "pressure_hpa": "hPa",
+                        "height_msl_m": "m above sea level (geometric)",
+                        "temperature_c": "degC",
+                        "dewpoint_c": "degC (reported values only)",
+                        "u_ms": "m s-1",
+                        "v_ms": "m s-1",
+                    },
+                    source_files=[Path(path).name],
+                    layer=result["provenance"],
+                    extra={"drift": snd.drift_note()},
+                ).rstrip("\n"),
+                "pressure_hpa,height_msl_m,temperature_c,dewpoint_c,u_ms,v_ms",
+            ]
+            keys = ("pressure_hpa", "height_msl_m", "temperature_c", "dewpoint_c", "u_ms", "v_ms")
+            for row in zip(*(lv[k] for k in keys), strict=True):
+                lines.append(",".join("" if x is None else f"{x:g}" for x in row))
+            Path(target).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        else:
+            raise UsageError(f"-o for sounding must end in .json or .csv, not {suffix or target!r}")
+        out.wrote(target)
+    if out.json:
+        payload = dict(result)
+        payload["levels"] = {k: v for k, v in result["levels"].items() if k in ("n_levels",)}
+        payload["files"] = out.files
+        out.emit_json(payload)
+        return EXIT_OK
+    head = " ".join(x for x in (snd.station, snd.launch_time or "launch time not in the file") if x)
+    out.result(f"{head}  ({snd.fmt}, {result['levels']['n_levels']} levels, {Path(path).name})")
+    out.result(f"data class: {result['provenance']['kind']}; {result['drift_note']}")
+    out.result("")
+    for line in sounding.summary_lines(diag):
+        out.result(line)
+    if diag["notes"]:
+        out.result("")
+        for note in diag["notes"]:
+            out.result(f"note: {note}")
+    if out.verbose:
+        out.result("")
+        out.result("definitions (heights are m above the launch site):")
+        for key, text in diag["definitions"].items():
+            out.result(f"  {key}: {text}")
+        out.result("parcels:")
+        for key, text in diag["parcel_definitions"].items():
+            out.result(f"  {key}: {text}")
+        out.result("references:")
+        for text in diag["references"].values():
+            out.result(f"  {text}")
+        out.result(f"libraries: {provenance.libraries_string()}")
+    return EXIT_OK
+
+
 def cmd_plot(args: argparse.Namespace, out: Out) -> int:
     path = _inputs(args, maximum=1)[0]
     targets = [t for t in [args.plot, *args.output] if t]
@@ -1805,7 +1915,8 @@ xrd run radarx_hid -i {SAMPLE} -p hid.png
 xrd run radarx_hid -i {SAMPLE} --all-sweeps -o results
 xrd run storm_detection -i {SAMPLE} -P threshold_dbz=40 -o cells.csv
 xrd cells -i {SAMPLE} -p cells.png
-xrd cells -i 'mayfield/KHPX/*_V06' -o cells.csv --tracks tracks.csv -p tracks.png""",
+xrd cells -i 'mayfield/KHPX/*_V06' -o cells.csv --tracks tracks.csv -p tracks.png
+xrd sounding -i BMX_20220330_00Z.csv --wind-units kt""",
     "combine": """\
 # COMBINE - several radars of one time (needs radarx)
 xrd mosaic -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 KPAH20211211_015935_V06 KVWX20211211_015522_V06
@@ -1838,6 +1949,7 @@ TOPIC_ALIASES = {
     "run": "analyse",
     "modules": "analyse",
     "cells": "analyse",
+    "sounding": "analyse",
     "mosaic": "combine",
     "winds": "combine",
     "animate": "animate",

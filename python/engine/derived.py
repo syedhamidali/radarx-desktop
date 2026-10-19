@@ -623,6 +623,7 @@ def tree_with_derived(
     """
     import xarray as xr
 
+    from engine import layer_provenance
     from engine.reader import sorted_sweep_names
 
     available = {v["name"]: v for v in store.variables()}
@@ -656,6 +657,7 @@ def tree_with_derived(
                 "long_name": str(info.get("label") or name),
                 "units": str(info.get("units") or ""),
                 "comment": _provenance_comment(info),
+                **layer_provenance.attrs(layer_provenance.from_derived_info(info)),
             }
             cats = info.get("categories")
             if cats:

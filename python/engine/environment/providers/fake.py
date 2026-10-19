@@ -1,0 +1,170 @@
+"""A provider and an HTTP server that exist only in memory: the test harness of the framework.
+
+``FakeServer`` plays the remote side. It is plugged into the real
+:class:`~engine.environment.net.HttpClient` as its transport (``HttpClient(opener=server.opener)``),
+so the *real* retry, backoff, timeout, size-cap and offline code runs, with no socket and no
+network. Failures are scripted (``fail_first={"name": 2}`` makes the first two requests for that
+file answer ``503``). ``FakeProvider`` offers a small recorded-style catalogue on top of it.
+
+Tests built on this harness never touch the Internet. Tests that do need the real service are
+marked with the ``XRADAR_NETWORK_TESTS`` environment variable (set only by CI jobs that opt in).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import threading
+import urllib.error
+import urllib.request
+from collections.abc import Mapping
+from email.message import Message
+from typing import Any, ClassVar
+
+from engine.environment.provider import Provider
+from engine.environment.request import FileSpec, InventoryItem, Request
+
+BASE_URL = "https://data.fake.invalid/files/"
+
+
+class _Response(io.BytesIO):
+    def __init__(self, body: bytes, headers: Mapping[str, str]) -> None:
+        super().__init__(body)
+        self.headers = headers
+        self.status = 200
+
+
+class FakeServer:
+    """In-memory file server with scripted failures. Thread-safe."""
+
+    def __init__(
+        self,
+        files: Mapping[str, bytes] | None = None,
+        *,
+        fail_first: Mapping[str, int] | None = None,
+        fail_status: int = 503,
+        truncate_first: Mapping[str, int] | None = None,
+        corrupt: set[str] | None = None,
+        retry_after: str | None = None,
+        announce_length: bool = True,
+    ) -> None:
+        self.files: dict[str, bytes] = dict(files or {})
+        self.fail_first = dict(fail_first or {})
+        self.fail_status = fail_status
+        self.truncate_first = dict(truncate_first or {})
+        self.corrupt = set(corrupt or ())
+        self.retry_after = retry_after
+        self.announce_length = announce_length
+        self.requests: list[tuple[str, str]] = []  # (url, user-agent)
+        self._lock = threading.Lock()
+
+    def count(self, name: str) -> int:
+        return sum(1 for url, _ in self.requests if url.endswith("/" + name))
+
+    # -- the transport the HttpClient calls ---------------------------------------------------
+    def opener(self, req: urllib.request.Request, timeout: float) -> Any:
+        url = req.full_url
+        with self._lock:
+            self.requests.append((url, req.get_header("User-agent") or ""))
+            name = url.rsplit("/", 1)[-1]
+            left = self.fail_first.get(name, 0)
+            if left > 0:
+                self.fail_first[name] = left - 1
+                headers = Message()
+                if self.retry_after is not None:
+                    headers["Retry-After"] = self.retry_after
+                raise urllib.error.HTTPError(
+                    url, self.fail_status, "scripted failure", headers, None
+                )  # type: ignore[arg-type]
+            if name not in self.files:
+                raise urllib.error.HTTPError(url, 404, "Not Found", Message(), None)  # type: ignore[arg-type]
+            body = self.files[name]
+            if name in self.corrupt:
+                body = bytes(b ^ 0xFF for b in body[:16]) + body[16:]
+            announced = len(body)
+            cut = self.truncate_first.get(name, 0)
+            if cut > 0:
+                self.truncate_first[name] = 0
+                body = body[: max(0, len(body) // 2)]
+        headers = {"Content-Length": str(announced)} if self.announce_length else {}
+        return _Response(body, _Headers(headers))
+
+
+class _Headers(dict):
+    def get(self, key: str, default: Any = None) -> Any:  # case-insensitive like http.client
+        for k, v in self.items():
+            if k.lower() == key.lower():
+                return v
+        return default
+
+
+def make_catalogue(
+    variables: tuple[str, ...] = ("t2m", "u10"), hours: int = 3, size: int = 4096
+) -> dict[str, bytes]:
+    """Deterministic small "model" files, one per variable and hour (JSON, ``size`` bytes-ish)."""
+    files: dict[str, bytes] = {}
+    for var in variables:
+        for h in range(hours):
+            name = f"fake_{var}_2022033000{h:02d}.json"
+            rows = [round(((i * 7 + h * 13 + len(var)) % 97) / 3.0, 3) for i in range(size // 8)]
+            files[name] = json.dumps({"var": var, "hour": h, "values": rows}).encode()
+    return files
+
+
+class FakeProvider(Provider):
+    """Serves :func:`make_catalogue` files; ``plan`` honours variables and the time window."""
+
+    id: ClassVar[str] = "fake"
+    name: ClassVar[str] = "Fake model (recorded sample)"
+    kind: ClassVar[str] = "model"
+    attribution: ClassVar[str] = (
+        "Synthetic test data generated by xradar-desktop; not real weather."
+    )
+    licence: ClassVar[str] = "CC0 (generated)"
+    homepage: ClassVar[str] = "https://data.fake.invalid/"
+    description: ClassVar[str] = "A made-up model used by the tests and the consent-dialog demo."
+
+    def __init__(self, server: FakeServer, *, with_checksums: bool = True) -> None:
+        self.server = server
+        self.with_checksums = with_checksums
+        self.plan_calls = 0
+
+    def inventory(self, query: dict[str, Any] | None = None) -> list[InventoryItem]:
+        vars_ = sorted({n.split("_")[1] for n in self.server.files})
+        return [
+            InventoryItem(
+                product="surface",
+                title="Fake surface fields",
+                description="Hourly synthetic fields for 2022-03-30.",
+                variables=tuple(vars_),
+                resolution="n/a",
+                coverage="global (synthetic)",
+                cadence="hourly",
+            )
+        ]
+
+    def plan(self, request: Request, env: Any) -> list[FileSpec]:
+        self.plan_calls += 1
+        want = set(request.variables)
+        specs = []
+        for name, body in sorted(self.server.files.items()):
+            var, stamp = name[len("fake_") : -len(".json")].split("_")
+            hour = int(stamp[-2:])
+            if want and var not in want:
+                continue
+            if request.time_start and f"2022-03-30T{hour:02d}" < request.time_start[:13]:
+                continue
+            if request.time_end and f"2022-03-30T{hour:02d}" > request.time_end[:13]:
+                continue
+            specs.append(
+                FileSpec(
+                    key=f"{var}/{stamp}",
+                    name=name,
+                    url=BASE_URL + name,
+                    size=len(body),
+                    sha256=hashlib.sha256(body).hexdigest() if self.with_checksums else None,
+                    meta={"variable": var, "hour": hour},
+                )
+            )
+        return specs

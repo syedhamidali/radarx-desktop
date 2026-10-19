@@ -4,6 +4,7 @@
 import { wsManager } from "../../src/lib/utils/websocket";
 import { openFiles, activeFileId, removeFile, setActiveFile } from "../../src/lib/stores/fileManager";
 import { selectedSweep, selectedVariable, radarData } from "../../src/lib/stores/radarData";
+import { requestEnvData, envFlow } from "../../src/lib/stores/environment";
 import { get } from "svelte/store";
 
 (window as any).__xr = {
@@ -15,5 +16,8 @@ import { get } from "svelte/store";
   selectedSweep,
   selectedVariable,
   radarData,
+  // environment data: scripts/perf/smoke_environment.py drives the consent dialog with these
+  requestEnvData,
+  envFlow,
   get,
 };

@@ -12,7 +12,7 @@ on purpose: if a rule here is hard to follow, change the feature, not the rule. 
 copied into the pull request template.
 
 Where a rule is already implemented, the page says where. Where it is a goal that the code does not yet
-meet (the on-screen provenance chips are tracked in {issue}`63`), the page says that too: a policy that
+meet (the provenance in the hover read-out and a generated citation block are tracked in {issue}`63`), the page says that too: a policy that
 pretends to be finished is the kind of claim this page forbids.
 
 ## 1. Provenance classes
@@ -48,10 +48,13 @@ information* from *nothing to say*.
 - Stylised looks are labelled on screen and in clips, and never change the data underneath
   ({doc}`REALISTIC_3D`, {doc}`STORM_CLIP`).
 - Imagery and terrain show their attribution while they are on screen.
-- **Not yet done:** per-layer provenance chips, the layers panel with source/time/resolution/offset to the
-  scan, provenance in the hover read-out and a generated citation block ({issue}`63`). Until then, features
-  that bring new data into the app must describe their provenance in their docs page and in the export
-  metadata.
+- **On screen:** every layer carries a provenance chip (OBS, MODEL, RETR, SIM, STYLE; the app shows
+  *simulated* and *stylised* as two chips) and the Layers panel lists each layer with its source, valid
+  time and the time offset to the active radar scan; exports carry `data_class`, `data_source`,
+  `data_valid_time`, ... ({doc}`ENVIRONMENT`).
+- **Not yet done:** provenance in the hover read-out and a generated citation block ({issue}`63`). Features
+  that bring new data into the app must describe their provenance in their docs page, give their layers a
+  `provenance` object (`python/engine/layer_provenance.py`) and carry it into the export metadata.
 
 ## 2. Rules
 
@@ -188,6 +191,6 @@ Copy this into a pull request that adds or changes anything scientific. It is al
 
 ## 4. Where this is going
 
-The roadmap items that make this policy visible in the app (provenance chips on every layer, a layers panel
-with source, time and resolution, a generated methods citation, provenance in the hover read-out) are
+The roadmap items that make this policy visible in the app (provenance chips on every layer and the layers
+panel are done; a generated methods citation and provenance in the hover read-out remain) are
 tracked in {issue}`63` and the environment-data roadmap ({issue}`112`). The master list is {issue}`120`.

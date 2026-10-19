@@ -46,7 +46,7 @@ interface WorkspaceManagerState {
 
 // ── Defaults & Presets ────────────────────────────────────────────────────
 
-const DEFAULT_RIGHT_PANELS = ['cloud', 'volume', 'timeseries', 'crosssection', 'qc', 'storm', 'processing', 'export'];
+const DEFAULT_RIGHT_PANELS = ['layers', 'cloud', 'volume', 'timeseries', 'crosssection', 'qc', 'storm', 'processing', 'export'];
 
 function defaultConfig(name: string): WorkspaceConfig {
   return {
@@ -112,7 +112,7 @@ function sanitizeConfig(raw: unknown, name: string): WorkspaceConfig {
   if (!isObj(raw)) return base;
   const num = (v: unknown, d: number, lo: number, hi: number) =>
     typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
-  const known = new Set(['cloud', 'mosaic', 'wind', 'volume', 'timeseries', 'crosssection', 'qc', 'storm', 'modules', 'processing', 'export']);
+  const known = new Set(['layers', 'sounding', 'cloud', 'mosaic', 'wind', 'volume', 'timeseries', 'crosssection', 'qc', 'storm', 'modules', 'processing', 'export']);
   const order = Array.isArray(raw.rightPanelOrder)
     ? [...new Set((raw.rightPanelOrder as unknown[]).filter((x): x is string => typeof x === 'string' && known.has(x)))]
     : [];
