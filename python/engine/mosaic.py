@@ -1641,7 +1641,7 @@ def _iso_to_dt64(text: str | None) -> np.datetime64:
 
 def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
     """Global attributes: CF, ACDD and a full description of how the mosaic was made."""
-    from engine import provenance
+    from engine import layer_provenance, provenance
 
     west, south, east, north = rec.bbox
     names = [r.name for r in rec.radars]
@@ -1676,6 +1676,7 @@ def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
             "_FillValue (NaN). Heights are above mean sea level."
         ),
         conventions="CF-1.10",
+        layer=layer_provenance.for_mosaic_header(rec.header()),
     )
     attrs.update(
         product=rec.product,

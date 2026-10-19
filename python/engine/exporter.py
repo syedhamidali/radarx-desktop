@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import xarray as xr
 
-from engine import cfwrite, provenance, rhi
+from engine import cfwrite, layer_provenance, provenance, rhi
 from engine.reader import (
     collapse_site_position,
     mask_below_threshold,
@@ -242,6 +242,9 @@ def _csv_header(
         fill="gates without an echo (below threshold / range folded / no data) are omitted",
         params={"variable": variable, "sweep": sweep, "mask_no_echo": True},
         extra=extra,
+        layer=layer_provenance.for_variable(
+            variable, radar=str(extra["radar"] or ""), scan_time=extra["data_time"] or ""
+        ).to_dict(),
     )
 
 
@@ -634,6 +637,7 @@ def figure_file_metadata(
         sweep=sweep,
         data_time=_with_utc(data_time) if data_time else "",
         params=params,
+        layer=layer_provenance.for_variable(variable, scan_time=data_time or "").to_dict(),
     )
     if fmt == "pdf":
         from datetime import datetime, timezone

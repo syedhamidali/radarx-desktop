@@ -20,6 +20,7 @@ Nothing here invents information: a field that is not known stays empty and the 
 
 from __future__ import annotations
 
+import contextlib
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -100,7 +101,8 @@ class LayerProvenance:
             text = _clean(getattr(self, name))
             if text:
                 out[name] = text
-        params = {k: _json_safe(v) for k, v in self.parameters.items() if v is not None}
+        params = {k: _json_safe(v) for k, v in self.parameters.items()}
+        params = {k: v for k, v in params.items() if v is not None}
         if params:
             out["parameters"] = params
         if self.references:
@@ -189,15 +191,16 @@ def observed_radar(
     n_sweeps: int | None = None,
     nyquist: str = "",
     references: Iterable[str] = (),
+    simulated: bool = False,
 ) -> LayerProvenance:
-    """The radar moments of an opened file (the measured data)."""
+    """The radar moments of an opened file (the measured data; ``simulated`` for synthetic ones)."""
     res = []
     if gate_spacing_m and math.isfinite(gate_spacing_m):
         res.append(f"gate spacing {gate_spacing_m:g} m")
     if n_sweeps:
         res.append(f"{n_sweeps} sweeps")
     return LayerProvenance(
-        kind="observed",
+        kind="simulated" if simulated else "observed",
         source=_clean(radar) or "radar file",
         title=title or "Radar moments",
         valid_time=scan_time,
@@ -242,6 +245,16 @@ def derived_field(
         references=list(references),
         inputs=list(inputs),
     )
+
+
+def for_variable(
+    variable: str, *, radar: str = "", scan_time: Any = "", title: str = ""
+) -> LayerProvenance:
+    """Provenance of a variable of an opened file: a derived variable is named ``module:field``."""
+    if ":" in variable:
+        module = variable.split(":", 1)[0]
+        return derived_field(name=title or variable, module=module, valid_time=scan_time)
+    return observed_radar(radar=radar, scan_time=scan_time, title=title or variable)
 
 
 def mosaic(
@@ -371,6 +384,124 @@ def for_provider(
         attribution=attribution,
         licence=licence,
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for the sidecar (read an opened file, wrap a derived-variable record)
+# ---------------------------------------------------------------------------
+
+
+def reader_context(reader: Any) -> dict[str, str]:
+    """``{"source", "scan_time"}`` of an opened file, as remembered by :func:`describe_reader`."""
+    ctx = getattr(reader, "_layer_ctx", None)
+    return dict(ctx) if isinstance(ctx, dict) else {"source": "radar file", "scan_time": ""}
+
+
+def describe_reader(reader: Any, schema: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Provenance dict of the radar moments of the file in *reader* (also cached on it).
+
+    Reads only the time and range coordinates of the first sweep. Never raises: whatever cannot
+    be read stays empty (the UI then shows "unknown").
+    """
+    schema = schema or {}
+    attrs = schema.get("attributes") or {}
+    radar = ""
+    for key in ("instrument_name", "station", "site_name"):
+        radar = _clean(schema.get(key) or attrs.get(key))
+        if radar:
+            break
+    scan_time = _clean(attrs.get("scan_time"))
+    spacing = None
+    try:
+        import numpy as np
+
+        ds = reader.get_sweep_dataset(0, mask=False)
+        if not scan_time and "time" in ds.variables:
+            t = np.asarray(ds["time"].values).ravel()
+            if t.size:
+                scan_time = _prov.iso_utc(t.min())
+        if "range" in ds.variables and ds["range"].size > 2:
+            rng = np.asarray(ds["range"].values, dtype=float)
+            spacing = float(np.nanmedian(np.diff(rng)))
+    except Exception:
+        pass
+    n_sweeps = len(schema.get("sweeps") or [])
+    prov = observed_radar(
+        radar=radar or "radar file",
+        scan_time=scan_time,
+        fmt=_clean(schema.get("format")),
+        gate_spacing_m=spacing,
+        n_sweeps=n_sweeps or None,
+    ).to_dict()
+    with contextlib.suppress(Exception):
+        reader._layer_ctx = {"source": prov["source"], "scan_time": prov.get("valid_time", "")}
+        reader._layer_prov = prov
+    return prov
+
+
+def _radar_names(radars: Any) -> list[str]:
+    names: list[str] = []
+    for r in radars or []:
+        name = r.get("name") if isinstance(r, Mapping) else r
+        if _clean(name):
+            names.append(_clean(name))
+    return names
+
+
+def for_mosaic_header(h: Mapping[str, Any]) -> dict[str, Any]:
+    """Provenance of a ``mosaic_result`` header (radars, analysis time, merge settings)."""
+    merge = h.get("merge") if isinstance(h.get("merge"), Mapping) else {}
+    level = f" at {h['height_m']:g} m" if isinstance(h.get("height_m"), (int, float)) else ""
+    method = (
+        f"{_clean(h.get('product')) or 'Composite'} of {_clean(h.get('variable'))}{level}: "
+        "the volumes of every radar are cone-gridded onto one grid and merged with "
+        "range-dependent weights (radarx.grid)."
+    )
+    return mosaic(
+        radars=_radar_names(h.get("radars")),
+        valid_time=h.get("analysis_time") or "",
+        method=method,
+        params={"merge": dict(merge), "threshold_dbz": h.get("threshold_dbz")},
+    ).to_dict()
+
+
+def for_winds_header(h: Mapping[str, Any]) -> dict[str, Any]:
+    """Provenance of a ``multidoppler_result`` / ``wind_volume`` header."""
+    opts = h.get("options") if isinstance(h.get("options"), Mapping) else {}
+    bg = h.get("background")
+    return winds(
+        radars=_radar_names(h.get("radars")),
+        valid_time=h.get("analysis_time") or "",
+        method=f"Multi-Doppler wind synthesis, method '{_clean(h.get('method')) or 'unknown'}' "
+        "(radarx): u, v and w from the radial velocities of two or more radars."
+        + (" A background field constrains the retrieval." if bg else ""),
+        params={
+            "min_crossing_angle": h.get("min_crossing_angle"),
+            "fall_speed_correction": h.get("fall_speed_correction"),
+            **{k: v for k, v in opts.items() if k != "storm_motion"},
+        },
+    ).to_dict()
+
+
+def from_derived_info(info: Mapping[str, Any], valid_time: Any = "") -> LayerProvenance:
+    """Provenance of one derived variable from its registry record (module, params, ...)."""
+    module = _clean(info.get("module")) or "unknown module"
+    title = _clean(info.get("module_title"))
+    stamp = info.get("computed_at")
+    run_time = ""
+    if isinstance(stamp, (int, float)):
+        run_time = _prov.utc_stamp(datetime.fromtimestamp(stamp, timezone.utc))
+    prov = derived_field(
+        name=_clean(info.get("label")) or _clean(info.get("name")) or module,
+        module=module,
+        params=info.get("params") if isinstance(info.get("params"), Mapping) else None,
+        valid_time=valid_time,
+        description=f"Computed by the '{title or module}' module from the radar moments of "
+        "the open file.",
+    )
+    if run_time:
+        prov.run_time = run_time
+    return prov
 
 
 # ---------------------------------------------------------------------------
