@@ -55,6 +55,14 @@
         action: () => dispatch('action', { type: 'toggle-right-sidebar' }),
       },
       {
+        id: 'toggle-map',
+        label: 'Hide / Show Map (2D and 3D)',
+        category: 'View',
+        shortcut: keysFor('toggle-map', bindings),
+        icon: '\u{1F5FA}',
+        action: () => dispatch('action', { type: 'toggle-map' }),
+      },
+      {
         id: 'toggle-animation',
         label: 'Play / Pause Animation',
         category: 'Playback',

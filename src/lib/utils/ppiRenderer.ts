@@ -25,6 +25,8 @@ import { perfStats } from '../stores/perfStats';
 import { buildSharpMesh, buildSmoothMesh, type SmoothMesh } from './meshBuilder';
 import type { MeshWorkerOutput } from '../workers/meshWorker';
 import { styleFor } from './variableStyles';
+import { GLSL_VALUE_MASK, MASK_OFF, maskVec, type MaskVec4 } from './valueMaskGl';
+import type { ValueMask } from '../stores/valueMask';
 
 // ─── Sweep data cache (moved to ./sweepCache; re-exported for existing imports) ──
 import { cacheSweepData, getCachedSweep, evictCachedVariable, clearSweepCache, type SweepDataEntry } from './sweepCache';
@@ -110,8 +112,10 @@ const FRAGMENT_SHADER_SHARP = `
   uniform float u_vignetteIntensity;
   uniform float u_maxRange;
   uniform float u_transitionAlpha;
+  uniform vec4 u_mask;
+${GLSL_VALUE_MASK}
   void main() {
-    if (v_value <= u_nodata + 0.5 || v_value < u_vmin) {
+    if (v_value <= u_nodata + 0.5 || v_value < u_vmin || valueHidden(v_value, u_mask)) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
       return;
     }
@@ -163,6 +167,8 @@ const FRAGMENT_SHADER_SMOOTH = `
   uniform float u_vignetteIntensity;
   uniform float u_maxRange;
   uniform float u_transitionAlpha;
+  uniform vec4 u_mask;
+${GLSL_VALUE_MASK}
 
   float bilinear(vec4 v, vec2 f) {
     float top = mix(v.x, v.y, f.y);
@@ -193,7 +199,7 @@ const FRAGMENT_SHADER_SMOOTH = `
     if (v.w <= nd) v.w = avg;
 
     float val = bilinear(v, v_polar);
-    if (val < u_vmin) {
+    if (val < u_vmin || valueHidden(val, u_mask)) {
       gl_FragColor = vec4(0.0, 0.0, 0.0, 0.0);
       return;
     }
@@ -238,8 +244,10 @@ const CONTOUR_FRAGMENT_SHADER = `
   uniform float u_contourInterval;
   uniform vec3 u_contourColor;
   uniform float u_contourWidth;
+  uniform vec4 u_mask;
+${GLSL_VALUE_MASK}
   void main() {
-    if (v_value <= u_nodata + 0.5) {
+    if (v_value <= u_nodata + 0.5 || valueHidden(v_value, u_mask)) {
       discard;
     }
     float interval = u_contourInterval;
@@ -326,6 +334,7 @@ interface SharpLocs {
   uVignetteIntensity: WebGLUniformLocation | null;
   uMaxRange: WebGLUniformLocation | null;
   uTransitionAlpha: WebGLUniformLocation | null;
+  uMask: WebGLUniformLocation | null;
 }
 
 interface SmoothLocs {
@@ -340,6 +349,7 @@ interface SmoothLocs {
   uVignetteIntensity: WebGLUniformLocation | null;
   uMaxRange: WebGLUniformLocation | null;
   uTransitionAlpha: WebGLUniformLocation | null;
+  uMask: WebGLUniformLocation | null;
 }
 
 interface ContourLocs {
@@ -352,6 +362,7 @@ interface ContourLocs {
   uContourInterval: WebGLUniformLocation | null;
   uContourColor: WebGLUniformLocation | null;
   uContourWidth: WebGLUniformLocation | null;
+  uMask: WebGLUniformLocation | null;
 }
 
 // ─── WebGL PPI Renderer ─────────────────────────────────────────────────
@@ -421,6 +432,10 @@ export class PPIRenderer {
 
   // Colormap / ring / view state
   private colormapTex: WebGLTexture | null = null;
+  /** The value mask as the shader reads it (mode, lower, upper, inclusive); off = all zeros. */
+  private maskUniform: MaskVec4 = MASK_OFF;
+  /** Theme colours for the map-hidden background and rings (null = the original dark navy). */
+  private plainSurface: { bg: [number, number, number]; ring: [number, number, number, number] } | null = null;
   /** Name of the colormap currently resident in the GPU texture ('' = none). */
   private currentCmapName = '';
   /** Data array that was uploaded for currentCmapName (detects re-registered colormaps). */
@@ -542,6 +557,7 @@ export class PPIRenderer {
       uVignetteIntensity: gl.getUniformLocation(sharpProg, 'u_vignetteIntensity'),
       uMaxRange: gl.getUniformLocation(sharpProg, 'u_maxRange'),
       uTransitionAlpha: gl.getUniformLocation(sharpProg, 'u_transitionAlpha'),
+      uMask: gl.getUniformLocation(sharpProg, 'u_mask'),
     };
 
     // Smooth program (bilinear interpolation)
@@ -562,6 +578,7 @@ export class PPIRenderer {
         uVignetteIntensity: gl.getUniformLocation(smoothProg, 'u_vignetteIntensity'),
         uMaxRange: gl.getUniformLocation(smoothProg, 'u_maxRange'),
         uTransitionAlpha: gl.getUniformLocation(smoothProg, 'u_transitionAlpha'),
+        uMask: gl.getUniformLocation(smoothProg, 'u_mask'),
       };
     }
 
@@ -581,6 +598,7 @@ export class PPIRenderer {
         uContourInterval: gl.getUniformLocation(contourProg, 'u_contourInterval'),
         uContourColor: gl.getUniformLocation(contourProg, 'u_contourColor'),
         uContourWidth: gl.getUniformLocation(contourProg, 'u_contourWidth'),
+        uMask: gl.getUniformLocation(contourProg, 'u_mask'),
       };
     }
 
@@ -695,6 +713,29 @@ export class PPIRenderer {
     const v = Math.max(0, Math.min(1, intensity));
     if (v === this.vignetteIntensity) return;
     this.vignetteIntensity = v;
+    this.markDirty();
+  }
+
+  /**
+   * Hide the gates the value mask hides (same rules as everywhere, see stores/valueMask). Applied
+   * in the shader, so changing it needs no new mesh and no data transfer.
+   */
+  setValueMask(mask: ValueMask | null): void {
+    const next = maskVec(mask);
+    if (next.every((x, i) => x === this.maskUniform[i])) return;
+    this.maskUniform = next;
+    this.markDirty();
+  }
+
+  /**
+   * Colours of the plain background used while the map is hidden (not transparent): the canvas
+   * colour and the range-ring colour, both taken from the active theme by the viewer. `null` keeps
+   * the original dark navy.
+   */
+  setPlainSurface(s: { bg: [number, number, number]; ring: [number, number, number, number] } | null): void {
+    const a = this.plainSurface;
+    if (a === s || (a && s && a.bg.every((x, i) => x === s.bg[i]) && a.ring.every((x, i) => x === s.ring[i]))) return;
+    this.plainSurface = s;
     this.markDirty();
   }
 
@@ -1065,6 +1106,7 @@ export class PPIRenderer {
     locs: {
       uVignetteIntensity: WebGLUniformLocation | null;
       uMaxRange: WebGLUniformLocation | null; uTransitionAlpha: WebGLUniformLocation | null;
+      uMask: WebGLUniformLocation | null;
       uVmin: WebGLUniformLocation | null; uVmax: WebGLUniformLocation | null;
       uNodata: WebGLUniformLocation | null; uColormap: WebGLUniformLocation | null;
       uMatrix: WebGLUniformLocation | null;
@@ -1081,6 +1123,7 @@ export class PPIRenderer {
     gl.uniform1f(locs.uVignetteIntensity, this.vignetteIntensity);
     gl.uniform1f(locs.uMaxRange, this.maxRange);
     gl.uniform1f(locs.uTransitionAlpha, alpha);
+    gl.uniform4fv(locs.uMask, this.maskUniform);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.colormapTex);
     gl.uniform1i(locs.uColormap, 0);
@@ -1168,6 +1211,9 @@ export class PPIRenderer {
 
     if (this.transparentBg) {
       gl.clearColor(0, 0, 0, 0);
+    } else if (this.plainSurface) {
+      const [r, g, b] = this.plainSurface.bg;
+      gl.clearColor(r, g, b, 1);
     } else {
       gl.clearColor(15 / 255, 15 / 255, 26 / 255, 1);
     }
@@ -1204,7 +1250,8 @@ export class PPIRenderer {
     if (this.ringProgram && this.ringVertexCount > 0) {
       gl.useProgram(this.ringProgram);
       gl.uniformMatrix3fv(this.ruMatrix, false, matrix);
-      gl.uniform4f(this.ruColor, 1, 1, 1, 0.15);
+      const ring = !this.transparentBg && this.plainSurface ? this.plainSurface.ring : [1, 1, 1, 0.15];
+      gl.uniform4f(this.ruColor, ring[0], ring[1], ring[2], ring[3]);
 
       gl.bindBuffer(gl.ARRAY_BUFFER, this.ringBuffer);
       gl.enableVertexAttribArray(this.raPosition);
@@ -1295,6 +1342,7 @@ export class PPIRenderer {
     gl.uniform1f(locs.uContourInterval, this.contourInterval);
     gl.uniform3fv(locs.uContourColor, this.contourColor);
     gl.uniform1f(locs.uContourWidth, this.contourWidthVal);
+    gl.uniform4fv(locs.uMask, this.maskUniform);
 
     gl.bindBuffer(gl.ARRAY_BUFFER, this.posBuffer);
     gl.enableVertexAttribArray(locs.aPosition);

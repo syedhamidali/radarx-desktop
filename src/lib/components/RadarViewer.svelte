@@ -32,6 +32,10 @@
   import type { SweepInfo } from '../stores/radarData';
   import RhiViewer from './RhiViewer.svelte';
   import { sweepLabel } from '../utils/rhiGeometry';
+  import { maskOf, maskTest, float32Mask, isMaskActive, valueMasks } from '../stores/valueMask';
+  import MaskPopover from './MaskPopover.svelte';
+  import { mapHidden, setMapHidden } from '../stores/settings';
+  import { getShortcutDisplay } from '../utils/shortcuts';
 
   // ── State ──────────────────────────────────────────────────────────────────
   let isLoading = $state(false);
@@ -45,6 +49,7 @@
   let canvasEl: HTMLDivElement;
   let webglCanvas: HTMLCanvasElement;
   let resizeObserver: ResizeObserver | null = null;
+  let themeObserver: MutationObserver | null = null;
   let containerWidth = $state(800);
   let containerHeight = $state(600);
 
@@ -70,8 +75,8 @@
   let currentMaxRange = $state(1);
   let currentCmap = $state('turbo');
 
-  // Map / geo overlay
-  let showMap = $state(true);
+  // Map / geo overlay. The map on/off choice is a persisted setting shared with the 3D views.
+  const showMap = $derived(!$mapHidden);
   let mapOpacity = $state(1.0);
   let showGeoOverlay = $state(true);
 
@@ -88,6 +93,8 @@
   let probeActive = $state(false);
   let probeValue: number | null = $state(null);
   let probeLabel: string | null = $state(null);
+  /** The gate under the probe exists but the value mask hides it. */
+  let probeHidden = $state(false);
   let probeX = $state(0);
   let probeY = $state(0);
   let currentEntry: SweepDataEntry | null = $state(null);
@@ -125,6 +132,9 @@
   const legendTitle = $derived(((fieldShown as DisplayedField | null)?.title) ?? variableLabel);
   const sweeps = $derived($radarData.sweeps);
   const variable = $derived($selectedVariable);
+  /** Value mask of what is on screen: a module field has its own, else the variable's. */
+  const maskKey = $derived(fieldShown ? `field:${(fieldShown as DisplayedField).name}` : ($selectedVariable ?? ''));
+  const activeMask = $derived(maskOf($valueMasks, maskKey));
   const sweep = $derived($selectedSweep);
   /** The selected sweep is an RHI (range-height scan): RhiViewer replaces the map view. */
   const sweepMeta = $derived(sweeps.find((sw) => sw.index === sweep));
@@ -161,6 +171,12 @@
         return { ...st, ppiStyle: { variable: v, cmap: cm, vmin: lo, vmax: hi, units: un }, ppiMaxRangeKm: km };
       });
     });
+  });
+
+  // The value mask changed (or the variable did): redraw, the shader hides the gates
+  $effect(() => {
+    void activeMask;
+    if (hasRendered) renderFrame();
   });
 
   // Re-render when map toggle changes (to update transparent background)
@@ -331,6 +347,10 @@
     });
     if (canvasEl) resizeObserver.observe(canvasEl);
 
+    // The theme decides the plain background (map hidden): redraw when data-theme changes.
+    themeObserver = new MutationObserver(() => renderFrame());
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
     // Mosaic hooks: the panel asks for the visible lon/lat box and for "fit to mosaic".
     registerViewBoundsProvider(currentViewBounds);
     window.addEventListener('xradar:mosaic-fit', onMosaicFit);
@@ -340,6 +360,7 @@
     registerViewBoundsProvider(null);
     window.removeEventListener('xradar:mosaic-fit', onMosaicFit);
     resizeObserver?.disconnect();
+    themeObserver?.disconnect();
     unsubSweepData?.();
     unsubField?.();
     unsubSweepStore?.();
@@ -427,6 +448,8 @@
     }
 
     ppi.setTransparentBackground(showMap);
+    ppi.setPlainSurface(showMap ? null : plainSurface());
+    ppi.setValueMask(activeMask);
     ppi.setColormap(currentCmap);
     ppi.setView(scale, translateX, translateY);
     ppi.render(currentVmin, currentVmax);
@@ -437,9 +460,23 @@
     console.log(`[PPI] Rendered ${entry.variable} sweep ${entry.sweep} in ${dt.toFixed(0)}ms (${entry.nAz}x${entry.nRange} gates)`);
   }
 
+  /** Theme colours (canvas, range rings) for the plain background shown while the map is hidden. */
+  function plainSurface() {
+    const cs = getComputedStyle(document.documentElement);
+    const hex = (name: string, fallback: string): [number, number, number] => {
+      const m = /^#([0-9a-f]{6})$/i.exec(cs.getPropertyValue(name).trim() || fallback);
+      const n = parseInt((m ?? /^#([0-9a-f]{6})$/i.exec(fallback)!)[1], 16);
+      return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+    };
+    const [r, g, b] = hex('--c-text', '#e0ebf7');
+    return { bg: hex('--c-surface-0', '#03060c'), ring: [r, g, b, 0.28] as [number, number, number, number] };
+  }
+
   function renderFrame() {
     if (!ppi || !hasRendered) return;
     ppi.setTransparentBackground(showMap);
+    ppi.setPlainSurface(showMap ? null : plainSurface());
+    ppi.setValueMask(activeMask);
     ppi.setColormap(currentCmap);
     ppi.setView(scale, translateX, translateY);
     ppi.render(currentVmin, currentVmax);
@@ -597,6 +634,7 @@
     if (bestAi < 0) {
       probeValue = null;
       probeLabel = null;
+      probeHidden = false;
       return;
     }
     // Find nearest range index
@@ -609,6 +647,9 @@
 
     const val = entry.values[bestAi * entry.nRange + bestRi];
     probeValue = val <= -9998 ? null : val;
+    // A gate the value mask hides reads like missing data, but says why.
+    probeHidden = probeValue !== null && isMaskActive(activeMask) && maskTest(probeValue, float32Mask(activeMask));
+    if (probeHidden) probeValue = null;
     const cat = probeValue !== null ? legendCategories?.find((c) => c.value === Math.round(probeValue!)) : undefined;
     probeLabel = cat ? cat.label : null;
 
@@ -745,8 +786,8 @@
 
       {#if hasRendered && !isRhi}
         <div class="control-group map-controls">
-          <label class="toggle-label" title="Toggle map background">
-            <input type="checkbox" bind:checked={showMap} />
+          <label class="toggle-label" title="Show or hide the map ({getShortcutDisplay('toggle-map')}). Hidden: a plain background with range rings.">
+            <input type="checkbox" checked={showMap} on:change={(e) => setMapHidden(!e.currentTarget.checked)} data-testid="map-toggle" />
             Map
           </label>
           {#if showMap}
@@ -763,6 +804,7 @@
             <input type="checkbox" bind:checked={showGeoOverlay} />
             Geo
           </label>
+          <MaskPopover variable={maskKey} units={currentUnits} testid="mask-2d" />
         </div>
         {#if $mosaicLayer}
           <div class="control-group map-controls">
@@ -967,7 +1009,7 @@
         </div>
       {:else if probeActive && probeValue === null}
         <div class="probe-tooltip muted" style="left: {probeX + 12}px; top: {probeY - 28}px">
-          No data
+          {probeHidden ? 'Hidden by the value mask' : 'No data'}
         </div>
       {/if}
 

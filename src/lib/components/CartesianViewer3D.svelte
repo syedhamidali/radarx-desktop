@@ -6,7 +6,8 @@
    * lighting, quality governor, orbit/zoom/pan camera - drawn by cartesianRenderer.ts.
    */
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { settings } from '../stores/settings';
+  import { settings, mapHidden, setMapHidden } from '../stores/settings';
+  import { getShortcutDisplay } from '../utils/shortcuts';
   import { mosaicResult } from '../stores/mosaic';
   import { windResult } from '../stores/wind';
   import {
@@ -44,6 +45,9 @@
   import { yieldToMain, type QualityMode, type GovernorState } from '../utils/qualityGovernor';
   import TransferFunctionEditor from './TransferFunctionEditor.svelte';
   import CmapSelect from './CmapSelect.svelte';
+  import MaskPopover from './MaskPopover.svelte';
+  import { maskOf, valueMasks } from '../stores/valueMask';
+  import { maskVecNorm } from '../utils/valueMaskGl';
 
   // ── Sources ───────────────────────────────────────────────────────────────
   const src = $derived($source3d);
@@ -134,6 +138,8 @@
   let showTfe = $state(false);
   let thrValue = $state(15);
   const thrSpec = $derived(thresholdSpec(kind, vmin, vmax, units));
+  /** The shared value mask of this variable in the volume's normalised units (8-bit over [vmin, vmax]). */
+  const vmaskVec = $derived(maskVecNorm(maskOf($valueMasks, variable), vmin, vmax));
 
   const cmapGradient = $derived.by(() => {
     const stops: string[] = [];
@@ -200,7 +206,10 @@
   let stepKm = $state(0.5);
   let opacityScale = $state(0.8);
   type GroundMode = 'map' | 'grid' | 'off';
-  let groundMode = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  /** The Ground choice the user made (kept while the map is hidden, so showing it again restores it). */
+  let groundChoice = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  /** What is drawn: no ground plane, imagery or terrain while the map is hidden (volume and axes stay). */
+  const groundMode = $derived<GroundMode>($mapHidden ? 'off' : groundChoice);
   let showLight = $state<boolean>(loadPref<boolean>('light', false));
 
   // Realistic ground (terrain + satellite imagery) and the Realistic (stylised) storm look. Both are
@@ -460,7 +469,7 @@
     const ts = thrSpec ? thresholdToShader(thrSpec, thrValue, vmin, vmax) : { thr: 0, soft: 0.03, mode: 0 as 0 | 1 };
     const p = {
       vexag: ve, stepKm, opacity: opacityScale, thr: ts.thr, thrSoft: ts.soft, thrMode: ts.mode,
-      groundMode, light: showLight, lightScene, showVolume: baseVol !== 'none',
+      groundMode, light: showLight, lightScene, showVolume: baseVol !== 'none', vmask: vmaskVec,
       gridStepKm: gridStepFor(sceneBox ? Math.max(sceneBox.xMax - sceneBox.xMin, sceneBox.yMax - sceneBox.yMin) : 100),
     };
     if (!ready) return;
@@ -698,7 +707,7 @@
   });
 
   // ── Misc UI ───────────────────────────────────────────────────────────────
-  function setGroundMode(m: GroundMode) { groundMode = m; savePref('ground', m); }
+  function setGroundMode(m: GroundMode) { groundChoice = m; savePref('ground', m); }
   function onRealGround() { savePref('realGround', realGround); }
   function onStormStyle(e: Event) {
     stormStyle = (e.target as HTMLSelectElement).value as StormStyle;
@@ -773,6 +782,7 @@
     </div>
     {#if volume}
       <button class="reset-btn" class:active={showTfe} onclick={() => (showTfe = !showTfe)} title="Transfer function editor">TF</button>
+      <MaskPopover variable={variable} units={units} label="Hide values" testid="mask-3d" />
     {/if}
     {#if wv}
       <div class="ctrl-group toggles" role="group" aria-label="Wind animation">
@@ -801,16 +811,20 @@
       <span class="ctrl-val">{vexag}×</span>
     </div>
     <div class="ctrl-group">
+      <button class="reset-btn" class:active={!$mapHidden} aria-pressed={!$mapHidden} data-testid="map-toggle-3d"
+              onclick={() => setMapHidden(!$mapHidden)}
+              title="{$mapHidden ? 'Show' : 'Hide'} the map: ground imagery and terrain ({getShortcutDisplay('toggle-map')})">Map</button>
       <label for="ground-ctrl">Ground</label>
-      <select id="ground-ctrl" class="quality-sel" value={groundMode} onchange={(e) => setGroundMode((e.target as HTMLSelectElement).value as GroundMode)}>
+      <select id="ground-ctrl" class="quality-sel" value={groundChoice} disabled={$mapHidden}
+              title={$mapHidden ? `The map is hidden (${getShortcutDisplay('toggle-map')} shows it again)` : 'Ground under the volume'} onchange={(e) => setGroundMode((e.target as HTMLSelectElement).value as GroundMode)}>
         <option value="map">Map</option>
         <option value="grid">Grid</option>
         <option value="off">Off</option>
       </select>
     </div>
-    {#if groundMode === 'map'}
-      <label class="chk" title="Terrain from elevation tiles with Sentinel-2 satellite imagery draped on it (needs a network connection; tiles are cached). Heights use the Vertical stretch.">
-        <input type="checkbox" bind:checked={realGround} onchange={onRealGround} /> Realistic ground
+    {#if groundChoice === 'map'}
+      <label class="chk" class:dim={$mapHidden} title="{$mapHidden ? 'Hidden while the map is hidden. ' : ''}Terrain from elevation tiles with Sentinel-2 satellite imagery draped on it (needs a network connection; tiles are cached). Heights use the Vertical stretch.">
+        <input type="checkbox" bind:checked={realGround} disabled={$mapHidden} onchange={onRealGround} /> Realistic ground
       </label>
     {/if}
     {#if volume && kind === 'reflectivity'}
@@ -1103,6 +1117,7 @@
     color: var(--text-muted); text-transform: uppercase; cursor: pointer;
   }
   .chk input { accent-color: var(--accent-primary); }
+  .chk.dim { opacity: 0.55; }
   .sweep-count { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-left: auto; }
   .tfe-panel { padding: var(--spacing-sm) var(--spacing-md); background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
   .canvas-wrap { flex: 1; position: relative; overflow: hidden; cursor: grab; outline: none; min-height: 0; }

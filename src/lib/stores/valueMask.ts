@@ -91,9 +91,31 @@ export function maskTest(value: number | null | undefined, mask: ValueMask | nul
   }
 }
 
-/** A predicate for `mask` (a no-op when it is off), for loops that test many values. */
-export function maskPredicate(mask: ValueMask | null | undefined): ((v: number) => boolean) | null {
-  return isMaskActive(mask) ? (v) => maskTest(v, mask) : null;
+/**
+ * The same mask with its limits rounded to float32. Radar data is float32 (in files, textures and
+ * the engine's arrays), and the engine and the shaders compare in float32, so a gate that holds
+ * the float32 form of a limit (0.7 stored as 0.699999988) is treated alike everywhere.
+ */
+export function float32Mask(mask: ValueMask | null | undefined): ValueMask {
+  if (!mask) return NO_MASK;
+  return {
+    ...mask,
+    min: mask.min === null ? null : Math.fround(mask.min),
+    max: mask.max === null ? null : Math.fround(mask.max),
+  };
+}
+
+/**
+ * A predicate for `mask` (null when it is off), for loops that test many values. Pass
+ * `{ f32: true }` when the values come from float32 data (see `float32Mask`).
+ */
+export function maskPredicate(
+  mask: ValueMask | null | undefined,
+  opts: { f32?: boolean } = {},
+): ((v: number) => boolean) | null {
+  if (!isMaskActive(mask)) return null;
+  const m = opts.f32 ? float32Mask(mask) : mask;
+  return (v) => maskTest(v, m);
 }
 
 const fmtNum = (n: number): string => (Number.isInteger(n) ? String(n) : String(Number(n.toFixed(3))));

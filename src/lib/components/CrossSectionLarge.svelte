@@ -118,7 +118,7 @@
   const maskVariable = $derived(data?.variable || style.variable);
   const mask = $derived(maskOf($valueMasks, maskVariable));
   const maskNote = $derived(maskDescription(mask, data?.units ?? ''));
-  const sc = $derived(data && data.n_sweeps > 0 ? buildCells(data, { fill, masked: maskPredicate(mask) }) : null);
+  const sc = $derived(data && data.n_sweeps > 0 ? buildCells(data, { fill, masked: maskPredicate(mask, { f32: true }) }) : null);
   const heightTop = $derived(top === 'auto' ? (sc ? autoHeightTop(sc.cells) : 15) : top);
   const full: View = $derived.by(() => {
     const dist = data?.distance_km ?? [];

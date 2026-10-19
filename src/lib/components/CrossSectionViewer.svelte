@@ -159,7 +159,7 @@
     const nPoints = data.distance_km.length;
     const nSweeps = data.n_sweeps;
 
-    const masked = maskPredicate(maskOf($valueMasks, data.variable));
+    const masked = maskPredicate(maskOf($valueMasks, data.variable), { f32: true });
 
     // Smoothing on: the shared smoothed picture instead of the blocky cells.
     const smooth = $smoothingStore;
@@ -331,7 +331,7 @@
     const maskNow = maskOf($valueMasks, data.variable);
     const key = `${smooth.interp}|${smooth.sigma}|${smooth.upsample}|${last}|${hMax}|${JSON.stringify(maskNow)}`;
     if (gridCache && gridCache.data === data && gridCache.key === key) return gridCache.grid;
-    const cells = buildCells(data, { fill: true, masked: maskPredicate(maskNow) });
+    const cells = buildCells(data, { fill: true, masked: maskPredicate(maskNow, { f32: true }) });
     const grid = buildSectionGrid(
       cells.columns,
       data.distance_km,

@@ -15,7 +15,8 @@
     type GovernorState,
   } from '../utils/qualityGovernor';
   import TransferFunctionEditor from './TransferFunctionEditor.svelte';
-  import { settings } from '../stores/settings';
+  import { settings, mapHidden, setMapHidden } from '../stores/settings';
+  import { getShortcutDisplay } from '../utils/shortcuts';
   import { resolveBasemap } from '../utils/basemaps';
   import {
     variableKind, buildTf, recolorTf, thresholdSpec, thresholdToShader, significantNorm, adaptiveShiftDb,
@@ -29,6 +30,9 @@
   import { buildGroundMap } from '../utils/groundMap';
   import { GLSL_THRESHOLD, GLSL_HASH, GLSL_GROUND_POLAR } from '../utils/volumeShaderParts';
   import CmapSelect from './CmapSelect.svelte';
+  import MaskPopover from './MaskPopover.svelte';
+  import { maskOf, valueMasks } from '../stores/valueMask';
+  import { GLSL_VALUE_MASK, maskVecNorm } from '../utils/valueMaskGl';
   import { cmapOverrides, effectiveCmap, chooseCmap } from '../stores/cmapChoice';
 
   // ── Reactive state ────────────────────────────────────────────────────────
@@ -174,6 +178,16 @@
   // "Hide below X" threshold (live, applied in the shader on top of the transfer function)
   let thrValue = $state(15);
   const thrSpec = $derived(thresholdSpec(kind, vmin, vmax, varUnits));
+  /**
+   * The shared value mask of this variable, in the volume's normalised units (the volume stores
+   * values over [vmin, vmax] in 8 bits, so a limit is honoured to about 1/254 of that range, and
+   * values outside the colour range cannot be hidden by a limit that lies outside it).
+   */
+  const vmaskVec = $derived(maskVecNorm(maskOf($valueMasks, variable ?? ''), vmin, vmax));
+  $effect(() => {
+    void vmaskVec;
+    untrack(() => interact());
+  });
 
   // Scene: vertical exaggeration, range crop, ground
   let vexag       = $state<number>(loadPref<number>('vexag', VEXAG_DEFAULT, (x) => (x as number) >= VEXAG_MIN && (x as number) <= VEXAG_MAX));
@@ -181,7 +195,10 @@
   let rangeAuto   = $state(true);
   let fullRangeKm = $state(460);
   type GroundMode = 'map' | 'grid' | 'off';
-  let groundMode  = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  /** The Ground choice the user made (kept while the map is hidden, so showing it again restores it). */
+  let groundChoice = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  /** What is drawn: no ground plane, imagery or terrain at all while the map is hidden (the volume and axes stay). */
+  const groundMode = $derived<GroundMode>($mapHidden ? 'off' : groundChoice);
   let showLight   = $state<boolean>(loadPref<boolean>('light', false));
   const siteName  = $derived(String($radarData.attributes?.instrument_name ?? $radarData.attributes?.site_name ?? ''));
 
@@ -346,6 +363,7 @@
     uniform float u_thr;           // "hide below" in normalised value units (0 = off)
     uniform float u_thrSoft;
     uniform int   u_thrMode;       // 0: value, 1: |value| about the middle (velocity)
+    uniform vec4  u_vmask;         // value mask in normalised units: (mode, lower, upper, inclusive)
     uniform int   u_groundMode;    // 0 off, 1 grid, 2 map
     uniform float u_groundSize;    // texels of u_ground
     uniform float u_groundHalf;    // km: half extent the map image covers
@@ -441,7 +459,7 @@
       cov = li.y * ws;
       return true;
     }
-${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
+${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     void main() {
       // Reconstruct per-pixel ray direction
       vec2 uv = (gl_FragCoord.xy / u_resolution - 0.5) * 2.0;
@@ -532,7 +550,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
 
           // Map value through transfer function
           vec4 tf = texture(u_transferFn, vec2((val * 255.0 + 0.5) / 256.0, 0.5));
-          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val);
+          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val) * (valueHidden(val, u_vmask) ? 0.0 : 1.0);
           if (a0 < 0.0004) continue;
           if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
 
@@ -677,7 +695,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       'u_volTotalAz','u_volMaxNRange','u_opacityScale',
       'u_elevMin','u_elevMax',
       'u_volume','u_angleIdx','u_sweepMeta','u_transferFn','u_ground',
-      'u_rangeLimit','u_zTop','u_vexag','u_thr','u_thrSoft','u_thrMode',
+      'u_rangeLimit','u_zTop','u_vexag','u_thr','u_thrSoft','u_thrMode','u_vmask',
       'u_groundMode','u_groundSize','u_groundHalf','u_ringStep','u_light',
       'u_useClip','u_clipMinX','u_clipMinY','u_clipMaxX','u_clipMaxY',
     ];
@@ -1321,7 +1339,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
   }
 
   function setGroundMode(m: GroundMode) {
-    groundMode = m;
+    groundChoice = m;
     savePref('ground', m);
     scheduleGround(0);
     markDirty();
@@ -1335,6 +1353,12 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     if (groundTimer) clearTimeout(groundTimer);
     groundTimer = setTimeout(() => { groundTimer = null; void refreshGround(); }, delay);
   }
+
+  // Hiding / showing the map: drop or bring back the ground (the map image is only fetched while shown).
+  $effect(() => {
+    void $mapHidden;
+    untrack(() => scheduleGround(0));
+  });
 
   /** (Re)build the map image under the volume; no-op without a site, a provider or network. */
   async function refreshGround() {
@@ -1408,7 +1432,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       const cam: Cam = { eye, fwd, right, up, tanX, tanY, w: cssW, h: cssH };
       drawOverlay(overlayCtx, cam, {
         rangeKm, zTopKm: Z_TOP_KM, vexag, ringStepKm: ringStepFor(rangeKm),
-        siteName, showRings: groundMode !== 'off', showFrame: true,
+        siteName, showRings: groundMode !== 'off' || $mapHidden, showFrame: true,
       });
     } catch (e) {
       console.warn('[3D] overlay failed:', e);
@@ -1494,6 +1518,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       g.uniform1f(u('u_thr'),          ts.thr);
       g.uniform1f(u('u_thrSoft'),      ts.soft);
       g.uniform1i(u('u_thrMode'),      ts.mode);
+      g.uniform4fv(u('u_vmask'),       vmaskVec);
       g.uniform1i(u('u_groundMode'),   groundMode === 'off' ? 0 : groundMode === 'map' && groundHasMap ? 2 : 1);
       g.uniform1f(u('u_groundSize'),   groundTexSize);
       g.uniform1f(u('u_groundHalf'),   groundHalfKm);
@@ -1889,6 +1914,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
         <button class="reset-btn" onclick={() => resetCamera('top')} title="Top-down view, north up">Top</button>
       </div>
       <button class="reset-btn" class:active={showTfe} onclick={() => showTfe = !showTfe} title="Transfer function editor">TF</button>
+      <MaskPopover variable={variable ?? ''} units={varUnits} label="Hide values" testid="mask-3d" />
 
       {#if $selectedBox}
         {@const bw = Math.round(Math.abs($selectedBox.xMax - $selectedBox.xMin) / 1000)}
@@ -1931,8 +1957,12 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       </div>
 
       <div class="ctrl-group">
+        <button class="reset-btn" class:active={!$mapHidden} aria-pressed={!$mapHidden} data-testid="map-toggle-3d"
+                onclick={() => setMapHidden(!$mapHidden)}
+                title="{$mapHidden ? 'Show' : 'Hide'} the map: ground imagery and terrain ({getShortcutDisplay('toggle-map')})">Map</button>
         <label for="ground-ctrl">Ground</label>
-        <select id="ground-ctrl" class="quality-sel" value={groundMode}
+        <select id="ground-ctrl" class="quality-sel" value={groundChoice} disabled={$mapHidden}
+                title={$mapHidden ? `The map is hidden (${getShortcutDisplay('toggle-map')} shows it again)` : 'Ground under the volume'}
                 onchange={(e) => setGroundMode((e.target as HTMLSelectElement).value as GroundMode)}>
           <option value="map">Map</option>
           <option value="grid">Grid</option>

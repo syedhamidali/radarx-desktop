@@ -19,6 +19,7 @@ export const SHORTCUT_REGISTRY: ShortcutDef[] = [
   { id: 'toggle-left-sidebar', description: 'Toggle left sidebar', defaultKey: 'mod+b', category: 'view' },
   { id: 'toggle-right-sidebar', description: 'Toggle right sidebar', defaultKey: 'mod+e', category: 'view' },
   { id: 'settings', description: 'Open settings', defaultKey: 'mod+,', category: 'app' },
+  { id: 'toggle-map', description: 'Hide / show the map (2D and 3D)', defaultKey: 'mod+shift+m', category: 'view' },
 ];
 
 // ─── Platform detection ──────────────────────────────────────────────────────
