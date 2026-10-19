@@ -324,7 +324,8 @@ def test_run_json_output(capsys, nc: Path) -> None:
     data = json.loads(out)
     assert code == 0
     assert data["module"] == "storm_detection" and data["params"]["min_size_km2"] == 5.0
-    assert data["scalars"]["Cells"] == len(next(iter(data["tables"].values())))
+    # the table is capped at 200 rows for very noisy sweeps; Cells is the true count
+    assert min(data["scalars"]["Cells"], 200) == len(next(iter(data["tables"].values())))
     assert data["files"] == [] and data["sweep"] == 0
 
 
