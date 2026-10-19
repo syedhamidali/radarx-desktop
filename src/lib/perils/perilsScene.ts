@@ -13,6 +13,7 @@ import {
   type PerilsData, type Station, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, tornadoAt, clockUtc,
 } from './perilsData.ts';
 import { type RGB, drawText, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR, GRAUPEL_COLOUR } from './perilsStyle.ts';
+import { recentHail } from './perilsInsets.ts';
 
 export interface SceneEnv {
   ctx: CanvasRenderingContext2D;
@@ -158,6 +159,16 @@ export function drawStations(e: SceneEnv, a: number): void {
         ctx.fill();
       }
     }
+    // a hail candidate at this station in the last seconds (OBSERVED size of the largest particle): an expanding ring
+    const hail = recentHail(s, e.td, 25);
+    if (hail) {
+      const f = hail.age / 25;
+      polyline(ctx, groundCircle(cam, s.x, s.y, rKm * (1.5 + 3 * f), e.ve), true);
+      ctx.strokeStyle = rgba(HAIL_COLOUR, 0.9 * (1 - f));
+      ctx.lineWidth = 3 * u;
+      ctx.stroke();
+      if (top) drawText(ctx, `hail candidate · largest ${hail.maxD.toFixed(0)} mm`, top[0] + 10 * u, top[1] - 26 * u, u, { size: 14, color: rgba(HAIL_COLOUR, 1) });
+    }
     // pole and head
     if (top) {
       ctx.strokeStyle = rgba(col, 0.95);
@@ -229,6 +240,11 @@ export function drawTornadoTrack(e: SceneEnv, a: number): void {
     const rating = tor.rating ?? 'tornado';
     lab(tor.path[0], `${rating} starts ${clockUtc(e.data.time0, tor.path[0].t)}`);
     lab(tor.path[tor.path.length - 1], `ends ${clockUtc(e.data.time0, tor.path[tor.path.length - 1].t)}`);
+    if (tor.path_interpolated) {
+      const mid = tor.path[Math.floor(tor.path.length / 2)];
+      const pm = pj(cam, mid.x, mid.y, 0.04, e.ve);
+      if (onScreen(pm, cam.w, cam.h)) drawText(ctx, 'surveyed begin and end, path between them interpolated', pm[0] + 10 * u, pm[1] - 10 * u, u, { size: 12, weight: 500, color: rgba([255, 205, 200], 0.95) });
+    }
     // the marker at the clip-time position
     const cur = tornadoAt(tor, e.td);
     if (cur) {
@@ -454,21 +470,97 @@ export function drawZdrColumns(e: SceneEnv, a: number): void {
   const cols = e.data.zdrColumns[e.nearStep];
   if (!cols) return;
   const { ctx, cam, u } = e;
+  // the column stands on the melting level: from the freezing level of the nearest sounding (4 km if none)
+  let fl = 4.0;
+  let best: PerilsData['soundings'][number] | null = null;
+  for (const s of e.data.soundings) if (s.levels && (!best || Math.abs(s.launch - e.td) < Math.abs(best.launch - e.td))) best = s;
+  const hz = best ? heightOfTemp(best.levels, 0) : null;
+  if (hz != null) fl = hz / 1000;
   ctx.save();
   ctx.globalAlpha = a;
-  for (const c of cols) {
-    const b = pj(cam, c[0], c[1], 0.05, e.ve);
-    const t = pj(cam, c[0], c[1], c[2] + 3.5, e.ve);
+  ctx.lineCap = 'round';
+  for (const c of cols.slice(0, 14)) {
+    const b = pj(cam, c[0], c[1], fl, e.ve);
+    const t = pj(cam, c[0], c[1], fl + Math.min(4, c[2]), e.ve);
     if (!onScreen(b, cam.w, cam.h) || !t) continue;
-    ctx.strokeStyle = rgba(ZDR_COLOUR, 0.8);
-    ctx.lineWidth = 2 * u;
+    const g = ctx.createLinearGradient(b[0], b[1], t[0], t[1]);
+    g.addColorStop(0, rgba(ZDR_COLOUR, 0.25));
+    g.addColorStop(1, rgba(ZDR_COLOUR, 0.95));
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 3.2 * u;
     ctx.beginPath();
     ctx.moveTo(b[0], b[1]);
     ctx.lineTo(t[0], t[1]);
     ctx.stroke();
     ctx.beginPath();
-    ctx.arc(t[0], t[1], 3.2 * u, 0, Math.PI * 2);
+    ctx.arc(t[0], t[1], 3.6 * u, 0, Math.PI * 2);
     ctx.fillStyle = rgba(ZDR_COLOUR, 1);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ─── winds ──────────────────────────────────────────────────────────────────
+
+/** Colour of a wind arrow by speed (m/s): blue-violet slow to white-yellow fast. */
+export function windColour(sp: number): RGB {
+  const f = Math.max(0, Math.min(1, sp / 25));
+  return [Math.round(110 + 145 * f), Math.round(130 + 120 * f), Math.round(255 - 60 * f * f)];
+}
+
+/**
+ * Storm-relative wind from the multi-Doppler retrieval (RETRIEVED): horizontal arrows at one level
+ * (inflow ahead of the line, rear inflow behind it, outflow) coloured by speed, and the cells of strong
+ * vertical motion (updraft warm, downdraft cool). Cells the retrieval masked (fewer than two radars, small
+ * beam-crossing angle) are not in the data and are not drawn. The arrow length is a display scale, not a distance travelled.
+ */
+export function drawWinds(e: SceneEnv, a: number): void {
+  if (a <= 0.02) return;
+  const viz = e.data.winds[e.nearStep];
+  if (!viz) return;
+  const { ctx, cam, u } = e;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.lineCap = 'round';
+  const n = viz.glyphs.length;
+  const eyeD = Math.hypot(cam.eye[0], cam.eye[1], cam.eye[2]);
+  const stride = eyeD > 90 ? 3 : eyeD > 40 ? 2 : 1;
+  for (let i = 0; i < n; i += stride) {
+    const g = viz.glyphs[i];
+    const sp = Math.hypot(g[2], g[3]);
+    if (sp < 1.5) continue;
+    const p0 = pj(cam, g[0], g[1], viz.zKm, e.ve);
+    if (!onScreen(p0, cam.w, cam.h)) continue;
+    const L = Math.min(3.2, 0.18 * sp);
+    const p1 = pj(cam, g[0] + (g[2] / sp) * L, g[1] + (g[3] / sp) * L, viz.zKm, e.ve);
+    if (!p1) continue;
+    const col = windColour(sp);
+    ctx.strokeStyle = rgba(col, 0.85);
+    ctx.lineWidth = 1.8 * u;
+    ctx.beginPath();
+    ctx.moveTo(p0[0], p0[1]);
+    ctx.lineTo(p1[0], p1[1]);
+    ctx.stroke();
+    const ang = Math.atan2(p1[1] - p0[1], p1[0] - p0[0]);
+    const hs = 6 * u;
+    ctx.beginPath();
+    ctx.moveTo(p1[0], p1[1]);
+    ctx.lineTo(p1[0] - hs * Math.cos(ang - 0.45), p1[1] - hs * Math.sin(ang - 0.45));
+    ctx.lineTo(p1[0] - hs * Math.cos(ang + 0.45), p1[1] - hs * Math.sin(ang + 0.45));
+    ctx.closePath();
+    ctx.fillStyle = rgba(col, 0.9);
+    ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  const wstride = Math.max(1, Math.ceil(viz.w.length / 900));
+  for (let i = 0; i < viz.w.length; i += wstride) {
+    const c = viz.w[i];
+    const p = pj(cam, c[0], c[1], c[2], e.ve);
+    if (!onScreen(p, cam.w, cam.h)) continue;
+    const up = c[3] > 0;
+    ctx.fillStyle = up ? 'rgba(255,150,60,0.5)' : 'rgba(80,170,255,0.5)';
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], Math.min(5 * u, Math.max(1.6 * u, 0.09 * pxPerKm(cam, p[2]))) * Math.min(2, Math.abs(c[3]) / 8), 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
@@ -516,7 +608,7 @@ export function drawBalloons(e: SceneEnv, a: number): void {
         ctx.stroke();
         if (s === nearest) drawText(ctx, `${name} ${hk.toFixed(1)} km`, p[0] + 13 * u, p[1] + 5 * u, u, { size: 13, color: rgba(provColour('observed'), 1) });
       }
-      drawText(ctx, `${s.site} sounding ${clockUtc(e.data.time0, s.launch)}`, base[0] + 10 * u, base[1] + 18 * u, u, { size: 14, color: rgba(provColour('observed'), 1) });
+      drawText(ctx, `${s.site} · launch ${clockUtc(e.data.time0, s.launch)}`, base[0] + 10 * u, base[1] + 18 * u, u, { size: 14, color: rgba(provColour('observed'), 1) });
     }
     // the balloon track: ascended part solid, the rest faint
     if (s.drift.length > 1) {

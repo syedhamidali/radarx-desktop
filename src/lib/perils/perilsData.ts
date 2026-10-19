@@ -15,6 +15,16 @@ export interface PerilsStep {
   offsets_s: Record<string, number>;
 }
 
+/** The drop-size spectrum of a disdrometer: log10 N(D) (m-3 mm-1) per time column (null = no drops) and diameter bin. */
+export interface Dsd {
+  t: number[];
+  d: number[];
+  logN: (number | null)[][];
+  rain_rate_mmh?: (number | null)[];
+  dm_mm?: (number | null)[];
+  fall?: number[];
+}
+
 export interface Station {
   id: string;
   name: string;
@@ -25,7 +35,24 @@ export interface Station {
   lon: number;
   altKm: number;
   series: Record<string, (number | null)[]>;
-  events: { t_s?: number; kind?: string; [k: string]: unknown }[];
+  events: { t_s?: number; kind?: string; max_d_mm?: number; n_large?: number; mean_d_large_mm?: number; mean_fall_ms_large?: number; [k: string]: unknown }[];
+  dsd?: Dsd;
+  credit?: string | null;
+}
+
+/** A time-height field (MRR, wind profiler): 8-bit codes (0 = missing) between `min` and `max`; rows are times, columns heights. */
+export interface TimeHeight {
+  t: number[];
+  h: number[];
+  fields: Record<string, { min: number; max: number; codes: number[][] }>;
+}
+
+export interface WindViz {
+  zKm: number;
+  /** Storm-relative horizontal wind at `zKm`: [x, y, u, v] (m/s). */
+  glyphs: number[][];
+  /** Vertical-motion cells: [x, y, z km, w m/s]. */
+  w: number[][];
 }
 
 export interface SoundingLevels {
@@ -56,6 +83,10 @@ export interface TornadoRec {
   width_m?: number;
   source?: string;
   path: { t: number; x: number; y: number }[];
+  /** The path is a line between the surveyed begin and end points (always so for a NWS survey). */
+  path_interpolated?: boolean;
+  start_iso?: string | null;
+  end_iso?: string | null;
   [k: string]: unknown;
 }
 
@@ -118,6 +149,12 @@ export interface PerilsData {
   tds: (number[][] | null)[];
   layers: ({ bin: string; names: string[]; ny: number; nx: number } | null)[];
   zdrColumns: (number[][] | null)[];
+  winds: (WindViz | null)[];
+  hasWinds: boolean;
+  profiles: Record<string, TimeHeight>;
+  science: { t_s: number; kind: string; title?: string | null; numbers?: string[]; text?: string | null; class?: string | null; where?: string | null; lat?: number | null; lon?: number | null; hold_s?: number }[];
+  hidLegend: { codes?: Record<string, { abbr: string; name: string }> } | null;
+  ground?: { file?: string; half: number; cx: number; cy: number; size?: number; credit?: string };
   sources: SourceCredit[];
   [k: string]: unknown;
 }
@@ -161,6 +198,24 @@ export function stationReadout(st: Station, t: number): Readout {
 export function stationHasData(st: Station, t: number): boolean {
   const ts = st.series?.t_s as number[] | undefined;
   return !!ts && ts.length > 0 && t >= ts[0] && t <= ts[ts.length - 1];
+}
+
+/** Column of a drop-size spectrum nearest in time to `t`, within `tolS` seconds, or -1. */
+export function dsdColumn(dsd: Dsd | undefined, t: number, tolS = 30): number {
+  if (!dsd || !dsd.t.length) return -1;
+  const { i, f } = bracket(dsd.t, t);
+  const j = f < 0.5 ? i : Math.min(i + 1, dsd.t.length - 1);
+  return Math.abs(dsd.t[j] - t) <= tolS ? j : -1;
+}
+
+/** Fall speed (m/s) of a raindrop of diameter `dMm` (Atlas et al. 1973; the reference curve the observed hail departs from). */
+export function raindropFall(dMm: number): number {
+  return 9.65 - 10.3 * Math.exp(-0.6 * dMm);
+}
+
+/** Value of a time-height code (1..255 between min and max); null for 0 (missing). */
+export function codeValue(code: number, min: number, max: number): number | null {
+  return code <= 0 ? null : min + ((code - 1) / 254) * (max - min);
 }
 
 // ─── soundings ──────────────────────────────────────────────────────────────

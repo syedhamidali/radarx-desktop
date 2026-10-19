@@ -16,7 +16,7 @@ const shots = [
 test('a layer has the value of its shot in the middle of the shot', () => {
   assert.equal(crossfade(shots, LAYER_TABLE.funnel, 58), 1);
   assert.equal(crossfade(shots, LAYER_TABLE.convStrat, 115), 1);
-  assert.equal(crossfade(shots, LAYER_TABLE.skewt, 80), 0.95);
+  assert.equal(crossfade(shots, LAYER_TABLE.skewt, 5), 0.95);
 });
 
 test('values change smoothly across a shot change: no pop, within the range of the two shots', () => {

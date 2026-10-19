@@ -17,7 +17,8 @@ import { Director, type CamEntry, type TimelineFile, nearestStation } from './pe
 import { LayerVis, type LayerId } from './perilsLayers';
 import { GroundComposer } from './perilsGround';
 import { compileFlashes, flashFrame, flashesInWindow, lightFrom, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
-import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, type SceneEnv } from './perilsScene';
+import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, type SceneEnv } from './perilsScene';
+import { drawStripCharts, drawDsdInset, drawTimeHeight, drawRainStreaks } from './perilsInsets';
 import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, drawStationCard, drawTornadoCard, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha } from './perilsHud';
 import { activeEvent, captionAlpha, captionOf, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
@@ -63,6 +64,7 @@ export class PerilsExtras implements ClipExtras {
   private pending: Promise<void> | null = null;
   private lastNearest: string | null = null;
   groundMissing = true;
+  rainStreaks = 0;
   lmaDrawn = 0;
   maxSimultaneousFlashes = 0;
 
@@ -231,6 +233,7 @@ export class PerilsExtras implements ClipExtras {
     drawBalloons(env, v('balloon'));
     drawZdrColumns(env, v('zdr'));
     drawHail(env, v('hail'));
+    drawWinds(env, v('flow'));
     drawTds(env, v('rotation'));
     drawRotation(env, v('rotation'));
     drawStations(env, v('stations'));
@@ -325,13 +328,34 @@ export class PerilsExtras implements ClipExtras {
     let y = 28 * u;
     y = drawLmaPanel(ctx, W, u, m, m.vis('lmaPanel'));
     y = drawEnvPanel(ctx, W, u, y, m.env, m.vis('envPanel'));
+    const yEnv = y;
+    const win = this.data.steps[this.data.steps.length - 1].t_s;
+    const ix = W - 34 * u - 330 * u;
+    if (m.station) {
+      const gf = this.data.science.filter((e) => e.kind === 'gust_front' || e.kind === 'pressure_jump').map((e) => e.t_s);
+      const sa = m.vis('stripCharts');
+      let h = drawStripCharts(ctx, ix, y, 330 * u, u, m.station.st, info.td, win, sa, gf);
+      if (h) y += h + 10 * u;
+      h = drawDsdInset(ctx, ix, y, 330 * u, u, m.station.st, info.td, m.vis('dsd'));
+      if (h) y += h + 10 * u;
+    }
+    const prof = this.data.profiles;
+    const th = prof.mrr;
+    if (th && th.fields.dbz) {
+      const h = drawTimeHeight(ctx, ix, y, 330 * u, u, 'MRR above RaDAPS', th, 'dbz', 'reflectivity, dBZ', info.td, win, m.vis('timeHeight'));
+      if (h) y += h + 10 * u;
+    }
+    if (m.station && info.eye[2] / Math.max(info.vexag, 1e-3) < 0.05) {
+      const ro = m.station.ro;
+      this.rainStreaks = drawRainStreaks(ctx, W, H, u, ro.rain, ro.dm, info.t, m.vis('rainStreaks'));
+    }
     drawStationCard(ctx, H, u, m, m.vis('stationCard'));
     drawTornadoCard(ctx, u, m, 1);
     drawCaption(ctx, W, H, u, m);
     drawTimeline(ctx, W, H, u, m);
     drawLegend(ctx, W, H, u, m);
     drawEndCard(ctx, W, H, u, m, info.t, this.director.duration);
-    this.updateInset(info, y, m.vis('skewt'));
+    this.updateInset(info, yEnv, m.vis('skewt'));
   }
 
   // ── Skew-T inset (a real Svelte component, in the page) ───────────────────

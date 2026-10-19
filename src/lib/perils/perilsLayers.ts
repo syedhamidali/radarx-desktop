@@ -8,7 +8,7 @@
 export type LayerId =
   | 'radars' | 'stations' | 'lma' | 'hail' | 'rotation' | 'tornadoTrack' | 'funnel' | 'zdr' | 'convStrat' | 'balloon'
   | 'mrms' | 'isotherms' | 'flow' | 'wsurface' | 'captions' | 'skewt' | 'envPanel' | 'stripCharts' | 'timeHeight' | 'lmaPanel' | 'stationCard'
-  | 'modelCloud' | 'surfaceModels';
+  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks';
 
 const SHOTS = ['establishing', 'flyby', 'tornado', 'window', 'rise', 'topdown'] as const;
 type ShotName = (typeof SHOTS)[number];
@@ -30,7 +30,7 @@ export const LAYER_TABLE: Record<LayerId, number[]> = {
   flow: [0, 0.8, 1, 0.5, 0.6, 0],
   wsurface: [0, 0, 0, 0, 0, 0],
   captions: [1, 1, 1, 1, 1, 1],
-  skewt: [0.95, 0, 0, 0.95, 0, 0],
+  skewt: [0.95, 0, 0, 0, 0.9, 0],
   envPanel: [1, 0, 0, 0, 0.8, 0.6],
   stripCharts: [0, 0.4, 0, 1, 0.3, 0],
   timeHeight: [0, 0, 0, 1, 0.3, 0],
@@ -38,6 +38,8 @@ export const LAYER_TABLE: Record<LayerId, number[]> = {
   stationCard: [0.3, 0.8, 0.5, 1, 0.5, 0.3],
   modelCloud: [0.5, 0, 0, 0, 0.3, 0.5],
   surfaceModels: [0.7, 0.3, 0.2, 0.3, 0.5, 0.8],
+  dsd: [0, 0, 0, 1, 0.3, 0],
+  rainStreaks: [0, 0, 0, 1, 0, 0],
 };
 
 export function smoothstep(x: number): number {
