@@ -40,7 +40,11 @@ def read_wav(path) -> tuple[np.ndarray, int]:
         a = np.frombuffer(raw, "<i2").astype(np.float64) / 32768.0
     elif sw == 3:
         b = np.frombuffer(raw, np.uint8).reshape(-1, 3)
-        v = b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16)
+        v = (
+            b[:, 0].astype(np.int32)
+            | (b[:, 1].astype(np.int32) << 8)
+            | (b[:, 2].astype(np.int32) << 16)
+        )
         v = np.where(v & 0x800000, v - (1 << 24), v)
         a = v.astype(np.float64) / 8388608.0
     else:

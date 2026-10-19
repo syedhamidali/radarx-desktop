@@ -123,7 +123,9 @@ class CameraPath:
         self.lat = np.array([float(k["lat"]) for k in keys])
         self.lon = np.array([float(k["lon"]) for k in keys])
         self.alt = np.array([float(k.get("alt_m", 0.0)) for k in keys])
-        self.heading = np.degrees(np.unwrap(np.radians([float(k.get("heading_deg", 0.0)) for k in keys])))
+        self.heading = np.degrees(
+            np.unwrap(np.radians([float(k.get("heading_deg", 0.0)) for k in keys]))
+        )
         self.pitch = np.array([float(k.get("pitch_deg", 0.0)) for k in keys])
 
     def capped(self, max_alt_m: float) -> CameraPath:

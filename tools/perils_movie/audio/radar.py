@@ -59,15 +59,25 @@ class RadarVolumes:
                     files.append(str(f))
         if not files:
             return None
-        return cls(Path(root), (float(g["origin_lat"]), float(g["origin_lon"])), np.array(t), files,
-                   np.array(g["x_km"], float), np.array(g["y_km"], float))
+        return cls(
+            Path(root),
+            (float(g["origin_lat"]), float(g["origin_lon"])),
+            np.array(t),
+            files,
+            np.array(g["x_km"], float),
+            np.array(g["y_km"], float),
+        )
 
     def _step_maps(self, k: int):
         if k not in self._maps:
             with np.load(self.files[k]) as z:
-                conv = (z["conv_strat"] == 2).astype(np.float32) if "conv_strat" in z.files else None
+                conv = (
+                    (z["conv_strat"] == 2).astype(np.float32) if "conv_strat" in z.files else None
+                )
                 hid = z["hid"][:LOW_LEVELS] if "hid" in z.files else None
-                mesh = np.nan_to_num(z["mesh_mm"].astype(np.float32)) if "mesh_mm" in z.files else None
+                mesh = (
+                    np.nan_to_num(z["mesh_mm"].astype(np.float32)) if "mesh_mm" in z.files else None
+                )
                 dbz = z["dbz"][:3].astype(np.float32) if "dbz" in z.files else None
             hail = None
             if hid is not None:
@@ -98,8 +108,15 @@ class RadarVolumes:
         linearly in time between the two volumes around the time; hail and mesh take the nearest."""
         t_data = np.asarray(t_data, float)
         n = len(t_data)
-        out = {"conv": np.zeros(n), "hail": np.zeros(n), "mesh_mm": np.zeros(n), "dbz_low": np.full(n, -30.0),
-               "rain_mmh": np.zeros(n), "ok": np.zeros(n, bool), "step": np.full(n, -1)}
+        out = {
+            "conv": np.zeros(n),
+            "hail": np.zeros(n),
+            "mesh_mm": np.zeros(n),
+            "dbz_low": np.full(n, -30.0),
+            "rain_mmh": np.zeros(n),
+            "ok": np.zeros(n, bool),
+            "step": np.full(n, -1),
+        }
         x, y = aeqd_km(*self.origin, lat, lon)
         ix = np.round((x - self.x_km[0]) / (self.x_km[1] - self.x_km[0])).astype(int)
         iy = np.round((y - self.y_km[0]) / (self.y_km[1] - self.y_km[0])).astype(int)
@@ -141,4 +158,4 @@ def zr_rain_rate(z_lin) -> np.ndarray:
     hail contamination, no drop-size information."""
     z = np.asarray(z_lin, float)
     r = (np.maximum(z, 0.0) / 300.0) ** (1.0 / 1.4)
-    return np.where(z >= 10.0 ** 1.2, np.minimum(r, 150.0), 0.0).astype(np.float32)
+    return np.where(z >= 10.0**1.2, np.minimum(r, 150.0), 0.0).astype(np.float32)

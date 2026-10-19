@@ -136,8 +136,13 @@ def render_mix(
     # the flash table: full rows for the flashes that were considered for the mix; the ones that are out of
     # range or after the end of the clip keep only what identifies them (the report stays small)
     shown = [
-        {k: v for k, v in _public(r).items() if k in ("id", "status", "n_sources", "t_flash_clip_s", "dist_nearest_m")}
-        if r["status"] in ("skipped_out_of_range", "outside_clip") else _public(r)
+        {
+            k: v
+            for k, v in _public(r).items()
+            if k in ("id", "status", "n_sources", "t_flash_clip_s", "dist_nearest_m")
+        }
+        if r["status"] in ("skipped_out_of_range", "outside_clip")
+        else _public(r)
         for r in rows
     ]
     provenance = _provenance(b, info, scene, rows)
@@ -154,13 +159,18 @@ def render_mix(
             "radar_samples": b.radar_samples is not None,
         },
         "params": {
-            "sample_rate": sr, "seed": seed, "target_lufs": target_lufs,
+            "sample_rate": sr,
+            "seed": seed,
+            "target_lufs": target_lufs,
             "speed_of_sound_ms": SPEED_OF_SOUND_MS,
             "thunder": asdict(prm),
             "clip_duration_s": dur,
-            "listener": {"max_height_above_ground_m": max_listener_height_m, "ground_alt_m": ground,
-                         "camera_altitude_max_m": cam_alt_max,
-                         "note": "the listener is the camera's ground track, at most this high above the ground"},
+            "listener": {
+                "max_height_above_ground_m": max_listener_height_m,
+                "ground_alt_m": ground,
+                "camera_altitude_max_m": cam_alt_max,
+                "note": "the listener is the camera's ground track, at most this high above the ground",
+            },
             "speedup": tl.speedup if tl.speedup is not None else "keyframes",
             "data_offset_s": tl.data_offset_s,
         },
@@ -196,16 +206,33 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
     used: dict[str, dict] = {}
     for layer, segs in drivers.items():
         for s in segs:
-            u = used.setdefault(s["station_id"], {"station_id": s["station_id"], "name": s["station_name"],
-                                                  "type": s["station_type"], "network": s.get("network"), "credit": s.get("credit"),
-                                                  "layers": set(), "clip_seconds": 0.0})
+            u = used.setdefault(
+                s["station_id"],
+                {
+                    "station_id": s["station_id"],
+                    "name": s["station_name"],
+                    "type": s["station_type"],
+                    "network": s.get("network"),
+                    "credit": s.get("credit"),
+                    "layers": set(),
+                    "clip_seconds": 0.0,
+                },
+            )
             u["layers"].add(layer)
             u["clip_seconds"] += s["clip_s"][1] - s["clip_s"][0]
     for row in info["hail"].get("rows", []):
         if row.get("station_id"):
-            u = used.setdefault(row["station_id"], {"station_id": row["station_id"], "name": row["station_name"],
-                                                    "type": None, "network": None, "layers": set(),
-                                                    "clip_seconds": 0.0})
+            u = used.setdefault(
+                row["station_id"],
+                {
+                    "station_id": row["station_id"],
+                    "name": row["station_name"],
+                    "type": None,
+                    "network": None,
+                    "layers": set(),
+                    "clip_seconds": 0.0,
+                },
+            )
             u["layers"].add("hail")
     for u in used.values():
         u["layers"] = sorted(u["layers"])
@@ -213,30 +240,55 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
     rad = info["rain"].get("radar_drivers", [])
     if rad:
         used["radar_volumes"] = {
-            "station_id": "radar_volumes", "name": "merged radar volumes (gridded radars, reflectivity)", "type": "radar",
-            "network": None, "credit": next((s.get("credit") for s in (b.manifest.get("sources") or [])
-                                              if str(s.get("name", "")).lower().startswith("radar")), None),
-            "layers": ["rain"], "clip_seconds": round(sum(s["clip_s"][1] - s["clip_s"][0] for s in rad), 2),
+            "station_id": "radar_volumes",
+            "name": "merged radar volumes (gridded radars, reflectivity)",
+            "type": "radar",
+            "network": None,
+            "credit": next(
+                (
+                    s.get("credit")
+                    for s in (b.manifest.get("sources") or [])
+                    if str(s.get("name", "")).lower().startswith("radar")
+                ),
+                None,
+            ),
+            "layers": ["rain"],
+            "clip_seconds": round(sum(s["clip_s"][1] - s["clip_s"][0] for s in rad), 2),
         }
     n_src = int(sum(r["n_sources"] for r in rows if r["status"] == "rendered"))
     return {
         "label": LABEL,
-        "thunder": {"instrument": "lightning mapping array (LMA) VHF sources", "flashes_total": len(rows),
-                    "flashes_rendered": sum(r["status"] == "rendered" for r in rows),
-                    "sources_in_rendered_flashes": n_src},
+        "thunder": {
+            "instrument": "lightning mapping array (LMA) VHF sources",
+            "flashes_total": len(rows),
+            "flashes_rendered": sum(r["status"] == "rendered" for r in rows),
+            "sources_in_rendered_flashes": n_src,
+        },
         "rain": drivers["rain"],
         "rain_from_radar": rad,
         "wind": drivers["wind"],
-        "wind_events": {"gust_fronts": info["wind"].get("gust_fronts", []),
-                        "pressure_jumps": info["wind"].get("pressure_jumps", [])},
+        "wind_events": {
+            "gust_fronts": info["wind"].get("gust_fronts", []),
+            "pressure_jumps": info["wind"].get("pressure_jumps", []),
+        },
         "hail": info["hail"].get("rows", []),
-        "tornado": {"evidence": info["tornado"].get("evidence", []),
-                    "tracks": [{"id": t.id, "name": t.name, "ef": t.ef,
-                                "data_s": [float(t.t[0]), float(t.t[-1])],
-                                "source": t.meta.get("source") or t.meta.get("survey"),
-                                "path_kind": t.meta.get("path_kind"), "credit": t.meta.get("credit")}
-                               for t in b.tornadoes if f"track:{t.id}" in info["tornado"].get("evidence", [])],
-                    "stylised": True},
+        "tornado": {
+            "evidence": info["tornado"].get("evidence", []),
+            "tracks": [
+                {
+                    "id": t.id,
+                    "name": t.name,
+                    "ef": t.ef,
+                    "data_s": [float(t.t[0]), float(t.t[-1])],
+                    "source": t.meta.get("source") or t.meta.get("survey"),
+                    "path_kind": t.meta.get("path_kind"),
+                    "credit": t.meta.get("credit"),
+                }
+                for t in b.tornadoes
+                if f"track:{t.id}" in info["tornado"].get("evidence", [])
+            ],
+            "stylised": True,
+        },
         "convective": {"source": info["convective"].get("source")},
         "stations_used": sorted(used.values(), key=lambda u: -u["clip_seconds"]),
         "manifest_sources": b.manifest.get("sources"),
@@ -250,7 +302,9 @@ def _per_second_db(x: np.ndarray, sr: int) -> np.ndarray:
     m = len(e) // CTL_RATE
     if m == 0:
         return e
-    return 10 * np.log10(np.maximum((10 ** (e[: m * CTL_RATE] / 10)).reshape(m, CTL_RATE).mean(axis=1), 1e-14))
+    return 10 * np.log10(
+        np.maximum((10 ** (e[: m * CTL_RATE] / 10)).reshape(m, CTL_RATE).mean(axis=1), 1e-14)
+    )
 
 
 def render_audio(
@@ -276,14 +330,26 @@ def render_audio(
     Deterministic: the same inputs and seed give the identical file.
     """
     y, report, stems = render_mix(
-        bundle_dir, timeline, camera_path, events=events, sample_rate=sample_rate, seed=seed,
-        target_lufs=target_lufs, thunder=thunder, max_listener_height_m=max_listener_height_m,
+        bundle_dir,
+        timeline,
+        camera_path,
+        events=events,
+        sample_rate=sample_rate,
+        seed=seed,
+        target_lufs=target_lufs,
+        thunder=thunder,
+        max_listener_height_m=max_listener_height_m,
     )
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
     write_wav(out, y.T, sample_rate, bits, seed)
-    report["output"] = {"wav": str(out), "bits": bits, "channels": 2, "sample_rate": sample_rate,
-                        "duration_s": y.shape[1] / sample_rate}
+    report["output"] = {
+        "wav": str(out),
+        "bits": bits,
+        "channels": 2,
+        "sample_rate": sample_rate,
+        "duration_s": y.shape[1] / sample_rate,
+    }
     rp = Path(report_path) if report_path else out.with_name("audio_report.json")
     rp.write_text(json.dumps(report, indent=1))
     if stems_dir:

@@ -96,7 +96,9 @@ def load_dsd(path) -> Dsd | None:
     if dD is None and lo is not None and hi is not None:
         dD = np.asarray(hi, float) - np.asarray(lo, float)
     if dD is None:
-        edges = np.concatenate([[D[0] - (D[1] - D[0]) / 2], (D[1:] + D[:-1]) / 2, [D[-1] + (D[-1] - D[-2]) / 2]])
+        edges = np.concatenate(
+            [[D[0] - (D[1] - D[0]) / 2], (D[1:] + D[:-1]) / 2, [D[-1] + (D[-1] - D[-2]) / 2]]
+        )
         dD = np.diff(edges)
     dD = np.asarray(dD, float).ravel()
     vt = _pick(d, ("vt_ms", "fall_speed_ms", "v_ms", "vt", "fall_speed", "fallspeed_ms"))
