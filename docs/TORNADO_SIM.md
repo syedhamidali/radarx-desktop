@@ -91,7 +91,7 @@ their crown height passes 33 m/s (hardwood) or 30 m/s (pine) (`treeDamage.ts`, m
 | funnel air | T 20.4, Td 18.3 C, 995.6 hPa, LCL 263 m | StickNet 0216A (warm inflow) |
 | haze air | T 15.7, Td 15.4 C, LCL 38 m | StickNet 0102A (nearest, rain-cooled) |
 | rain | 5 to 24 mm/h (25-45 dBZ at 0.5 km) | merged radar volume, Marshall-Palmer |
-| flashes | 337 within 45 km, t = 355-565 s | LMA |
+| flashes | 339 within 45 km, t = 355-565 s | LMA |
 
 `tools/tornado_sim/make_seed.py` builds all of this from the bundle into `tornado_seed.json` and prints which station was
 used and why.

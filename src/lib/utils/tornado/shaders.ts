@@ -700,6 +700,7 @@ void main() {
   } else if (vKind < 1.5) {     // leaf / insulation: ragged ellipse
     vec4 n = noiseAt(vec3(vWorld * 1.7));
     a = smoothstep(1.0, 0.7, length(vUv * vec2(1.0, 1.25))) * smoothstep(0.25, 0.5, n.r + 0.2);
+    a = a > 0.4 ? 1.0 : 0.0;
   } else {                      // boards, sheet, timber: crisp rectangle with a soft edge
     a = smoothstep(1.0, 0.85, max(abs(vUv.x), abs(vUv.y)));
   }
@@ -799,6 +800,7 @@ layout(location = 1) out vec4 outDist;
 uniform vec3 uCam;
 uniform vec4 uAmb;
 uniform float uWet;
+uniform vec3 uGlowDir;
 void main() {
   vec3 N = normalize(vN);
   vec3 col;
@@ -813,7 +815,8 @@ void main() {
     if (leaf < cut) discard;
     vec3 hw = mix(vec3(0.045, 0.07, 0.026), vec3(0.075, 0.10, 0.034), vVar);
     vec3 pine = mix(vec3(0.022, 0.040, 0.024), vec3(0.034, 0.055, 0.028), vVar);
-    col = (vSpecies < 0.5 ? hw : pine) * (0.55 + 1.0 * n2.b) * (0.7 + 0.5 * smoothstep(-0.2, 1.0, N.z));
+    float lit = max(dot(N, normalize(vec3(uGlowDir.xy, 0.25))), 0.0);
+    col = (vSpecies < 0.5 ? hw : pine) * (0.55 + 1.0 * n2.b) * (0.7 + 0.5 * smoothstep(-0.2, 1.0, N.z)) * (1.0 + 1.4 * lit);
   }
   col *= (1.0 - 0.35 * uWet);
   float up = 0.45 + 0.55 * N.z;

@@ -141,7 +141,8 @@ export function modePose(mode: CameraMode, r: ResolvedSeed, tau: number, t: numb
     pos = [pos[0] + j * sway(tau * 3.1, 4), pos[1] + j * sway(tau * 2.9, 5), pos[2] + j * 0.6 * sway(tau * 3.3, 6)];
   }
   void horizontalSpeed;
-  return { pos, target, fovDeg: fov, roll, windAtCamera: wind, shakeDeg, distance };
+  const exposure = mode === 'inside' ? 0.62 : mode === 'debris' ? 1.15 : 1;
+  return { pos, target, fovDeg: fov, roll, windAtCamera: wind, shakeDeg, distance, exposure };
 }
 
 /** Velocity of the camera pose (finite difference), for the rain streak blur. */

@@ -41,6 +41,8 @@ export interface TornadoCamera {
   roll?: number;
   /** Camera velocity (m/s), for the rain streaks' motion blur. */
   vel?: Vec3;
+  /** Exposure multiplier of the shot (a darker, moodier grade for the view from inside the vortex). */
+  exposure?: number;
 }
 
 export type AmbientPreset = 'dusk' | 'night' | 'overcast';
@@ -992,7 +994,7 @@ export class TornadoScene {
       gl.useProgram(p.prog);
       this.bindTex(p, 'uHdr', gl.TEXTURE_2D, this.volColor, 0);
       this.bindTex(p, 'uBloom', gl.TEXTURE_2D, this.bloomTex[1], 1);
-      gl.uniform1f(p.u.uExposure, amb.exposure * this.exposureMul);
+      gl.uniform1f(p.u.uExposure, amb.exposure * this.exposureMul * (camera.exposure ?? 1));
       gl.uniform1f(p.u.uBloomK, 0.5);
       gl.uniform1f(p.u.uFrame, this.frameKey());
       gl.uniform2f(p.u.uRes, this.width, this.height);
