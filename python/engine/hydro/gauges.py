@@ -984,8 +984,6 @@ class Adjuster:
         return self
 
     def _fit_ked(self) -> None:
-        from scipy.optimize import least_squares
-
         g, r, x, y = self._g, self._r, self._x, self._y
         design = np.column_stack([np.ones_like(r), r])
         beta, *_ = np.linalg.lstsq(design, g, rcond=None)
@@ -1004,18 +1002,19 @@ class Adjuster:
         centers, gam = np.array(centers), np.array(gam)
         var = float(res.var()) + 1e-6
 
-        def model(p, hh):
-            c0, c, a = p
-            return c0 + c * (1.0 - np.exp(-hh / a))
-
         if centers.size >= 3:
-            p0 = [0.1 * var, 0.9 * var, max(float(centers.max()) / 3.0, 1.0)]
-            sol = least_squares(
-                lambda p: model(p, centers) - gam,
-                p0,
-                bounds=([0.0, 1e-9, 1.0], [10 * var, 10 * var, 500.0]),
-            )
-            c0, c, a = (float(v) for v in sol.x)
+            # exponential variogram with nugget: for each range ``a`` the nugget and the partial
+            # sill are a non-negative linear least-squares problem; take the best range of a grid
+            # (no iterative optimiser: deterministic, and no scipy.optimize in the installer)
+            best = None
+            for a_try in np.geomspace(1.0, 500.0, 60):
+                basis = np.column_stack([np.ones_like(centers), 1.0 - np.exp(-centers / a_try)])
+                coef, *_ = np.linalg.lstsq(basis, gam, rcond=None)
+                coef = np.clip(coef, [0.0, 1e-9], [10 * var, 10 * var])
+                err = float(np.sum((basis @ coef - gam) ** 2))
+                if best is None or err < best[0]:
+                    best = (err, float(coef[0]), float(coef[1]), float(a_try))
+            _, c0, c, a = best  # type: ignore[misc]
         else:
             c0, c, a = 0.1 * var, 0.9 * var, 30.0
         self._vario = (c0, c, a)

@@ -74,9 +74,9 @@ class QpeGrid:
     def areal_scale(self) -> np.ndarray:
         """Area distortion factor of the grid (AEQD: ``theta / sin(theta)`` tangentially).
 
-        True cell area = ``cell_m**2 / areal_scale``. The factor is 1 on the axes through the
-        origin and ~1.0006 at 150 km, 1.0014 at 230 km: negligible for a regional grid but applied
-        so that areas are exact to the first order.
+        True cell area = ``cell_m**2 / areal_scale``. The factor is 1 at the origin, 1.0002 at
+        230 km and 1.0007 at 400 km (1 + theta^2/6): negligible for a regional grid but applied so
+        that areas are right to the first order.
         """
         xx, yy = np.meshgrid(self.x, self.y)
         rho = np.hypot(xx, yy)
@@ -175,6 +175,7 @@ class SweepSample:
     frac_atten: np.ndarray
     frac_block: np.ndarray
     frac_phase: np.ndarray
+    snr_db: np.ndarray | None = None
 
 
 def _window_indices(
@@ -251,6 +252,11 @@ def sample_sweep(
         "att": ((sq.flags & hqpe.FLAG_ATTEN) > 0).astype(np.float64),
         "ph": ((sq.flags & hqpe.FLAG_PHASE) > 0).astype(np.float64),
     }
+    has_snr = sq.snr_db is not None
+    if has_snr:
+        snr_ok = valid_g & np.isfinite(sq.snr_db)
+        chans["snr"] = np.where(snr_ok, sq.snr_db, 0.0)
+        chans["snr_n"] = snr_ok.astype(np.float64)
     if has_dem:  # quality, height and blockage vary with azimuth only through the terrain
         chans["q"] = np.where(valid_g, sq.quality, 0.0)
         chans["h"] = np.where(valid_g, sq.beam_height_agl_m, 0.0)
@@ -283,6 +289,11 @@ def sample_sweep(
                 ok, np.interp(s_cell, sq.ground_range_m, sq.beam_height_agl_m[0]), np.nan
             )
             cbb = None
+        snr_mean = (
+            np.where(ok & (sums["snr_n"] > 0), sums["snr"] / np.maximum(sums["snr_n"], 1.0), np.nan)
+            if has_snr
+            else None
+        )
         keys = ("ml", "hail", "att", "ph", "blk") if has_dem else ("ml", "hail", "att", "ph")
         fr = {k: sums[k] / np.maximum(n_total, 1.0) for k in keys}
         fr.setdefault("blk", np.zeros_like(n_total))
@@ -300,6 +311,7 @@ def sample_sweep(
         frac_atten=full(fr["att"], 0.0),
         frac_block=full(fr["blk"], 0.0),
         frac_phase=full(fr["ph"], 0.0),
+        snr_db=full(snr_mean) if snr_mean is not None else None,
     )
 
 
@@ -331,6 +343,7 @@ class RadarField:
     beam: np.ndarray  # int8: index of the serving sweep (-1 none)
     sweeps: list[dict[str, Any]]
     meta: dict[str, Any] = field(default_factory=dict)
+    snr_db: np.ndarray | None = None  # mean SNR of the serving beam (dB), when the volume has it
 
     @property
     def covered(self) -> np.ndarray:
@@ -354,6 +367,7 @@ def merge_sweeps(
     qual = np.full(shape, -1.0, dtype=np.float32)
     hag = np.full(shape, np.nan, dtype=np.float32)
     blk = None
+    snr = None
     flags = np.zeros(shape, dtype=np.uint8)
     beam = np.full(shape, -1, dtype=np.int8)
     info = []
@@ -372,6 +386,10 @@ def merge_sweeps(
             if blk is None:
                 blk = np.full(shape, np.nan, dtype=np.float32)
             blk = np.where(better, sm.blockage, blk)
+        if sm.snr_db is not None:
+            if snr is None:
+                snr = np.full(shape, np.nan, dtype=np.float32)
+            snr = np.where(better, sm.snr_db, snr)
         f = (
             (sm.frac_ml >= CELL_FLAG_FRACTION).astype(np.uint8) * hqpe.FLAG_ML
             | (sm.frac_hail >= CELL_FLAG_FRACTION).astype(np.uint8) * hqpe.FLAG_HAIL
@@ -404,6 +422,7 @@ def merge_sweeps(
         flags=flags,
         beam=beam,
         sweeps=info,
+        snr_db=snr,
     )
 
 
@@ -423,6 +442,7 @@ class Composite:
     n_radars: np.ndarray  # uint8: radars with an estimate in the cell
     source: np.ndarray  # int8: index of the radar with the highest quality (-1 none)
     blockage: np.ndarray | None = None
+    snr_db: np.ndarray | None = None
 
 
 def composite(
@@ -476,6 +496,9 @@ def composite(
     blk = None
     if any(f.blockage is not None for f in fields):
         blk = pick([f.blockage for f in fields]).astype(np.float32)
+    snr = None
+    if any(f.snr_db is not None for f in fields):
+        snr = pick([f.snr_db for f in fields]).astype(np.float32)
     return Composite(
         rate=rate.astype(np.float32),
         sigma=sigma.astype(np.float32),
@@ -488,4 +511,5 @@ def composite(
         n_radars=n,
         source=best,
         blockage=blk,
+        snr_db=snr,
     )

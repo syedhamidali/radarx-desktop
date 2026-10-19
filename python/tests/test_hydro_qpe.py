@@ -588,6 +588,32 @@ class TestComposite:
         assert (mid[fin] > 2.0).all() and (mid[fin] < 10.0).all()
 
 
+class TestSnr:
+    def test_snr_is_a_quality_field_and_can_gate_noise(self):
+        def vol(t):
+            return make_reader(LAT, LON, _const(10.0), t, extra={"SNR": 17.0})
+
+        readers = [vol(t) for t in _times([0, 10])]
+        res = acc.accumulate(readers, {"min_dbz": -30.0}, resolution_m=3000.0, max_range_km=80.0)
+        assert res.snr_db is not None
+        wet = np.isfinite(res.accumulation) & (res.range_km > 8)
+        assert res.snr_db[wet] == pytest.approx(17.0, abs=0.05)
+        from engine.hydro import products
+
+        assert products.to_dataset(res)["snr"].attrs["units"] == "dB"
+        gated = acc.accumulate(
+            readers, {"min_dbz": -30.0, "min_snr_db": 20.0}, resolution_m=3000.0, max_range_km=80.0
+        )
+        # every gate is below 20 dB: not weather, rate 0 (and flagged), not a rate of 10 mm/h
+        assert np.nanmax(gated.accumulation) == pytest.approx(0.0, abs=1e-6)
+        assert (gated.flags & qpe.FLAG_NONMET).any() or np.nanmax(gated.rate_max) == 0.0
+
+    def test_no_snr_field_means_no_snr_output(self):
+        readers = [make_reader(LAT, LON, _const(5.0), t) for t in _times([0, 10])]
+        res = acc.accumulate(readers, {"min_dbz": -30.0}, resolution_m=3000.0, max_range_km=80.0)
+        assert res.snr_db is None
+
+
 # ---------------------------------------------------------------------------
 # Terrain
 # ---------------------------------------------------------------------------
@@ -683,6 +709,17 @@ class TestProducts:
         flags = ds["quality_flags"]
         assert "melting_layer_or_ice" in flags.attrs["flag_meanings"]
         assert ds["radar_name"].size == 1
+
+    def test_netcdf_passes_the_structural_and_the_real_cf_checker(self, result, tmp_path):
+        from engine.hydro import products
+        from tests import cf_check
+
+        path = products.write_netcdf(result, tmp_path / "cf.nc")
+        problems = cf_check.structural_problems(path)
+        assert not problems, problems
+        report = cf_check.cfchecker_report(path)
+        if report is not None:  # the real CF Checker is optional (UDUNITS + the name table)
+            assert not report.errors, report.errors
 
     def test_png_and_map_record(self, result):
         from engine.hydro import products

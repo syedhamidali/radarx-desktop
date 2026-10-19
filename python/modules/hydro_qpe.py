@@ -209,6 +209,8 @@ def run(
     )
     res.field("Beam quality index", np.where(finite, quality, np.nan), units="", vmin=0.0, vmax=1.0)
     res.field("Relation used", rel, categories=CATEGORIES)
+    if sq.snr_db is not None:
+        res.field("SNR (dB)", sq.to_input_order(sq.snr_db), units="dB", vmin=0.0, vmax=40.0)
     counts = sq.meta["gate_counts"]
     flags = sq.flags
     scal = [

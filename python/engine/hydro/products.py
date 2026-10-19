@@ -39,6 +39,7 @@ FIELDS: dict[str, tuple[str, str, tuple[float, float], str, str]] = {
     "quality": ("Quality index (0-1)", "1", (0.0, 1.0), "cividis", "mean"),
     "beam_height_agl_m": ("Beam height above ground/radar", "m", (0.0, 4000.0), "plasma", "mean"),
     "range_km": ("Range from the serving radar", "km", (0.0, 230.0), "plasma", "mean"),
+    "snr_db": ("Signal-to-noise ratio, serving beam", "dB", (0.0, 40.0), "cividis", "mean"),
     "adjustment_factor": ("Gauge adjustment factor", "1", (0.0, 2.0), "PuOr_r", "inst"),
 }
 
@@ -261,6 +262,12 @@ def to_dataset(result: QpeResult) -> xr.Dataset:
             **_prov_attrs(result, True),
         )
         data["adjustment_factor"] = result.adjustment_factor
+    if result.snr_db is not None:
+        names["snr"] = {
+            "long_name": "signal-to-noise ratio of the serving beam, time mean",
+            "units": "dB",
+        }
+        data["snr"] = result.snr_db
     for name, arr in data.items():
         a = np.asarray(arr, dtype=np.float32)
         ds[name] = (("y", "x"), a, {**names[name], "grid_mapping": "crs", "coordinates": "lat lon"})
@@ -277,6 +284,7 @@ def to_dataset(result: QpeResult) -> xr.Dataset:
         {
             "long_name": "quality flags, set if present at any time",
             "flag_masks": flags,
+            "flag_values": flags,  # single-bit masks: (value & mask) == value tests the bit
             "flag_meanings": " ".join(hqpe.FLAG_MEANINGS[int(f)] for f in flags),
             "grid_mapping": "crs",
             "coordinates": "lat lon",
@@ -338,6 +346,8 @@ def to_dataset(result: QpeResult) -> xr.Dataset:
     )
     if not ds["radar_name"].attrs.get("cf_role"):
         ds["radar_name"].attrs.pop("cf_role", None)
+    ds["x"].encoding = {"_FillValue": None}
+    ds["y"].encoding = {"_FillValue": None}
     ds["time"].encoding = {
         "units": f"seconds since {ref}",
         "calendar": "standard",

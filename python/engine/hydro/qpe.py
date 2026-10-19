@@ -237,6 +237,7 @@ class QpeConfig:
     z_cap: float | None = 53.0  # dBZ; hail contamination limit (Giangrande & Ryzhkov 2008)
     min_dbz: float = 5.0  # below this an observed echo is "no rain" (rate 0)
     min_rhohv: float = 0.80  # below this a gate is not weather (rate 0)
+    min_snr_db: float | None = None  # below this a gate is not weather (needs an SNR field)
     zdr_floor: float = 0.0  # ZDR (dB) below this is raised to it before R(Z,ZDR)
     zdr_offset_db: float = 0.0  # calibration offset subtracted from ZDR
     z_offset_db: float = 0.0  # calibration offset subtracted from DBZH
@@ -403,6 +404,7 @@ class SweepQpe:
     ray_time: np.ndarray | None  # datetime64 per ray
     meta: dict[str, Any] = field(default_factory=dict)
     order: np.ndarray | None = None  # ray order of the input: arrays here are sorted by azimuth
+    snr_db: np.ndarray | None = None  # signal-to-noise ratio (dB) when the volume has the field
 
     def to_input_order(self, arr: np.ndarray) -> np.ndarray:
         """``arr`` (n_az, n_range) back in the ray order of the input sweep."""
@@ -528,7 +530,7 @@ def estimate_sweep(
     rhohv = _arr(ds, "RHOHV")
     phidp = _arr(ds, "PHIDP")
     kdp = _arr(ds, "KDP")
-    snr = _arr(ds, "SNRH")
+    snr = _arr(ds, "SNR")
     naz, nr = dbz.shape
 
     s_info = site or {}
@@ -592,6 +594,8 @@ def estimate_sweep(
     nonmet = np.zeros_like(obs)
     if rhohv is not None:
         nonmet = obs & np.isfinite(rhohv) & (rhohv < cfg.min_rhohv)
+    if snr is not None and cfg.min_snr_db is not None:
+        nonmet = nonmet | (obs & np.isfinite(snr) & (snr < cfg.min_snr_db))
     echo = obs & ~nonmet & (dbz >= cfg.min_dbz)
 
     flags = np.zeros((naz, nr), dtype=np.uint8)
@@ -857,6 +861,7 @@ def estimate_sweep(
         blockage=cbb,
         ray_time=ray_time,
         order=order,
+        snr_db=snr.astype(np.float32) if snr is not None else None,
         meta=meta,
     )
 

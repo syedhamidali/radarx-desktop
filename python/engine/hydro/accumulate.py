@@ -137,7 +137,7 @@ def scan_meta(reader: Any, index: int = 0) -> ScanMeta:
 
 
 def _roles() -> tuple[str, ...]:
-    return ("DBZH", "ZDR", "PHIDP", "RHOHV", "KDP")
+    return ("DBZH", "ZDR", "PHIDP", "RHOHV", "KDP", "SNR")
 
 
 def select_sweeps(
@@ -369,6 +369,7 @@ class QpeResult:
     basin_series: Any = None  # engine.hydro.basins.BasinSeries or None
     adjusted: dict[str, Any] | None = None  # filled by engine.hydro.gauges
     adjustment_factor: np.ndarray | None = None
+    snr_db: np.ndarray | None = None  # time-mean SNR of the serving beam, when the volumes have it
     accumulation_adjusted: np.ndarray | None = None
     source_files: list[str] = field(default_factory=list)
     exceedance: list[dict[str, Any]] | None = None  # basins.exceedance(...) when a table was given
@@ -600,6 +601,7 @@ class FieldStore:
             blockage=(
                 rf.blockage[sl].astype(np.float16) if rf.blockage is not None else np.zeros(0)
             ),
+            snr=(rf.snr_db[sl].astype(np.float16) if rf.snr_db is not None else np.zeros(0)),
         )
         shell = hgrid.RadarField(
             name=rf.name,
@@ -650,6 +652,7 @@ class FieldStore:
                 height_agl_m=full("hagl", np.nan),
                 range_km=full("rng", np.nan),
                 blockage=full("blockage", np.nan) if blk.size else None,
+                snr_db=full("snr", np.nan) if z["snr"].size else None,
                 flags=full("flags", 0, np.uint8),
                 beam=full("beam", -1, np.int8),
                 sweeps=shell.sweeps,
@@ -847,6 +850,8 @@ def _accumulate(
     vtime = np.zeros(shape, dtype=np.float64)
     qsum = np.zeros(shape, dtype=np.float64)
     hsum = np.zeros(shape, dtype=np.float64)
+    ssum = np.zeros(shape, dtype=np.float64)
+    snr_n = np.zeros(shape, dtype=np.float64)
     rsum = np.zeros(shape, dtype=np.float64)
     rmax = np.full(shape, np.nan, dtype=np.float32)
     flags_or = np.zeros(shape, dtype=np.uint8)
@@ -952,6 +957,10 @@ def _accumulate(
                     qsum += np.where(both, np.nan_to_num(comp.quality) * dt, 0.0)
                     hsum += np.where(both, np.nan_to_num(comp.height_agl_m) * dt, 0.0)
                     rsum += np.where(both, np.nan_to_num(comp.range_km) * dt, 0.0)
+                    if comp.snr_db is not None:
+                        ok_s = both & np.isfinite(comp.snr_db)
+                        ssum += np.where(ok_s, np.nan_to_num(comp.snr_db) * dt, 0.0)
+                        snr_n += np.where(ok_s, dt, 0.0)
         prev_rate, prev_t, prev_sig = rate, t, sig
         if kk % 8 == 0:
             rep(62 + int(30 * kk / max(n_nodes, 1)), f"Integrating {kk + 1}/{n_nodes}")
@@ -967,11 +976,14 @@ def _accumulate(
         qmean = np.where(have, qsum / np.maximum(vtime, 1e-9), np.nan)
         hmean = np.where(have, hsum / np.maximum(vtime, 1e-9), np.nan)
         rkm = np.where(have, rsum / np.maximum(vtime, 1e-9), np.nan)
+        snr_mean = np.where(snr_n > 0, ssum / np.maximum(snr_n, 1e-9), np.nan)
     if total_s == 0:
         vf = np.where(covered_ever, 1.0, np.nan)
         notes.append("A single time: the accumulation is 0 mm over 0 s; read rate_last instead.")
         if last_comp is not None:  # the instant itself has no time integral: show its beam fields
             qmean, hmean, rkm = last_comp.quality, last_comp.height_agl_m, last_comp.range_km
+            if last_comp.snr_db is not None:
+                snr_mean = last_comp.snr_db
             sigma_mm = np.where(
                 np.isfinite(last_rate),
                 np.nan_to_num(last_comp.sigma) * np.nan_to_num(last_rate),
@@ -1069,6 +1081,7 @@ def _accumulate(
         quality=qmean.astype(np.float32),
         beam_height_agl_m=hmean.astype(np.float32),
         range_km=rkm.astype(np.float32),
+        snr_db=snr_mean.astype(np.float32) if np.isfinite(snr_mean).any() else None,
         flags=flags_or,
         n_radars=nrad,
         nodes=nodes,
