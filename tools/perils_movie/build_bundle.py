@@ -1178,7 +1178,7 @@ def stage_manifest(c: Ctx) -> None:
     )
     man = {
         "title": "PERiLS IOP2 QLCS, 31 March 2022 UTC (30 March local evening): a real-data bundle",
-        "case": "PERiLS 2022 IOP2, Mississippi / Alabama QLCS and the EF2 tornado near Lamar County AL / Pickens county line (NWS event 1035605)",
+        "case": "PERiLS 2022 IOP2, Mississippi / Alabama QLCS and the EF2 tornado of the NWS damage survey (event 1035605, 01:08 to 01:20 UTC, begin 33.1008 N 88.4691 W)",
         "spec_version": bundle.SPEC_VERSION,
         "window": {
             "start": c.start.isoformat().replace("+00:00", "Z"),
@@ -1200,6 +1200,15 @@ def stage_manifest(c: Ctx) -> None:
         "rotation_tracks": "context/rotation_tracks.json"
         if (out / "context/rotation_tracks.json").exists()
         else None,
+        "vortex_kinematics": "context/vortex_kinematics.json"
+        if (out / "context/vortex_kinematics.json").exists()
+        else None,
+        "tobac_track": "context/tobac_track.json"
+        if (out / "context/tobac_track.json").exists()
+        else None,
+        "kgwx_polar_local": sorted(
+            str(p.relative_to(out)) for p in (out / "context").glob("kgwx_polar_local_*.npz")
+        ),
         "science_events": "science_events.json" if (out / "science_events.json").exists() else None,
         "hail_events": "stations/hail_events.json"
         if (out / "stations/hail_events.json").exists()
@@ -1349,7 +1358,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     # the soundings stage always runs (the environment profile is needed by the volumes)
     stages = list(a.stages)
-    if "volumes" in stages and "soundings" not in stages:
+    if any(s in stages for s in ("volumes", "manifest")) and "soundings" not in stages:
         stages.insert(0, "soundings")
     failed = []
     for s in STAGES:
