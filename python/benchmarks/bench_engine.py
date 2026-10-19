@@ -427,6 +427,46 @@ def stage_render(rd, var: str, repeat: int) -> None:
     measure("render", "PNG render 2000x2000", big, repeat=repeat)
 
 
+def _server_loader(rd, var: str):
+    """The sweep loader the server hands to 3D / cross-section code (older engines: all moments)."""
+    import server
+
+    make = getattr(server, "_loader_for", None)
+    return make(rd, var) if make else rd.get_sweep_dataset
+
+
+def stage_analysis(rd, var: str, repeat: int) -> None:
+    """Point-and-click analyses: cross-section, vertical profile, profile statistics."""
+    from engine import statistics
+    from engine.processor import extract_cross_section, extract_vertical_profile
+
+    attrs = rd.get_schema()["attributes"]
+    lat, lon = float(attrs["latitude"]), float(attrs["longitude"])
+    loader = _server_loader(rd, var)
+    measure(
+        "analysis",
+        f"cross-section {var} (200 pts)",
+        lambda: extract_cross_section(
+            rd.datatree, (lat, lon), (lat + 0.5, lon + 0.6), var, n_points=200, sweep_loader=loader
+        ),
+        repeat=repeat,
+    )
+    measure(
+        "analysis",
+        f"vertical profile {var}",
+        lambda: extract_vertical_profile(
+            rd.datatree, lat + 0.1, lon + 0.1, var, sweep_loader=loader
+        ),
+        repeat=repeat,
+    )
+    measure(
+        "analysis",
+        f"area-averaged profile {var} (all sweeps)",
+        lambda: statistics.area_averaged_profile(rd.datatree, var),
+        repeat=repeat,
+    )
+
+
 def stage_volume(rd, var: str, repeat: int) -> None:
     from engine.volume import extract_volume
 
@@ -441,7 +481,7 @@ def stage_volume(rd, var: str, repeat: int) -> None:
                 box,
                 resolution=res,
                 z_max=15000.0,
-                sweep_loader=rd.get_sweep_dataset,
+                sweep_loader=_server_loader(rd, var),
             ),
             repeat=repeat,
         )
@@ -540,7 +580,18 @@ def stage_export(rd, var: str, repeat: int) -> None:
 
 # --------------------------------------------------------------------------- main
 
-STAGES = ["startup", "open", "sweeps", "render", "volume", "qc", "modules", "mosaic", "export"]
+STAGES = [
+    "startup",
+    "open",
+    "sweeps",
+    "render",
+    "volume",
+    "analysis",
+    "qc",
+    "modules",
+    "mosaic",
+    "export",
+]
 
 
 def main() -> int:
@@ -579,6 +630,8 @@ def main() -> int:
         stage_render(rd, var, args.repeat)
     if "volume" in want:
         stage_volume(rd, var, args.repeat)
+    if "analysis" in want:
+        stage_analysis(rd, var, args.repeat)
     if "qc" in want:
         stage_qc(rd, var, args.repeat)
     if "modules" in want:
