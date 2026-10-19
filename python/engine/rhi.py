@@ -18,6 +18,7 @@ An RHI sweep keeps the azimuth fixed and moves the antenna in elevation, so its 
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -287,3 +288,155 @@ def contiguous_mesh(angles: np.ndarray, values: np.ndarray) -> tuple[np.ndarray,
         rows.append(values[i])
         edges.append(hi[i])
     return np.asarray(edges), np.asarray(rows)
+
+
+# ---------------------------------------------------------------------------
+# Noise cleaning (the same rules as the viewer's "Noise & smoothing" panel)
+# ---------------------------------------------------------------------------
+
+_QUALITY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "sqi": re.compile(r"^(sqi|ncp|signal_?quality|normalized_coherent_power)", re.I),
+    "snr": re.compile(r"^(snr|signal_to_noise)", re.I),
+    "rhohv": re.compile(r"(^|_)rhohv|^rho_?hv|cross_correlation|correlation_coeff", re.I),
+}
+_QUALITY_UNIT = {"sqi": "", "snr": " dB", "rhohv": ""}
+
+
+@dataclass(frozen=True)
+class RhiClean:
+    """What is hidden from an RHI figure: ``None`` / ``0`` switch a step off, ``raw`` all."""
+
+    raw: bool = False
+    sqi: float | None = 0.4
+    snr: float | None = 3.0
+    rhohv: float | None = 0.7
+    despeckle: int = 8
+    mask: dict[str, Any] | None = None
+
+
+def parse_clean(options: Any) -> RhiClean:
+    """``RhiClean`` from an export option: ``None`` = defaults, ``False`` / ``"raw"`` = raw data,
+    or a dict with any of ``raw``, ``sqi``, ``snr``, ``rhohv``, ``despeckle`` and ``mask``."""
+    if options is None or options is True:
+        return RhiClean()
+    if options is False or options == "raw":
+        return RhiClean(raw=True)
+    if not isinstance(options, dict):
+        raise ValueError("rhi_clean must be a dict, a boolean or 'raw'")
+    d = RhiClean()
+
+    def limit(key: str, default: float | None) -> float | None:
+        if key not in options:
+            return default
+        v = options[key]
+        if v is None or v is False:
+            return None
+        return float(v)
+
+    return RhiClean(
+        raw=bool(options.get("raw", False)),
+        sqi=limit("sqi", d.sqi),
+        snr=limit("snr", d.snr),
+        rhohv=limit("rhohv", d.rhohv),
+        despeckle=int(options.get("despeckle", d.despeckle) or 0),
+        mask=options.get("mask") if isinstance(options.get("mask"), dict) else None,
+    )
+
+
+def find_quality_fields(names: list[str], exclude: str = "") -> dict[str, str]:
+    """The variable to use for each quality kind (``sqi``, ``snr``, ``rhohv``): first by name."""
+    out: dict[str, str] = {}
+    for name in names:
+        if name == exclude:
+            continue
+        for kind, pattern in _QUALITY_PATTERNS.items():
+            if kind not in out and pattern.search(name):
+                out[kind] = name
+                break
+    return out
+
+
+def _mask_hidden(values: np.ndarray, mask: dict[str, Any]) -> np.ndarray | None:
+    """Boolean array of the values a value mask hides (see the viewer's ``stores/valueMask``)."""
+    mode = mask.get("mode")
+    lo, hi = mask.get("min"), mask.get("max")
+    inc = bool(mask.get("inclusive"))
+    with np.errstate(invalid="ignore"):
+        if mode == "below" and lo is not None:
+            return values <= lo if inc else values < lo
+        if mode == "above" and hi is not None:
+            return values >= hi if inc else values > hi
+        if mode in ("between", "outside") and lo is not None and hi is not None:
+            a, b = min(lo, hi), max(lo, hi)
+            inside = (values >= a) & (values <= b) if inc else (values > a) & (values < b)
+            if mode == "between":
+                return inside
+            return (values <= a) | (values >= b) if inc else (values < a) | (values > b)
+    return None
+
+
+def _fmt(v: float) -> str:
+    return f"{v:g}"
+
+
+def clean_values(
+    values: np.ndarray,
+    quality: dict[str, tuple[str, np.ndarray]],
+    spec: RhiClean,
+    *,
+    units: str = "",
+) -> tuple[np.ndarray, str]:
+    """Hide noise in an RHI sweep. Returns ``(values with NaN where hidden, caption)``.
+
+    *values* and the quality arrays are ``(n_rays, n_gates)``; *quality* maps ``"sqi"`` / ``"snr"``
+    / ``"rhohv"`` to ``(variable name, array)``. Steps: quality masks, the value mask, then
+    despeckle
+    (8-connected groups of fewer than ``spec.despeckle`` gates are removed).
+    """
+    out = np.array(values, dtype=np.float64, copy=True)
+    before = int(np.isfinite(out).sum())
+    if spec.raw:
+        return out, "Raw data: no masking or despeckling."
+    applied: list[str] = []
+    missing: list[str] = []
+    n_quality = 0
+    for kind in ("sqi", "snr", "rhohv"):
+        limit = getattr(spec, kind)
+        if limit is None:
+            continue
+        found = quality.get(kind)
+        if found is None:
+            missing.append(kind.upper())
+            continue
+        name, q = found
+        with np.errstate(invalid="ignore"):
+            out[np.isfinite(q) & (q < limit)] = np.nan
+        applied.append(f"{name} \u2265 {_fmt(limit)}{_QUALITY_UNIT[kind]}")
+        n_quality += 1
+    if spec.mask:
+        hidden = _mask_hidden(out, spec.mask)
+        if hidden is not None:
+            out[hidden] = np.nan
+            applied.append(f"value mask ({spec.mask.get('mode')} {units})".strip())
+    if spec.despeckle and spec.despeckle > 1:
+        from scipy import ndimage
+
+        valid = np.isfinite(out)
+        labels, n = ndimage.label(valid, structure=np.ones((3, 3), dtype=int))
+        if n:
+            sizes = np.bincount(labels.ravel())
+            small = sizes < spec.despeckle
+            small[0] = False
+            out[small[labels]] = np.nan
+        applied.append(f"despeckled (< {spec.despeckle} gates)")
+    after = int(np.isfinite(out).sum())
+    parts: list[str] = []
+    if applied:
+        text = "Cleaned: " + ", ".join(applied)
+        pct = round(100 * (before - after) / before) if before else 0
+        if pct > 0:
+            text += f" (hid {pct}% of gates)"
+        parts.append(text)
+    if n_quality == 0 and missing:
+        parts.append(f"no {'/'.join(missing)} field in this sweep")
+    return out, "  \u00b7  ".join(parts) if parts else "No masking applied."

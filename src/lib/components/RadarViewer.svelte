@@ -1013,6 +1013,8 @@
         entry={rhiEntry && rhiEntry.sweep === sweep && rhiEntry.variable === variable ? rhiEntry : null}
         altitudeM={sweepMeta?.altitude ?? null}
         variableLabel={variableLabel}
+        variable={variable ?? ""}
+        variables={sweepMeta?.variables ?? variables}
         cmap={currentCmap}
         vmin={currentVmin}
         vmax={currentVmax}

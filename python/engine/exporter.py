@@ -429,12 +429,20 @@ def render_publication_figure(
     dark_background: bool = False,
     vmin: float | None = None,
     vmax: float | None = None,
+    rhi_clean: Any = None,
+    rhi_view: dict[str, Any] | None = None,
 ) -> plt.Figure:
-    """Create a publication-quality matplotlib figure of a PPI sweep.
+    """Create a publication-quality matplotlib figure of a PPI sweep (or an RHI sweep as a
+    range-height plot).
 
     *vmin*/*vmax* override the colour range (otherwise the per-variable default
-    or the data range is used).  Returns the Figure object (caller is
-    responsible for saving/closing).
+    or the data range is used).  *rhi_clean* only matters for RHI sweeps: how noise is hidden
+    (``None`` = SQI / SNR / RHOHV masks and despeckle with the defaults, ``False`` = raw data, or a
+    dict, see :func:`engine.rhi.parse_clean`); the figure's caption says what was applied.
+    *rhi_view* sets the RHI axes: ``{"height_max": 25, "full": False}``. By default the axes cover
+    the ground range and height that hold valid gates (rounded up), with the height cut at
+    ``height_max`` km (25): the beams reach ~95 km but there is no weather up there.
+    Returns the Figure object (caller is responsible for saving/closing).
     """
     plt = _pyplot()
     sweep_ds = _extract_sweep_dataset(datatree, sweep)
@@ -470,6 +478,8 @@ def render_publication_figure(
             dark_background=dark_background,
             vmin=vmin,
             vmax=vmax,
+            clean=rhi.parse_clean(rhi_clean),
+            view=rhi_view or {},
         )
 
     # Polar coordinates
@@ -645,6 +655,20 @@ def _nice_step(span: float, target: int = 6) -> float:
     return float((1.0 if f < 1.5 else 2.0 if f < 3.5 else 5.0 if f < 7.5 else 10.0) * pow10)
 
 
+#: Default cap of an RHI figure's height axis (km): no weather above it.
+DEFAULT_RHI_HEIGHT_CAP_KM = 25.0
+#: How beam height is computed, stated on the figure.
+RHI_BEAM_MODEL = "beam path: standard refraction, 4/3 effective Earth radius"
+
+
+def _nice_ceil(v: float) -> float:
+    """Round *v* up to a readable number (13.3 -> 14, 77.5 -> 80)."""
+    if not v > 0:
+        return 1.0
+    step = _nice_step(v, 4)
+    return float(np.ceil(v / step - 1e-9) * step)
+
+
 def _rhi_mesh(
     rays: rhi.RhiRays, values: np.ndarray, range_m: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -685,6 +709,8 @@ def _render_rhi_figure(
     dark_background: bool,
     vmin: float | None,
     vmax: float | None,
+    clean: rhi.RhiClean,
+    view: dict[str, Any],
 ) -> plt.Figure:
     """Range-height figure of an RHI sweep: x ground range (km), y height above the radar (km).
 
@@ -694,6 +720,16 @@ def _render_rhi_figure(
     plt = _pyplot()
     raw = np.asarray(da.values, dtype=np.float64)
     values = raw[rays.order]
+    units = _get_units(variable, dict(da.attrs))
+    quality: dict[str, tuple[str, np.ndarray]] = {}
+    for kind, name in rhi.find_quality_fields(
+        [str(v) for v in sweep_ds.data_vars], exclude=variable
+    ).items():
+        quality[kind] = (
+            name,
+            np.asarray(mask_variable(sweep_ds[name]).values, dtype=np.float64)[rays.order],
+        )
+    values, caption = rhi.clean_values(values, quality, clean, units=units)
     if "range" in da.coords:
         range_m = da.coords["range"].values.astype(np.float64)
     else:
@@ -715,7 +751,6 @@ def _render_rhi_figure(
     if vmax <= vmin:
         vmax = vmin + 1.0
 
-    units = _get_units(variable, dict(da.attrs))
     cmap_name = _get_cmap(variable)
 
     # Extent: the cells that hold data and are not below the colour range (the whole scan when none
@@ -730,8 +765,18 @@ def _render_rhi_figure(
     corner_y = np.stack(
         [gy[:-1, :-1][valid], gy[1:, 1:][valid], gy[:-1, 1:][valid], gy[1:, :-1][valid]]
     )
-    x_lo, x_hi = min(0.0, float(corner_x.min())), float(corner_x.max())
-    y_lo, y_hi = min(0.0, float(corner_y.min())), float(corner_y.max())
+    x_lo, y_lo = min(0.0, float(corner_x.min())), min(0.0, float(corner_y.min()))
+    if view.get("full"):
+        x_hi, y_hi = float(gx.max()), float(gy.max())  # the whole geometric extent of the scan
+    else:
+        # where 99.9% of the valid cells end (a few stray gates do not count), rounded up and cut
+        # at the height cap: noise and the unreachable heights above the weather stay out
+        cap = max(1.0, float(view.get("height_max") or DEFAULT_RHI_HEIGHT_CAP_KM))
+        x_hi = min(
+            _nice_ceil(float(np.quantile(corner_x.max(axis=0), 0.999)) * 1.03 + 0.5),
+            float(gx.max()),
+        )
+        y_hi = min(_nice_ceil(float(np.quantile(corner_y.max(axis=0), 0.999)) * 1.06 + 0.3), cap)
     x_span = max(x_hi - x_lo, 1.0)
     y_span = max(y_hi - y_lo, 1.0)
     pad_x, pad_y = 0.03 * x_span, 0.05 * y_span
@@ -770,7 +815,7 @@ def _render_rhi_figure(
         ax.set_aspect("equal", adjustable="box")
         ax.set_xlim(x_lo - pad_x, x_hi + pad_x)
         ax.set_ylim(y_lo - pad_y, y_hi + pad_y)
-        ax.set_xlabel("Ground range (km)")
+        ax.set_xlabel(f"Ground range (km)\n{RHI_BEAM_MODEL}")
         ax.set_ylabel("Height above radar (km)")
         ax.axhline(0, color="gray", linewidth=0.5, alpha=0.6)
 
@@ -779,7 +824,7 @@ def _render_rhi_figure(
 
         if show_colorbar:
             cbar = fig.colorbar(
-                mesh, ax=ax, orientation="horizontal", pad=0.14, shrink=0.6, aspect=40
+                mesh, ax=ax, orientation="horizontal", pad=0.32, shrink=0.6, aspect=40
             )
             label = f"{variable}"
             if units:
@@ -798,6 +843,18 @@ def _render_rhi_figure(
             ax.set_title(title, pad=12)
 
         fig.tight_layout()
+        # what was applied, under everything (kept in the figure so SVG / PDF / PNG all carry it)
+        fig.text(
+            0.5,
+            0.005,
+            caption,
+            ha="center",
+            va="bottom",
+            fontsize=max(font_size - 4, 6),
+            color="gray",
+            wrap=True,
+        )
+        fig.subplots_adjust(bottom=fig.subplotpars.bottom + 0.04)
     except BaseException:
         plt.close(fig)
         raise
@@ -973,6 +1030,7 @@ class RadarExporter:
         title_override = options.get("title")
         dark_bg = options.get("dark_background", False)
         vmin, vmax = _opt_range(options)
+        rhi_clean = options.get("rhi_clean")
 
         progress(30, "Rendering figure")
 
@@ -990,6 +1048,8 @@ class RadarExporter:
             dark_background=dark_bg,
             vmin=vmin,
             vmax=vmax,
+            rhi_clean=rhi_clean,
+            rhi_view=options.get("rhi_view"),
         )
 
         try:
@@ -1164,6 +1224,8 @@ class RadarExporter:
                 dark_background=options.get("dark_background", False),
                 vmin=vmin,
                 vmax=vmax,
+                rhi_clean=options.get("rhi_clean"),
+                rhi_view=options.get("rhi_view"),
             )
 
             # Render figure to an opaque RGB PIL image (alpha composited on white)

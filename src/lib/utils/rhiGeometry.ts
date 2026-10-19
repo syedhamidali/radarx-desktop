@@ -20,6 +20,8 @@
 
 /** A gate is "no data" when value <= -9998 or NaN (same convention as meshBuilder.ts). */
 export const NODATA_LIMIT = -9998;
+import type { Extent as GridExtent, Grid as CartesianGrid } from './crossSectionRaster';
+
 const DEG2RAD = Math.PI / 180;
 const RAD2DEG = 180 / Math.PI;
 
@@ -364,6 +366,132 @@ export function dataExtent(lk: RhiLookup, minValue = NODATA_LIMIT): Extent {
   return { xMinKm: xMin / 1000, xMaxKm: xMax / 1000, yMinKm: yMin / 1000, yMaxKm: yMax / 1000 };
 }
 
+// ─── Auto range ────────────────────────────────────────────────────────────
+
+/** Heights above this (km, above sea level) are beyond the troposphere: nothing the radar sees there is weather. */
+export const TROPOSPHERE_KM = 30;
+/** Default cap of the height axis (km). */
+export const DEFAULT_HEIGHT_CAP_KM = 25;
+
+/** A "nice" step (1, 2 or 5 x 10^k) for a raw step size. */
+function niceStep(raw: number): number {
+  const pow = 10 ** Math.floor(Math.log10(Math.max(raw, 1e-9)));
+  const f = raw / pow;
+  return (f < 1.5 ? 1 : f < 3.5 ? 2 : f < 7.5 ? 5 : 10) * pow;
+}
+
+/** Round `v` up to a nice number (about 4 ticks' worth): 13.3 -> 14, 77.5 -> 80. */
+export function niceCeil(v: number): number {
+  if (!(v > 0)) return 1;
+  const step = niceStep(v / 4);
+  return Math.ceil(v / step - 1e-9) * step;
+}
+
+export interface AutoExtent extends Extent {
+  /** True when the height axis was cut at the cap (data reach higher). */
+  capped: boolean;
+  /** The whole geometric extent of the scan (every beam to its last gate). */
+  geometric: Extent;
+}
+
+/** Bounding box of the whole scan: the beams' end points, the radar and the ground. */
+export function geometricExtent(lk: RhiLookup): Extent {
+  const { rays, gates, field } = lk;
+  if (field.nRays === 0 || field.nRange === 0) return { xMinKm: 0, xMaxKm: 1, yMinKm: 0, yMaxKm: 1 };
+  let xMin = 0, xMax = 0, yMin = 0, yMax = 0;
+  const lo = rays.lo[0];
+  const hi = rays.hi[rays.n - 1];
+  for (const el of [lo, hi, Math.min(Math.max(0, lo), hi), (lo + hi) / 2]) {
+    for (const r of [Math.max(gates.minM, 0), gates.maxM]) {
+      const p = beamPoint(r, el);
+      xMin = Math.min(xMin, p.groundM);
+      xMax = Math.max(xMax, p.groundM);
+      yMin = Math.min(yMin, p.heightM);
+      yMax = Math.max(yMax, p.heightM);
+    }
+  }
+  return { xMinKm: xMin / 1000, xMaxKm: xMax / 1000, yMinKm: yMin / 1000, yMaxKm: yMax / 1000 };
+}
+
+/**
+ * The window the view shows by default: the ground range and height that hold VALID gates (not
+ * masked, not below `minValue`), with a small margin, rounded to nice numbers. The height is cut at
+ * `capKm` (default 25 km): the beams of a steep RHI reach ~95 km, but nothing there is weather and
+ * noise must not stretch the axes. `full` shows the whole beam extent instead.
+ *
+ * Stray gates do not count: the top / far edge is where 99.9% of the valid gates lie.
+ */
+export function autoExtent(
+  lk: RhiLookup,
+  minValue = NODATA_LIMIT,
+  opts: { capKm?: number; full?: boolean } = {},
+): AutoExtent {
+  const geometric = geometricExtent(lk);
+  if (opts.full) return { ...geometric, capped: false, geometric };
+  const cap = Math.max(1, opts.capKm ?? DEFAULT_HEIGHT_CAP_KM);
+  const { field, rays, gates } = lk;
+  const floor = Math.max(minValue, NODATA_LIMIT);
+
+  // histograms of valid gate positions: heights in 0.25 km bins, ground ranges in 0.5 km bins
+  const H_BIN = 0.25;
+  const G_BIN = 0.5;
+  const hOff = 5; // km below the radar that still get a bin
+  const nH = Math.ceil((geometric.yMaxKm + hOff) / H_BIN) + 2;
+  const gOff = -Math.min(0, geometric.xMinKm) + 1;
+  const nG = Math.ceil((geometric.xMaxKm + gOff) / G_BIN) + 2;
+  const hHist = new Uint32Array(nH);
+  const gHist = new Uint32Array(nG);
+  let total = 0;
+  let hMinSeen = Infinity;
+  const re = EFFECTIVE_RADIUS_M;
+  for (let i = 0; i < field.nRays; i++) {
+    const el = rays.centers[i] * DEG2RAD;
+    const sinE = Math.sin(el);
+    const cosE = Math.cos(el);
+    const base = i * field.nRange;
+    for (let g = 0; g < field.nRange; g++) {
+      const v = field.values[base + g];
+      if (!(v > NODATA_LIMIT) || v < floor) continue;
+      const r = field.range[g];
+      const hM = Math.sqrt(r * r + re * re + 2 * r * re * sinE) - re;
+      const gM = re * Math.asin(Math.max(-1, Math.min(1, (r * cosE) / (re + hM))));
+      const hb = Math.min(nH - 1, Math.max(0, Math.floor((hM / 1000 + hOff) / H_BIN)));
+      const gb = Math.min(nG - 1, Math.max(0, Math.floor((gM / 1000 + gOff) / G_BIN)));
+      hHist[hb]++;
+      gHist[gb]++;
+      total++;
+      if (hM / 1000 < hMinSeen) hMinSeen = hM / 1000;
+    }
+  }
+  if (total === 0) {
+    const yTop = Math.min(geometric.yMaxKm, cap);
+    return { ...geometric, yMaxKm: yTop, capped: geometric.yMaxKm > cap, geometric };
+  }
+  const quantile = (hist: Uint32Array, bin: number, off: number, q: number): number => {
+    const need = Math.ceil(total * q);
+    let acc = 0;
+    for (let b = 0; b < hist.length; b++) {
+      acc += hist[b];
+      if (acc >= need) return (b + 1) * bin - off; // upper edge of the bin
+    }
+    return hist.length * bin - off;
+  };
+  const yq = Math.max(quantile(hHist, H_BIN, hOff, 0.999), 1);
+  const xq = Math.max(quantile(gHist, G_BIN, gOff, 0.999), 1);
+  const yWanted = niceCeil(yq * 1.06 + 0.3);
+  const yMaxKm = Math.min(yWanted, cap);
+  const xMaxKm = Math.min(niceCeil(xq * 1.03 + 0.5), Math.max(geometric.xMaxKm, 1));
+  const yMinKm = hMinSeen < 0 ? Math.floor(hMinSeen / 0.5) * 0.5 : 0;
+  return {
+    xMinKm: Math.min(0, geometric.xMinKm),
+    xMaxKm,
+    yMinKm,
+    yMaxKm,
+    capped: yWanted > cap,
+    geometric,
+  };
+}
+
 // ─── Rasteriser ────────────────────────────────────────────────────────────
 
 /** The visible window and its pixel size. Pixels are square in x; y may be exaggerated. */
@@ -441,6 +569,83 @@ export function rasterizeRhi(
       out[o + 3] = 255;
       painted++;
     }
+  }
+  return painted;
+}
+
+/**
+ * Sample the field onto a regular (ground range, height) grid for smoothing: cell-centred, NaN where
+ * the point is outside the scan or the gate has no data. Same inverse mapping as `rasterizeRhi`, so
+ * the grid holds exactly what the picture would show; the result plugs into crossSectionRaster's
+ * `gaussianSmoothNaN` / `resampleGrid`.
+ */
+export function rasterizeRhiGrid(lk: RhiLookup, full: GridExtent, nx: number, ny: number): CartesianGrid {
+  const data = new Float32Array(nx * ny).fill(NaN);
+  const { field, rays, gates } = lk;
+  if (field.nRays === 0 || field.nRange === 0) return { ...full, nx, ny, data };
+  const re = EFFECTIVE_RADIUS_M;
+  const dx = (full.d1 - full.d0) / nx;
+  const dy = (full.h1 - full.h0) / ny;
+  const sinA = new Float64Array(nx);
+  const cosA = new Float64Array(nx);
+  for (let i = 0; i < nx; i++) {
+    const alpha = ((full.d0 + (i + 0.5) * dx) * 1000) / re;
+    sinA[i] = Math.sin(alpha);
+    cosA[i] = Math.cos(alpha);
+  }
+  const rMin2 = Math.max(0, gates.minM) ** 2;
+  const rMax2 = gates.maxM ** 2;
+  const elLo = rays.lo[0];
+  const elHi = rays.hi[rays.n - 1];
+  for (let j = 0; j < ny; j++) {
+    const rh = re + (full.h1 - (j + 0.5) * dy) * 1000;
+    for (let i = 0; i < nx; i++) {
+      const px = rh * sinA[i];
+      const pz = rh * cosA[i] - re;
+      const r2 = px * px + pz * pz;
+      if (r2 > rMax2 || r2 < rMin2) continue;
+      const el = Math.atan2(pz, px) * RAD2DEG;
+      if (el < elLo || el > elHi) continue;
+      const ray = rayAtElevation(rays, el);
+      if (ray < 0) continue;
+      const gate = gateAtRange(gates, Math.sqrt(r2));
+      if (gate < 0) continue;
+      const v = field.values[ray * field.nRange + gate];
+      if (v > NODATA_LIMIT) data[j * nx + i] = v;
+    }
+  }
+  return { ...full, nx, ny, data };
+}
+
+/**
+ * Colour a picture of values (NaN = missing) into `out` (RGBA). Missing values and values below
+ * `vmin` stay transparent, like `rasterizeRhi`. Returns the number of painted pixels.
+ */
+export function colorizeValues(
+  vals: ArrayLike<number>,
+  lut: ColormapLut,
+  vmin: number,
+  vmax: number,
+  out: Uint8ClampedArray,
+): number {
+  const n = vals.length;
+  const scale = vmax > vmin ? 255 / (vmax - vmin) : 0;
+  let painted = 0;
+  for (let i = 0, o = 0; i < n; i++, o += 4) {
+    const v = vals[i];
+    if (!(v > NODATA_LIMIT) || v < vmin) {
+      out[o + 3] = 0;
+      continue;
+    }
+    let t = ((v - vmin) * scale + 0.5) | 0;
+    if (t > 255) t = 255;
+    else if (t < 0) t = 0;
+    const c = t * 3;
+    out[o] = lut[c];
+    out[o + 1] = lut[c + 1];
+    out[o + 2] = lut[c + 2];
+    out[o + 3] = 255;
+    painted++;
   }
   return painted;
 }

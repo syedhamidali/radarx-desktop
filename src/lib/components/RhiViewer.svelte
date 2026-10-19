@@ -6,27 +6,56 @@
    * selection lives in RadarViewer's control bar; colormap and colour range are owned by RadarViewer
    * too and arrive as props, so both views stay in step.
    *
-   * Data flow (see utils/rhiGeometry.ts): entry -> `field` (values may be transformed here, e.g. a
-   * future smoothing / value mask) -> lookup tables -> `rasterizeRhi` (inverse mapped, one pixel at a
-   * time) -> canvas. Hover uses the same lookup, so the read-out matches the picture.
+   * Data flow (see utils/rhiGeometry.ts, rhiClean.ts): entry -> `cleaned` (quality masks from the
+   * sweep's SQI / SNR / RHOHV, the variable's value mask, despeckle; "Raw data" skips all of it) ->
+   * lookup tables -> picture. With no smoothing the picture is `rasterizeRhi` (inverse mapped, one
+   * pixel at a time, exact gate edges at any zoom); with smoothing the field is sampled onto a fine
+   * regular grid once, smoothed with the cross-section's NaN-aware Gaussian and resampled per view
+   * (nearest / bilinear / bicubic). Hover uses the same lookup, so the read-out matches the picture.
+   * A caption says what was applied; Save PNG writes it into the image.
    *
    * Colours are CSS variables with fallbacks (--rhi-*), so a theme can restyle the plot.
    */
   import { onMount } from 'svelte';
   import ColorBar from './ColorBar.svelte';
-  import type { SweepDataEntry } from '../utils/ppiRenderer';
+  import ValueMaskControl from './ValueMaskControl.svelte';
+  import CrossSectionSmoothing from './CrossSectionSmoothing.svelte';
+  import { getCachedSweep, type SweepDataEntry } from '../utils/ppiRenderer';
+  import { wsManager } from '../utils/websocket';
   import { COLORMAP_DATA } from '../utils/colormaps';
   import {
     buildLookup,
-    dataExtent,
+    colorizeValues,
+    autoExtent,
+    DEFAULT_HEIGHT_CAP_KM,
+    TROPOSPHERE_KM,
     formatTick,
     gridLines,
     niceTicks,
     rasterizeRhi,
+    rasterizeRhiGrid,
     sampleAt,
     type RhiField,
     type RhiSample,
   } from '../utils/rhiGeometry';
+  import {
+    addPngText,
+    gaussianSmoothNaN,
+    gridSize,
+    isPlain,
+    resampleGrid,
+  } from '../utils/crossSectionRaster';
+  import {
+    QUALITY_LABEL,
+    QUALITY_STEP,
+    cleanField,
+    findCompanions,
+    noiseCaption,
+    type QualityKind,
+  } from '../utils/rhiClean';
+  import { rhiNoise, setNoise, resetNoise } from '../stores/rhiNoise';
+  import { maskOf, valueMasks } from '../stores/valueMask';
+  import { canvasToBlob, savePng } from '../utils/crossSectionExport';
 
   interface Props {
     /** The sweep to draw; an RHI entry carries `kind === 'rhi'` and per-ray `elevation`. */
@@ -35,6 +64,9 @@
     altitudeM?: number | null;
     /** Label of the shown variable (legend title / read-out). */
     variableLabel?: string;
+    /** Name of the shown variable and the variables the sweep holds (quality fields are found among them). */
+    variable?: string;
+    variables?: string[];
     cmap: string;
     vmin: number;
     vmax: number;
@@ -51,6 +83,8 @@
     entry,
     altitudeM = null,
     variableLabel = '',
+    variable = '',
+    variables = [],
     cmap,
     vmin,
     vmax,
@@ -63,10 +97,10 @@
   }: Props = $props();
 
   // ── Layout constants ─────────────────────────────────────────────────────
-  const MARGIN = { left: 58, right: 16, top: 14, bottom: 42 };
+  const MARGIN = { left: 58, right: 16, top: 14, bottom: 52 };
+  /** Said on the axes and in the exported image: how beam height is computed. */
+  const BEAM_MODEL = 'beam path: standard refraction, 4/3 effective Earth radius';
   const EXAGGERATIONS = [1, 1.5, 2, 3];
-  /** Fraction of the data extent kept as padding when fitting the view. */
-  const FIT_PAD = 0.06;
 
   // ── State ────────────────────────────────────────────────────────────────
   let container: HTMLDivElement | undefined = $state();
@@ -76,8 +110,13 @@
   let width = $state(800);
   let height = $state(500);
 
-  let exag = $state(1);
+  /** 'auto' picks the smallest exaggeration (1, 1.5, 2 or 3) that gives a shallow echo a usable height. */
+  let exagChoice = $state<'auto' | number>('auto');
   let showGrid = $state(true);
+  /** The height axis never goes above this (km) unless 'Full beam extent' is on. */
+  let heightMaxKm = $state(DEFAULT_HEIGHT_CAP_KM);
+  /** Show the whole geometric extent of the scan instead of the part that holds valid gates. */
+  let fullExtent = $state(false);
   let heightRef = $state<'agl' | 'asl'>('agl');
   /** View centre (ground km, height-above-radar km) and horizontal scale (CSS px per km). */
   let cx = $state(0);
@@ -90,30 +129,130 @@
   const hasAltitude = $derived(altitudeM != null && Number.isFinite(altitudeM));
   const offsetKm = $derived(heightRef === 'asl' && hasAltitude ? (altitudeM as number) / 1000 : 0);
 
-  // ── Data -> field -> lookup ──────────────────────────────────────────────
-  /**
-   * Hook for value-level processing between the wire data and the picture (smoothing, value mask,
-   * ...). Must return values on the same ray x gate grid.
-   */
-  function prepareValues(e: SweepDataEntry): ArrayLike<number> {
-    return e.values;
-  }
+  // ── Data -> cleaned field -> lookup ──────────────────────────────────────
+  const noise = $derived($rhiNoise);
 
-  const field: RhiField | null = $derived.by(() => {
+  /** The sweep as measured (rays in ascending elevation). */
+  const rawField: RhiField | null = $derived.by(() => {
     const e = entry;
     if (!e || e.kind !== 'rhi' || !e.elevation || e.elevation.length !== e.nAz) return null;
-    return {
-      elevation: e.elevation,
-      range: e.range,
-      values: prepareValues(e),
-      nRays: e.nAz,
-      nRange: e.nRange,
-    };
+    return { elevation: e.elevation, range: e.range, values: e.values, nRays: e.nAz, nRange: e.nRange };
   });
+
+  // Quality fields of the same sweep (SQI / NCP, SNR, RHOHV): fetched quietly into the sweep cache.
+  let qualityRev = $state(0);
+  const pendingQuality = new Set<string>();
+  const companions = $derived(findCompanions(variables.filter((v) => v !== variable)));
+  $effect(() => {
+    const e = entry;
+    if (!e || noise.raw) return;
+    for (const kind of ['sqi', 'snr', 'rhohv'] as QualityKind[]) {
+      const name = companions[kind];
+      if (!name || !noise[kind].on) continue;
+      const c = getCachedSweep(name, e.sweep);
+      const key = `${name}:${e.sweep}`;
+      if ((c && c.nAz === e.nAz && c.nRange === e.nRange) || pendingQuality.has(key)) continue;
+      pendingQuality.add(key);
+      wsManager.requestSweepData(name, e.sweep, undefined, {
+        priority: 'prefetch',
+        group: 'rhi-quality',
+        onSettled: () => {
+          pendingQuality.delete(key);
+          qualityRev++;
+        },
+      });
+    }
+  });
+  const quality = $derived.by(() => {
+    void qualityRev;
+    const e = entry;
+    const out: Partial<Record<QualityKind, { name: string; values: ArrayLike<number> }>> = {};
+    if (!e || noise.raw) return out;
+    for (const kind of ['sqi', 'snr', 'rhohv'] as QualityKind[]) {
+      const name = companions[kind];
+      if (!name || !noise[kind].on) continue;
+      const c = getCachedSweep(name, e.sweep);
+      if (c && c.nAz === e.nAz && c.nRange === e.nRange) out[kind] = { name, values: c.values };
+    }
+    return out;
+  });
+  /** Quality masks that are switched on but whose field is still on its way. */
+  const qualityLoading = $derived(
+    !noise.raw && (['sqi', 'snr', 'rhohv'] as QualityKind[]).some((k) => companions[k] && noise[k].on && !quality[k]),
+  );
+
+  const valueMask = $derived(maskOf($valueMasks, variable));
+  const cleaned = $derived(
+    rawField
+      ? cleanField(
+          { values: rawField.values, nRays: rawField.nRays, nRange: rawField.nRange, quality, mask: valueMask },
+          noise,
+          units,
+        )
+      : null,
+  );
+  /** What is drawn: the cleaned values on the sweep's ray x gate grid. */
+  const field: RhiField | null = $derived(rawField && cleaned ? { ...rawField, values: cleaned.values } : null);
   const lookup = $derived(field ? buildLookup(field) : null);
-  const extent = $derived(lookup ? dataExtent(lookup, vmin) : null);
-  const plotW = $derived(Math.max(10, width - MARGIN.left - MARGIN.right));
-  const plotH = $derived(Math.max(10, height - MARGIN.top - MARGIN.bottom));
+  const rawLookup = $derived(lookup && rawField ? { ...lookup, field: rawField } : null);
+  /**
+   * The window the view shows: the ground range and height of the valid gates at the current colour
+   * range, rounded up and cut at the height cap (the beams reach ~95 km, the weather does not).
+   */
+  const extent = $derived(lookup ? autoExtent(lookup, vmin, { capKm: heightMaxKm, full: fullExtent }) : null);
+
+  const gateKm = $derived(lookup ? lookup.gates.dr / 1000 : null);
+  const smoothing = $derived(noise.raw || isPlain(noise.smoothing) ? null : noise.smoothing);
+  /** The cleaned field on a fine regular grid, Gaussian-smoothed; null when nothing is smoothed. */
+  const smoothGrid = $derived.by(() => {
+    const lk = lookup;
+    const sm = smoothing;
+    if (!lk || !sm || !gateKm) return null;
+    const ex = extent;
+    if (!ex) return null;
+    const full = {
+      d0: ex.xMinKm - gateKm,
+      d1: ex.xMaxKm + gateKm,
+      h0: ex.yMinKm - gateKm,
+      h1: ex.yMaxKm + gateKm,
+    };
+    const { nx, ny } = gridSize(full, Math.ceil((full.d1 - full.d0) / gateKm), sm.upsample);
+    const grid = rasterizeRhiGrid(lk, full, nx, ny);
+    if (sm.sigma > 0) {
+      const sigmaKm = sm.sigma * gateKm;
+      grid.data = gaussianSmoothNaN(
+        grid.data,
+        nx,
+        ny,
+        sigmaKm / ((full.d1 - full.d0) / nx),
+        sigmaKm / ((full.h1 - full.h0) / ny),
+      );
+    }
+    return grid;
+  });
+
+  const caption = $derived(noiseCaption(noise, noise.raw ? null : cleaned, gateKm));
+  // The plot box has the aspect of the extent (equal km per pixel in x, times the vertical
+  // exaggeration in y), so no empty axis range is shown around the data.
+  const availW = $derived(Math.max(40, width - MARGIN.left - MARGIN.right));
+  const availH = $derived(Math.max(40, height - MARGIN.top - MARGIN.bottom));
+  const xSpanKm = $derived(extent ? Math.max(extent.xMaxKm - extent.xMinKm, 1) : 1);
+  const ySpanKm = $derived(extent ? Math.max(extent.yMaxKm - extent.yMinKm, 1) : 1);
+  const exag = $derived.by(() => {
+    if (exagChoice !== 'auto') return exagChoice;
+    if (!extent) return 1;
+    // true equal aspect (1x) unless the echo would fill less than half the pane's height
+    const k1 = Math.min(availW / xSpanKm, availH / ySpanKm);
+    for (const e of EXAGGERATIONS) if (ySpanKm * k1 * e >= 0.55 * availH) return e;
+    return EXAGGERATIONS[EXAGGERATIONS.length - 1];
+  });
+  /** CSS px per km of the fitted view. */
+  const fitK = $derived(extent ? Math.min(availW / xSpanKm, availH / (ySpanKm * exag)) : 10);
+  const plotW = $derived(extent ? Math.max(40, Math.round(xSpanKm * fitK)) : availW);
+  const plotH = $derived(extent ? Math.max(40, Math.round(ySpanKm * fitK * exag)) : availH);
+  /** Top-left of the plot box on the canvas (centred in the free area). */
+  const ox = $derived(MARGIN.left + Math.max(0, (availW - plotW) / 2));
+  const oy = $derived(MARGIN.top + Math.max(0, (availH - plotH) / 2));
   const elRange = $derived(
     lookup && lookup.rays.n > 0
       ? { lo: lookup.rays.lo[0], hi: lookup.rays.hi[lookup.rays.n - 1] }
@@ -124,18 +263,24 @@
   const lut = $derived(COLORMAP_DATA[cmap] ?? COLORMAP_DATA['turbo']);
 
   // ── View fitting ─────────────────────────────────────────────────────────
-  /** Show the whole data extent with equal-aspect pixels (times the vertical exaggeration). */
+  /** Show the whole extent (the plot box is sized to it, so it fills the box exactly). */
   function fit() {
     const ex = extent;
     if (!ex) return;
     userAdjusted = false;
-    const xSpan = Math.max(ex.xMaxKm - ex.xMinKm, 1);
-    const ySpan = Math.max(ex.yMaxKm - ex.yMinKm, 1);
-    const k = Math.min(plotW / (xSpan * (1 + 2 * FIT_PAD)), plotH / (ySpan * exag * (1 + 2 * FIT_PAD)));
-    pxPerKm = k;
+    pxPerKm = fitK;
     cx = (ex.xMinKm + ex.xMaxKm) / 2;
-    // Spare vertical room goes above the data: the ground line stays near the bottom edge.
-    cy = ex.yMinKm - FIT_PAD * ySpan + plotH / (2 * k * exag);
+    cy = (ex.yMinKm + ex.yMaxKm) / 2;
+  }
+
+  /** Keep the window inside the extent: nothing outside the valid range is ever shown. */
+  function clampView() {
+    const ex = extent;
+    if (!ex) return;
+    const hw = plotW / (2 * pxPerKm);
+    const hh = plotH / (2 * pxPerKm * exag);
+    cx = hw * 2 >= ex.xMaxKm - ex.xMinKm ? (ex.xMinKm + ex.xMaxKm) / 2 : Math.min(Math.max(cx, ex.xMinKm + hw), ex.xMaxKm - hw);
+    cy = hh * 2 >= ex.yMaxKm - ex.yMinKm ? (ex.yMinKm + ex.yMaxKm) / 2 : Math.min(Math.max(cy, ex.yMinKm + hh), ex.yMaxKm - hh);
   }
 
   // Refit when another sweep / file arrives or the pane is resized (until the user pans or zooms);
@@ -148,6 +293,7 @@
     void plotW;
     void plotH;
     if (!e || !lk) return;
+    void [heightMaxKm, fullExtent, extent];
     const key = `${e.sweep}:${e.nAz}:${e.nRange}:${e.rhiAzimuth ?? ''}:${lk.rays.centers[0]}:${e.maxRange}`;
     if (key !== fitKey || !userAdjusted) {
       fitKey = key;
@@ -155,8 +301,8 @@
     }
   });
 
-  function changeExaggeration(v: number) {
-    exag = v;
+  function changeExaggeration(v: string) {
+    exagChoice = v === 'auto' ? 'auto' : parseFloat(v);
     fit();
   }
 
@@ -226,7 +372,7 @@
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, width, height);
     ctx.save();
-    ctx.translate(MARGIN.left, MARGIN.top);
+    ctx.translate(ox, oy);
     ctx.fillStyle = plotBg;
     ctx.fillRect(0, 0, plotW, plotH);
 
@@ -241,21 +387,32 @@
         rasterCanvas.width = rw;
         rasterCanvas.height = rh;
       }
-      rasterizeRhi(
-        lookup,
-        {
-          xLeftKm: xKm(0),
-          yTopKm: yKm(0),
-          kmPerPxX: 1 / (pxPerKm * s),
-          kmPerPxY: 1 / (pxPerKm * exag * s),
-          width: rw,
-          height: rh,
-        },
-        lut,
-        vmin,
-        vmax,
-        rasterImage.data,
-      );
+      if (smoothGrid && smoothing) {
+        const vals = resampleGrid(
+          smoothGrid,
+          { d0: xKm(0), d1: xKm(plotW), h0: yKm(plotH), h1: yKm(0) },
+          rw,
+          rh,
+          smoothing.interp,
+        );
+        colorizeValues(vals, lut, vmin, vmax, rasterImage.data);
+      } else {
+        rasterizeRhi(
+          lookup,
+          {
+            xLeftKm: xKm(0),
+            yTopKm: yKm(0),
+            kmPerPxX: 1 / (pxPerKm * s),
+            kmPerPxY: 1 / (pxPerKm * exag * s),
+            width: rw,
+            height: rh,
+          },
+          lut,
+          vmin,
+          vmax,
+          rasterImage.data,
+        );
+      }
       rasterCanvas.getContext('2d')?.putImageData(rasterImage, 0, 0);
       ctx.imageSmoothingEnabled = s < 1;
       ctx.drawImage(rasterCanvas, 0, 0, plotW, plotH);
@@ -319,6 +476,17 @@
         ctx.fillText(l.text, l.x, l.y);
       }
     }
+    if (extent?.capped && !fullExtent) {
+      ctx.font = '10.5px var(--font-sans, system-ui, sans-serif)';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      const note = `height axis cut at ${fmtKm(extent.yMaxKm)} km - data reach higher`;
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = halo;
+      ctx.strokeText(note, plotW - 6, 5);
+      ctx.fillStyle = cssVar('--accent-warning', '#fbbf24');
+      ctx.fillText(note, plotW - 6, 5);
+    }
     ctx.restore();
 
     // 3. axes
@@ -356,9 +524,12 @@
     ctx.font = '600 11px var(--font-sans, system-ui, sans-serif)';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'bottom';
-    ctx.fillText('Ground range (km)', plotW / 2, plotH + MARGIN.bottom - 4);
+    ctx.fillText('Ground range (km)', plotW / 2, plotH + MARGIN.bottom - 18);
+    ctx.font = '10px var(--font-sans, system-ui, sans-serif)';
+    ctx.fillStyle = fg;
+    ctx.fillText(exag === 1 ? BEAM_MODEL : `${BEAM_MODEL}  \u00B7  vertical exaggeration ${exag}\u00D7`, plotW / 2, plotH + MARGIN.bottom - 4);
     ctx.save();
-    ctx.translate(-MARGIN.left + 14, plotH / 2);
+    ctx.translate(-46, plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textBaseline = 'top';
     ctx.fillText(offsetKm ? 'Height above sea level (km)' : 'Height above radar (km)', 0, -6);
@@ -378,7 +549,7 @@
     const h = hover;
     if (!h) return;
     ctx.save();
-    ctx.translate(MARGIN.left, MARGIN.top);
+    ctx.translate(ox, oy);
     ctx.beginPath();
     ctx.rect(0, 0, plotW, plotH);
     ctx.clip();
@@ -396,7 +567,7 @@
 
   // Redraw when anything that shapes the picture changes.
   $effect(() => {
-    void [field, lookup, lut, vmin, vmax, showGrid, offsetKm, exag, cx, cy, pxPerKm, width, height, plotW, plotH];
+    void [field, lookup, smoothGrid, smoothing, lut, vmin, vmax, showGrid, offsetKm, exag, cx, cy, pxPerKm, width, height, plotW, plotH, ox, oy, extent];
     schedule();
   });
   $effect(() => {
@@ -410,7 +581,7 @@
   function plotPoint(e: PointerEvent | WheelEvent | MouseEvent): { x: number; y: number } | null {
     if (!baseCanvas) return null;
     const r = baseCanvas.getBoundingClientRect();
-    return { x: e.clientX - r.left - MARGIN.left, y: e.clientY - r.top - MARGIN.top };
+    return { x: e.clientX - r.left - ox, y: e.clientY - r.top - oy };
   }
 
   function onPointerDown(e: PointerEvent) {
@@ -429,6 +600,7 @@
     if (dragStart) {
       cx = dragStart.cx - (e.clientX - dragStart.x) / pxPerKm;
       cy = dragStart.cy + (e.clientY - dragStart.y) / (pxPerKm * exag);
+      clampView();
       sharpenSoon();
     }
     if (!p || !lookup || p.x < 0 || p.y < 0 || p.x > plotW || p.y > plotH) {
@@ -458,8 +630,7 @@
   }
 
   function zoomAt(factor: number, px: number, py: number) {
-    const base = fitScale();
-    const next = Math.min(Math.max(pxPerKm * factor, base * 0.2), base * 80);
+    const next = Math.min(Math.max(pxPerKm * factor, fitK), fitK * 80);
     userAdjusted = true;
     // keep the point under the cursor fixed
     const gx = xKm(px);
@@ -467,17 +638,9 @@
     pxPerKm = next;
     cx = gx - (px - plotW / 2) / next;
     cy = gy + (py - plotH / 2) / (next * exag);
+    clampView();
     interacting = true;
     sharpenSoon();
-  }
-
-  /** The px/km of the fitted view: the zoom limits are relative to it. */
-  function fitScale(): number {
-    const ex = extent;
-    if (!ex) return pxPerKm;
-    const xSpan = Math.max(ex.xMaxKm - ex.xMinKm, 1);
-    const ySpan = Math.max(ex.yMaxKm - ex.yMinKm, 1);
-    return Math.min(plotW / xSpan, plotH / (ySpan * exag));
   }
 
   function onWheel(e: WheelEvent) {
@@ -527,19 +690,116 @@
     return () => el.removeEventListener('wheel', onWheel);
   });
 
+  const KINDS: QualityKind[] = ['sqi', 'snr', 'rhohv'];
+  const fmtKm = (v: number) => String(Number(v.toFixed(1)));
+
+  // ── Noise panel + export ─────────────────────────────────────────────────
+  let noiseOpen = $state(false);
+  let noiseHost: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    if (!noiseOpen) return;
+    const away = (e: PointerEvent) => {
+      if (noiseHost && !noiseHost.contains(e.target as Node)) noiseOpen = false;
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') noiseOpen = false;
+    };
+    window.addEventListener('pointerdown', away, true);
+    window.addEventListener('keydown', esc);
+    return () => {
+      window.removeEventListener('pointerdown', away, true);
+      window.removeEventListener('keydown', esc);
+    };
+  });
+
+  function setThreshold(kind: QualityKind, patch: { on?: boolean; min?: number }) {
+    setNoise({ [kind]: { ...noise[kind], ...patch } });
+  }
+
+  /** The picture with a title, colour bar and the caption, as a PNG (the caption is also stored in it). */
+  async function exportPng() {
+    if (!baseCanvas || !field || !lut) return;
+    const dpr = baseCanvas.width / width;
+    const topBar = 28;
+    const bottomBar = 78;
+    const out = document.createElement('canvas');
+    out.width = baseCanvas.width;
+    out.height = Math.round((height + topBar + bottomBar) * dpr);
+    const ctx = out.getContext('2d');
+    if (!ctx) return;
+    const bg = cssVar('--rhi-bg', '#080a14');
+    const fg = cssVar('--rhi-text', '#9da2c2');
+    const fgStrong = cssVar('--rhi-text-strong', '#e4e6f4');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, width, height + topBar + bottomBar);
+    ctx.drawImage(baseCanvas, 0, topBar, width, height);
+    const sans = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.font = `600 13px ${sans}`;
+    ctx.fillStyle = fgStrong;
+    ctx.textAlign = 'left';
+    const title = [variableLabel || variable, planeAz != null ? `RHI ${planeAz.toFixed(1)}\u00B0` : 'RHI', entry ? `sweep ${entry.sweep}` : '']
+      .filter(Boolean)
+      .join('  \u00B7  ');
+    ctx.fillText(title, MARGIN.left, topBar / 2 + 2);
+    // colour bar
+    const barW = Math.min(360, width - MARGIN.left - MARGIN.right);
+    const barX = MARGIN.left;
+    const barY = topBar + height + 8;
+    for (let i = 0; i < barW; i++) {
+      const t = Math.round((i / Math.max(1, barW - 1)) * 255) * 3;
+      ctx.fillStyle = `rgb(${lut[t]},${lut[t + 1]},${lut[t + 2]})`;
+      ctx.fillRect(barX + i, barY, 1, 10);
+    }
+    ctx.font = `10.5px ${sans}`;
+    ctx.fillStyle = fg;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    for (const t of niceTicks(vmin, vmax, 5)) {
+      const x = barX + ((t - vmin) / (vmax - vmin)) * barW;
+      ctx.fillText(formatTick(t, Math.abs(vmax - vmin) / 5), x, barY + 13);
+    }
+    ctx.textAlign = 'left';
+    ctx.fillText(units, barX + barW + 8, barY - 1);
+    // caption, wrapped
+    ctx.font = `11px ${sans}`;
+    const maxW = width - MARGIN.left - MARGIN.right;
+    const words = caption.split(' ');
+    let line = '';
+    let y = barY + 34;
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, MARGIN.left, y);
+        y += 14;
+        line = w;
+      } else line = test;
+    }
+    if (line) ctx.fillText(line, MARGIN.left, y);
+    const blob = await canvasToBlob(out);
+    const bytes = addPngText(new Uint8Array(await blob.arrayBuffer()), 'Description', `${title}. ${caption}`);
+    const name = `rhi_${(variable || 'field').replace(/[^\w.-]+/g, '_')}_az${planeAz != null ? planeAz.toFixed(0) : 'x'}_sweep${entry?.sweep ?? 0}`;
+    await savePng(name, new Blob([bytes as BlobPart], { type: 'image/png' }));
+  }
+
   // ── Read-out ─────────────────────────────────────────────────────────────
   const readout = $derived.by(() => {
     const h = hover;
     if (!h) return null;
     const s = h.sample;
     const heightShown = h.heightKm + offsetKm;
+    // a gate the noise settings hide: say so, with the measured value
+    const rawS = s && rawLookup && !Number.isFinite(s.value) ? sampleAt(rawLookup, h.groundKm * 1000, h.heightKm * 1000) : null;
     return {
       value: s && Number.isFinite(s.value) ? s.value : null,
+      hidden: rawS && Number.isFinite(rawS.value) ? rawS.value : null,
       inScan: s !== null,
       range: s ? s.rangeM / 1000 : null,
       el: s ? s.elDeg : null,
       ground: h.groundKm,
       height: heightShown,
+      aboveTroposphere: heightShown + (offsetKm ? 0 : hasAltitude ? (altitudeM as number) / 1000 : 0) > TROPOSPHERE_KM,
     };
   });
 
@@ -552,28 +812,45 @@
     if (!entry || !field) return '';
     const parts: string[] = [];
     if (planeAz != null) parts.push(`RHI ${planeAz.toFixed(1)}°`);
-    parts.push(`${lookup!.rays.centers[0].toFixed(1)}–${lookup!.rays.centers[lookup!.rays.n - 1].toFixed(1)}° elevation`);
-    parts.push(`${field.nRays} rays × ${field.nRange} gates`);
+    parts.push(`${lookup!.rays.centers[0].toFixed(1)}–${lookup!.rays.centers[lookup!.rays.n - 1].toFixed(1)}°`);
     return parts.join(' · ');
   });
+  const summaryTitle = $derived(
+    field && lookup
+      ? `Range-height scan, elevation ${lookup.rays.centers[0].toFixed(1)} to ${lookup.rays.centers[lookup.rays.n - 1].toFixed(1)} degrees, ${field.nRays} rays x ${field.nRange} gates`
+      : 'Range-height scan',
+  );
 </script>
 
 <div class="rhi-viewer" data-testid="rhi-viewer">
   <div class="rhi-toolbar">
-    {#if summary}<span class="rhi-summary" title="Range-height scan">{summary}</span>{/if}
-    <label class="rhi-ctl" title="Vertical exaggeration (the picture keeps equal x/y scale at 1×)">
+    {#if summary}<span class="rhi-summary" title={summaryTitle}>{summary}</span>{/if}
+    <label class="rhi-ctl" title="Vertical exaggeration. 1× is true equal aspect; Auto uses 1× unless that would draw a very flat picture. The factor is stated on the axis.">
       <span>Vertical</span>
-      <select value={exag} onchange={(e) => changeExaggeration(parseFloat(e.currentTarget.value))} data-testid="rhi-exag">
+      <select value={String(exagChoice)} onchange={(e) => changeExaggeration(e.currentTarget.value)} data-testid="rhi-exag">
+        <option value="auto">Auto ({exag}×)</option>
         {#each EXAGGERATIONS as v}
-          <option value={v}>{v}×</option>
+          <option value={String(v)}>{v}×</option>
         {/each}
       </select>
+    </label>
+    <label class="rhi-ctl" title="Highest height shown (km). The beams reach much higher than any weather: the default view shows the heights that hold data, cut here.">
+      <span>Top</span>
+      <input type="number" class="rhi-num" min="2" max={Math.ceil(extent?.geometric.yMaxKm ?? 100)} step="5" value={heightMaxKm}
+             disabled={fullExtent}
+             onchange={(e) => { heightMaxKm = Math.max(2, Number(e.currentTarget.value) || DEFAULT_HEIGHT_CAP_KM); fit(); }}
+             data-testid="rhi-height-max" aria-label="Highest height shown in km" />
+      <span class="rhi-unit">km</span>
+    </label>
+    <label class="rhi-ctl check" title="Show the whole geometric extent of the beams instead of the valid data (fit to data)">
+      <input type="checkbox" checked={fullExtent} onchange={(e) => { fullExtent = e.currentTarget.checked; fit(); }} data-testid="rhi-full-extent" />
+      <span>Full beam extent</span>
     </label>
     <label class="rhi-ctl" title={hasAltitude ? 'Height reference' : 'The file does not state the radar altitude'}>
       <span>Height</span>
       <select bind:value={heightRef} disabled={!hasAltitude} data-testid="rhi-height-ref">
-        <option value="agl">above radar</option>
-        <option value="asl">above sea level</option>
+        <option value="agl" title="Height above the radar">AGL</option>
+        <option value="asl" title="Height above sea level">ASL</option>
       </select>
     </label>
     <label class="rhi-ctl check" title="Lines of constant range and constant elevation">
@@ -581,9 +858,72 @@
       <span>Grid</span>
     </label>
     <button class="rhi-btn" onclick={fit} disabled={!field} title="Show the whole scan (key 0, or double-click). Scroll to zoom, drag to pan.">Fit</button>
+
+    <span class="rhi-sep" aria-hidden="true"></span>
+    <label class="rhi-ctl check" title="Show the data exactly as measured: no quality masks, despeckling, value mask or smoothing">
+      <input type="checkbox" checked={noise.raw} onchange={(e) => setNoise({ raw: e.currentTarget.checked })} data-testid="rhi-raw" />
+      <span>Raw data</span>
+    </label>
+    <div class="rhi-noise-host" bind:this={noiseHost}>
+      <button class="rhi-btn" class:on={noiseOpen} onclick={() => (noiseOpen = !noiseOpen)} aria-expanded={noiseOpen}
+              title="Noise masks, despeckle, value mask and smoothing" data-testid="rhi-noise-btn">
+        Noise &amp; smoothing {noiseOpen ? '\u25B4' : '\u25BE'}
+      </button>
+      {#if noiseOpen}
+        <div class="rhi-pop" role="dialog" aria-label="Noise and smoothing" data-testid="rhi-noise-panel">
+          <label class="rhi-row check strong">
+            <input type="checkbox" checked={noise.raw} onchange={(e) => setNoise({ raw: e.currentTarget.checked })} />
+            <span>Raw data <em>(turns everything below off)</em></span>
+          </label>
+          <fieldset class="rhi-group" disabled={noise.raw}>
+            <legend>Hide low-quality gates</legend>
+            {#each KINDS as kind (kind)}
+              <div class="rhi-row">
+                <label class="check">
+                  <input type="checkbox" checked={noise[kind].on} disabled={!companions[kind]}
+                         onchange={(e) => setThreshold(kind, { on: e.currentTarget.checked })} data-testid="rhi-q-{kind}" />
+                  <span>{QUALITY_LABEL[kind]} &ge;</span>
+                </label>
+                <input type="number" class="rhi-num" value={noise[kind].min} step={QUALITY_STEP[kind]} disabled={!companions[kind]}
+                       aria-label="{QUALITY_LABEL[kind]} lower limit"
+                       onchange={(e) => setThreshold(kind, { min: Number(e.currentTarget.value) })} />
+                <span class="rhi-hint">{companions[kind] ? companions[kind] : 'not in this sweep'}</span>
+              </div>
+            {/each}
+          </fieldset>
+          <fieldset class="rhi-group" disabled={noise.raw}>
+            <legend>Despeckle</legend>
+            <div class="rhi-row">
+              <label class="check">
+                <input type="checkbox" checked={noise.despeckle.on}
+                       onchange={(e) => setNoise({ despeckle: { ...noise.despeckle, on: e.currentTarget.checked } })} data-testid="rhi-despeckle" />
+                <span>Remove groups smaller than</span>
+              </label>
+              <input type="number" class="rhi-num" min="2" max="200" step="1" value={noise.despeckle.minGates}
+                     aria-label="Smallest group of gates to keep"
+                     onchange={(e) => setNoise({ despeckle: { ...noise.despeckle, minGates: Number(e.currentTarget.value) } })} />
+              <span class="rhi-hint">gates</span>
+            </div>
+          </fieldset>
+          <fieldset class="rhi-group" disabled={noise.raw}>
+            <legend>Value mask ({variable || 'variable'})</legend>
+            <ValueMaskControl {variable} {units} compact />
+          </fieldset>
+          <fieldset class="rhi-group" disabled={noise.raw}>
+            <legend>Smoothing</legend>
+            <CrossSectionSmoothing compact uid="rhi" value={noise.smoothing}
+                                   onChange={(patch) => setNoise({ smoothing: { ...noise.smoothing, ...patch } })} />
+          </fieldset>
+          <div class="rhi-row end">
+            <button class="rhi-btn" onclick={resetNoise} title="Back to the defaults: SQI / SNR / RHOHV masks, despeckle, light smoothing">Reset to defaults</button>
+          </div>
+        </div>
+      {/if}
+    </div>
+    <button class="rhi-btn" onclick={exportPng} disabled={!field} title="Save the picture with its colour bar and a caption saying what was applied" data-testid="rhi-save">Save PNG</button>
   </div>
 
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
   <div
     class="rhi-plot"
     class:dragging
@@ -616,6 +956,8 @@
           {#if readout.value !== null}
             <strong>{fmtValue(readout.value)}</strong> {units}
             {#if variableLabel}<span class="rhi-readout-var">{variableLabel}</span>{/if}
+          {:else if readout.hidden !== null}
+            <span class="rhi-readout-none">hidden by the noise settings (measured {fmtValue(readout.hidden)} {units})</span>
           {:else if readout.inScan}
             <span class="rhi-readout-none">no data</span>
           {:else}
@@ -626,6 +968,7 @@
           {#if readout.range !== null}<span>range {readout.range.toFixed(1)} km</span>{/if}
           <span>x {readout.ground.toFixed(1)} km</span>
           <span>h {readout.height.toFixed(2)} km {offsetKm ? 'ASL' : 'AGL'}</span>
+          {#if readout.aboveTroposphere}<span class="rhi-warn" title="Above about {TROPOSPHERE_KM} km there is no weather: gates here are noise">beyond the troposphere</span>{/if}
           {#if readout.el !== null}<span>el {readout.el.toFixed(2)}°</span>{/if}
           {#if planeAz !== null}<span>az {planeAz.toFixed(1)}°</span>{/if}
         </div>
@@ -652,6 +995,9 @@
   </div>
 
   {#if field}
+    <div class="rhi-caption" class:raw={noise.raw} data-testid="rhi-caption" title={caption}>
+      {caption}{#if qualityLoading}<span class="rhi-hint"> (loading quality fields...)</span>{/if}
+    </div>
     <div class="rhi-colorbar">
       <ColorBar cmapName={cmap} {vmin} {vmax} {units} {onCmapChange} {onRangeChange} />
     </div>
@@ -680,7 +1026,7 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--spacing-md, 12px);
+    gap: 8px 10px;
     padding: 4px var(--spacing-md, 12px);
     border-bottom: 1px solid var(--border-color, rgba(140, 160, 250, 0.08));
     background: var(--bg-secondary, #0d1020);
@@ -815,6 +1161,124 @@
     }
   }
 
+  .rhi-unit {
+    text-transform: none;
+    font-weight: 400;
+  }
+  .rhi-warn {
+    color: var(--accent-warning, #fbbf24);
+  }
+  .rhi-sep {
+    width: 1px;
+    align-self: stretch;
+    background: var(--border-color, rgba(140, 160, 250, 0.08));
+  }
+  .rhi-btn.on {
+    background: rgba(91, 108, 247, 0.28);
+  }
+  .rhi-noise-host {
+    position: relative;
+  }
+  .rhi-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 30;
+    width: 372px;
+    max-height: min(70vh, 640px);
+    overflow: auto;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 11px;
+    color: var(--text-secondary, #9da2c2);
+    background: var(--overlay-bg, rgba(13, 16, 32, 0.96));
+    border: 1px solid var(--border-light, rgba(140, 160, 250, 0.14));
+    border-radius: var(--radius-md, 8px);
+    box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.6));
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .rhi-group {
+    margin: 0;
+    padding: 6px 8px 8px;
+    border: 1px solid var(--border-color, rgba(140, 160, 250, 0.08));
+    border-radius: var(--radius-sm, 6px);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .rhi-group:disabled {
+    opacity: 0.45;
+  }
+  .rhi-group legend {
+    padding: 0 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted, #5c6088);
+  }
+  .rhi-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .rhi-row.end {
+    justify-content: flex-end;
+  }
+  .rhi-row .check,
+  .rhi-row.check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .rhi-row.strong {
+    color: var(--text-primary, #e4e6f4);
+    font-weight: 600;
+  }
+  .rhi-row em {
+    font-weight: 400;
+    font-style: normal;
+    color: var(--text-muted, #5c6088);
+  }
+  .rhi-row input[type='checkbox'] {
+    margin: 0;
+    width: 14px;
+    height: 14px;
+  }
+  .rhi-num {
+    width: 60px;
+    height: 24px;
+    padding: 2px 6px;
+    font-size: 11px;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .rhi-row .rhi-hint {
+    margin-left: 0;
+    font-size: 10.5px;
+    color: var(--text-muted, #5c6088);
+  }
+  .rhi-caption {
+    flex-shrink: 0;
+    padding: 3px var(--spacing-md, 12px) 0;
+    text-align: center;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text-secondary, #9da2c2);
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .rhi-caption.raw {
+    color: var(--accent-warning, #fbbf24);
+  }
   .rhi-colorbar {
     flex-shrink: 0;
     display: flex;

@@ -13,6 +13,10 @@
   import { addToast } from '../stores/toasts';
   import { getActiveFile } from '../stores/fileManager';
   import { activeDerived } from '../stores/derived';
+  import { get } from 'svelte/store';
+  import { rhiNoise } from '../stores/rhiNoise';
+  import { maskOf, valueMasks } from '../stores/valueMask';
+  import { engineCleanOptions } from '../utils/rhiClean';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import { webUi } from '../stores/webInfo';
   import { inTauri } from '../utils/env';
@@ -276,6 +280,8 @@
       ...(showTitle && exportTitle.trim() ? { title: exportTitle.trim() } : {}),
       show_colorbar: true,
       dark_background: darkBackground,
+      // an RHI figure hides noise the way the viewer does (ignored for PPI sweeps)
+      rhi_clean: engineCleanOptions(get(rhiNoise), maskOf(get(valueMasks), $selectedVariable)),
     };
   }
 

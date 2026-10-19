@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 import numpy as np
@@ -15,16 +14,14 @@ from engine import rhi
 from engine.exporter import RadarExporter, render_publication_figure
 from engine.reader import RadarReader
 from engine.volume import _collect_sweeps
+from tests import radar_data
 from tests.conftest import make_synthetic_datatree
 from tests.test_server import _binary, _make_handler
 
-CPOL_RHI = Path(
-    os.environ.get(
-        "XRADAR_RHI_TEST_FILE",
-        "/Users/syed44/Downloads/Others/XRADAR_EXAMPLES/"
-        "RHI_20170825_223408_to_20170825_223445_CPOLRVP_MATT_RHI.nc",
-    )
-)
+#: the author's CPOL RHI example (local only) and the open-radar-data DOW8 RHIs (run on CI)
+CPOL_RHI = radar_data.example("RHI_20170825_223408_to_20170825_223445_CPOLRVP_MATT_RHI.nc")
+DOW8_RHI = radar_data.get(radar_data.DOW8_RHI)
+DOW8_RHI_2 = radar_data.get(radar_data.DOW8_RHI_2)
 
 # ---------------------------------------------------------------------------
 # Synthetic data
@@ -42,6 +39,8 @@ def make_rhi_sweep(
     mode: str | None = "rhi",
     fixed_angle: float | None = None,
     echo_top_km: float = 8.0,
+    quality: bool = False,
+    noise: float | None = None,
 ) -> xr.Dataset:
     """An RHI sweep: constant azimuth, rays over elevation (stored out of order), with an echo of
     known top height so the geometry can be checked."""
@@ -51,6 +50,8 @@ def make_rhi_sweep(
     range_m = np.linspace(500.0, 60_000.0, n_range)
     _, height = rhi.beam_geometry(range_m[None, :], el[:, None])
     values = np.where(height / 1000.0 < echo_top_km, 30.0, np.nan).astype(np.float32)
+    if noise is not None:  # valid (not masked) noise above the echo
+        values = np.where(np.isnan(values), np.float32(noise), values)
     ds = xr.Dataset(
         {"DBZH": (["azimuth", "range"], values)},
         coords={
@@ -62,6 +63,14 @@ def make_rhi_sweep(
     )
     if mode is not None:
         ds["sweep_mode"] = xr.DataArray(mode)
+    if quality:
+        # echo gates have good quality, the rest is noise; one far-range block of echo is "bad"
+        good = np.isfinite(values)
+        sqi = np.where(good, 0.9, 0.05).astype(np.float32)
+        rho = np.where(good, 0.98, 0.2).astype(np.float32)
+        sqi[:, -20:] = np.where(good[:, -20:], 0.05, sqi[:, -20:])  # echo with SQI ~ 0
+        ds["SQI"] = (["azimuth", "range"], sqi)
+        ds["RHOHV"] = (["azimuth", "range"], rho)
     return ds
 
 
@@ -450,6 +459,54 @@ def _mesh_top_km(fig) -> float:
     return float(ys[filled].max())
 
 
+class TestFigureAxes:
+    """The axes follow the valid gates: never the ~95 km the beams reach."""
+
+    def _figure(self, ds, **kw):
+        return render_publication_figure(rhi_tree(ds), "DBZH", 0, dpi=50, **kw)
+
+    def test_echo_to_8_km_gives_an_axis_to_about_10_km(self) -> None:
+        import matplotlib.pyplot as plt
+
+        ds = make_rhi_sweep(n_rays=60, n_range=150, el_hi=50.0, echo_top_km=8.0)
+        fig = self._figure(ds)
+        try:
+            ymax = fig.axes[0].get_ylim()[1]
+            assert 8.0 < ymax < 12.0
+            assert "4/3 effective Earth radius" in fig.axes[0].get_xlabel()
+        finally:
+            plt.close(fig)
+
+    def test_valid_noise_is_cut_at_the_height_cap(self) -> None:
+        import matplotlib.pyplot as plt
+
+        ds = make_rhi_sweep(n_rays=60, n_range=150, el_hi=50.0, echo_top_km=8.0, noise=5.0)
+        figs = [
+            self._figure(ds),
+            self._figure(ds, rhi_view={"height_max": 15}),
+            self._figure(ds, rhi_view={"full": True}),
+        ]
+        try:
+            default, low, full = (f.axes[0].get_ylim()[1] for f in figs)
+            assert 25 <= default < 27  # cut at 25 km (+ the small margin of the frame)
+            assert 15 <= low < 16.5
+            assert full > 45  # everything the beams reach
+        finally:
+            for f in figs:
+                plt.close(f)
+
+    def test_stray_gates_above_the_echo_do_not_stretch_the_axes(self) -> None:
+        import matplotlib.pyplot as plt
+
+        ds = make_rhi_sweep(n_rays=60, n_range=150, el_hi=50.0, echo_top_km=8.0)
+        ds["DBZH"].values[55, 140:142] = 10.0  # two stray gates high up
+        fig = self._figure(ds)
+        try:
+            assert fig.axes[0].get_ylim()[1] < 12.0
+        finally:
+            plt.close(fig)
+
+
 class TestFigureExport:
     def test_rhi_is_a_range_height_plot(self) -> None:
         import matplotlib.pyplot as plt
@@ -458,7 +515,7 @@ class TestFigureExport:
         fig = render_publication_figure(tree, "DBZH", 0, dpi=60)
         try:
             ax = fig.axes[0]
-            assert ax.get_xlabel() == "Ground range (km)"
+            assert ax.get_xlabel().startswith("Ground range (km)")
             assert ax.get_ylabel() == "Height above radar (km)"
             assert "RHI az 135.0" in ax.get_title()
             # equal aspect: one km looks the same in x and y
@@ -528,7 +585,7 @@ class TestFigureExport:
         fig = render_publication_figure(rhi_tree(ds), "DBZH", 0, dpi=50)
         plt.close(fig)
 
-    @pytest.mark.skipif(not CPOL_RHI.exists(), reason="CPOL RHI example file not available")
+    @pytest.mark.skipif(CPOL_RHI is None, reason="CPOL RHI example file not available")
     def test_real_cpol_rhi(self, tmp_path: Path) -> None:
         import matplotlib.pyplot as plt
 
@@ -540,13 +597,167 @@ class TestFigureExport:
         fig = render_publication_figure(reader.datatree, "DBZ", 0, dpi=60)
         try:
             ax = fig.axes[0]
-            assert ax.get_xlabel() == "Ground range (km)"
-            # the data reach ~124 km of range and ~41 km of height (the file's own height limit)
-            assert 110 < ax.get_xlim()[1] < 135
-            assert 38 < _mesh_top_km(fig) < 47
+            assert ax.get_xlabel().startswith("Ground range (km)")
+            # cleaned by default: the echo (to ~75 km, ~10 km tall) without the noise above it
+            assert 60 < ax.get_xlim()[1] < 90
+            assert 5 < _mesh_top_km(fig) < 15
+            assert "SQI" in fig.texts[0].get_text()
         finally:
             plt.close(fig)
         # and through the wire format: rays are in ascending elevation although the file is not
         rays = rhi.rhi_rays(reader.get_sweep_dataset(0, mask=False))
         assert rays is not None and np.all(np.diff(rays.elevation) > 0)
         assert rays.order.size == 152
+
+
+# ---------------------------------------------------------------------------
+# Noise cleaning
+# ---------------------------------------------------------------------------
+
+
+class TestClean:
+    def test_find_quality_fields(self) -> None:
+        names = ["DBZ", "VEL", "SQI", "RHOHV", "ZDR", "DBZ_TOT"]
+        assert rhi.find_quality_fields(names) == {"sqi": "SQI", "rhohv": "RHOHV"}
+        npol = ["corrected_reflectivity", "normalized_coherent_power", "cross_correlation_ratio"]
+        assert rhi.find_quality_fields(npol) == {
+            "sqi": "normalized_coherent_power",
+            "rhohv": "cross_correlation_ratio",
+        }
+        assert rhi.find_quality_fields(["DBZH", "SNRH"]) == {"snr": "SNRH"}
+        assert rhi.find_quality_fields(["RHOHV"], exclude="RHOHV") == {}
+
+    def test_parse_clean(self) -> None:
+        assert rhi.parse_clean(None) == rhi.RhiClean()
+        assert rhi.parse_clean(False).raw and rhi.parse_clean("raw").raw
+        c = rhi.parse_clean({"sqi": None, "rhohv": 0.5, "despeckle": 0, "snr": False})
+        assert (c.sqi, c.snr, c.rhohv, c.despeckle) == (None, None, 0.5, 0)
+        with pytest.raises(ValueError):
+            rhi.parse_clean(7)
+
+    def test_quality_masks_hide_noise_and_keep_missing_quality(self) -> None:
+        values = np.full((4, 6), 20.0)
+        sqi = np.full((4, 6), 0.9)
+        sqi[0, 0] = 0.1
+        sqi[0, 1] = np.nan  # no quality value: kept
+        out, caption = rhi.clean_values(
+            values, {"sqi": ("SQI", sqi)}, rhi.RhiClean(rhohv=None, snr=None, despeckle=0)
+        )
+        assert np.isnan(out[0, 0]) and out[0, 1] == 20.0 and np.isfinite(out).sum() == 23
+        assert caption.startswith("Cleaned: SQI \u2265 0.4")
+        assert "hid 4% of gates" in caption
+
+    def test_despeckle_removes_small_groups_only(self) -> None:
+        v = np.full((6, 10), np.nan)
+        v[0:2, 0:2] = 1  # 4 gates
+        v[3, 3] = v[4, 4] = 1  # diagonal pair: one group of 2
+        v[0, 9] = 1  # lone gate
+        v[3:6, 6:10] = 1  # 12 gates
+        out, caption = rhi.clean_values(
+            v, {}, rhi.RhiClean(sqi=None, snr=None, rhohv=None, despeckle=8)
+        )
+        assert np.isfinite(out).sum() == 12
+        assert "despeckled (< 8 gates)" in caption
+
+    def test_value_mask(self) -> None:
+        v = np.array([[5.0, 25.0, np.nan]])
+        spec = rhi.RhiClean(
+            sqi=None, snr=None, rhohv=None, despeckle=0, mask={"mode": "below", "min": 10}
+        )
+        out, _ = rhi.clean_values(v, {}, spec, units="dBZ")
+        assert np.isnan(out[0, 0]) and out[0, 1] == 25.0
+        between = {"mode": "between", "min": 0, "max": 10, "inclusive": True}
+        assert rhi._mask_hidden(v, between).tolist() == [[True, False, False]]
+        outside = {"mode": "outside", "min": 0, "max": 10}
+        assert rhi._mask_hidden(v, outside).tolist() == [[False, True, False]]
+
+    def test_raw_is_untouched_and_says_so(self) -> None:
+        v = np.array([[1.0, np.nan, 3.0]])
+        out, caption = rhi.clean_values(v, {}, rhi.RhiClean(raw=True))
+        assert np.array_equal(out, v, equal_nan=True)
+        assert caption.startswith("Raw data")
+
+    def test_missing_quality_fields_are_reported(self) -> None:
+        _, caption = rhi.clean_values(np.full((3, 3), 1.0), {}, rhi.RhiClean(despeckle=0))
+        assert "no SQI/SNR/RHOHV field in this sweep" in caption
+
+    def test_exported_figure_is_clean_by_default_and_raw_on_request(self) -> None:
+        import matplotlib.pyplot as plt
+
+        tree = rhi_tree(make_rhi_sweep(quality=True))
+        clean_fig = render_publication_figure(tree, "DBZH", 0, dpi=50)
+        raw_fig = render_publication_figure(tree, "DBZH", 0, dpi=50, rhi_clean=False)
+        try:
+            assert (
+                "Cleaned: SQI \u2265 0.4, RHOHV \u2265 0.7, despeckled"
+                in clean_fig.texts[0].get_text()
+            )
+            assert raw_fig.texts[0].get_text().startswith("Raw data")
+            # SQI ~ 0 on the far block of echo: cleaning shrinks the drawn extent
+            assert clean_fig.axes[0].get_xlim()[1] < raw_fig.axes[0].get_xlim()[1]
+        finally:
+            plt.close(clean_fig)
+            plt.close(raw_fig)
+
+    def test_export_option_reaches_the_figure(self, tmp_path: Path) -> None:
+        tree = rhi_tree(make_rhi_sweep(quality=True))
+        out = tmp_path / "raw.png"
+        RadarExporter().export(
+            tree,
+            fmt="png",
+            dpi=72,
+            output_path=str(out),
+            variable="DBZH",
+            sweep=0,
+            options={"rhi_clean": {"raw": True}},
+        )
+        assert out.stat().st_size > 3_000
+
+
+# ---------------------------------------------------------------------------
+# Real RHI files from open-radar-data (DOW8): run where the files are available (CI)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("path", [DOW8_RHI, DOW8_RHI_2], ids=["DOW8_RHI", "DOW8_RHI_2"])
+class TestDow8:
+    def test_opens_as_rhi_with_ascending_elevation(self, path: Path | None) -> None:
+        if path is None:
+            pytest.skip("open-radar-data DOW8 RHI file not available")
+        reader = RadarReader()
+        reader.open_file(str(path))
+        schema = reader.get_schema()
+        kinds = [s["kind"] for s in schema["sweeps"]]
+        assert "rhi" in kinds
+        for i, sweep in enumerate(schema["sweeps"]):
+            if sweep["kind"] != "rhi":
+                continue
+            assert 0 <= sweep["azimuth"] < 360
+            assert sweep["elevation_max"] > sweep["elevation_min"]
+            rays = rhi.rhi_rays(reader.get_sweep_dataset(i, mask=False))
+            assert rays is not None and np.all(np.diff(rays.elevation) > 0)
+
+    def test_wire_format_and_figure(self, path: Path | None, tmp_path: Path) -> None:
+        import matplotlib.pyplot as plt
+
+        if path is None:
+            pytest.skip("open-radar-data DOW8 RHI file not available")
+        reader = RadarReader()
+        reader.open_file(str(path))
+        schema = reader.get_schema()
+        idx = next(i for i, s in enumerate(schema["sweeps"]) if s["kind"] == "rhi")
+        names = schema["sweeps"][idx]["variables"]
+        reflectivity = [v for v in names if "DBZ" in v.upper() or "REFL" in v.upper()]
+        variable = (reflectivity or names)[0]
+        rays = server._rhi_rays_of(reader, idx)
+        fields, arrays = server._pack_field(
+            reader.get_sweep_data(idx, variable), variable, rays=rays
+        )
+        assert fields["sweep_kind"] == "rhi" and len(arrays) == 4
+        assert arrays[3].size == fields["n_az"] and np.all(np.diff(arrays[3]) > 0)
+        fig = render_publication_figure(reader.datatree, variable, idx, dpi=50)
+        try:
+            assert fig.axes[0].get_xlabel().startswith("Ground range (km)")
+            assert fig.texts and fig.texts[0].get_text()
+        finally:
+            plt.close(fig)

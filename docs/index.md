@@ -39,6 +39,7 @@ usage
 opening-data
 viewing
 using-modules
+RHI
 export
 settings
 ```
