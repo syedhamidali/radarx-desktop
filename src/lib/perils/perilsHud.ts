@@ -15,6 +15,8 @@ import {
 } from './perilsData.ts';
 import { PROV, type RGB, chip, drawText, measure, panel, provColour, rgba, ui, FONT, MONO } from './perilsStyle.ts';
 import { wrapText } from './perilsCaptions.ts';
+import { tempColour } from './perilsSurface.ts';
+import { COLORMAP_DATA } from '../utils/colormaps';
 
 export interface TornadoCard {
   rating: string;
@@ -54,6 +56,8 @@ export interface HudModel {
   credits: string;
   shots: { name: string; label: string; t0: number; t1: number }[];
   layersOn: string[];
+  /** What the colours on the ground mean (only the layers that are visible and have data). */
+  groundKey: { temp: [number, number] | null; mrms: boolean; swath: boolean };
   vexag: number;
 }
 
@@ -334,6 +338,56 @@ export function drawLegend(ctx: CanvasRenderingContext2D, W: number, H: number, 
   for (const k of kinds) x += chip(ctx, k, x, y, u, undefined, 12) + 8 * u;
   drawText(ctx, m.credits, W / 2, H - 22 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
   drawText(ctx, `Vertical scale ×${m.vexag.toFixed(1)} · flat ground, no terrain · cloud look and lighting STYLISED, echo position and strength are radar data`, W / 2, H - 40 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
+}
+
+/**
+ * The key of the ground colours: surface temperature (ANALYSIS), MRMS reflectivity outside the radar volume
+ * (OBSERVED), and the rotation swath (RETRIEVED). Only the layers that are on and have data get a row.
+ */
+export function drawGroundKey(ctx: CanvasRenderingContext2D, u: number, m: HudModel, y: number, a: number): void {
+  const k = m.groundKey;
+  const rows = [k.temp && 'temp', k.mrms && 'mrms', k.swath && 'swath'].filter(Boolean) as string[];
+  if (!rows.length || a <= 0.02) return;
+  const w = 330 * u;
+  const h = (14 + rows.length * 40) * u;
+  const x = 34 * u;
+  ctx.save();
+  ctx.globalAlpha = a;
+  panel(ctx, x, y, w, h, u, 0.5);
+  rows.forEach((r, i) => {
+    const yy = y + (30 + i * 40) * u;
+    const bx = x + 14 * u;
+    const bw = 120 * u;
+    if (r === 'temp' && k.temp) {
+      const g = ctx.createLinearGradient(bx, 0, bx + bw, 0);
+      for (let q = 0; q <= 4; q++) {
+        const c = tempColour(k.temp[0] + ((k.temp[1] - k.temp[0]) * q) / 4, k.temp[0], k.temp[1]);
+        g.addColorStop(q / 4, `rgb(${c[0]},${c[1]},${c[2]})`);
+      }
+      ctx.fillStyle = g;
+      ctx.fillRect(bx, yy - 12 * u, bw, 12 * u);
+      drawText(ctx, `${k.temp[0].toFixed(0)} to ${k.temp[1].toFixed(0)} °C`, bx, yy + 14 * u, u, { size: 12, weight: 600, halo: 0 });
+      chip(ctx, 'analysis', bx + bw + 12 * u, yy + 2 * u, u, 'ANALYSIS', 11);
+      drawText(ctx, 'surface temperature', bx + bw + 12 * u, yy + 22 * u, u, { size: 12, weight: 500, halo: 0, color: rgba(ui().dim, 1) });
+    } else if (r === 'mrms') {
+      const lut = COLORMAP_DATA['NWSRef'];
+      for (let q = 0; q < bw; q += 2) {
+        const i2 = Math.round((q / bw) * 255);
+        ctx.fillStyle = `rgb(${lut[i2 * 3]},${lut[i2 * 3 + 1]},${lut[i2 * 3 + 2]})`;
+        ctx.fillRect(bx + q, yy - 12 * u, 2, 12 * u);
+      }
+      drawText(ctx, '-10 to 70 dBZ', bx, yy + 14 * u, u, { size: 12, weight: 600, halo: 0 });
+      chip(ctx, 'observed', bx + bw + 12 * u, yy + 2 * u, u, 'OBSERVED', 11);
+      drawText(ctx, 'MRMS, outside the volume', bx + bw + 12 * u, yy + 22 * u, u, { size: 12, weight: 500, halo: 0, color: rgba(ui().dim, 1) });
+    } else {
+      ctx.fillStyle = 'rgba(255,225,70,0.85)';
+      ctx.fillRect(bx, yy - 12 * u, bw, 12 * u);
+      drawText(ctx, 'rotation so far', bx, yy + 14 * u, u, { size: 12, weight: 600, halo: 0 });
+      chip(ctx, 'retrieved', bx + bw + 12 * u, yy + 2 * u, u, 'RETRIEVED', 11);
+      drawText(ctx, 'MRMS azimuthal shear', bx + bw + 12 * u, yy + 22 * u, u, { size: 12, weight: 500, halo: 0, color: rgba(ui().dim, 1) });
+    }
+  });
+  ctx.restore();
 }
 
 /** Opacity of the end card at clip time `tc` of a clip of `duration` s: it comes in over 1.2 s, 9 s before the end. */

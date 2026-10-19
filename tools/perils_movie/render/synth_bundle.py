@@ -42,7 +42,7 @@ def _frames():
 
 def bow_at(along: float) -> float:
     """How far (km) the made-up line bows ahead at the along-line position ``along``."""
-    return 14.0 * math.exp(-(((along + 5) / 38.0) ** 2))
+    return 14.0 * np.exp(-(((np.asarray(along) + 5) / 38.0) ** 2))
 
 
 def tornado_xy(t: float, dur: float):
@@ -154,7 +154,19 @@ def write(out: Path, n_steps: int, step_s: float, res_km: float = 0.5, dz_km: fl
         mf = make_field(mx, mx, np.array([1.0, 4.0]), t)
         mcomp = np.nanmax(np.where(np.isfinite(mf), mf, -30), axis=0)
         mcomp = np.where(mcomp < 5, np.nan, mcomp).astype(np.float32)
-        np.savez_compressed(out / "context" / f"mrms_{k:04d}.npz", refl=mcomp, x_km=mx, y_km=mx)
+        MX, MY = np.meshgrid(mx, mx)
+        az = np.zeros_like(mcomp)
+        for tq in np.arange(0.4 * step_s * (n_steps - 1), t + 1, 20.0):  # the swath of the made-up tornado so far
+            tp = tornado_xy(float(tq), step_s * (n_steps - 1))
+            if tp is not None:
+                az = np.maximum(az, 0.03 * np.exp(-(((MX - tp[0]) ** 2 + (MY - tp[1]) ** 2) / (2 * 1.2**2))))
+        np.savez_compressed(out / "context" / f"mrms_{k:04d}.npz", **{"mergedref_dbz": mcomp, "azshear_s-1": az.astype(np.float32), "x_km": mx, "y_km": mx})
+        # surface analysis (2 km grid): a cold pool behind the leading edge
+        sx_ = np.arange(-90, 90.01, 2.0)
+        SX, SY = np.meshgrid(sx_, sx_)
+        sw = SX * _frames()[0][0] + SY * _frames()[0][1] - SPEED_MS * t / 1000.0 + 6.0 - bow_at(SX * _frames()[1][0] + SY * _frames()[1][1])
+        cold = 1.0 / (1.0 + np.exp(np.clip((sw + 3.0) / 4.0, -50, 50)))
+        np.savez_compressed(out / "context" / f"surface_{k:04d}.npz", x_km=sx_, y_km=sx_, n_stations=np.array(30), temperature_c=(24 - 6 * cold).astype(np.float32), dewpoint_c=(20 - 1.5 * cold).astype(np.float32), theta_e_k=(345 - 9 * cold).astype(np.float32), pressure_hpa=(1004 + 3 * cold).astype(np.float32))
         steps.append(
             {
                 "index": k,
@@ -164,6 +176,7 @@ def write(out: Path, n_steps: int, step_s: float, res_km: float = 0.5, dz_km: fl
                 "volume": f"volumes/step_{k:04d}.npz",
                 "mrms": f"context/mrms_{k:04d}.npz",
                 "winds": f"winds/step_{k:04d}.npz",
+                "surface": f"context/surface_{k:04d}.npz",
             }
         )
         # winds on a 1 km grid, made up in line coordinates: inflow ahead, an updraft at the line, rear inflow behind
@@ -263,7 +276,7 @@ def write(out: Path, n_steps: int, step_s: float, res_km: float = 0.5, dz_km: fl
         di = np.array([170, 190, 205, 225, 235, 245, 250, 255, 255, 255, 255], float)
         u = -sp * np.sin(np.radians(di))
         v = -sp * np.cos(np.radians(di))
-        rows = "\n".join(f"{p_:.0f},{z_:.0f},{t_:.1f},{d_:.1f},{u_:.1f},{v_:.1f}" for p_, z_, t_, d_, u_, v_ in zip(p, zz, tt, td, u, v))
+        rows = "\n".join(f"{p_:.0f},{z_:.0f},{t_:.1f},{d_:.1f},{u_:.1f},{v_:.1f}" for p_, z_, t_, d_, u_, v_ in zip(p, zz, tt, td, u, v, strict=False))
         (out / "soundings" / f"sounding_{si}.csv").write_text("pressure_hpa,height_m,temperature_c,dewpoint_c,u_ms,v_ms\n" + rows)
         drift = [[float(tq), la + 0.00004 * tq, lo + 0.00009 * tq, float(min(14000.0, 5.0 * (tq + 1800)))] for tq in np.arange(-600, 721, 120)]
         snd.append(

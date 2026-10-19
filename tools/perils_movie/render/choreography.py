@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from convert_bundle import Geo, parse_iso  # noqa: E402
+from convert_bundle import Geo, parse_iso
 
 EYE_M = 2.0  # eye height of the ground-level (window) camera above the ground, m
 
@@ -73,7 +73,7 @@ def speed_profile(t: np.ndarray, dip_centre: float | None, dip_width: float = 24
 
 def build_timeline(window_s: float, duration: float = 120.0, fps: int = 30, dip_centre: float | None = None, dip_width: float = 24.0, dip_level: float = 0.35) -> dict:
     """Dense mapping: ``t_data_s[i]`` = seconds after the data start shown at frame i (0..N, N = duration * fps)."""
-    n = int(round(duration * fps))
+    n = round(duration * fps)
     t = np.arange(n + 1) / fps
     sp = speed_profile(t, dip_centre, dip_width, dip_level)
     cum = np.concatenate([[0.0], np.cumsum((sp[1:] + sp[:-1]) * 0.5 / fps)])
@@ -356,7 +356,7 @@ def build_events(scene: Scene, tl: dict, camera: list[dict], shots: list[Shot], 
         t_a, t_b = float(clip_time_of_data(tl, span[0])), float(clip_time_of_data(tl, span[1]))
         pos = []
         for tc in np.arange(math.ceil(t_a), t_b + 1e-9, 1.0):
-            q, act = scene.tornado_at(float(data_time_of_clip(tl, tc)))
+            q, _act = scene.tornado_at(float(data_time_of_clip(tl, tc)))
             la, lo = geo.latlon(q[0], q[1])
             pos.append({"t_clip_s": float(tc), "lat": round(float(la), 5), "lon": round(float(lo), 5)})
         ev["tornado"] = {"id": tors[0].get("id"), "rating": tors[0].get("rating"), "t_clip_start_s": round(t_a, 3), "t_clip_end_s": round(t_b, 3), "positions": pos}

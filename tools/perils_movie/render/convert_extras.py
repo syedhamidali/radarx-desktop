@@ -144,7 +144,7 @@ def convert_dsd(path: Path, max_cols: int = 200):
     t = np.asarray(z["t_s"], float)
     d = np.asarray(z["diameter_mm"], float)
     nd = np.asarray(z["nd_m3mm"], float)
-    stride = max(1, int(math.ceil(len(t) / max_cols)))
+    stride = max(1, math.ceil(len(t) / max_cols))
     ts, nds = t[::stride], nd[::stride]
     logn = np.where(nds > 0, np.log10(np.maximum(nds, 1e-9)), np.nan)
     out = {
@@ -230,7 +230,7 @@ def convert_profiles(files: dict, geo=None, site=None, max_cols: int = 600) -> d
             continue
         t = np.asarray(z["t_s"], float)
         h = np.asarray(z["height_m"], float)
-        stride = max(1, int(math.ceil(len(t) / max_cols)))
+        stride = max(1, math.ceil(len(t) / max_cols))
         fields = {}
         for key in ("dbz", "fall_speed_ms", "rain_rate_mmh", "u", "v", "w", "speed_ms", "snr_db"):
             if key not in z.files:

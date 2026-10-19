@@ -37,7 +37,7 @@ def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
     frames: list[int] = []
     for part in spec.split(","):
         a, b = (float(x) for x in part.split("-"))
-        frames.extend(range(int(round(a * fps)), min(int(round(b * fps)), int(duration * fps))))
+        frames.extend(range(round(a * fps), min(round(b * fps), int(duration * fps))))
     return frames
 
 
@@ -68,7 +68,7 @@ def prepare_bundle(bundle: Path, work: Path, export_dir: Path | None, counties: 
             stamp.write_text(json.dumps(p))
         except Exception as e:  # the movie still renders: a plain grid ground, said on screen
             log(f"no ground map ({e}); the ground will be a plain grid")
-    res = choreography.write(stamp, clip, 120.0, 30, log=log)
+    choreography.write(stamp, clip, 120.0, 30, log=log)
     if export_dir:
         export_dir.mkdir(parents=True, exist_ok=True)
         for name in ("timeline.json", "camera_path.json", "events.json"):
@@ -245,7 +245,7 @@ def main(argv=None) -> None:
     fps, duration = tl["fps"], tl["clip_duration_s"]
     n_all = tl["frames"]
     if a.at:
-        frames = [min(n_all - 1, int(round(float(t) * fps))) for t in a.at.split(",")]
+        frames = [min(n_all - 1, round(float(t) * fps)) for t in a.at.split(",")]
     elif a.frames:
         lo, hi = (int(v) for v in a.frames.split(":"))
         frames = list(range(lo, min(hi, n_all)))

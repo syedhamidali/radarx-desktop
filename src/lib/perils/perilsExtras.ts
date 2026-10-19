@@ -15,11 +15,12 @@ import {
 } from './perilsData';
 import { Director, type CamEntry, type TimelineFile, nearestStation } from './perilsDirector';
 import { LayerVis, type LayerId } from './perilsLayers';
-import { GroundComposer } from './perilsGround';
+import { GroundComposer, contourSegments, type PixelFn } from './perilsGround';
+import { decodeSurface, sampleGrid, blendFields, tempColour, coldPoolLevel, swathUpTo, type SurfaceMeta } from './perilsSurface';
 import { compileFlashes, flashFrame, flashesInWindow, lightFrom, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
-import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, type SceneEnv } from './perilsScene';
+import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, type SceneEnv } from './perilsScene';
 import { drawStripCharts, drawDsdInset, drawTimeHeight, drawRainStreaks } from './perilsInsets';
-import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, drawStationCard, drawTornadoCard, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha } from './perilsHud';
+import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, drawStationCard, drawTornadoCard, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
 import { activeEvent, captionAlpha, captionOf, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
 import { fmtOffset, clockUtc } from './perilsData';
@@ -50,6 +51,11 @@ export class PerilsExtras implements ClipExtras {
   private api!: ClipApi;
   private ground: GroundComposer | null = null;
   private mrmsCodes: (Uint8Array | null)[] = [];
+  private azCodes: (Uint8Array | null)[] = [];
+  private swathCache = new Map<number, Uint8Array | null>();
+  private surf: (Record<string, Float32Array> | null)[] = [];
+  private tRange: [number, number] = [10, 30];
+  private coldLevel = NaN;
   private flashes: CompiledFlash[] = [];
   private maxDur = 0;
   private firstTimes: number[] = [];
@@ -130,6 +136,34 @@ export class PerilsExtras implements ClipExtras {
         return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       }),
     );
+    // MRMS azimuthal shear (the rotation swath) and the surface analysis
+    this.azCodes = await Promise.all(
+      this.data.mrms.map(async (m) => {
+        if (!m || !m.az) return null;
+        const r = await fetch(`${this.base}/${m.az}`);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      }),
+    );
+    const surfMeta = (this.data.surface ?? []) as (SurfaceMeta | null)[];
+    this.surf = await Promise.all(
+      surfMeta.map(async (m) => {
+        if (!m) return null;
+        const r = await fetch(`${this.base}/${m.bin}`);
+        return r.ok ? decodeSurface(m, new Uint8Array(await r.arrayBuffer())) : null;
+      }),
+    );
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const f of this.surf) {
+      const t = f?.temperature_c;
+      if (!t) continue;
+      for (const v of t) if (Number.isFinite(v)) {
+        lo = Math.min(lo, v);
+        hi = Math.max(hi, v);
+      }
+      if (!Number.isFinite(this.coldLevel)) this.coldLevel = coldPoolLevel(t, 2.0);
+    }
+    if (Number.isFinite(lo)) this.tRange = [lo, Math.max(hi, lo + 1)];
     this.composeGround({ t: 0, td: 0, k: 0, s: 0, vexag: 1, eye: [0, 0, 0], yawDeg: 0, pitchDeg: 0 });
     this.mountInset();
   }
@@ -189,8 +223,54 @@ export class PerilsExtras implements ClipExtras {
       codesA: ia >= 0 ? this.mrmsCodes[ia] : null, codesB: ib >= 0 ? this.mrmsCodes[ib] : null,
       s: w.s, dt: mo ? mo.dt_s : 1, motion: mo ? [mo.dx_km / mo.dt_s, mo.dy_km / mo.dt_s] : [0, 0],
       box, lut: this.lut, vmin: this.api.g0.vmin, vmax: this.api.g0.vmax, gain: this.vis.at('mrms', info.t),
+      under: this.surfaceLayer(k, w.s, this.vis.at('surfaceModels', info.t)),
+      over: this.swathLayer(w.s < 0.5 ? k : k + 1, this.vis.at('rotation', info.t)),
     });
     this.api.renderer.setGround(this.ground.spec.size, rgba, this.ground.spec.half, [this.ground.spec.cx, this.ground.spec.cy]);
+  }
+
+  /** The surface temperature analysis (ANALYSIS) as a translucent ground layer, cross-faded between the two step analyses. */
+  private surfaceLayer(k: number, s: number, gain: number): PixelFn | null {
+    const metaA = (this.data.surface ?? [])[k] as SurfaceMeta | null;
+    const metaB = (this.data.surface ?? [])[k + 1] as SurfaceMeta | null;
+    const meta = metaA ?? metaB;
+    const f = blendFields(this.surf[k]?.temperature_c ?? null, this.surf[k + 1]?.temperature_c ?? null, s);
+    if (!meta || !f || gain <= 0.02) return null;
+    const [lo, hi] = this.tRange;
+    return (x, y) => {
+      const v = sampleGrid(f, meta, x, y);
+      if (!Number.isFinite(v)) return null;
+      const c = tempColour(v, lo, hi);
+      return [c[0], c[1], c[2], 0.26 * gain];
+    };
+  }
+
+  /** The rotation swath so far (MRMS azimuthal shear, RETRIEVED): the maximum up to step `k`, yellow, opacity by strength. */
+  private swathLayer(k: number, gain: number): PixelFn | null {
+    const kk = Math.max(0, Math.min(k, this.azCodes.length - 1));
+    if (gain <= 0.02 || !this.azCodes.some(Boolean)) return null;
+    if (!this.swathCache.has(kk)) this.swathCache.set(kk, swathUpTo(this.azCodes, kk));
+    const sw = this.swathCache.get(kk);
+    const meta = this.data.mrms.find((m) => m);
+    if (!sw || !meta) return null;
+    return (x, y) => {
+      const i = Math.round((x - meta.x0) / meta.dx);
+      const j = Math.round((y - meta.y0) / meta.dx);
+      if (i < 0 || j < 0 || i >= meta.nx || j >= meta.ny) return null;
+      const c = sw[j * meta.nx + i];
+      if (c < 40) return null; // below about 6e-3 s-1 nothing is drawn
+      return [255, 225, 70, Math.min(0.75, 0.25 + (c - 40) / 300) * gain];
+    };
+  }
+
+  /** Segments of the cold-pool edge at the current time, from the blended surface temperature analysis; [] without a cold pool. */
+  private coldPoolSegments(td: number): number[][] {
+    if (!Number.isFinite(this.coldLevel)) return [];
+    const w = interpWeights(this.data.steps.map((q) => q.t_s), td);
+    const meta = ((this.data.surface ?? [])[w.k] ?? (this.data.surface ?? [])[w.k + 1]) as SurfaceMeta | null;
+    const f = blendFields(this.surf[w.k]?.temperature_c ?? null, this.surf[w.k + 1]?.temperature_c ?? null, w.s);
+    if (!meta || !f) return [];
+    return contourSegments(f, meta.nx, meta.ny, meta.x0, meta.y0, meta.dx, this.coldLevel);
   }
 
   beforeFrame(info: FrameInfo): void {
@@ -234,6 +314,7 @@ export class PerilsExtras implements ClipExtras {
     drawZdrColumns(env, v('zdr'));
     drawHail(env, v('hail'));
     drawWinds(env, v('flow'));
+    drawColdPool(env, v('surfaceModels'), this.coldPoolSegments(info.td));
     drawTds(env, v('rotation'));
     drawRotation(env, v('rotation'));
     drawStations(env, v('stations'));
@@ -315,6 +396,11 @@ export class PerilsExtras implements ClipExtras {
       flash: { perMin: flashesInWindow(this.firstTimes, td, 60), series, binS, total: this.firstTimes.length, nowIdx: Math.min(series.length - 1, Math.floor(td / binS)) },
       station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: d.environment,
       legendKinds: ['observed', 'model', 'analysis', 'retrieved', 'interpolated', 'stylised'], credits, shots: this.director.tl.shots, layersOn: [], vexag: info.vexag,
+      groundKey: {
+        temp: this.surf.some(Boolean) && this.vis.at('surfaceModels', info.t) > 0.12 ? this.tRange : null,
+        mrms: this.mrmsCodes.some(Boolean) && this.vis.at('mrms', info.t) > 0.12,
+        swath: this.azCodes.some(Boolean) && this.vis.at('rotation', info.t) > 0.12,
+      },
     };
   }
 
@@ -351,6 +437,7 @@ export class PerilsExtras implements ClipExtras {
     }
     drawStationCard(ctx, H, u, m, m.vis('stationCard'));
     drawTornadoCard(ctx, u, m, 1);
+    drawGroundKey(ctx, u, m, 280 * u, m.vis('captions'));
     drawCaption(ctx, W, H, u, m);
     drawTimeline(ctx, W, H, u, m);
     drawLegend(ctx, W, H, u, m);

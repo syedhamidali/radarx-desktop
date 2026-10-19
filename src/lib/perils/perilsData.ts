@@ -100,6 +100,8 @@ export interface RotationTrack {
 
 export interface MrmsMeta {
   bin: string;
+  az?: string;
+  azMax?: number;
   x0: number;
   y0: number;
   dx: number;
@@ -145,6 +147,7 @@ export interface PerilsData {
   tornadoes: TornadoRec[];
   rotation: RotationTrack[];
   mrms: (MrmsMeta | null)[];
+  surface?: (unknown | null)[];
   hail: ({ n: number; p: number[][] } | null)[];
   tds: (number[][] | null)[];
   layers: ({ bin: string; names: string[]; ny: number; nx: number } | null)[];

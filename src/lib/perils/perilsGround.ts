@@ -42,6 +42,49 @@ export function reflAlpha(dbz: number): number {
   return Math.min(0.85, 0.35 + ((dbz - 10) / 35) * 0.5);
 }
 
+/** A ground layer given as a function of the position (km): RGBA with alpha 0..1, or null for nothing. */
+export type PixelFn = (x: number, y: number) => [number, number, number, number] | null;
+
+/** Marching squares: the segments [x0, y0, x1, y1] of the contour `level` of a regular grid (row-major, x fastest). */
+export function contourSegments(f: ArrayLike<number>, nx: number, ny: number, x0: number, y0: number, dx: number, level: number): number[][] {
+  const out: number[][] = [];
+  const v = (i: number, j: number) => f[j * nx + i];
+  const lerp = (a: number, b: number) => (a === b ? 0.5 : (level - a) / (b - a));
+  for (let j = 0; j < ny - 1; j++) {
+    for (let i = 0; i < nx - 1; i++) {
+      const a = v(i, j);
+      const b = v(i + 1, j);
+      const c = v(i + 1, j + 1);
+      const d = v(i, j + 1);
+      if (![a, b, c, d].every(Number.isFinite)) continue;
+      const code = (a > level ? 1 : 0) | (b > level ? 2 : 0) | (c > level ? 4 : 0) | (d > level ? 8 : 0);
+      if (code === 0 || code === 15) continue;
+      const X = x0 + i * dx;
+      const Y = y0 + j * dx;
+      // edge crossings: bottom (a-b), right (b-c), top (d-c), left (a-d)
+      const e = {
+        bottom: [X + lerp(a, b) * dx, Y],
+        right: [X + dx, Y + lerp(b, c) * dx],
+        top: [X + lerp(d, c) * dx, Y + dx],
+        left: [X, Y + lerp(a, d) * dx],
+      };
+      const segs: [number[], number[]][] = [];
+      switch (code) {
+        case 1: case 14: segs.push([e.left, e.bottom]); break;
+        case 2: case 13: segs.push([e.bottom, e.right]); break;
+        case 3: case 12: segs.push([e.left, e.right]); break;
+        case 4: case 11: segs.push([e.right, e.top]); break;
+        case 6: case 9: segs.push([e.bottom, e.top]); break;
+        case 7: case 8: segs.push([e.left, e.top]); break;
+        case 5: segs.push([e.left, e.top], [e.bottom, e.right]); break;
+        case 10: segs.push([e.left, e.bottom], [e.top, e.right]); break;
+      }
+      for (const [p, q] of segs) out.push([p[0], p[1], q[0], q[1]]);
+    }
+  }
+  return out;
+}
+
 export interface GroundSpec {
   size: number;
   half: number;
@@ -57,6 +100,10 @@ export class GroundComposer {
   private out: HTMLCanvasElement;
   private outCtx: CanvasRenderingContext2D;
   private img: ImageData;
+  private under: HTMLCanvasElement;
+  private underCtx: CanvasRenderingContext2D;
+  private over: HTMLCanvasElement;
+  private overCtx: CanvasRenderingContext2D;
   private M: number;
   mrmsCodes: (Uint8Array | null)[] = [];
 
@@ -79,6 +126,40 @@ export class GroundComposer {
     this.out.width = this.out.height = S;
     this.outCtx = this.out.getContext('2d', { willReadFrequently: true })!;
     this.img = this.mrmsCtx.createImageData(mrmsSize, mrmsSize);
+    this.under = document.createElement('canvas');
+    this.under.width = this.under.height = mrmsSize;
+    this.underCtx = this.under.getContext('2d')!;
+    this.over = document.createElement('canvas');
+    this.over.width = this.over.height = mrmsSize;
+    this.overCtx = this.over.getContext('2d')!;
+  }
+
+  /** Draw a pixel function into a small canvas covering the ground square. */
+  private paint(ctx: CanvasRenderingContext2D, fn: PixelFn | null): boolean {
+    const { spec, M } = this;
+    if (!fn) {
+      ctx.clearRect(0, 0, M, M);
+      return false;
+    }
+    const img = ctx.createImageData(M, M);
+    const d = img.data;
+    let any = false;
+    for (let j = 0; j < M; j++) {
+      const y = spec.cy + spec.half - ((j + 0.5) / M) * 2 * spec.half;
+      for (let i = 0; i < M; i++) {
+        const x = spec.cx - spec.half + ((i + 0.5) / M) * 2 * spec.half;
+        const c = fn(x, y);
+        if (!c || c[3] <= 0) continue;
+        const o = (j * M + i) * 4;
+        d[o] = c[0];
+        d[o + 1] = c[1];
+        d[o + 2] = c[2];
+        d[o + 3] = Math.round(255 * Math.min(1, c[3]));
+        any = true;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return any;
   }
 
   /**
@@ -99,6 +180,9 @@ export class GroundComposer {
     vmin: number;
     vmax: number;
     gain?: number;
+    /** A layer under the MRMS (the surface analysis) and one over it (the rotation swath). */
+    under?: PixelFn | null;
+    over?: PixelFn | null;
   }): Uint8ClampedArray {
     const { spec, M } = this;
     const d = this.img.data;
@@ -135,7 +219,9 @@ export class GroundComposer {
     c.drawImage(this.base, 0, 0);
     c.imageSmoothingEnabled = true;
     c.imageSmoothingQuality = 'high';
+    if (this.paint(this.underCtx, opts.under ?? null)) c.drawImage(this.under, 0, 0, spec.size, spec.size);
     c.drawImage(this.mrms, 0, 0, spec.size, spec.size);
+    if (this.paint(this.overCtx, opts.over ?? null)) c.drawImage(this.over, 0, 0, spec.size, spec.size);
     return c.getImageData(0, 0, spec.size, spec.size).data;
   }
 }

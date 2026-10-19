@@ -243,7 +243,7 @@ export function drawTornadoTrack(e: SceneEnv, a: number): void {
     if (tor.path_interpolated) {
       const mid = tor.path[Math.floor(tor.path.length / 2)];
       const pm = pj(cam, mid.x, mid.y, 0.04, e.ve);
-      if (onScreen(pm, cam.w, cam.h)) drawText(ctx, 'surveyed begin and end, path between them interpolated', pm[0] + 10 * u, pm[1] - 10 * u, u, { size: 12, weight: 500, color: rgba([255, 205, 200], 0.95) });
+      if (onScreen(pm, cam.w, cam.h)) drawText(ctx, 'surveyed begin and end, path between them interpolated', pm[0] + 10 * u, pm[1] + 32 * u, u, { size: 12, weight: 500, color: rgba([255, 205, 200], 0.95) });
     }
     // the marker at the clip-time position
     const cur = tornadoAt(tor, e.td);
@@ -563,6 +563,38 @@ export function drawWinds(e: SceneEnv, a: number): void {
     ctx.arc(p[0], p[1], Math.min(5 * u, Math.max(1.6 * u, 0.09 * pxPerKm(cam, p[2]))) * Math.min(2, Math.abs(c[3]) / 8), 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
+}
+
+// ─── cold pool ──────────────────────────────────────────────────────────────
+
+/**
+ * The edge of the cold pool on the ground: the contour of the surface temperature analysis 2 K below the
+ * warm sector (ANALYSIS, an interpolation of station observations: smooth, defined only near stations). Drawn only
+ * when the analysis has such a region.
+ */
+export function drawColdPool(e: SceneEnv, a: number, segs: number[][]): void {
+  if (a <= 0.02 || !segs.length) return;
+  const { ctx, cam, u } = e;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = 'rgba(120,200,255,0.95)';
+  ctx.lineWidth = 2.6 * u;
+  ctx.setLineDash([9 * u, 5 * u]);
+  ctx.beginPath();
+  let last: [number, number, number] | null = null;
+  for (const s of segs) {
+    const p = pj(cam, s[0], s[1], 0.07, e.ve);
+    const q = pj(cam, s[2], s[3], 0.07, e.ve);
+    if (!p || !q) continue;
+    ctx.moveTo(p[0], p[1]);
+    ctx.lineTo(q[0], q[1]);
+    last = q;
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if (last && onScreen(last, cam.w, cam.h)) drawText(ctx, 'cold-pool edge (surface analysis, 2 K cooler)', last[0] + 8 * u, last[1] - 8 * u, u, { size: 13, color: 'rgba(170,220,255,1)' });
   ctx.restore();
 }
 

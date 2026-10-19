@@ -160,7 +160,7 @@ def test_timeline_is_monotone_covers_the_window_and_slows_down_at_the_dip():
     assert np.all(np.diff(td) > 0)
     assert len(td) == 3601
     sp = tl["speedup"]
-    assert sp[int(60 * 30)] < 0.5 * sp[int(10 * 30)]
+    assert sp[(60 * 30)] < 0.5 * sp[(10 * 30)]
     assert sp.min() > 0
     assert 960.0 / 120.0 > 7.9  # at least 10 minutes in 2: the mean speed-up is above x5
 
@@ -199,7 +199,7 @@ def test_camera_path_has_no_jumps_and_stays_in_bounds(tiny):
     pit = np.array([c["pitch_deg"] for c in cam])
     assert np.abs(np.diff(pit)).max() < 1.5 and np.abs(pit).max() <= 86.0
     assert all(c["z_km"] >= 0.0019 for c in cam)
-    assert [s["name"] for s in res["events"]["shots"]][0] == "establishing"
+    assert next(s["name"] for s in res["events"]["shots"]) == "establishing"
     assert res["events"]["shots"][-1]["name"] == "topdown" and res["events"]["shots"][-1]["t1"] == 120.0
 
 

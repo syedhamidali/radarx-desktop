@@ -24,7 +24,15 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
-from convert_extras import convert_dsd, convert_profiles, convert_rotation, convert_science, convert_stations, convert_tornadoes, convert_winds  # noqa: F401
+from convert_extras import (  # noqa: F401
+    convert_dsd,
+    convert_profiles,
+    convert_rotation,
+    convert_science,
+    convert_stations,
+    convert_tornadoes,
+    convert_winds,
+)
 
 VMIN, VMAX = -10.0, 70.0
 # hydrometeor class ids of the data bundle (docs/PERILS_BUNDLE.md); hail = the "hail" class of the
@@ -184,7 +192,7 @@ def read_series(s: dict) -> dict:
     return out
 
 
-def sounding_levels(csv_text: str) -> dict:
+def sounding_levels(csv_text: str, max_levels: int = 450) -> dict:
     """Levels of a sounding CSV: pressure, height, temperature, dew point, u, v (tolerant to column names)."""
     lines = [ln for ln in csv_text.strip().splitlines() if ln.strip() and not ln.startswith("#")]
     head = [h.strip().lower() for h in lines[0].split(",")]
@@ -226,6 +234,10 @@ def sounding_levels(csv_text: str) -> dict:
                 u, v = -sp * math.sin(math.radians(dr)), -sp * math.cos(math.radians(dr))
         cols["u_ms"].append(u)
         cols["v_ms"].append(v)
+    n = len(cols["pressure_hpa"])
+    if n > max_levels:  # a 1 Hz sonde has thousands of levels; the diagram needs a few hundred
+        keep = sorted(set(np.linspace(0, n - 1, max_levels).round().astype(int).tolist()))
+        cols = {k: [v[i] for i in keep] for k, v in cols.items()}
     return cols
 
 
@@ -417,8 +429,10 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     p["rotation"] = convert_rotation(_load_json(bundle / man["rotation_tracks"]) if man.get("rotation_tracks") else None, geo, rel)
     # MRMS composites
     p["mrms"] = []
+    p["surface"] = []
     for k, st in enumerate(steps):
         p["mrms"].append(_convert_mrms(bundle, st, k, geo, out) if st.get("mrms") else None)
+        p["surface"].append(_convert_surface(bundle, st, k, out))
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     (out / "perils.json").write_text(json.dumps(p))
     log(f"wrote {out} ({len(steps)} steps, {sum(1 for m in p['mrms'] if m)} MRMS frames)")
@@ -441,7 +455,7 @@ def line_geometry(colmax: np.ndarray, xs, ys, motion_xy: tuple[float, float], th
     cov = np.cov(np.stack([px - cx, py - cy]))
     w, v = np.linalg.eigh(cov)
     ax = v[:, int(np.argmax(w))]
-    bearing = math.degrees(math.atan2(ax[0], ax[1])) % 180.0
+    math.degrees(math.atan2(ax[0], ax[1])) % 180.0
     mn = math.hypot(*motion_xy)
     mdir = np.array(motion_xy) / mn if mn > 1e-9 else np.array([ax[1], -ax[0]])
     perp = np.array([ax[1], -ax[0]])  # axis rotated 90 degrees clockwise
@@ -453,7 +467,7 @@ def line_geometry(colmax: np.ndarray, xs, ys, motion_xy: tuple[float, float], th
     return {
         "cx": cx, "cy": cy, "axis_deg": float(math.degrees(math.atan2(ax[0], ax[1])) % 360.0), "perp_deg": float(math.degrees(math.atan2(perp[0], perp[1])) % 360.0),
         "half_len_km": float(np.percentile(np.abs(along), 97)), "front_km": float(np.percentile(across, 97)), "back_km": float(np.percentile(across, 3)),
-        "n_pixels": int(len(ii)),
+        "n_pixels": len(ii),
     }
 
 
@@ -468,36 +482,96 @@ def _zdr_markers(zc: np.ndarray, xs, ys, thr_km: float = 1.0, cap: int = 60) -> 
     return [[round(float(xs[ii[o]]), 2), round(float(ys[jj[o]]), 2), round(float(a[jj[o], ii[o]]), 2)] for o in order]
 
 
+AZ_MAX = 0.04  # s-1: the azimuthal shear that fills the 8-bit range of the swath layer
+
+
+def _resample(z, geo: Geo, field: np.ndarray, fill: float):
+    """A lat / lon field onto a local 1 km grid (km east / north of the origin) covering the field's box; NaN outside the box."""
+
+    lat, lon = np.asarray(z["lat"], float), np.asarray(z["lon"], float)
+    lat_a = lat if lat.ndim == 1 else lat[:, 0]
+    lon_a = lon if lon.ndim == 1 else lon[0, :]
+    cx = np.array([lon_a.min(), lon_a.max(), lon_a.min(), lon_a.max()])
+    cy = np.array([lat_a.min(), lat_a.min(), lat_a.max(), lat_a.max()])
+    gx, gy = geo.xy(cy, cx)
+    mx = np.arange(np.floor(gx.min()), np.ceil(gx.max()) + 0.01, 1.0)
+    my = np.arange(np.floor(gy.min()), np.ceil(gy.max()) + 0.01, 1.0)
+    X, Y = np.meshgrid(mx, my)
+    la, lo = geo.latlon(X, Y)
+    flip = lat_a[0] > lat_a[-1]
+    ri = np.interp(la, lat_a[::-1], np.arange(len(lat_a))[::-1]) if flip else np.interp(la, lat_a, np.arange(len(lat_a)))
+    ci = np.interp(lo, lon_a, np.arange(len(lon_a)))
+    inside = (la >= lat_a.min()) & (la <= lat_a.max()) & (lo >= lon_a.min()) & (lo <= lon_a.max())
+    return mx, my, ri, ci, inside
+
+
 def _convert_mrms(bundle: Path, st: dict, k: int, geo: Geo, out: Path) -> dict | None:
     f = bundle / st["mrms"]
     if not f.exists():
         return None
     z = np.load(f)
-    refl = first_key(z, "refl", "dbz", "reflectivity", "composite", "MergedReflectivityQCComposite")
+    refl = first_key(z, "mergedref_dbz", "refl", "dbz", "reflectivity", "composite", "MergedReflectivityQCComposite")
     if refl is None:
         return None
     refl = np.asarray(refl, float)
+    az = first_key(z, "azshear_s-1", "azshear")
     if "x_km" in z.files and "y_km" in z.files:
         mx, my = np.asarray(z["x_km"], float), np.asarray(z["y_km"], float)
         grid = refl
-    else:  # lat / lon regular grid: resample onto a 1 km local grid of the same extent
+        azgrid = np.asarray(az, float) if az is not None else None
+    else:
         from scipy.ndimage import map_coordinates
 
-        lat, lon = np.asarray(z["lat"], float), np.asarray(z["lon"], float)
-        lat_a = lat if lat.ndim == 1 else lat[:, 0]
-        lon_a = lon if lon.ndim == 1 else lon[0, :]
-        half = 250.0
-        mx = my = np.arange(-half, half + 0.01, 1.0)
-        X, Y = np.meshgrid(mx, my)
-        la, lo = geo.latlon(X, Y)
-        flip = lat_a[0] > lat_a[-1]
-        ri = np.interp(la, lat_a[::-1], np.arange(len(lat_a))[::-1]) if flip else np.interp(la, lat_a, np.arange(len(lat_a)))
-        ci = np.interp(lo, lon_a, np.arange(len(lon_a)))
+        mx, my, ri, ci, inside = _resample(z, geo, refl, -30.0)
         grid = map_coordinates(np.nan_to_num(refl, nan=-30.0), [ri, ci], order=1, mode="nearest")
-        grid = np.where(grid < 0, np.nan, grid)
+        grid = np.where(inside & (grid >= 0), grid, np.nan)
+        azgrid = None
+        if az is not None:
+            azv = map_coordinates(np.nan_to_num(np.asarray(az, float), nan=0.0), [ri, ci], order=1, mode="nearest")
+            azgrid = np.where(inside, azv, np.nan)
     codes = encode_dbz(grid)
     (out / f"mrms_{k}.bin").write_bytes(np.ascontiguousarray(codes).tobytes())
-    return {"bin": f"mrms_{k}.bin", "x0": float(mx[0]), "y0": float(my[0]), "dx": float(mx[1] - mx[0]), "nx": int(len(mx)), "ny": int(len(my))}
+    meta = {"bin": f"mrms_{k}.bin", "x0": float(mx[0]), "y0": float(my[0]), "dx": float(mx[1] - mx[0]), "nx": len(mx), "ny": len(my)}
+    if azgrid is not None:
+        azc = np.where(np.isfinite(azgrid) & (azgrid > 0), np.clip(np.rint(azgrid / AZ_MAX * 254) + 1, 1, 255), 0).astype(np.uint8)
+        (out / f"mrmsaz_{k}.bin").write_bytes(np.ascontiguousarray(azc).tobytes())
+        meta["az"] = f"mrmsaz_{k}.bin"
+        meta["azMax"] = AZ_MAX
+    return meta
+
+
+SURFACE_FIELDS = ("temperature_c", "dewpoint_c", "theta_e_k", "pressure_hpa", "u_ms", "v_ms")
+
+
+def _convert_surface(bundle: Path, st: dict, k: int, out: Path) -> dict | None:
+    """The objective surface analysis of a step (a Barnes analysis of the station observations, ANALYSIS) as 8-bit layers."""
+    if not st.get("surface"):
+        return None
+    f = bundle / st["surface"]
+    if not f.exists():
+        return None
+    z = np.load(f)
+    if "x_km" not in z.files:
+        return None
+    x, y = np.asarray(z["x_km"], float), np.asarray(z["y_km"], float)
+    fields, blobs = [], []
+    for name in SURFACE_FIELDS:
+        if name not in z.files:
+            continue
+        a = np.asarray(z[name], float)
+        fin = a[np.isfinite(a)]
+        if fin.size < 10:
+            continue
+        lo, hi = float(np.floor(fin.min() * 4) / 4), float(np.ceil(fin.max() * 4) / 4)
+        if hi <= lo:
+            hi = lo + 1.0
+        c = np.where(np.isfinite(a), np.clip(np.rint((a - lo) / (hi - lo) * 254) + 1, 1, 255), 0).astype(np.uint8)
+        fields.append({"name": name, "min": lo, "max": hi})
+        blobs.append(np.ascontiguousarray(c).tobytes())
+    if not fields:
+        return None
+    (out / f"surf_{k}.bin").write_bytes(b"".join(blobs))
+    return {"bin": f"surf_{k}.bin", "x0": float(x[0]), "y0": float(y[0]), "dx": float(x[1] - x[0]), "nx": len(x), "ny": len(y), "fields": fields, "nStations": int(z["n_stations"]) if "n_stations" in z.files else None}
 
 
 def main(argv=None) -> None:

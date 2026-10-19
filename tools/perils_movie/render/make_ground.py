@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from convert_bundle import Geo  # noqa: E402
+from convert_bundle import Geo
 
 CREDIT = "Ground map: Natural Earth (public domain)"
 CREDIT_COUNTIES = "US Census Bureau cartographic boundary files (county lines)"
@@ -41,7 +41,7 @@ def _reader(path: Path):
 
 def _parts(shape):
     pts = np.asarray(shape.points, float)
-    idx = list(shape.parts) + [len(pts)]
+    idx = [*list(shape.parts), len(pts)]
     return [pts[idx[i] : idx[i + 1]] for i in range(len(shape.parts))]
 
 
@@ -67,8 +67,8 @@ def draw(out_png: Path, geo: Geo, half: float, cx: float, cy: float, ne_dir: Pat
 
     def shapes(path: Path):
         r = _reader(path)
-        for s, rec in zip(r.iterShapes(), r.iterRecords()):
-            if s.shapeType == 0 or not inbox(s.bbox if hasattr(s, "bbox") else (0, 0, 0, 0)) and s.shapeType != 1:
+        for s, rec in zip(r.iterShapes(), r.iterRecords(), strict=False):
+            if s.shapeType == 0 or (not inbox(s.bbox if hasattr(s, "bbox") else (0, 0, 0, 0)) and s.shapeType != 1):
                 continue
             yield s, rec
 
@@ -94,7 +94,7 @@ def draw(out_png: Path, geo: Geo, half: float, cx: float, cy: float, ne_dir: Pat
     polys("ne_10m_lakes", (10 / 255, 18 / 255, 32 / 255), 2)
     # rivers
     lines = []
-    for s, rec in shapes(phys / "ne_10m_rivers_lake_centerlines.shp"):
+    for s, _rec in shapes(phys / "ne_10m_rivers_lake_centerlines.shp"):
         for part in _parts(s):
             lines.append(proj(part))
     if lines:
@@ -117,7 +117,7 @@ def draw(out_png: Path, geo: Geo, half: float, cx: float, cy: float, ne_dir: Pat
     # major roads
     rl = []
     try:
-        for s, rec in shapes(cult / "ne_10m_roads.shp"):
+        for s, _rec in shapes(cult / "ne_10m_roads.shp"):
             for part in _parts(s):
                 rl.append(proj(part))
     except Exception as e:  # pragma: no cover
@@ -129,7 +129,7 @@ def draw(out_png: Path, geo: Geo, half: float, cx: float, cy: float, ne_dir: Pat
     fields = [f[0] for f in r.fields[1:]]
     ni, pi = fields.index("NAME"), fields.index("POP_MAX")
     places = []
-    for s, rec in zip(r.iterShapes(), r.iterRecords()):
+    for s, rec in zip(r.iterShapes(), r.iterRecords(), strict=False):
         lon, lat = s.points[0]
         if bx[0] <= lon <= bx[2] and bx[1] <= lat <= bx[3] and rec[pi] and rec[pi] >= 8000:
             x, y = geo.xy(lat, lon)
@@ -139,7 +139,7 @@ def draw(out_png: Path, geo: Geo, half: float, cx: float, cy: float, ne_dir: Pat
     for name, x, y, pop in places[:40]:
         big = pop >= 100000
         ax.plot([x], [y], "o", ms=7 if big else 5, color=(215 / 255, 222 / 255, 235 / 255), zorder=7)
-        ax.text(x + 2.2, y + 1.2, name, color=(215 / 255, 222 / 255, 235 / 255), fontsize=17 if big else 13, zorder=8, va="bottom")
+        ax.text(x + 2.2, y + 1.2, name, color=(215 / 255, 222 / 255, 235 / 255), fontsize=12 if big else 9, zorder=8, va="bottom")
     out_png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=100, facecolor=ax.get_facecolor())
     plt.close(fig)
