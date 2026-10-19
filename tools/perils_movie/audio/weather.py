@@ -33,6 +33,7 @@ from .layers import (
 )
 from .scene import CTL_RATE, DROP_CLASS_MM, Scene
 
+RADAR_SWITCH_M = 8000.0  # a rain gauge / disdrometer nearer than this is the rain at the listener; farther, the radar is
 MRR_REACH_M = 3000.0  # an MRR / lidar site only drives the rain character when the listener is over it
 
 
@@ -87,8 +88,16 @@ def rain_plan(scene: Scene):
     mrr_dm_eff = np.where(ok_mrr_dm, mrr_dm, dm_from_fall_speed(mrr_vt))
 
     use_dsd = dsd["ok"] if dsd is not None else np.zeros(n, bool)
+    ra = scene.radar_at()
+    near_station = ok_r & (d_r < RADAR_SWITCH_M)
+    use_radar = (ra["ok"] & ~near_station) if ra is not None else np.zeros(n, bool)
     R_eff = np.where(ok_r, np.maximum(R, 0.0), 0.0)
     rate_src = np.where(ok_r, "station", "none").astype(object)
+    if ra is not None:
+        # no instrument under the listener: the radar echo over the listener (Z-R estimate, 0 = no echo)
+        R_eff = np.where(use_radar, ra["rain_mmh"], R_eff)
+        rate_src = np.where(use_radar, "radar_zr", rate_src)
+        use_dsd = use_dsd & ~use_radar
     if dsd is not None:
         fill = ~ok_r & use_dsd
         R_eff = np.where(fill, dsd["rr"], R_eff)
@@ -96,7 +105,7 @@ def rain_plan(scene: Scene):
     fill = (R_eff <= 0) & ~ok_r & ok_mrr_r & mrr_near
     R_eff = np.where(fill, np.maximum(mrr_r, 0.0), R_eff)
     rate_src = np.where(fill, "mrr", rate_src)
-    covered = (R_eff > 0) | ok_r | use_dsd
+    covered = (R_eff > 0) | ok_r | use_dsd | use_radar
 
     dm_assumed = np.clip(0.9 * np.maximum(R_eff, 0.01) ** 0.21, 0.5, 3.0)
     dm = np.where(use_dsd, dsd["dm"] if dsd is not None else 0.0,
@@ -110,12 +119,18 @@ def rain_plan(scene: Scene):
     d = np.where(ok_r, d_r, np.inf)
     if dsd is not None:
         d = np.where(~ok_r & use_dsd, dsd["dist"], d)
+    d = np.where(use_radar, 0.0, d)  # the radar sees the rain over the listener
     wd = np.where(covered & np.isfinite(d), rain_distance_weight(np.where(np.isfinite(d), d, 1e9)), 0.0)
     lam_ctl = np.where(use_dsd, 4.0 * np.minimum(dsd["F"], 5000.0) ** 0.7 if dsd is not None else 0.0,
                        60.0 * np.maximum(R_eff, 0.0) ** 0.6)
     lam_ctl = np.minimum(lam_ctl, 3000.0) * wd**2 * (R_eff > 0)
     return {"R": R_eff, "dm": dm, "dm_src": dm_src, "rate_src": rate_src, "shares": shares, "wd": wd,
-            "lam": lam_ctl, "covered": covered, "dsd_used": use_dsd, "mrr_used": mrr_near, "dist": d}
+            "lam": lam_ctl, "covered": covered, "dsd_used": use_dsd, "mrr_used": mrr_near, "dist": d, "radar_used": use_radar}
+
+
+def _mostly(mask: np.ndarray, scene: Scene, clip_span) -> bool:
+    i0, i1 = int(clip_span[0] * CTL_RATE), int(clip_span[1] * CTL_RATE) + 1
+    return bool(mask[i0:i1].mean() > 0.5) if i1 > i0 else False
 
 
 def render_rain(scene: Scene, sr: int, n: int, seed: int):
@@ -163,7 +178,7 @@ def render_rain(scene: Scene, sr: int, n: int, seed: int):
         "rain_rate_mmh": {"min": float(R.min()), "mean": float(R.mean()), "max": float(R.max())},
         "dm_mm": {"mean": float(dm.mean()), "max": float(dm.max())},
         "sources": {
-            "rain_rate": {k: float((p["rate_src"] == k).mean()) for k in ("station", "dsd", "mrr", "none")},
+            "rain_rate": {k: float((p["rate_src"] == k).mean()) for k in ("station", "dsd", "mrr", "radar_zr", "none")},
             "dm": {k: float((p["dm_src"] == k).mean()) for k in ("dsd", "mrr", "station", "assumed")},
             "assumed_dm_fraction": float((p["dm_src"] == "assumed").mean()),
         },
@@ -172,7 +187,9 @@ def render_rain(scene: Scene, sr: int, n: int, seed: int):
         "coverage": float(cov.mean()),
         "mean_station_distance_m": float(np.mean(p["dist"][cov & np.isfinite(p["dist"])])) if (cov & np.isfinite(p["dist"])).any() else None,
         "level_db_premaster": {"min": _db(level.min()), "max": _db(level.max())},
-        "drivers": segs,
+        "drivers": [s for s in segs if not _mostly(p["radar_used"], scene, s["clip_s"])],
+        "radar_drivers": scene.runs(p["radar_used"] & (R > 0), "radar volumes: lowest echo over the listener (Z = 300 R^1.4)"),
+        "radar_fraction": float(p["radar_used"].mean()),
         "drop_spectrum_drivers": dsd_segs,
         "note": "impacts: rate ~ number flux per drop size, amplitude ~ mass^(2/3); hiss from small drops",
     }

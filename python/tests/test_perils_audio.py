@@ -894,3 +894,69 @@ def test_thunder_coverage_and_voice_limits_keep_the_mix_readable():
             occupied[int(r["first_arrival_clip_s"] * 10): int(r["last_arrival_clip_s"] * 10) + 1] = True
     window = np.convolve(occupied.astype(float), np.ones(100) / 100, mode="valid")
     assert window.max() <= 0.3 + 1e-9  # in any 10 s of the clip
+
+
+# ----------------------------------------------------------------------------- radar rain, listener height
+
+
+def _radar_bundle(tmp_path, dbz=45.0):
+    from perils_movie.audio.bundle import load_bundle
+
+    d = write_real_layout_bundle(tmp_path / "bundle")
+    # the volume gets a reflectivity field: dbz over the 5x5 core around the centre, NaN elsewhere
+    z = np.load(d / "volumes" / "step_0000.npz")
+    arrs = {k: z[k] for k in z.files}
+    ref = np.full(arrs["hid"].shape, np.nan, np.float32)
+    ref[:3, 6:15, 6:15] = dbz
+    np.savez_compressed(d / "volumes" / "step_0000.npz", dbz=ref, **arrs)
+    return load_bundle(d)
+
+
+def test_radar_reflectivity_gives_the_rain_where_no_instrument_is_near(tmp_path):
+    b = _radar_bundle(tmp_path)
+    s = b.radar_volumes.sample(np.array([300.0]), np.array([LAT0]), np.array([LON0]))
+    assert s["dbz_low"][0] == pytest.approx(45.0, abs=0.1)
+    assert s["rain_mmh"][0] == pytest.approx((10 ** 4.5 / 300.0) ** (1 / 1.4), rel=0.02)
+    from perils_movie.audio.radar import zr_rain_rate
+
+    assert float(zr_rain_rate(10 ** 0.5)) == 0.0  # below 12 dBZ: no rain
+    assert float(zr_rain_rate(1e9)) == 150.0  # capped
+    # stations only far away (> 8 km): the radar over the listener decides
+    for s_ in b.stations:
+        s_.lat, s_.lon = LAT0 + 0.3, LON0  # 33 km north
+    b.stations = [s for s in b.stations if "rain_rate_mmh" in s.series][:1]
+    sc = scene(b, dur=10.0, speedup=30.0)  # clip 0..10 s = data 0..300 s
+    plan = wx.rain_plan(sc)
+    mid = int(10.0 * 100 - 1)  # data ~300 s, the volume time
+    assert plan["radar_used"][mid]
+    assert plan["rate_src"][mid] == "radar_zr"
+    assert plan["R"][mid] == pytest.approx((10 ** 4.5 / 300.0) ** (1 / 1.4), rel=0.05)
+    assert plan["wd"][mid] == 1.0
+    # an instrument near the listener (< 8 km) is the rain: the radar is not used
+    b.stations[0].lat, b.stations[0].lon = LAT0 + 0.02, LON0
+    sc2 = scene(b, dur=10.0, speedup=30.0)
+    plan2 = wx.rain_plan(sc2)
+    assert not plan2["radar_used"][mid]
+    assert plan2["rate_src"][mid] == "station"
+    # no echo over the listener: far rain is not heard (the radar says there is none)
+    b0 = _radar_bundle(tmp_path / "dry", dbz=5.0)
+    b0.stations = b.stations[:1]
+    b0.stations[0].lat, b0.stations[0].lon = LAT0 + 0.3, LON0
+    _out, info = wx.render_rain(scene(b0, dur=6.0, speedup=50.0), SR, 6 * SR, 3)
+    assert info["sources"]["rain_rate"]["radar_zr"] > 0.2  # the volume is valid +-90 s of data around its time
+    assert info["radar_drivers"] == []
+
+
+def test_listener_is_the_camera_ground_track_capped_in_height():
+    b, tl, _camera = synthetic_scenario()
+    high = CameraPath([{"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0},
+                       {"t_clip_s": 120.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0}])
+    _, rep, _ = render_mix(b, tl, high, layers={"rain", "wind"})
+    assert rep["params"]["listener"]["camera_altitude_max_m"] == 58000.0
+    assert rep["params"]["listener"]["max_height_above_ground_m"] == 500.0
+    assert high.capped(600.0).alt.max() == 600.0
+    assert high.alt.max() == 58000.0  # the original path is untouched
+    # without the cap a 58 km high listener hears nothing of the stations on the ground
+    _, rep_nocap, _ = render_mix(b, tl, high, layers={"rain", "wind"}, max_listener_height_m=None)
+    assert rep["layers"]["rain"]["coverage"] > 0.5
+    assert rep_nocap["layers"]["rain"]["coverage"] < 0.01

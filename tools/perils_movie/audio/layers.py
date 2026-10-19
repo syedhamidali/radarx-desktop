@@ -94,7 +94,7 @@ def render_ambient(sr: int, n: int, seed: int, level_db: float = -64.0):
     return out, {"level_db_premaster": level_db, "note": "synthetic noise bed"}
 
 
-def render_convective(scene: Scene, sr: int, n: int, seed: int, max_db: float = -40.0):
+def render_convective(scene: Scene, sr: int, n: int, seed: int, max_db: float = -44.0):
     """A gentle low rumble that follows the convective-core index at the listener (none in
     stratiform / where the index is zero)."""
     idx, source = scene.convective()

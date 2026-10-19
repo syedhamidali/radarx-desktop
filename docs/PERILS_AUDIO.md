@@ -37,6 +37,17 @@ camera position at the time of the flash is used for the distances; the heading 
 each direction sector is used for the panning. Sound speed is the constant 343 m/s (it varies by a few
 percent with temperature).
 
+## The listener
+
+The listener is the camera: its position at the time of the flash gives the distances, its heading
+gives the left / right. A wide shot from 58 km up would hear nothing (the sound of a storm does not
+reach that high), so the listener is **the ground track of the camera, at most 500 m above the ground**
+(`--max-listener-height`, 0 = the camera's own altitude); the report states the cap and the highest camera
+altitude. Stations and the radar echo are taken at the listener's horizontal position; a station
+only counts when it is near enough (rain and reflectivity 30 km, other variables 40 km, an MRR 3 km).
+Where nothing is near, the layer is silent: the soundtrack is quiet while the camera is far from the
+storm, as it would be.
+
 ## Layers and priority
 
 Priority (a layer is ducked by the louder layers above it, up to 10 / 6 / 4 / 3 dB): **thunder >
@@ -60,7 +71,10 @@ tornado > hail > rain > wind**, then the convective rumble and the ambient bed. 
   `assumed_dm_fraction`). Total level follows the rain rate on a perceptual curve (-58 dB at 0,
   +14 dB per decade of `1 + R`) plus +3 dB per doubling of Dm; rain you are not under (nearest station
   far away) fades to a quiet hiss (`1/(1+(d/5 km)^2)`, floor -22 dB). The nearest station dominates
-  with a smooth crossfade.
+  with a smooth crossfade. **Where no instrument is within 8 km of the listener the rain rate comes from the
+  radar echo over the listener** (the lowest echo of the merged volumes, mean over 2 km, `Z = 300 R^1.4`,
+  capped at 150 mm/h, interpolated in time between the 60 s volumes; no echo means no rain): a rough estimate,
+  labelled `radar_zr` in the report, with an assumed drop size.
 * **Wind**. Level ~ speed^1.5 (30 dB per decade), brighter with speed, from the station nearest the
   listener; a high-rate station (sampling <= 7 s) is used as observed (the synthetic gust part drops to a quarter),
   the gust column sets the top of the excursions, the direction (relative to the heading)
@@ -69,7 +83,10 @@ tornado > hail > rain > wind**, then the convective rumble and the ambient bed. 
   minutes is a **pressure-wave rumble** (31 to 125 Hz) added; calibration offsets between stations
   are never a jump. Wind aloft (multi-Doppler winds) is not audible and not used.
 * **Hail**. Hard impacts (ping with a short ring and a thud, pitch down with size) on top of the
-  rain, only where hail evidence is within 5 km of the listener. Rate `6 F^0.6` per second from
+  rain, only where hail evidence is within 5 km of the listener: the PIPS size-velocity hail candidates
+  (`hail_events.json`: 10 s samples with particles of 8 mm or more, merged per station in the report),
+  a piezo hail sensor reading above 0.5 hits/cm2/h, or the radar hail class (code 10) in the lowest 1.5 km over
+  the listener. Rate `6 F^0.6` per second from
   the large-particle flux `F` (event counts / (0.0054 m2 x duration), or the tail of the drop spectrum);
   amplitude from the maximum diameter (mass^(2/3)). Missing fields are assumed and listed per event in
   `assumed`.
@@ -139,6 +156,32 @@ python/.venv/bin/python tools/perils_movie/audio/verify_audio.py --wav ...perils
 
 `--synthetic DIR` renders a made-up storm (never the real data) for a quick test. From Python:
 `render_audio(bundle_dir, timeline, camera_path, out_wav)` and `mux_audio(video_in, wav, video_out)`.
+
+## Verification on the real bundle
+
+`tools/perils_movie/audio/verify_audio.py` writes the plots (waveform, spectrogram with the thunder arrivals,
+per-layer levels, flash / delay table); they were looked at. Real bundle (PERiLS IOP2, window 2022-03-31
+01:04 to 01:20 UTC, 960 s in 120 s, the renderer's `timeline.json` with the tornado slow-down: speed-up 3.3
+to 9.4, mean 8; its `camera_path.json` and `events.json`):
+
+* 3236 LMA flashes (244 675 sources), 37 stations (4 with drop spectra, 1 with an MRR), 23 survey
+  tornado tracks (one, NSED 1035605 EF2, is near the camera), 17 radar volumes, no hail event and no hail
+  sensor hit in the window.
+* Loudness -23.0 LUFS integrated, true peak -5.1 dBFS, no clipped sample, mono loss 0.75 dB, deterministic
+  (two renders give the same SHA-1).
+* Thunder: 20 flashes rendered of 3236: 1653 beyond 90 km of the listener, 331 whose sound arrives after the
+  end of the clip, 166 dense, 287 more than 4 at once, 779 over the coverage limit. Distances 6 to 31 km,
+  delays in the clip 1.9 to 9.5 s (`delay = clip(t + d/343) - clip(t)` for every flash to 0.07 s, the
+  difference being the time of the nearest source inside the flash).
+* Layers (rms in the final mix): thunder -31 dBFS, tornado roar -30, rain -39, convective bed -40,
+  wind -45, ambient -56, hail silent (no evidence). The tornado is 5.5 km from the listener at the
+  nearest and is audible for 95 s of the clip (the roar is silent beyond 25 km). Rain is from the radar
+  echo for 60 % of the clip (`radar_zr`), from instruments near the listener for 2 %, silent for 37 %
+  (nothing near). Wind (max 8 m/s observed, 12 m/s with the observed gust) from StickNet 0223A, 0102A,
+  0107A, 0217A, 0222A and mesonet SCOUT2; 62 % of the clip has a station within 40 km. The first 45 s
+  (the wide shot, 100 km from the line) have only the ambient bed and a distant thunder.
+* The gust fronts the data contain are weak (rises of 5 to 6 m/s in 2 minutes, pressure rises of 0.8 to
+  2.8 hPa): the swell is as small as the data say.
 
 ## Limits
 
