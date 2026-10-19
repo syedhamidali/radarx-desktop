@@ -101,4 +101,7 @@ All open failures reach the UI as `open_file failed: <specific text>` (the prefi
 | unknown binary | file type not recognised; lists supported formats |
 | out of memory | close other files / applications |
 
-The per-format reasons follow in parentheses for diagnosis.
+The backend's own wording for the most likely format follows in parentheses (internal errors of
+xradar such as `unsupported operand ... NoneType` are left out; every format's failure is in the
+engine log). See [STABILITY.md](STABILITY.md) for what happens after a file opens but turns out to
+be damaged, and for the other failure modes that were tried.
