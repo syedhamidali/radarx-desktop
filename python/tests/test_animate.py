@@ -893,6 +893,101 @@ class TestMemoryBound:
         assert size == 30 * 16 * 128 * 128
 
 
+class TestRunWithoutRendering:
+    def opts(self, tmp_path, **kw):
+        files = sorted((tmp_path / "radar").glob("*/*")) or series(
+            tmp_path / "radar", {"AAAA": 0, "BBBB": 40}, 4
+        )
+        return animate.AnimateOptions(
+            files=[str(f) for f in files], cache_dir=str(tmp_path / "cache"), no_render=True, **kw
+        )
+
+    def test_unreadable_radars_are_left_out_named_and_remembered_by_the_cache(self, tmp_path):
+        class Tdwr(SyntheticGridder):
+            def coarse(self, step, opts):
+                c = super().coarse(step, opts)
+                c.unreadable = {"BBBB": "site position out of range (a TDWR file)"}
+                return c
+
+        res = animate.run(self.opts(tmp_path), gridder=Tdwr())
+        assert res.steps.used_radars == ["AAAA"]
+        assert all(set(st["files"]) == {"AAAA"} for st in res.bundle.manifest["steps"])
+        assert "BBBB" not in res.bundle.manifest["title"] and res.bundle.manifest["case"] == "AAAA"
+        gone = [s for s in res.steps.skipped if s.radar == "BBBB"]
+        assert len(gone) == 4 and "could not be read: site position" in gone[0].reason
+        assert any("BBBB left out" in w for w in res.warnings)
+        # the next run does not open the files again, and still knows
+        again = animate.run(self.opts(tmp_path), gridder=SyntheticGridder())
+        assert again.steps.used_radars == ["AAAA"] and any(
+            "BBBB left out" in w for w in again.warnings
+        )
+
+    def test_the_result_is_json_able_and_complete(self, tmp_path):
+        res = animate.run(self.opts(tmp_path, fps=24, duration=20.0), gridder=SyntheticGridder())
+        doc = json.loads(json.dumps(res.to_dict()))
+        for key in (
+            "inputs",
+            "steps",
+            "radar_offsets",
+            "storm",
+            "frames",
+            "camera",
+            "grid",
+            "output",
+        ):
+            assert key in doc
+        assert doc["frames"]["frames"] == 480 and doc["frames"]["fps"] == 24
+        assert doc["frames"]["timelapse"] == pytest.approx(900 / 17, rel=0.01)
+        assert doc["storm"]["track"][0]["speed_ms_since_previous"] is None
+        assert doc["storm"]["track"][1]["speed_ms_since_previous"] == pytest.approx(
+            1000 * SPEED_KM_S * math.hypot(0.9, 0.45), rel=0.06
+        )
+
+    def test_timelapse_sets_the_length(self, tmp_path):
+        res = animate.run(self.opts(tmp_path, timelapse=30.0), gridder=SyntheticGridder())
+        assert res.duration == pytest.approx(900 / 30 + 3, abs=0.1)
+
+    def test_page_settings_carry_the_options(self, tmp_path):
+        look = tmp_path / "look.json"
+        look.write_text('{"exposure": 1.4}')
+        o = animate.AnimateOptions(
+            files=["x"],
+            realistic=True,
+            look_preset="Golden hour",
+            look_file=str(look),
+            set_values=["temperature=0.2"],
+            fov=55.0,
+            target_lag=0.6,
+            title="My storm",
+            lightning_model=True,
+            sea=True,
+            camera="top-down",
+        )
+        sp = make_plan(tmp_path, 3)
+        cp = cam.resolve_camera(cam.load_camera("top-down"), 20.0, 90.0, target_lag=0.6, fov=55.0)
+        s = animate.page_settings(o, cp, sp, 24, 20.0)
+        assert s["fps"] == 24 and s["duration"] == 20.0 and s["camera"] == "orbit"
+        assert s["ground"] == "realistic" and s["stormStyle"] == "realistic"
+        assert s["lookPreset"] == "Golden hour" and s["lookOverrides"] == {"temperature": 0.2}
+        assert s["lookFormat"] == "json" and "exposure" in s["lookText"]
+        assert s["targetLag"] == 0.6 and all(k["fov"] == 55.0 for k in s["keys"])
+        assert s["title"] == "My storm" and s["lightning"] == "auto" and s["sea"] is True
+        assert s["audio"] is False and s["observedTolS"] == plan.OBSERVED_TOL_S
+        assert s["radarCredit"] == "Radar data: AAAA, BBBB"
+        plain = animate.page_settings(animate.AnimateOptions(files=["x"]), cp, sp, 30, 36.0)
+        assert plain["lightning"] == "off" and plain["ground"] == "map"
+        assert plain["stormStyle"] == "scientific" and "lookPreset" not in plain
+
+    def test_credit_names_the_radars_not_nexrad_for_other_formats(self, tmp_path):
+        def meta(p):
+            return "CPOL", T0 + timedelta(minutes=5 * (p.name == "b.nc"))
+
+        refs, _ = plan.scan_files([tmp_path / "a.nc", tmp_path / "b.nc"], meta=meta)
+        sp = plan.choose_steps(plan.group_by_radar(refs))
+        assert animate.radar_credit(animate.AnimateOptions(), sp) == "Radar data: CPOL"
+        assert animate.radar_credit(animate.AnimateOptions(credit="Data: ARM"), sp) == "Data: ARM"
+
+
 # ---------------------------------------------------------------------------
 # frames on disk, resume, encoding
 # ---------------------------------------------------------------------------
