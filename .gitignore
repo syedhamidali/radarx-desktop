@@ -21,3 +21,5 @@ docs/_api/
 docs/generated/
 docs/render/
 docs/changes/unreleased.md
+dist-analyze/
+dist-perf/
