@@ -673,7 +673,7 @@ def mp4_metadata(res: AnimateResult, video: Path) -> dict[str, str]:
     """Tags written into the MP4: what it is, and where the full record is."""
     sp = res.steps
     return {
-        "title": res.bundle.manifest["title"],
+        "title": res.options.title or res.bundle.manifest["title"],
         "comment": (
             f"xrd animate {_xrd_version()}: {len(sp.steps)} time steps of {', '.join(sp.used_radars)} "
             f"({sp.steps[0].time:%Y-%m-%d %H:%M:%S} to {sp.steps[-1].time:%H:%M:%S} UTC); frames between "
