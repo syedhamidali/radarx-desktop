@@ -299,6 +299,33 @@ def _mutation_lock() -> asyncio.Lock:
     return (_locks if cs is None else cs.locks).get("mutation")
 
 
+async def _run_holding(lock: asyncio.Lock, func: Callable[..., Any], *args: Any) -> Any:
+    """Run ``func(*args)`` in the executor while holding *lock*, until the worker really ends.
+
+    ``async with lock: await loop.run_in_executor(...)`` frees the lock the moment the awaiting
+    task is cancelled (the client disconnected, a newer request replaced it) although the thread
+    keeps running -- and the next request then starts alongside it. For work that is only safe
+    (or only affordable: radarx uses every core) one at a time that stacks up. Here the lock is
+    released by the worker thread itself when it returns, whatever happened to the caller.
+    """
+    loop = asyncio.get_running_loop()
+    await lock.acquire()
+
+    def job() -> Any:
+        try:
+            return func(*args)
+        finally:
+            with contextlib.suppress(RuntimeError):  # RuntimeError: the loop is already closed
+                loop.call_soon_threadsafe(lock.release)
+
+    try:
+        future = loop.run_in_executor(None, job)
+    except BaseException:
+        lock.release()
+        raise
+    return await future
+
+
 class UnknownFileError(KeyError):
     """Raised when a request references a file_id that is not (or no longer) open."""
 
@@ -1756,14 +1783,9 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock():
-            result_tree = await loop.run_in_executor(
-                None,
-                _processor().process,
-                datatree,
-                pipeline,
-                progress_sync,
-            )
+        result_tree = await _run_holding(
+            _mutation_lock(), _processor().process, datatree, pipeline, progress_sync
+        )
 
         # Swap the data and bump the generation together (no await in between) so
         # no render can pair the new generation with the old tree or vice versa.
@@ -1850,12 +1872,11 @@ class ConnectionHandler:
             )
             return path, names
 
-        async with _mutation_lock():
-            try:
-                saved_path, derived_names = await loop.run_in_executor(None, _do_export)
-            except BaseException:
-                self._web_discard(output_path)
-                raise
+        try:
+            saved_path, derived_names = await _run_holding(_mutation_lock(), _do_export)
+        except BaseException:
+            self._web_discard(output_path)
+            raise
 
         result_path: dict[str, Any] = {"path": saved_path}
         if self.session is not None:
@@ -1912,35 +1933,34 @@ class ConnectionHandler:
 
         progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock():
-            batch_reader = _get_reader(file_id)
+        batch_reader = _get_reader(file_id)
 
-            def _do_batch() -> list[str]:
-                tree, mapped, opts, _ = _export_inputs(
-                    batch_reader,
-                    datatree,
-                    variables=variables,
-                    include_derived=None,
-                    include_original=True,
-                    options=options,
-                )
-                return _exporter().batch_export(
-                    tree,
-                    variables=mapped,
-                    sweeps=sweeps,
-                    fmt=fmt,
-                    dpi=dpi,
-                    output_dir=output_dir,
-                    progress=progress_sync,
-                    options=opts,
-                )
+        def _do_batch() -> list[str]:
+            tree, mapped, opts, _ = _export_inputs(
+                batch_reader,
+                datatree,
+                variables=variables,
+                include_derived=None,
+                include_original=True,
+                options=options,
+            )
+            return _exporter().batch_export(
+                tree,
+                variables=mapped,
+                sweeps=sweeps,
+                fmt=fmt,
+                dpi=dpi,
+                output_dir=output_dir,
+                progress=progress_sync,
+                options=opts,
+            )
 
-            try:
-                saved_paths = await loop.run_in_executor(None, _do_batch)
-            except BaseException:
-                if self.session is not None and output_dir:
-                    shutil.rmtree(output_dir, ignore_errors=True)
-                raise
+        try:
+            saved_paths = await _run_holding(_mutation_lock(), _do_batch)
+        except BaseException:
+            if self.session is not None and output_dir:
+                shutil.rmtree(output_dir, ignore_errors=True)
+            raise
 
         if self.session is not None:
             try:
@@ -2039,12 +2059,11 @@ class ConnectionHandler:
                 options=opts,
             )
 
-        async with _mutation_lock():
-            try:
-                saved_path = await loop.run_in_executor(None, _do_animation)
-            except BaseException:
-                self._web_discard(output_path)
-                raise
+        try:
+            saved_path = await _run_holding(_mutation_lock(), _do_animation)
+        except BaseException:
+            self._web_discard(output_path)
+            raise
 
         result_path: dict[str, Any] = {"path": saved_path}
         if self.session is not None:
@@ -3725,8 +3744,8 @@ class ConnectionHandler:
             )
 
         t0 = time.perf_counter()
-        async with _locks.get("mosaic"):  # one heavy build at a time (radarx uses every core)
-            record = await loop.run_in_executor(None, _build)
+        # one heavy build at a time (radarx uses every core), even if this request is abandoned
+        record = await _run_holding(_locks.get("mosaic"), _build)
         if self.session is not None:  # only the creator may probe / export this mosaic
             self.session.owned["mosaics"].add(record.mosaic_id)
         header = {
@@ -3939,12 +3958,15 @@ class ConnectionHandler:
                 pairs, grid, options, progress=progress_sync, cancel=cancel.is_set
             )
 
+        def _build_unless_cancelled() -> mdop.WindRecord:
+            if cancel.is_set():  # cancelled while queued behind another run
+                raise mdop.MultiDopplerCancelledError("cancelled")
+            return _build()
+
         t0 = time.perf_counter()
         try:
-            async with _locks.get("multidoppler"):  # one heavy run at a time (radarx is threaded)
-                if cancel.is_set():
-                    raise mdop.MultiDopplerCancelledError("cancelled")
-                record = await loop.run_in_executor(None, _build)
+            # one heavy run at a time (radarx is threaded), even if this request is abandoned
+            record = await _run_holding(_locks.get("multidoppler"), _build_unless_cancelled)
         except BaseException:
             cancel.set()  # connection gone / task cancelled: the worker stops at its next check
             raise

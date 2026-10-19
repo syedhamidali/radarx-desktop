@@ -263,6 +263,109 @@ class TestDamagedDataOnRead:
         assert "I/O error" not in text
 
 
+class TestAbandonedWorkKeepsItsLock:
+    """A cancelled request cannot stop its worker thread; the next request must still wait."""
+
+    @pytest.mark.asyncio
+    async def test_lock_is_released_by_the_worker_not_by_the_cancel(self) -> None:
+        import asyncio
+        import threading
+
+        lock = asyncio.Lock()
+        started, release = threading.Event(), threading.Event()
+        order: list[str] = []
+
+        def slow() -> str:
+            started.set()
+            release.wait(20)
+            order.append("slow done")
+            return "slow"
+
+        first = asyncio.create_task(server._run_holding(lock, slow))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        first.cancel()  # the client went away
+        await asyncio.gather(first, return_exceptions=True)
+        assert lock.locked()  # the thread is still running
+
+        def quick() -> str:
+            order.append("quick ran")
+            return "quick"
+
+        second = asyncio.create_task(server._run_holding(lock, quick))
+        await asyncio.sleep(0.2)
+        assert not second.done()  # must not start alongside the abandoned one
+        release.set()
+        assert await asyncio.wait_for(second, 10) == "quick"
+        assert order == ["slow done", "quick ran"]
+        await asyncio.sleep(0.05)
+        assert not lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_errors_and_normal_returns_release_the_lock(self) -> None:
+        import asyncio
+
+        lock = asyncio.Lock()
+
+        def boom() -> None:
+            raise ValueError("bad")
+
+        with pytest.raises(ValueError):
+            await server._run_holding(lock, boom)
+        assert await server._run_holding(lock, lambda: 7) == 7
+        await asyncio.sleep(0.05)
+        assert not lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_while_waiting_for_the_lock_never_runs(self) -> None:
+        import asyncio
+        import threading
+
+        lock = asyncio.Lock()
+        await lock.acquire()
+        ran = threading.Event()
+        waiting = asyncio.create_task(server._run_holding(lock, ran.set))
+        await asyncio.sleep(0.05)
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
+        lock.release()
+        await asyncio.sleep(0.1)
+        assert not ran.is_set()
+        assert not lock.locked()
+
+    @pytest.mark.asyncio
+    async def test_an_export_cancelled_midway_still_blocks_the_next_one(self, monkeypatch) -> None:
+        import asyncio
+        import threading
+
+        server._register_reader(_reader_with_tree())
+        started, release = threading.Event(), threading.Event()
+        running = []
+
+        def slow_export(self, tree, **kw):
+            running.append(1)
+            started.set()
+            release.wait(20)
+            running.pop()
+            return "/tmp/never-written.csv"
+
+        monkeypatch.setattr(server.RadarExporter, "export", slow_export)
+        handler, _ = _make_handler()
+        msg = {"type": "export", "format": "csv", "variable": "DBZH", "sweep": 0}
+        first = asyncio.create_task(_send(handler, msg))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        started.clear()
+        second = asyncio.create_task(_send(handler, msg))
+        await asyncio.sleep(0.3)
+        assert running == [1]  # still only the abandoned one: the new export is queued behind it
+        release.set()
+        await asyncio.wait_for(second, 20)
+        assert any(m["type"] == "export_complete" for m in handler._sent)
+
+
 class TestEngineIdentity:
     @pytest.mark.asyncio
     async def test_pong_carries_a_stable_engine_id(self) -> None:
