@@ -153,6 +153,14 @@
     // (Colormap commands are intentionally absent: the viewer keeps its own colormap state and
     // does not read settings.colormap, so such a command would silently do nothing.)
 
+    actions.push({
+      id: 'data-check',
+      label: 'Data Check: what is in this file',
+      category: 'File',
+      icon: '✓',
+      action: () => dispatch('action', { type: 'data-check' }),
+    });
+
     // Export action
     actions.push({
       id: 'export',

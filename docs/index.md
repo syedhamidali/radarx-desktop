@@ -64,6 +64,7 @@ API
 :caption: User guide
 
 VARMAP
+DATA_CHECK
 PIPELINES
 MODULES
 CELLS
