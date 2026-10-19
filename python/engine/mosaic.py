@@ -42,7 +42,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine import varmap
+from engine import hdf5_guard, varmap
 
 logger = logging.getLogger(__name__)
 
@@ -1969,6 +1969,7 @@ def to_dataset(rec: MosaicRecord) -> xr.Dataset:
     return ds
 
 
+@hdf5_guard.guarded
 def write_netcdf(rec: MosaicRecord, path: str | os.PathLike[str]) -> None:
     """Write the mosaic as a CF-1.10 NetCDF4 file (see :func:`to_dataset`)."""
     ds = to_dataset(rec)

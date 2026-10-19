@@ -30,7 +30,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine import provenance
+from engine import hdf5_guard, provenance
 from engine.varmap import role_for_name, unit_class
 
 logger = logging.getLogger(__name__)
@@ -636,6 +636,7 @@ def _write_cfradial1_with_xradar(
             nc.setncattr(key, value)
 
 
+@hdf5_guard.guarded
 def write_cfradial1(
     dtree: xr.DataTree,
     path: str | Path,
@@ -798,6 +799,7 @@ def cfradial2_tree(
     return xr.DataTree.from_dict(nodes)
 
 
+@hdf5_guard.guarded
 def write_cfradial2(
     dtree: xr.DataTree,
     path: str | Path,

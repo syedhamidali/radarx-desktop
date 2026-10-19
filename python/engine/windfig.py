@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import hdf5_guard
 from engine import multidoppler as mdop
 
 THEMES: dict[str, dict[str, str]] = {
@@ -69,7 +70,8 @@ def _dataset(obj: Any) -> xr.Dataset:
     if isinstance(obj, xr.Dataset):
         return obj
     if isinstance(obj, str | Path):
-        return xr.open_dataset(obj)
+        with hdf5_guard.native_section():
+            return xr.open_dataset(obj)
     raise TypeError("plot_wind needs a WindRecord or an xarray.Dataset of a wind analysis")
 
 

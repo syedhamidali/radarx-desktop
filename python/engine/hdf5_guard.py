@@ -32,11 +32,12 @@ Three rules remove it, and they also make the libraries safe for the engine's wo
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import os
 import threading
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,25 @@ def native_section() -> Iterator[None]:
     """Run a block of native netCDF/HDF5 work (open a tree, write a file) one thread at a time."""
     with LOCK:
         yield
+
+
+F = TypeVar("F")
+
+
+def guarded(func: F) -> F:
+    """Decorator: the whole function runs inside :func:`native_section`.
+
+    For writers (``to_netcdf`` ...) and one-shot readers. Do not use it around code that waits
+    for dask worker threads to read NetCDF data: they would wait for this lock (the engine
+    does not open its files with dask chunks).
+    """
+
+    @functools.wraps(func)  # type: ignore[arg-type]
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with LOCK:
+            return func(*args, **kwargs)  # type: ignore[operator]
+
+    return wrapper  # type: ignore[return-value]
 
 
 def enabled() -> bool:
@@ -108,7 +128,7 @@ def install() -> bool:
         # 2. read-only managers of one file share one handle, guarded by LOCK
         original_init = manager_cls.__init__
 
-        def __init__(self, opener, *args, **kwargs):  # type: ignore[no-untyped-def]
+        def shared_init(self, opener, *args, **kwargs):  # type: ignore[no-untyped-def]
             mode = kwargs.get("mode")
             if (
                 opener in openers
@@ -121,7 +141,7 @@ def install() -> bool:
                     kwargs["lock"] = LOCK  # (xarray's own netCDF4 store passes its locks: ours)
             original_init(self, opener, *args, **kwargs)
 
-        manager_cls.__init__ = __init__  # type: ignore[method-assign]
+        manager_cls.__init__ = shared_init  # type: ignore[method-assign]
 
         # 3. closing (explicit, by garbage collection, or by cache eviction) takes the lock too
         original_close = manager_cls.close

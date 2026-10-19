@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import xarray as xr
 
+from engine import hdf5_guard
+
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
     import pandas as pd
@@ -688,7 +690,8 @@ class ModuleResult:
                         )
                     elif self.fields:
                         path = dest.file("nc")
-                        self.to_dataset().to_netcdf(path)
+                        with hdf5_guard.native_section():
+                            self.to_dataset().to_netcdf(path)
                         written.append(path)
                     elif dest.explicit:
                         self.save_notes.append(
