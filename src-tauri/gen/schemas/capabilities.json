@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capabilities for xradar desktop","local":true,"windows":["main"],"permissions":["core:default","shell:allow-open","core:window:default","core:window:allow-close","core:window:allow-set-title","dialog:allow-open","dialog:allow-save"]}}

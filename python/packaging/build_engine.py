@@ -45,6 +45,7 @@ def build() -> Path:
         check=True,
     )
     _remove_dangling_symlinks(DIST / "xradar-engine")
+    _strip_macos(DIST / "xradar-engine")
     exe = DIST / "xradar-engine" / EXE_NAME
     if not exe.exists():
         raise SystemExit(f"build finished but {exe} is missing")
@@ -57,6 +58,29 @@ def _remove_dangling_symlinks(root: Path) -> None:
         if path.is_symlink() and not path.exists():
             print("removing dangling symlink", path.relative_to(root))
             path.unlink()
+
+
+def _strip_macos(root: Path) -> None:
+    """Drop local symbols from the bundled Mach-O libraries and sign them again (ad hoc).
+
+    PyInstaller's own ``strip`` only removes debug symbols on macOS (-S) because the default
+    breaks some libraries; ``-x`` (local symbols only, the exports stay) saves about 20 % on the
+    big ones (icechunk, libarrow, libarrow_compute) and is checked by the smoke test below.
+    """
+    if sys.platform != "darwin":
+        return
+    before = sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        if not (path.suffix == ".so" or ".dylib" in path.name):
+            continue
+        subprocess.run(["strip", "-x", str(path)], check=False, capture_output=True)
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", str(path)], check=True, capture_output=True
+        )
+    after = sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+    print(f"stripped local symbols: {before / 1e6:.0f} -> {after / 1e6:.0f} MB")
 
 
 def _free_port() -> int:
@@ -157,7 +181,7 @@ def _check_engine(port: int, token: str) -> None:
                 )
                 print("  get_sweep_data ok")
 
-                for fmt, ext in (("png", "png"), ("csv", "csv")):
+                for fmt, ext in (("png", "png"), ("svg", "svg"), ("pdf", "pdf"), ("csv", "csv")):
                     out = Path(tmp) / f"out.{ext}"
                     done = await request(
                         ws,

@@ -14,7 +14,7 @@ starts `python/.venv` + `server.py` as before. `XRADAR_PYTHON=/path/to/python` f
 
 ```bash
 cd python
-pip install -e ".[radarx,bundle,dev]"          # radarx needs Python >= 3.12
+pip install -e ".[radarx,bundle,dev]"          # radarx needs Python >= 3.12; no system libraries needed
 python packaging/build_engine.py           # -> python/dist/xradar-engine/, then smoke-tests it
 
 cd ..
@@ -43,18 +43,22 @@ that fails.
 
 ## Size
 
-| | unpacked | download (macOS dmg) |
-|---|---|---|
-| first working build | 771 MB | 299 MB |
-| now | ~395 MB | ~156 MB |
+| | unpacked engine | macOS app | download (macOS dmg) |
+|---|---|---|---|
+| first working build | 771 MB | | 299 MB |
+| before the packaging audit | 346 MB | 361 MB | ~156 MB |
+| now | 220 MB | 229 MB | ~101 MB |
 
-How: the renderer rasterises with numpy, so datashader (and with it numba/llvmlite, ~130 MB) is no longer a dependency; unused
-pyarrow components, other-service AWS models, test suites and headers are dropped (see the spec); and on
-macOS the engine is added through `bundle.macOS.files`, which keeps symlinks (Tauri's `resources` copies
-each symlink as a full file, ~140 MB of duplicates).
+How: the renderer rasterises with numpy, so datashader (and with it numba/llvmlite, ~130 MB) is not a dependency; pyarrow
+(55 MB, only the unused `engine/arrow_bridge.py` needs it), pycairo, s3fs/aiohttp and `dask[complete]` are no longer
+installed; test suites, bytecode caches, unused Pillow plugins, matplotlib GUI backends and fonts, other-service AWS models and
+headers are dropped (see the spec); local symbols are stripped from the libraries; and on macOS the engine is added through
+`bundle.macOS.files`, which keeps symlinks (Tauri's `resources` copies each symlink as a full file, ~140 MB of duplicates).
+The audit, with the numbers and the reasons each item is safe, is in [PACKAGING_AUDIT.md](PACKAGING_AUDIT.md).
 
-Where the rest is: pyarrow 83, NetCDF/HDF5 libraries 55, icechunk 38, scipy 36, rustytree 20, pyproj 17,
-pandas 17 MB. Smaller still would mean dropping a feature (icechunk cloud archive) or a dependency.
+Where the rest is: icechunk 32, scipy 31, NetCDF/HDF5 libraries 34 (netCDF4 + h5py), pyproj 18, pandas 16, radarx 14,
+matplotlib 12 MB, and the 28 MB executable (the compressed Python modules). Smaller still would mean dropping a feature
+(icechunk cloud archive) or a dependency.
 
 ## Installing the unsigned builds
 
@@ -72,7 +76,7 @@ The installers are not code-signed by a registered developer (no certificates). 
 
 - **Not signed** (see above). Signing would need an Apple Developer ID + notarization and a Windows code-signing certificate (Tauri reads them from
   the usual `APPLE_*` / `TAURI_SIGNING_*` secrets).
-- **First launch is slow** (seconds to a minute on macOS): the OS scans the newly installed libraries.
+- **First launch is slow** (measured 20-70 s on macOS, see [PACKAGING_AUDIT.md](PACKAGING_AUDIT.md)): the OS checks the newly installed libraries.
   Later launches take about a second. The app waits up to 3 minutes for the engine.
 - Linux ships `.deb` and `.rpm`. There is no AppImage: linuxdeploy fails on the bundled Python libraries.
 - Linux installers are built on Ubuntu 22.04 and need glibc >= 2.35 (Ubuntu 22.04+, Debian 12+, Fedora 36+).

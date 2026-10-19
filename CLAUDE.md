@@ -14,7 +14,7 @@ See `ARCHITECTURE.md` for the full system diagram, data flow, and design decisio
   - **xradar** — reads all major radar formats (NEXRAD, ODIM, CfRadial, IRIS, Rainbow, Furuno, IMD)
   - **xarray + Dask** — lazy/chunked out-of-core data loading
   - **Datashader** — fast server-side rasterization for both interactive views AND high-DPI export
-  - **Cairo (pycairo)** — vector overlays (map borders, gridlines, colorbars, labels) for publication export
+  - **matplotlib** — vector overlays and publication export (SVG/PDF/PNG)
   - **Apache Arrow IPC** — zero-copy data transfer to frontend
 
 ### Project structure
@@ -64,5 +64,5 @@ Frontend ↔ Python sidecar communicate via WebSocket:
 
 - Node.js 18+
 - Rust (via rustup)
-- Python 3.10+ with xradar, xarray, dask, pycairo, pillow
+- Python 3.10+ with xradar, xarray, dask, matplotlib, pillow
 - Tauri CLI: `cargo install tauri-cli@^2`

@@ -139,12 +139,12 @@ npm run tauri build        # build an installer for this OS (see docs/BUNDLING.m
 <details>
 <summary>System libraries</summary>
 
-**macOS:** `xcode-select --install` and `brew install cairo pkg-config`
+**macOS:** `xcode-select --install`
 
 **Ubuntu / Debian:**
 ```bash
 sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
-                 patchelf libgtk-3-dev libcairo2-dev pkg-config
+                 patchelf libgtk-3-dev
 ```
 
 **Windows:** WebView2 is already part of Windows 10/11.
