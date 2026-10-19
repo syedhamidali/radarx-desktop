@@ -67,6 +67,7 @@ The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`),
 | Analyse | `xrd run MODULE` | an algorithm on one sweep or all sweeps (same as `xrd modules run`) |
 | | `xrd modules` | `list` (default) or `show ID` the algorithms |
 | | `xrd cells` | storm cells; several files are tracked in time |
+| | `xrd sounding` | a radiosonde file: CAPE, CIN, shear, helicity, freezing level, precipitable water |
 | Combine | `xrd mosaic` | several radars on one map |
 | | `xrd winds` | 3-D winds from two or more radars |
 | Save | `xrd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
@@ -184,6 +185,29 @@ wrote cells_all.csv
 wrote tracks.csv
 wrote tracks.png
 ```
+
+**Soundings** (`xrd sounding`): read a radiosonde file (University of Wyoming text or CSV, SPC / SHARPpy,
+IEM JSON, IGRA2, or a CSV whose header names the columns) and print its parameters, each labelled with
+the parcel it belongs to (surface-based, mixed-layer 100 hPa, most-unstable 300 hPa), its unit and its height
+reference (m AGL). A value that cannot be computed is `n/a`; a wind speed with no unit in the file is read as
+m/s and the output says so (`--wind-units kt`). Needs radarx; nothing is downloaded. See
+{doc}`ENVIRONMENT`.
+
+```console
+$ xrd sounding -i BMX_20220330_00Z.csv --wind-units kt
+BMX launch time not in the file  (csv, 80 levels, BMX_20220330_00Z.csv)
+data class: observed; This file has no per-level positions or times: the profile is treated as a vertical line ...
+
+surface-based  CAPE 101 J/kg  CIN -3 J/kg  LCL 1635 m AGL  LFC 1808 m AGL  EL 6584 m AGL  LI -1.1 K
+most-unstable  CAPE 101 J/kg  CIN -3 J/kg  ...
+bulk shear 0-6km 15.8 m/s
+SRH 0-3km right 247 m2/s2  left 66 m2/s2
+freezing level 3520 m AGL   wet-bulb zero 2454 m AGL   -20 degC 6289 m AGL
+precipitable water 22 mm (to 7.0 hPa)
+```
+
+`-v` adds the definitions and references, `--json` everything, `-o result.json` / `-o profile.csv` write the full
+result or the levels (with a provenance header). Python: `xrd.sounding("file.csv", wind_units="kt")`.
 
 ### Clean: `pipeline`
 

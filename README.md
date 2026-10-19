@@ -136,7 +136,7 @@ polar fields, not just reflectivity.
 
 Everything above also runs without the GUI, on the same engine: `xrd info -i FILE`, `xrd plot -i FILE`,
 `xrd run radarx_hid -i FILE --all-sweeps`, `xrd pipeline "Doppler velocity" -i FILE`,
-`xrd mosaic -i F1 F2 F3 -o mosaic.nc -p map.png`, `xrd winds -i F1 F2 ...`, `xrd export -i FILE -o out.zarr`
+`xrd mosaic -i F1 F2 F3 -o mosaic.nc -p map.png`, `xrd winds -i F1 F2 ...`, `xrd sounding -i SONDE.csv`, `xrd export -i FILE -o out.zarr`
 (see [docs/CLI.md](docs/CLI.md)). From a notebook: `from engine import api; api.open("FILE").run("radarx_hid")`
 (see [docs/API.md](docs/API.md)).
 

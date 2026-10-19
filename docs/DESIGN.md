@@ -66,6 +66,14 @@ for active and focused elements only.
 
 **Motion** `--dur-fast/base/slow` (120 / 200 / 360 ms), `--ease-out`, `--ease-in-out`.
 
+### Provenance chips
+
+`src/lib/styles/provenance.css` aliases five more tokens to the ones above, so both themes follow:
+`--c-prov-observed` (`--c-nominal`), `--c-prov-model` (`--c-accent`), `--c-prov-retrieved` (`--c-derived`),
+`--c-prov-simulated` (`--c-caution`) and `--c-prov-stylised` (neutral, dashed outline). The class is always
+spelled out in the chip (`OBS`, `MODEL`, `RETR`, `SIM`, `STYLE`), never colour alone. See
+[ENVIRONMENT.md](ENVIRONMENT.md).
+
 ### Legacy aliases
 
 The old names (`--bg-primary`, `--bg-secondary`, `--text-muted`, `--border-color`,
