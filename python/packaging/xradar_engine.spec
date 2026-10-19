@@ -59,6 +59,14 @@ for pkg in (
         pass
 
 hiddenimports += ["scipy.spatial", "scipy.ndimage", "scipy.sparse.csgraph", "PIL.Image"]
+# matplotlib picks its output backend by name at savefig() time, which PyInstaller cannot see: without
+# these, SVG and PDF export failed in the packaged engine ("No module named backend_svg").
+hiddenimports += [
+    "matplotlib.backends.backend_agg",
+    "matplotlib.backends.backend_svg",
+    "matplotlib.backends.backend_pdf",
+    "matplotlib.backends.backend_ps",
+]
 
 excludes = [
     # Never imported by the engine, and large. (The renderer rasterises with numpy; keeping
@@ -108,9 +116,9 @@ excludes = [
     "matplotlib.backends.backend_webagg",
     "matplotlib.backends.backend_webagg_core",
     "matplotlib.backends.backend_nbagg",
-    # Cloud file systems of pyarrow: the engine reads S3 with boto3 / icechunk, never pyarrow.fs.
-    # (pyarrow.fs imports _s3fs inside try/except ImportError.)
-    "pyarrow._s3fs",
+    # pyarrow (~55 MB): only engine/arrow_bridge.py uses it, and the app never imports that (the
+    # WebSocket sends raw binary chunks). pandas treats it as optional.
+    "pyarrow",
 ]
 
 a = Analysis(
@@ -135,11 +143,6 @@ import re
 # boto3/botocore ship a JSON model for every AWS service (~20 MB); the engine only talks to S3.
 _KEEP_SERVICES = {"s3", "sts", "sso", "sso-oidc", "signin"}
 _DROP_PATTERNS = [
-    # (also the top-level symlinks PyInstaller makes to these libraries)
-    r"(^|/)(pyarrow/)?(libarrow_flight|libarrow_substrait|libgandiva)",
-    r"(^|/)pyarrow/(_flight|_substrait|_gandiva)",
-    r"(^|/)pyarrow/include/",
-    r"(^|/)pyarrow/(tests|_generated_version)",
     r"\.(pyx|pxd|pxi|h|hpp|c|cc|cpp|md|rst|pyi|a)$",
     r"(^|/)(tests|test)/",  # test suites of numpy / scipy / pandas / xarray / ...
     r"(^|/)matplotlib/mpl-data/(sample_data|images|stylelib|plot_directive)",
@@ -149,9 +152,6 @@ _DROP_PATTERNS = [
     # Bytecode caches that the developer's python/modules/ folder may contain.
     r"(^|/)__pycache__/",
     r"\.py[co]$",
-    # pyarrow's S3 file system (the engine uses boto3) and its extension module.
-    r"(^|/)(pyarrow/)?libarrow_s3",
-    r"(^|/)pyarrow/_s3fs",
     # Pillow plugins for formats the engine never reads or writes (it makes PNG / GIF; matplotlib
     # writes PNG / SVG / PDF) and the libraries only they use. Pillow tolerates their absence.
     r"(^|/)PIL/_(avif|webp|imagingcms|imagingtk)\.",

@@ -181,7 +181,7 @@ def _check_engine(port: int, token: str) -> None:
                 )
                 print("  get_sweep_data ok")
 
-                for fmt, ext in (("png", "png"), ("csv", "csv")):
+                for fmt, ext in (("png", "png"), ("svg", "svg"), ("pdf", "pdf"), ("csv", "csv")):
                     out = Path(tmp) / f"out.{ext}"
                     done = await request(
                         ws,
