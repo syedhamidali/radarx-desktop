@@ -200,14 +200,21 @@ class Scene:
         if not self.bundle.tornadoes:
             # no survey track: tornado events with a position and an interval
             for e in self.events:
-                if e.type != "tornado" or e.lat is None:
+                pos = e.props.get("positions") if e.type == "tornado" else None
+                if e.type != "tornado" or (e.lat is None and not pos):
                     continue
                 a = self._ev_clip(e, e.t_data_s, e.t_clip_s)
                 b = self._ev_clip(e, e.t_end_data_s, e.t_end_clip_s)
                 if a is None or b is None or b <= a:
                     continue
                 ex = (self.tc >= a) & (self.tc <= b)
-                d = np.where(ex, slant_distance(self.lat, self.lon, self.alt, e.lat, e.lon, self.ground_alt_m), np.inf)
+                if pos:  # the renderer lists the tornado position per clip second
+                    pt = np.array([p["t_clip_s"] for p in pos], float)
+                    la = np.interp(self.tc, pt, [p["lat"] for p in pos])
+                    lo = np.interp(self.tc, pt, [p["lon"] for p in pos])
+                else:
+                    la, lo = e.lat, e.lon
+                d = np.where(ex, slant_distance(self.lat, self.lon, self.alt, la, lo, self.ground_alt_m), np.inf)
                 dist = np.minimum(dist, d)
                 exist = np.maximum(exist, ex.astype(float))
                 srcs.append("event")
@@ -322,6 +329,8 @@ class Scene:
         for e in self.events:
             if e.type != "hail" or e.lat is None:
                 continue
+            if str(e.props.get("station")) in {s.id for s in self.bundle.stations}:
+                continue  # the renderer's list repeats the station events, which are counted from the stations
             a = self._ev_clip(e, e.t_data_s, e.t_clip_s)
             b = self._ev_clip(e, e.t_end_data_s, e.t_end_clip_s)
             if a is None:

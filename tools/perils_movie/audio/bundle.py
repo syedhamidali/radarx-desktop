@@ -233,15 +233,27 @@ def parse_tornadoes(raw, window_start: str) -> list[TornadoTrack]:
 
 
 def parse_events(raw, window_start: str) -> list[Event]:
-    """events.json (renderer): a list (or {"events": [...]}) of {"type": "tornado"|"hail"|"flash",
-    "t_clip_s" and/or "t_s", optional "t_end_clip_s"/"t_end_s", "lat", "lon", "alt_m", ...}."""
+    """events.json of the renderer. Either its dict {"flashes": [...], "tornado": {"t_clip_start_s",
+    "t_clip_end_s", "positions": [{t_clip_s, lat, lon}]}, "hail": [{station, t_clip_s, t_data_s, lat,
+    lon, max_d_mm, n_large, ...}], ...} or a flat list / {"events": [...]} of {"type": "tornado" |
+    "hail" | "flash", "t_clip_s" and/or "t_s", optional "t_end_clip_s" / "t_end_s", "lat", "lon", ...}."""
     if raw is None:
         return []
     ws = parse_iso(window_start)
-    items = raw.get("events", []) if isinstance(raw, dict) else raw
+    items: list[dict] = []
+    if isinstance(raw, dict) and ("tornado" in raw or "hail" in raw or "flashes" in raw) and "events" not in raw:
+        tor = raw.get("tornado")
+        if tor:
+            items.append({"type": "tornado", "t_clip_s": tor.get("t_clip_start_s"),
+                          "t_end_clip_s": tor.get("t_clip_end_s"), "id": tor.get("id"),
+                          "positions": tor.get("positions"), "rating": tor.get("rating")})
+        items += [{"type": "hail", **h} for h in raw.get("hail") or []]
+        items += [{"type": "flash", **f} for f in raw.get("flashes") or []]
+    else:
+        items = raw.get("events", []) if isinstance(raw, dict) else raw
     out = []
     for e in items:
-        td = _time(e.get("t_s", e.get("time")), ws)
+        td = _time(e.get("t_s", e.get("time", e.get("t_data_s"))), ws)
         te = _time(e.get("t_end_s", e.get("end_time")), ws)
         out.append(
             Event(

@@ -825,3 +825,54 @@ def test_a_moving_station_is_followed_by_its_position_series():
     sc = scene(bundle([mob]), dur=20.0, speedup=30.0)
     assert sc.dist[0][0] == pytest.approx(2000.0, abs=30.0)
     assert sc.dist[0][-1] < 400.0
+
+
+# ----------------------------------------------------------------------------- the renderer's files
+
+
+def test_timeline_reads_the_renderers_mapping_and_per_frame_speedup():
+    t = np.linspace(0.0, 120.0, 3601)
+    # speed 8x, slowed to 3x around clip 60 s (what the tornado shot does)
+    sp = 8.0 - 5.0 * np.exp(-0.5 * ((t - 60.0) / 8.0) ** 2)
+    d = np.concatenate([[0.0], np.cumsum(0.5 * (sp[1:] + sp[:-1]) * np.diff(t))])
+    tl = Timeline.from_dict({
+        "data_start": "2022-03-30T20:01:00Z", "data_end": "2022-03-30T20:17:00Z", "clip_duration_s": 120.0, "fps": 30,
+        "speedup": [float(v) for v in sp[:-1]],
+        "mapping": {"t_clip_s": [float(v) for v in t], "t_data_s": [float(v) for v in d]}}, WINDOW_START)
+    assert tl.data_offset_s == 60.0  # data_start is one minute after the window start
+    assert float(tl.clip_to_data(0.0)) == pytest.approx(60.0)
+    assert float(tl.clip_to_data(120.0)) == pytest.approx(60.0 + d[-1])
+    for tc in (10.0, 60.0, 100.0):
+        assert float(tl.data_to_clip(tl.clip_to_data(tc))) == pytest.approx(tc, abs=1e-6)
+    assert float(tl.speedup_at(60.0)) == pytest.approx(3.0, abs=0.1)
+    assert float(tl.speedup_at(5.0)) > 7.5
+    # without the mapping, the per-frame list of floats gives the same clock
+    tl2 = Timeline.from_dict({"clip_duration_s": 120.0, "fps": 30, "speedup": [float(v) for v in sp[:-1]]})
+    assert float(tl2.clip_to_data(120.0)) == pytest.approx(d[-1], rel=2e-3)
+    # the thunder delay follows the speedup at the time: slower clock -> longer delay in the clip
+    f_fast = flash_at(0.0, 6860.0, alt=0.0, t=float(tl.clip_to_data(10.0)))
+    f_slow = flash_at(0.0, 6860.0, alt=0.0, t=float(tl.clip_to_data(60.0)))
+    r_fast = plan_flash(f_fast, tl, cam(0.0, 120.0), 120.0, ThunderParams())
+    r_slow = plan_flash(f_slow, tl, cam(0.0, 120.0), 120.0, ThunderParams())
+    assert r_slow["delay_nearest_clip_s"] > 2.0 * r_fast["delay_nearest_clip_s"]
+
+
+def test_renderers_events_json_dict_is_parsed_and_gates_the_tornado_without_a_track():
+    raw = {
+        "flashes": [{"id": 1, "t_clip_s": 3.0, "lat": 33.5, "lon": -88.5}],
+        "tornado": {"id": "NSED_1", "rating": "EF2", "t_clip_start_s": 2.0, "t_clip_end_s": 6.0,
+                    "positions": [{"t_clip_s": 2.0, "lat": LAT0, "lon": LON0 + 0.01},
+                                  {"t_clip_s": 6.0, "lat": LAT0, "lon": LON0 + 0.02}]},
+        "hail": [{"station": "S", "t_clip_s": 4.0, "t_data_s": 20.0, "lat": LAT0, "lon": LON0, "max_d_mm": 12.0}],
+        "nearest_station": [], "shots": [],
+    }
+    ev = parse_events(raw, WINDOW_START)
+    assert [e.type for e in ev] == ["tornado", "hail", "flash"]
+    sc = scene(bundle([station(rain=5.0)]), dur=8.0, events=ev)
+    dist, exist, srcs = sc.tornado()
+    assert srcs == ["event"]
+    assert exist[int(4.0 * 100)] > 0.99
+    assert exist[int(7.8 * 100)] == 0.0
+    assert dist[int(4.0 * 100)] == pytest.approx(1500.0, rel=0.1)  # ~0.015 deg of longitude
+    out, _ = wx.render_hail(sc, SR, 8 * SR, 1)
+    assert np.all(out == 0.0)  # the repeated station hail event is counted only through the station

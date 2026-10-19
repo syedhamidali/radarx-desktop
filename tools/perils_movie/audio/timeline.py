@@ -41,7 +41,26 @@ class Timeline:
         off = 0.0
         if ds and window_start:
             off = (parse_iso(ds) - parse_iso(window_start)).total_seconds()
+        mp = d.get("mapping")
+        if isinstance(mp, dict) and mp.get("t_clip_s") and mp.get("t_data_s"):
+            # the renderer's authoritative mapping (monotone, one entry per frame): data seconds after data_start
+            tg = np.asarray(mp["t_clip_s"], float)
+            dg = np.asarray(mp["t_data_s"], float)
+            sp = np.gradient(dg, tg) if len(tg) > 1 else np.array([1.0])
+            tl = cls(dur, fps, None, off, tg, np.maximum(sp, 1e-6), ds, de)
+            tl._grid_t, tl._grid_d = tg, dg + off
+            return tl
         sp = d.get("speedup")
+        if isinstance(sp, list | tuple) and sp and not isinstance(sp[0], dict):
+            # a per-frame list of floats: frame i at clip time i / fps
+            ks = np.asarray(sp, float)
+            kt = np.arange(len(ks)) / fps
+            tl = cls(dur, fps, None, off, kt, ks, ds, de)
+            tg = np.arange(0.0, dur + 1e-9, 1.0 / fps)
+            sg = np.interp(tg, kt, ks)
+            dg = np.concatenate([[0.0], np.cumsum(0.5 * (sg[1:] + sg[:-1]) * np.diff(tg))])
+            tl._grid_t, tl._grid_d = tg, dg + off
+            return tl
         if sp is None and ds and de:
             sp = (parse_iso(de) - parse_iso(ds)).total_seconds() / dur
         if isinstance(sp, list | tuple):
