@@ -30,7 +30,9 @@ REPO = HERE.parents[2]
 sys.path.insert(0, str(REPO / "tools" / "storm_clip"))
 sys.path.insert(0, str(HERE))
 
-DEFAULT_SEGMENTS = "0-5,52-58,74-80,108-114"  # the 20 s preview: establishing, tornado, ground level, top-down
+DEFAULT_SEGMENTS = (
+    "0-5,52-58,74-80,108-114"  # the 20 s preview: establishing, tornado, ground level, top-down
+)
 
 
 def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
@@ -41,7 +43,9 @@ def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
     return frames
 
 
-def prepare_bundle(bundle: Path, work: Path, export_dir: Path | None, counties: Path | None = None, log=print) -> Path:
+def prepare_bundle(
+    bundle: Path, work: Path, export_dir: Path | None, counties: Path | None = None, log=print
+) -> Path:
     """Convert the bundle (if needed) and write timeline / camera / events next to the converted files."""
     import choreography
     import convert_bundle
@@ -63,7 +67,16 @@ def prepare_bundle(bundle: Path, work: Path, export_dir: Path | None, counties: 
             for m in p.get("mrms", []):
                 if m:
                     half = max(half, abs(m["x0"]) + 10)
-            meta = make_ground.draw(clip / "ground.png", convert_bundle.Geo(p["origin"]["lat"], p["origin"]["lon"]), half, 0.0, 0.0, Path.home() / ".local/share/cartopy/shapefiles/natural_earth", counties, log=log)
+            meta = make_ground.draw(
+                clip / "ground.png",
+                convert_bundle.Geo(p["origin"]["lat"], p["origin"]["lon"]),
+                half,
+                0.0,
+                0.0,
+                Path.home() / ".local/share/cartopy/shapefiles/natural_earth",
+                counties,
+                log=log,
+            )
             p["ground"] = meta
             stamp.write_text(json.dumps(p))
         except Exception as e:  # the movie still renders: a plain grid ground, said on screen
@@ -86,7 +99,9 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
     if not (dist / "index.html").exists():
         sys.exit(f"{dist}/index.html not found: run `npm run build` first (or pass --app-dist)")
     todo = [i for i in frames if not (frames_dir / f"frame_{i:05d}.png").exists()]
-    log(f"{len(frames)} frames wanted, {len(frames) - len(todo)} already on disk, {len(todo)} to draw")
+    log(
+        f"{len(frames)} frames wanted, {len(frames) - len(todo)} already on disk, {len(todo)} to draw"
+    )
     if not todo:
         return
     srv, port = serve(dist, clip, TileCache(None, offline=True))
@@ -107,16 +122,32 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
         browser = await p.chromium.launch(
             channel="chrome",
             headless=True,
-            args=["--no-proxy-server", "--use-gl=angle", "--use-angle=metal", "--ignore-gpu-blocklist", "--enable-gpu-rasterization"],
+            args=[
+                "--no-proxy-server",
+                "--use-gl=angle",
+                "--use-angle=metal",
+                "--ignore-gpu-blocklist",
+                "--enable-gpu-rasterization",
+            ],
         )
-        page = await browser.new_page(viewport={"width": a.width, "height": a.height}, device_scale_factor=1)
+        page = await browser.new_page(
+            viewport={"width": a.width, "height": a.height}, device_scale_factor=1
+        )
         logs: list[str] = []
-        page.on("console", lambda m: logs.append(f"{m.type}: {m.text[:300]}") if m.type in ("error", "warning") else None)
+        page.on(
+            "console",
+            lambda m: (
+                logs.append(f"{m.type}: {m.text[:300]}") if m.type in ("error", "warning") else None
+            ),
+        )
         page.on("pageerror", lambda e: logs.append(f"PAGEERROR: {str(e)[:300]}"))
         await page.goto(f"http://127.0.0.1:{port}/?clip=1")
         await page.wait_for_function("() => !!window.__xrClip", timeout=30000)
         try:
-            info = await page.evaluate("(o) => window.__xrClip.loadPerils('/bundle', o)", {"settings": settings, "perils": perils})
+            info = await page.evaluate(
+                "(o) => window.__xrClip.loadPerils('/bundle', o)",
+                {"settings": settings, "perils": perils},
+            )
         except Exception as exc:
             msg = str(exc).split("\n")[0]
             sys.exit(f"error: {msg}\n" + "\n".join(logs[-5:]))
@@ -133,7 +164,9 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
             (frames_dir / f"frame_{i:05d}.png.part").rename(frames_dir / f"frame_{i:05d}.png")
             if n % 30 == 0 or n == len(todo) - 1:
                 el = time.time() - t0
-                log(f"frame {i} ({n + 1}/{len(todo)})  {el:.0f}s elapsed, {el / (n + 1):.2f}s per frame, ETA {(len(todo) - n - 1) * el / (n + 1):.0f}s")
+                log(
+                    f"frame {i} ({n + 1}/{len(todo)})  {el:.0f}s elapsed, {el / (n + 1):.2f}s per frame, ETA {(len(todo) - n - 1) * el / (n + 1):.0f}s"
+                )
         rep = await page.evaluate("() => window.__xrClip.report()")
         (frames_dir.parent / "render_report.json").write_text(json.dumps(rep, indent=1))
         await browser.close()
@@ -142,7 +175,15 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
         log("browser messages:\n  " + "\n  ".join(sorted(set(logs))[-12:]))
 
 
-def encode(frames: list[int], frames_dir: Path, out: Path, fps: int, audio: Path | None, crf: int, log=print) -> None:
+def encode(
+    frames: list[int],
+    frames_dir: Path,
+    out: Path,
+    fps: int,
+    audio: Path | None,
+    crf: int,
+    log=print,
+) -> None:
     """H.264 (yuv420p, +faststart) from the frame files; optional AAC track from any audio file PyAV can read."""
     from fractions import Fraction
 
@@ -178,7 +219,9 @@ def encode(frames: list[int], frames_dir: Path, out: Path, fps: int, audio: Path
                 if pts + n > limit:
                     arr = arr[:, : limit - pts]
                     n = arr.shape[1]
-                af = av.AudioFrame.from_ndarray(np.ascontiguousarray(arr), format="fltp", layout="stereo")
+                af = av.AudioFrame.from_ndarray(
+                    np.ascontiguousarray(arr), format="fltp", layout="stereo"
+                )
                 af.sample_rate = sr
                 af.pts = pts
                 af.time_base = Fraction(1, sr)
@@ -203,30 +246,67 @@ def encode(frames: list[int], frames_dir: Path, out: Path, fps: int, audio: Path
     for pkt in aud_packets:
         container.mux(pkt)
     container.close()
-    log(f"wrote {out}  ({len(frames)} frames, {len(frames) / fps:.2f} s, {out.stat().st_size / 1e6:.1f} MB)")
+    log(
+        f"wrote {out}  ({len(frames)} frames, {len(frames) / fps:.2f} s, {out.stat().st_size / 1e6:.1f} MB)"
+    )
 
 
 def main(argv=None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--bundle", required=True, help="the data bundle (SPEC v1, manifest.json inside)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--bundle", required=True, help="the data bundle (SPEC v1, manifest.json inside)"
+    )
     ap.add_argument("--work", required=True, help="scratch folder: converted bundle, frames")
     ap.add_argument("--out", default=None, help="MP4 to write")
     ap.add_argument("--audio", default=None, help="an audio file to mux (any format PyAV reads)")
-    ap.add_argument("--export-dir", default=None, help="also write timeline.json, camera_path.json, events.json here")
-    ap.add_argument("--counties", default=None, help="US Census county lines (.shp) for the ground map (optional)")
-    ap.add_argument("--convert-only", action="store_true", help="convert + plan, then stop (run in the engine environment)")
-    ap.add_argument("--preview", nargs="?", const=DEFAULT_SEGMENTS, default=None, help="render only these clip-time segments, e.g. 0-5,52-58 (default: 20 s of the film)")
+    ap.add_argument(
+        "--export-dir",
+        default=None,
+        help="also write timeline.json, camera_path.json, events.json here",
+    )
+    ap.add_argument(
+        "--counties",
+        default=None,
+        help="US Census county lines (.shp) for the ground map (optional)",
+    )
+    ap.add_argument(
+        "--convert-only",
+        action="store_true",
+        help="convert + plan, then stop (run in the engine environment)",
+    )
+    ap.add_argument(
+        "--preview",
+        nargs="?",
+        const=DEFAULT_SEGMENTS,
+        default=None,
+        help="render only these clip-time segments, e.g. 0-5,52-58 (default: 20 s of the film)",
+    )
     ap.add_argument("--frames", default=None, help="a:b frame range (tests)")
-    ap.add_argument("--at", default=None, help="render the frames at these clip times (s), comma separated (stills)")
-    ap.add_argument("--no-render", action="store_true", help="do not draw, only encode the frames on disk")
+    ap.add_argument(
+        "--at",
+        default=None,
+        help="render the frames at these clip times (s), comma separated (stills)",
+    )
+    ap.add_argument(
+        "--no-render", action="store_true", help="do not draw, only encode the frames on disk"
+    )
     ap.add_argument("--app-dist", default=str(REPO / "dist"))
     ap.add_argument("--width", type=int, default=1920)
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--crf", type=int, default=17)
-    ap.add_argument("--style", default="realistic", choices=["realistic", "scientific"], help="the stylised storm look (default) or the dBZ colour scale")
+    ap.add_argument(
+        "--style",
+        default="realistic",
+        choices=["realistic", "scientific"],
+        help="the stylised storm look (default) or the dBZ colour scale",
+    )
     ap.add_argument("--palette", default="white", choices=["white", "soft", "stormy", "cyclone"])
-    ap.add_argument("--light", default="overcast", choices=["daylight", "dusk", "overcast", "night"])
+    ap.add_argument(
+        "--light", default="overcast", choices=["daylight", "dusk", "overcast", "night"]
+    )
     ap.add_argument("--look-preset", default=None)
     ap.add_argument("--set", action="append", default=None, metavar="KEY=VALUE")
     ap.add_argument("--cloud-base-km", type=float, default=1.0)
@@ -238,7 +318,9 @@ def main(argv=None) -> None:
     work = Path(a.work).expanduser().resolve()
     work.mkdir(parents=True, exist_ok=True)
     export = Path(a.export_dir).expanduser().resolve() if a.export_dir else None
-    clip = prepare_bundle(bundle, work, export, Path(a.counties).expanduser() if a.counties else None)
+    clip = prepare_bundle(
+        bundle, work, export, Path(a.counties).expanduser() if a.counties else None
+    )
     if a.convert_only:
         return
     tl = json.loads((clip / "timeline.json").read_text())
@@ -258,7 +340,14 @@ def main(argv=None) -> None:
     if not a.no_render:
         asyncio.run(draw_frames(a, clip, frames, frames_dir))
     if a.out:
-        encode(frames, frames_dir, Path(a.out).expanduser().resolve(), fps, Path(a.audio).expanduser().resolve() if a.audio else None, a.crf)
+        encode(
+            frames,
+            frames_dir,
+            Path(a.out).expanduser().resolve(),
+            fps,
+            Path(a.audio).expanduser().resolve() if a.audio else None,
+            a.crf,
+        )
 
 
 if __name__ == "__main__":

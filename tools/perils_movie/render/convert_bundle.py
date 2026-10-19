@@ -98,7 +98,9 @@ def _prep(a: np.ndarray, lo: float = 10.0, hi: float = 55.0) -> np.ndarray:
     return f * wy * wx
 
 
-def phase_correlate(a: np.ndarray, b: np.ndarray, max_shift_px: float | None = None) -> tuple[float, float, float]:
+def phase_correlate(
+    a: np.ndarray, b: np.ndarray, max_shift_px: float | None = None
+) -> tuple[float, float, float]:
     """Shift (dx, dy) in pixels that carries ``a`` onto ``b`` (x = columns, y = rows) and the peak sharpness.
 
     Cross-power spectrum normalised to unit magnitude, sub-pixel peak by a parabola fit. A shift
@@ -130,7 +132,9 @@ def phase_correlate(a: np.ndarray, b: np.ndarray, max_shift_px: float | None = N
     return dx, dy, sharp
 
 
-def estimate_motion(colmax: list[np.ndarray], cell_km: float, times_s: list[float], max_speed_ms: float = 45.0) -> list[dict]:
+def estimate_motion(
+    colmax: list[np.ndarray], cell_km: float, times_s: list[float], max_speed_ms: float = 45.0
+) -> list[dict]:
     """Per interval: the displacement (km east, north) of the echo pattern, the velocity (m/s) and the peak sharpness.
 
     Sub-pixel phase correlation of the column-maximum reflectivity. A weak or implausible peak
@@ -142,8 +146,21 @@ def estimate_motion(colmax: list[np.ndarray], cell_km: float, times_s: list[floa
         dt = times_s[k + 1] - times_s[k]
         mx = max_speed_ms * dt / 1000.0 / cell_km
         dx, dy, sh = phase_correlate(colmax[k], colmax[k + 1], max_shift_px=mx)
-        out.append({"dx_km": dx * cell_km, "dy_km": dy * cell_km, "dt_s": dt, "sharpness": sh, "fallback": False})
-    good = [o for o in out if o["sharpness"] >= 4.0 and math.hypot(o["dx_km"], o["dy_km"]) * 1000.0 / o["dt_s"] <= max_speed_ms]
+        out.append(
+            {
+                "dx_km": dx * cell_km,
+                "dy_km": dy * cell_km,
+                "dt_s": dt,
+                "sharpness": sh,
+                "fallback": False,
+            }
+        )
+    good = [
+        o
+        for o in out
+        if o["sharpness"] >= 4.0
+        and math.hypot(o["dx_km"], o["dy_km"]) * 1000.0 / o["dt_s"] <= max_speed_ms
+    ]
     if good:
         mu = float(np.median([o["dx_km"] / o["dt_s"] for o in good]))
         mv = float(np.median([o["dy_km"] / o["dt_s"] for o in good]))
@@ -188,7 +205,10 @@ def read_series(s: dict) -> dict:
     """One station series with NaN / None kept as None."""
     out = {}
     for k, v in (s or {}).items():
-        out[k] = [None if (x is None or (isinstance(x, float) and not math.isfinite(x))) else float(x) for x in v]
+        out[k] = [
+            None if (x is None or (isinstance(x, float) and not math.isfinite(x))) else float(x)
+            for x in v
+        ]
     return out
 
 
@@ -210,7 +230,10 @@ def sounding_levels(csv_text: str, max_levels: int = 450) -> dict:
     itd = col("dewpoint", "dewp", "dpt", "td")
     iu, iv = col("u_ms", "u_wind", "u"), col("v_ms", "v_wind", "v")
     isp, idr = col("wind_speed", "wspd", "speed"), col("wind_dir", "wdir", "direction")
-    cols = {k: [] for k in ("pressure_hpa", "height_msl_m", "temperature_c", "dewpoint_c", "u_ms", "v_ms")}
+    cols = {
+        k: []
+        for k in ("pressure_hpa", "height_msl_m", "temperature_c", "dewpoint_c", "u_ms", "v_ms")
+    }
 
     def val(parts, i):
         if i is None or i >= len(parts):
@@ -264,7 +287,17 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     rsites = []
     for r in radars:
         x, y = geo.xy(r["lat"], r["lon"])
-        rsites.append({"name": r["name"], "latitude": r["lat"], "longitude": r["lon"], "altitude_m": r.get("alt_m", 0.0), "x_m": float(x) * 1000.0, "y_m": float(y) * 1000.0, "type": r.get("type", "")})
+        rsites.append(
+            {
+                "name": r["name"],
+                "latitude": r["lat"],
+                "longitude": r["lon"],
+                "altitude_m": r.get("alt_m", 0.0),
+                "x_m": float(x) * 1000.0,
+                "y_m": float(y) * 1000.0,
+                "type": r.get("type", ""),
+            }
+        )
 
     colmax: list[np.ndarray] = []
     msteps = []
@@ -276,16 +309,33 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         dbz = z["dbz"]
         nz, ny, nx = dbz.shape
         if (nz, ny, nx) != (len(zs), len(ys), len(xs)):
-            raise ValueError(f"step {k}: volume {dbz.shape} does not match the manifest grid {(len(zs), len(ys), len(xs))}")
+            raise ValueError(
+                f"step {k}: volume {dbz.shape} does not match the manifest grid {(len(zs), len(ys), len(xs))}"
+            )
         codes = encode_dbz(dbz)
         header = {
-            "mosaic_id": f"perils_{k:04d}", "variable": "DBZH", "units": "dBZ", "product": "mosaic",
+            "mosaic_id": f"perils_{k:04d}",
+            "variable": "DBZH",
+            "units": "dBZ",
+            "product": "mosaic",
             "grid": {
-                "x0": float(xs[0]) * 1000.0, "y0": float(ys[0]) * 1000.0, "cell_m": cell * 1000.0, "nx": nx, "ny": ny, "nz": nz,
-                "z": [float(v) * 1000.0 for v in zs], "origin_lat": lat0, "origin_lon": lon0,
+                "x0": float(xs[0]) * 1000.0,
+                "y0": float(ys[0]) * 1000.0,
+                "cell_m": cell * 1000.0,
+                "nx": nx,
+                "ny": ny,
+                "nz": nz,
+                "z": [float(v) * 1000.0 for v in zs],
+                "origin_lat": lat0,
+                "origin_lon": lon0,
             },
-            "vmin": VMIN, "vmax": VMAX, "dtype": "uint8", "scale": {"offset": VMIN, "step": (VMAX - VMIN) / 254.0, "nodata": 0},
-            "cmap": "NWSRef", "radars": rsites, "analysis_time": st["time"],
+            "vmin": VMIN,
+            "vmax": VMAX,
+            "dtype": "uint8",
+            "scale": {"offset": VMIN, "step": (VMAX - VMIN) / 254.0, "nodata": 0},
+            "cmap": "NWSRef",
+            "radars": rsites,
+            "analysis_time": st["time"],
         }
         (out / f"mosaic_{k}.json").write_text(json.dumps(header))
         (out / f"mosaic_{k}.bin").write_bytes(np.ascontiguousarray(codes).tobytes())
@@ -299,7 +349,9 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             if len(kk) > hail_cap:
                 pick = rng.choice(len(kk), hail_cap, replace=False)
                 kk, jj, ii = kk[pick], jj[pick], ii[pick]
-            hail_pts.append({"n": int(sel.sum()), "p": _round(np.stack([xs[ii], ys[jj], zs[kk]], 1), 2)})
+            hail_pts.append(
+                {"n": int(sel.sum()), "p": _round(np.stack([xs[ii], ys[jj], zs[kk]], 1), 2)}
+            )
         else:
             hail_pts.append(None)
         tds = first_key(z, "tds", "tds_flag")
@@ -317,14 +369,18 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             lay["conv_strat"] = np.asarray(cs, np.uint8)
         et = first_key(z, "echotop40_km", "echotop40")
         if et is not None:
-            lay["echotop40"] = np.clip(np.rint(np.nan_to_num(et, nan=0) * 10), 0, 255).astype(np.uint8)
+            lay["echotop40"] = np.clip(np.rint(np.nan_to_num(et, nan=0) * 10), 0, 255).astype(
+                np.uint8
+            )
         vil = first_key(z, "vil")
         if vil is not None:
             lay["vil"] = np.clip(np.rint(np.nan_to_num(vil, nan=0)), 0, 255).astype(np.uint8)
         if lay:
             blob = b"".join(np.ascontiguousarray(v).tobytes() for v in lay.values())
             (out / f"layers_{k}.bin").write_bytes(blob)
-            layers_meta.append({"bin": f"layers_{k}.bin", "names": list(lay.keys()), "ny": ny, "nx": nx})
+            layers_meta.append(
+                {"bin": f"layers_{k}.bin", "names": list(lay.keys()), "ny": ny, "nx": nx}
+            )
         else:
             layers_meta.append(None)
         zc = first_key(z, "zdr_column_km", "zdr_col_km")
@@ -334,16 +390,27 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             zdrcol.append(None)
         msteps.append(
             {
-                "index": k, "time_utc": st["time"], "t_s": times_s[k],
-                "files": {r: {"name": r, "offset_s": float(st.get("offsets_s", {}).get(r, 0.0))} for r in st.get("radars", [])},
-                "mosaic": {"header": f"mosaic_{k}.json", "bin": f"mosaic_{k}.bin"}, "wind": None, "eye": None,
+                "index": k,
+                "time_utc": st["time"],
+                "t_s": times_s[k],
+                "files": {
+                    r: {"name": r, "offset_s": float(st.get("offsets_s", {}).get(r, 0.0))}
+                    for r in st.get("radars", [])
+                },
+                "mosaic": {"header": f"mosaic_{k}.json", "bin": f"mosaic_{k}.bin"},
+                "wind": None,
+                "eye": None,
             }
         )
-        log(f"  step {k + 1}/{len(steps)}: {st['time']}  {int(np.isfinite(dbz).sum())} echo cells, radars {st.get('radars')}")
+        log(
+            f"  step {k + 1}/{len(steps)}: {st['time']}  {int(np.isfinite(dbz).sum())} echo cells, radars {st.get('radars')}"
+        )
 
     mot = estimate_motion(colmax, cell, times_s)
     for k, o in enumerate(mot):
-        log(f"  interval {k}: line motion {o['u_ms']:.1f}, {o['v_ms']:.1f} m/s (sharpness {o['sharpness']:.1f}{', FALLBACK' if o['fallback'] else ''})")
+        log(
+            f"  interval {k}: line motion {o['u_ms']:.1f}, {o['v_ms']:.1f} m/s (sharpness {o['sharpness']:.1f}{', FALLBACK' if o['fallback'] else ''})"
+        )
     # pseudo-track: the centre of the strong echo of step 0, then the estimated displacement per interval
     c0 = colmax[0]
     jj, ii = np.nonzero(np.nan_to_num(c0, nan=-9) >= 40)
@@ -356,28 +423,76 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     u = (track[-1][0] - track[0][0]) * 1000.0 / span if span else 0.0
     v = (track[-1][1] - track[0][1]) * 1000.0 / span if span else 0.0
     manifest = {
-        "version": 1, "title": man.get("title", "PERiLS IOP2"), "case": man.get("case", ""), "variable": "DBZH", "units": "dBZ",
-        "origin": {"lat": lat0, "lon": lon0}, "crop_half_km": float(min(xs.max(), ys.max())), "detail_m": cell * 1000.0,
+        "version": 1,
+        "title": man.get("title", "PERiLS IOP2"),
+        "case": man.get("case", ""),
+        "variable": "DBZH",
+        "units": "dBZ",
+        "origin": {"lat": lat0, "lon": lon0},
+        "crop_half_km": float(min(xs.max(), ys.max())),
+        "detail_m": cell * 1000.0,
         "steps": msteps,
         "storm": {
-            "track_km": [list(p) for p in track], "track_lonlat": [[float(geo.latlon(p[0], p[1])[1]), float(geo.latlon(p[0], p[1])[0])] for p in track],
-            "motion_ms": [u, v], "speed_ms": math.hypot(u, v), "heading_deg": (math.degrees(math.atan2(u, v)) + 360.0) % 360.0,
+            "track_km": [list(p) for p in track],
+            "track_lonlat": [
+                [float(geo.latlon(p[0], p[1])[1]), float(geo.latlon(p[0], p[1])[0])] for p in track
+            ],
+            "motion_ms": [u, v],
+            "speed_ms": math.hypot(u, v),
+            "heading_deg": (math.degrees(math.atan2(u, v)) + 360.0) % 360.0,
         },
-        "sites": rsites, "perils": "perils.json",
+        "sites": rsites,
+        "perils": "perils.json",
     }
 
     # ── everything else, in the scene frame ──
     line = [line_geometry(colmax[k], xs, ys, (u, v)) for k in range(len(steps))]
     p: dict = {
-        "line": line, "track": [{"t": times_s[k], "x": track[k][0], "y": track[k][1]} for k in range(len(steps))],
-        "version": 1, "time0": steps[0]["time"], "origin": {"lat": lat0, "lon": lon0},
-        "window": man.get("window", {}), "title": man.get("title", ""), "case": man.get("case", ""),
-        "grid": {"x0": float(xs[0]), "y0": float(ys[0]), "dx": cell, "nx": len(xs), "ny": len(ys), "zTop": float(zs[-1])},
-        "steps": [{"t_s": times_s[k], "time": s["time"], "radars": s.get("radars", []), "offsets_s": s.get("offsets_s", {})} for k, s in enumerate(steps)],
-        "motion": mot, "radars": [], "sources": man.get("sources", []), "hail": hail_pts, "tds": tds_pts, "layers": layers_meta, "zdrColumns": zdrcol,
+        "line": line,
+        "track": [{"t": times_s[k], "x": track[k][0], "y": track[k][1]} for k in range(len(steps))],
+        "version": 1,
+        "time0": steps[0]["time"],
+        "origin": {"lat": lat0, "lon": lon0},
+        "window": man.get("window", {}),
+        "title": man.get("title", ""),
+        "case": man.get("case", ""),
+        "grid": {
+            "x0": float(xs[0]),
+            "y0": float(ys[0]),
+            "dx": cell,
+            "nx": len(xs),
+            "ny": len(ys),
+            "zTop": float(zs[-1]),
+        },
+        "steps": [
+            {
+                "t_s": times_s[k],
+                "time": s["time"],
+                "radars": s.get("radars", []),
+                "offsets_s": s.get("offsets_s", {}),
+            }
+            for k, s in enumerate(steps)
+        ],
+        "motion": mot,
+        "radars": [],
+        "sources": man.get("sources", []),
+        "hail": hail_pts,
+        "tds": tds_pts,
+        "layers": layers_meta,
+        "zdrColumns": zdrcol,
     }
     for r in rsites:
-        p["radars"].append({"name": r["name"], "x": r["x_m"] / 1000.0, "y": r["y_m"] / 1000.0, "altKm": r["altitude_m"] / 1000.0, "type": r["type"], "lat": r["latitude"], "lon": r["longitude"]})
+        p["radars"].append(
+            {
+                "name": r["name"],
+                "x": r["x_m"] / 1000.0,
+                "y": r["y_m"] / 1000.0,
+                "altKm": r["altitude_m"] / 1000.0,
+                "type": r["type"],
+                "lat": r["latitude"],
+                "lon": r["longitude"],
+            }
+        )
     # lightning mapping array
     lma = _load_json(bundle / man["lma"]) if man.get("lma") else None
     p["lma"] = None
@@ -389,13 +504,24 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             if not len(src):
                 continue
             x, y = geo.xy(src[:, 1], src[:, 2])
-            fl.append({"id": f["id"], "t0": lt0 + float(f["t_start_s"]), "t1": lt0 + float(f["t_end_s"]), "n": int(f.get("n_sources", len(src))),
-                       "s": _round(np.stack([src[:, 0] + lt0, x, y, src[:, 3] / 1000.0, src[:, 4]], 1), 4)})
+            fl.append(
+                {
+                    "id": f["id"],
+                    "t0": lt0 + float(f["t_start_s"]),
+                    "t1": lt0 + float(f["t_end_s"]),
+                    "n": int(f.get("n_sources", len(src))),
+                    "s": _round(
+                        np.stack([src[:, 0] + lt0, x, y, src[:, 3] / 1000.0, src[:, 4]], 1), 4
+                    ),
+                }
+            )
         p["lma"] = {"flashes": fl, "nSources": int(sum(len(f["s"]) for f in fl))}
         log(f"  LMA: {len(fl)} flashes, {p['lma']['nSources']} sources")
     # stations (with their hail candidate events and drop-size spectra)
     hail_ev = _load_json(bundle / man["hail_events"]) if man.get("hail_events") else None
-    p["stations"] = convert_stations(_load_json(bundle / man["stations"]) if man.get("stations") else None, geo, bundle, hail_ev)
+    p["stations"] = convert_stations(
+        _load_json(bundle / man["stations"]) if man.get("stations") else None, geo, bundle, hail_ev
+    )
     # multi-Doppler winds: the clip's flow files (they make the interpolation follow the observed wind) and the visual layers
     p["winds"] = []
     for k, st in enumerate(steps):
@@ -408,8 +534,12 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         msteps[k]["wind"] = ref
         p["winds"].append(viz)
     p["hasWinds"] = any(v for v in p["winds"])
-    p["profiles"] = convert_profiles({n: bundle / f for n, f in (man.get("profiles") or {}).items()})
-    p["science"] = convert_science(_load_json(bundle / man["science_events"]) if man.get("science_events") else None, rel)
+    p["profiles"] = convert_profiles(
+        {n: bundle / f for n, f in (man.get("profiles") or {}).items()}
+    )
+    p["science"] = convert_science(
+        _load_json(bundle / man["science_events"]) if man.get("science_events") else None, rel
+    )
     p["hidLegend"] = man.get("hid_legend")
     # soundings
     p["soundings"] = []
@@ -421,12 +551,32 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         drift = []
         for d in s.get("drift", []):
             dx, dy = geo.xy(d[1], d[2])
-            drift.append([float(d[0]) + rel(s["launch"]), float(dx), float(dy), float(d[3]) / 1000.0])
-        p["soundings"].append({"id": s["id"], "site": s.get("site", s["id"]), "launch": rel(s["launch"]), "launchIso": s["launch"], "x": float(x), "y": float(y), "drift": drift, "levels": levels, "diagnostics": s.get("diagnostics", {})})
+            drift.append(
+                [float(d[0]) + rel(s["launch"]), float(dx), float(dy), float(d[3]) / 1000.0]
+            )
+        p["soundings"].append(
+            {
+                "id": s["id"],
+                "site": s.get("site", s["id"]),
+                "launch": rel(s["launch"]),
+                "launchIso": s["launch"],
+                "x": float(x),
+                "y": float(y),
+                "drift": drift,
+                "levels": levels,
+                "diagnostics": s.get("diagnostics", {}),
+            }
+        )
     p["environment"] = _load_json(bundle / man["environment"]) if man.get("environment") else None
     # tornadoes and rotation tracks
-    p["tornadoes"] = convert_tornadoes(_load_json(bundle / man["tornadoes"]) if man.get("tornadoes") else None, geo, rel)
-    p["rotation"] = convert_rotation(_load_json(bundle / man["rotation_tracks"]) if man.get("rotation_tracks") else None, geo, rel)
+    p["tornadoes"] = convert_tornadoes(
+        _load_json(bundle / man["tornadoes"]) if man.get("tornadoes") else None, geo, rel
+    )
+    p["rotation"] = convert_rotation(
+        _load_json(bundle / man["rotation_tracks"]) if man.get("rotation_tracks") else None,
+        geo,
+        rel,
+    )
     # MRMS composites
     p["mrms"] = []
     p["surface"] = []
@@ -439,7 +589,9 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     return p
 
 
-def line_geometry(colmax: np.ndarray, xs, ys, motion_xy: tuple[float, float], thr: float = 40.0) -> dict | None:
+def line_geometry(
+    colmax: np.ndarray, xs, ys, motion_xy: tuple[float, float], thr: float = 40.0
+) -> dict | None:
     """Centre, axis and extent of the strong echo (column maximum >= ``thr`` dBZ) by principal axes.
 
     ``axis_deg`` is the bearing of the long axis chosen so that the motion points to its right (the
@@ -465,8 +617,13 @@ def line_geometry(colmax: np.ndarray, xs, ys, motion_xy: tuple[float, float], th
     along = (px - cx) * ax[0] + (py - cy) * ax[1]
     across = (px - cx) * perp[0] + (py - cy) * perp[1]
     return {
-        "cx": cx, "cy": cy, "axis_deg": float(math.degrees(math.atan2(ax[0], ax[1])) % 360.0), "perp_deg": float(math.degrees(math.atan2(perp[0], perp[1])) % 360.0),
-        "half_len_km": float(np.percentile(np.abs(along), 97)), "front_km": float(np.percentile(across, 97)), "back_km": float(np.percentile(across, 3)),
+        "cx": cx,
+        "cy": cy,
+        "axis_deg": float(math.degrees(math.atan2(ax[0], ax[1])) % 360.0),
+        "perp_deg": float(math.degrees(math.atan2(perp[0], perp[1])) % 360.0),
+        "half_len_km": float(np.percentile(np.abs(along), 97)),
+        "front_km": float(np.percentile(across, 97)),
+        "back_km": float(np.percentile(across, 3)),
         "n_pixels": len(ii),
     }
 
@@ -479,7 +636,10 @@ def _zdr_markers(zc: np.ndarray, xs, ys, thr_km: float = 1.0, cap: int = 60) -> 
     mx = (a == maximum_filter(a, size=9)) & (a >= thr_km)
     jj, ii = np.nonzero(mx)
     order = np.argsort(-a[jj, ii])[:cap]
-    return [[round(float(xs[ii[o]]), 2), round(float(ys[jj[o]]), 2), round(float(a[jj[o], ii[o]]), 2)] for o in order]
+    return [
+        [round(float(xs[ii[o]]), 2), round(float(ys[jj[o]]), 2), round(float(a[jj[o], ii[o]]), 2)]
+        for o in order
+    ]
 
 
 AZ_MAX = 0.04  # s-1: the azimuthal shear that fills the 8-bit range of the swath layer
@@ -499,7 +659,11 @@ def _resample(z, geo: Geo, field: np.ndarray, fill: float):
     X, Y = np.meshgrid(mx, my)
     la, lo = geo.latlon(X, Y)
     flip = lat_a[0] > lat_a[-1]
-    ri = np.interp(la, lat_a[::-1], np.arange(len(lat_a))[::-1]) if flip else np.interp(la, lat_a, np.arange(len(lat_a)))
+    ri = (
+        np.interp(la, lat_a[::-1], np.arange(len(lat_a))[::-1])
+        if flip
+        else np.interp(la, lat_a, np.arange(len(lat_a)))
+    )
     ci = np.interp(lo, lon_a, np.arange(len(lon_a)))
     inside = (la >= lat_a.min()) & (la <= lat_a.max()) & (lo >= lon_a.min()) & (lo <= lon_a.max())
     return mx, my, ri, ci, inside
@@ -510,7 +674,15 @@ def _convert_mrms(bundle: Path, st: dict, k: int, geo: Geo, out: Path) -> dict |
     if not f.exists():
         return None
     z = np.load(f)
-    refl = first_key(z, "mergedref_dbz", "refl", "dbz", "reflectivity", "composite", "MergedReflectivityQCComposite")
+    refl = first_key(
+        z,
+        "mergedref_dbz",
+        "refl",
+        "dbz",
+        "reflectivity",
+        "composite",
+        "MergedReflectivityQCComposite",
+    )
     if refl is None:
         return None
     refl = np.asarray(refl, float)
@@ -527,13 +699,26 @@ def _convert_mrms(bundle: Path, st: dict, k: int, geo: Geo, out: Path) -> dict |
         grid = np.where(inside & (grid >= 0), grid, np.nan)
         azgrid = None
         if az is not None:
-            azv = map_coordinates(np.nan_to_num(np.asarray(az, float), nan=0.0), [ri, ci], order=1, mode="nearest")
+            azv = map_coordinates(
+                np.nan_to_num(np.asarray(az, float), nan=0.0), [ri, ci], order=1, mode="nearest"
+            )
             azgrid = np.where(inside, azv, np.nan)
     codes = encode_dbz(grid)
     (out / f"mrms_{k}.bin").write_bytes(np.ascontiguousarray(codes).tobytes())
-    meta = {"bin": f"mrms_{k}.bin", "x0": float(mx[0]), "y0": float(my[0]), "dx": float(mx[1] - mx[0]), "nx": len(mx), "ny": len(my)}
+    meta = {
+        "bin": f"mrms_{k}.bin",
+        "x0": float(mx[0]),
+        "y0": float(my[0]),
+        "dx": float(mx[1] - mx[0]),
+        "nx": len(mx),
+        "ny": len(my),
+    }
     if azgrid is not None:
-        azc = np.where(np.isfinite(azgrid) & (azgrid > 0), np.clip(np.rint(azgrid / AZ_MAX * 254) + 1, 1, 255), 0).astype(np.uint8)
+        azc = np.where(
+            np.isfinite(azgrid) & (azgrid > 0),
+            np.clip(np.rint(azgrid / AZ_MAX * 254) + 1, 1, 255),
+            0,
+        ).astype(np.uint8)
         (out / f"mrmsaz_{k}.bin").write_bytes(np.ascontiguousarray(azc).tobytes())
         meta["az"] = f"mrmsaz_{k}.bin"
         meta["azMax"] = AZ_MAX
@@ -565,17 +750,30 @@ def _convert_surface(bundle: Path, st: dict, k: int, out: Path) -> dict | None:
         lo, hi = float(np.floor(fin.min() * 4) / 4), float(np.ceil(fin.max() * 4) / 4)
         if hi <= lo:
             hi = lo + 1.0
-        c = np.where(np.isfinite(a), np.clip(np.rint((a - lo) / (hi - lo) * 254) + 1, 1, 255), 0).astype(np.uint8)
+        c = np.where(
+            np.isfinite(a), np.clip(np.rint((a - lo) / (hi - lo) * 254) + 1, 1, 255), 0
+        ).astype(np.uint8)
         fields.append({"name": name, "min": lo, "max": hi})
         blobs.append(np.ascontiguousarray(c).tobytes())
     if not fields:
         return None
     (out / f"surf_{k}.bin").write_bytes(b"".join(blobs))
-    return {"bin": f"surf_{k}.bin", "x0": float(x[0]), "y0": float(y[0]), "dx": float(x[1] - x[0]), "nx": len(x), "ny": len(y), "fields": fields, "nStations": int(z["n_stations"]) if "n_stations" in z.files else None}
+    return {
+        "bin": f"surf_{k}.bin",
+        "x0": float(x[0]),
+        "y0": float(y[0]),
+        "dx": float(x[1] - x[0]),
+        "nx": len(x),
+        "ny": len(y),
+        "fields": fields,
+        "nStations": int(z["n_stations"]) if "n_stations" in z.files else None,
+    }
 
 
 def main(argv=None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--bundle", required=True)
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)

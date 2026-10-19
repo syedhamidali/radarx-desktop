@@ -61,7 +61,13 @@ def circular_mean_deg(a):
 # ── timeline ────────────────────────────────────────────────────────────────
 
 
-def speed_profile(t: np.ndarray, dip_centre: float | None, dip_width: float = 24.0, dip_level: float = 0.35, edge: float = 4.0) -> np.ndarray:
+def speed_profile(
+    t: np.ndarray,
+    dip_centre: float | None,
+    dip_width: float = 24.0,
+    dip_level: float = 0.35,
+    edge: float = 4.0,
+) -> np.ndarray:
     """Relative speed of the data clock at clip times ``t``: 1, and ``dip_level`` around ``dip_centre`` (smooth edges)."""
     s = np.ones_like(t, dtype=float)
     if dip_centre is None:
@@ -71,7 +77,14 @@ def speed_profile(t: np.ndarray, dip_centre: float | None, dip_width: float = 24
     return 1.0 - (1.0 - dip_level) * ramp
 
 
-def build_timeline(window_s: float, duration: float = 120.0, fps: int = 30, dip_centre: float | None = None, dip_width: float = 24.0, dip_level: float = 0.35) -> dict:
+def build_timeline(
+    window_s: float,
+    duration: float = 120.0,
+    fps: int = 30,
+    dip_centre: float | None = None,
+    dip_width: float = 24.0,
+    dip_level: float = 0.35,
+) -> dict:
     """Dense mapping: ``t_data_s[i]`` = seconds after the data start shown at frame i (0..N, N = duration * fps)."""
     n = round(duration * fps)
     t = np.arange(n + 1) / fps
@@ -91,7 +104,16 @@ def data_time_of_clip(tl: dict, t):
     return np.interp(t, tl["t_clip_s"], tl["t_data_s"])
 
 
-def solve_dip_centre(window_s: float, target_td: float, duration: float, fps: int, lo: float, hi: float, dip_width: float = 24.0, dip_level: float = 0.35) -> float:
+def solve_dip_centre(
+    window_s: float,
+    target_td: float,
+    duration: float,
+    fps: int,
+    lo: float,
+    hi: float,
+    dip_width: float = 24.0,
+    dip_level: float = 0.35,
+) -> float:
     """Clip time ``c`` in [lo, hi] such that, with the slow-down centred on ``c``, data time ``target_td`` is shown at ``c``."""
 
     def f(c: float) -> float:
@@ -188,10 +210,19 @@ def _pad(v, n):
 
 class Shot:
     def __init__(self, name: str, label: str, t0: float, t1: float, fn, vexag: float):
-        self.name, self.label, self.t0, self.t1, self.fn, self.vexag = name, label, t0, t1, fn, vexag
+        self.name, self.label, self.t0, self.t1, self.fn, self.vexag = (
+            name,
+            label,
+            t0,
+            t1,
+            fn,
+            vexag,
+        )
 
 
-def plan_shots(scene: Scene, tl: dict, duration: float, tor_c: float | None, station: dict | None) -> list[Shot]:
+def plan_shots(
+    scene: Scene, tl: dict, duration: float, tor_c: float | None, station: dict | None
+) -> list[Shot]:
     """The shot list. Times are clip seconds; ``tor_c`` is the clip time of the tornado shot's middle (or None)."""
     m, a = scene.m, scene.a
     front = scene.front_km
@@ -216,14 +247,19 @@ def plan_shots(scene: Scene, tl: dict, duration: float, tor_c: float | None, sta
 
     def fly(t):
         u = np.clip((t - b0) / max(1e-6, b1 - b0), 0, 1)
-        s = (-0.62 + 1.24 * smoothstep(u)) * L  # along-line position (km): from the south end to the north end
+        s = (
+            -0.62 + 1.24 * smoothstep(u)
+        ) * L  # along-line position (km): from the south end to the north end
         c = cen(t)
         d = front + 24.0 + 4.0 * np.sin(u * math.pi)
         P = c + col(s) * a[None, :] + col(d) * m[None, :]
         look = c + col(s + 0.22 * L) * a[None, :] + (front - 6.0) * m[None, :]
         return P, 2.2 + 1.3 * np.sin(u * math.pi), look, _pad(3.2, len(t))
 
-    shots = [Shot("establishing", "Establishing view of the whole line", 0.0, b0, estab, 2.4), Shot("flyby", "Low flyby along the line", b0, b1, fly, 2.4)]
+    shots = [
+        Shot("establishing", "Establishing view of the whole line", 0.0, b0, estab, 2.4),
+        Shot("flyby", "Low flyby along the line", b0, b1, fly, 2.4),
+    ]
     t_after = b1
     if tor_c is not None:
 
@@ -236,7 +272,16 @@ def plan_shots(scene: Scene, tl: dict, duration: float, tor_c: float | None, sta
             P = q + col(dist) * np.stack([np.sin(ang), np.cos(ang)], -1)
             return P, 0.55 + 0.9 * smoothstep(u), q, _pad(0.8, len(t))
 
-        shots.append(Shot("tornado", "Tornado: a safe distance ahead, the line behind", tor_c - 12.0, tor_c + 12.0, tor, 1.8))
+        shots.append(
+            Shot(
+                "tornado",
+                "Tornado: a safe distance ahead, the line behind",
+                tor_c - 12.0,
+                tor_c + 12.0,
+                tor,
+                1.8,
+            )
+        )
         t_after = tor_c + 12.0
     t_st1 = min(duration - 30.0, t_after + 27.0)
     if station is not None:
@@ -246,12 +291,30 @@ def plan_shots(scene: Scene, tl: dict, duration: float, tor_c: float | None, sta
         def stat(t):
             u = np.clip((t - t_after) / max(1e-6, t_st1 - t_after), 0, 1)
             # a slow pan while the line approaches, then (after it has passed) a turn to watch it leave
-            yaw = np.radians(look_b + 14.0 * (1.0 - 2.0 * smoothstep(u / 0.7)) + 180.0 * smoothstep((u - 0.7) / 0.3))
+            yaw = np.radians(
+                look_b
+                + 14.0 * (1.0 - 2.0 * smoothstep(u / 0.7))
+                + 180.0 * smoothstep((u - 0.7) / 0.3)
+            )
             P = np.stack([np.full(len(t), sx), np.full(len(t), sy)], -1)
             T = P + 30.0 * np.stack([np.sin(yaw), np.cos(yaw)], -1)
-            return P, _pad(EYE_M / 1000.0, len(t)), T, _pad(EYE_M / 1000.0 + 30.0 * math.tan(math.radians(7.0)), len(t))
+            return (
+                P,
+                _pad(EYE_M / 1000.0, len(t)),
+                T,
+                _pad(EYE_M / 1000.0 + 30.0 * math.tan(math.radians(7.0)), len(t)),
+            )
 
-        shots.append(Shot("window", f"Ground-level view at {station.get('name', station['id'])}", t_after, t_st1, stat, 1.0))
+        shots.append(
+            Shot(
+                "window",
+                f"Ground-level view at {station.get('name', station['id'])}",
+                t_after,
+                t_st1,
+                stat,
+                1.0,
+            )
+        )
     else:
         t_st1 = t_after
     e1 = duration - 15.0
@@ -316,9 +379,17 @@ def build_camera(scene: Scene, tl: dict, shots: list[Shot]) -> list[dict]:
     for i in range(len(t)):
         out.append(
             {
-                "t_clip_s": round(float(t[i]), 4), "lat": round(float(lat[i]), 6), "lon": round(float(lon[i]), 6), "alt_m": round(float(alt[i]) * 1000.0, 1),
-                "heading_deg": round(float(heading[i]), 3), "pitch_deg": round(float(pitch[i]), 3),
-                "x_km": round(float(P[i, 0]), 4), "y_km": round(float(P[i, 1]), 4), "z_km": round(float(alt[i]), 5), "vexag": round(float(vex[i]), 4), "shot": shots[min(idx[i], len(shots) - 1)].name,
+                "t_clip_s": round(float(t[i]), 4),
+                "lat": round(float(lat[i]), 6),
+                "lon": round(float(lon[i]), 6),
+                "alt_m": round(float(alt[i]) * 1000.0, 1),
+                "heading_deg": round(float(heading[i]), 3),
+                "pitch_deg": round(float(pitch[i]), 3),
+                "x_km": round(float(P[i, 0]), 4),
+                "y_km": round(float(P[i, 1]), 4),
+                "z_km": round(float(alt[i]), 5),
+                "vexag": round(float(vex[i]), 4),
+                "shot": shots[min(idx[i], len(shots) - 1)].name,
             }
         )
     return out
@@ -337,10 +408,19 @@ def nearest_station(stations: list[dict], x: float, y: float, z_km: float) -> st
     return best
 
 
-def build_events(scene: Scene, tl: dict, camera: list[dict], shots: list[Shot], station: dict | None) -> dict:
+def build_events(
+    scene: Scene, tl: dict, camera: list[dict], shots: list[Shot], station: dict | None
+) -> dict:
     p = scene.p
     geo = scene.geo
-    ev: dict = {"flashes": [], "tornado": None, "hail": [], "nearest_station": [], "shots": [], "observer_station": None}
+    ev: dict = {
+        "flashes": [],
+        "tornado": None,
+        "hail": [],
+        "nearest_station": [],
+        "shots": [],
+        "observer_station": None,
+    }
     for f in (p.get("lma") or {}).get("flashes", []):
         s = np.asarray(f["s"], float)
         if not len(s):
@@ -349,7 +429,17 @@ def build_events(scene: Scene, tl: dict, camera: list[dict], shots: list[Shot], 
         if not (0.0 <= tc <= tl["t_clip_s"][-1]):
             continue
         lat, lon = geo.latlon(s[:, 1].mean(), s[:, 2].mean())
-        ev["flashes"].append({"id": f["id"], "t_clip_s": round(tc, 3), "t_data_s": round(f["t0"], 3), "n_sources": int(f.get("n", len(s))), "lat": round(float(lat), 5), "lon": round(float(lon), 5), "alt_m": round(float(s[:, 3].mean()) * 1000.0, 0)})
+        ev["flashes"].append(
+            {
+                "id": f["id"],
+                "t_clip_s": round(tc, 3),
+                "t_data_s": round(f["t0"], 3),
+                "n_sources": int(f.get("n", len(s))),
+                "lat": round(float(lat), 5),
+                "lon": round(float(lon), 5),
+                "alt_m": round(float(s[:, 3].mean()) * 1000.0, 0),
+            }
+        )
     span = scene.tornado_span()
     if span:
         tors = [t for t in p["tornadoes"] if len(t.get("path", [])) >= 2]
@@ -358,23 +448,49 @@ def build_events(scene: Scene, tl: dict, camera: list[dict], shots: list[Shot], 
         for tc in np.arange(math.ceil(t_a), t_b + 1e-9, 1.0):
             q, _act = scene.tornado_at(float(data_time_of_clip(tl, tc)))
             la, lo = geo.latlon(q[0], q[1])
-            pos.append({"t_clip_s": float(tc), "lat": round(float(la), 5), "lon": round(float(lo), 5)})
-        ev["tornado"] = {"id": tors[0].get("id"), "rating": tors[0].get("rating"), "t_clip_start_s": round(t_a, 3), "t_clip_end_s": round(t_b, 3), "positions": pos}
+            pos.append(
+                {"t_clip_s": float(tc), "lat": round(float(la), 5), "lon": round(float(lo), 5)}
+            )
+        ev["tornado"] = {
+            "id": tors[0].get("id"),
+            "rating": tors[0].get("rating"),
+            "t_clip_start_s": round(t_a, 3),
+            "t_clip_end_s": round(t_b, 3),
+            "positions": pos,
+        }
     for s in p.get("stations", []):
         for h in s.get("events") or []:
             t = h.get("t_s")
             if t is None:
                 continue
-            ev["hail"].append({"station": s["id"], "t_clip_s": round(float(clip_time_of_data(tl, t)), 3), "t_data_s": t, "lat": s["lat"], "lon": s["lon"], **{k: v for k, v in h.items() if k not in ("t_s",)}})
+            ev["hail"].append(
+                {
+                    "station": s["id"],
+                    "t_clip_s": round(float(clip_time_of_data(tl, t)), 3),
+                    "t_data_s": t,
+                    "lat": s["lat"],
+                    "lon": s["lon"],
+                    **{k: v for k, v in h.items() if k not in ("t_s",)},
+                }
+            )
     last = None
     for c in camera:
         sid = nearest_station(p.get("stations", []), c["x_km"], c["y_km"], c["z_km"])
         if sid != last:
             ev["nearest_station"].append({"t_clip_s": c["t_clip_s"], "id": sid})
             last = sid
-    ev["shots"] = [{"name": s.name, "label": s.label, "t0": round(s.t0, 3), "t1": round(s.t1, 3)} for s in shots]
+    ev["shots"] = [
+        {"name": s.name, "label": s.label, "t0": round(s.t0, 3), "t1": round(s.t1, 3)}
+        for s in shots
+    ]
     if station:
-        ev["observer_station"] = {"id": station["id"], "name": station.get("name"), "lat": station["lat"], "lon": station["lon"], "eye_m": EYE_M}
+        ev["observer_station"] = {
+            "id": station["id"],
+            "name": station.get("name"),
+            "lat": station["lat"],
+            "lon": station["lon"],
+            "eye_m": EYE_M,
+        }
     return ev
 
 
@@ -397,7 +513,13 @@ def pick_station(scene: Scene, tl: dict, t0: float, t1: float) -> dict | None:
     return best
 
 
-def plan(perils: dict, duration: float = 120.0, fps: int = 30, dip_level: float = 0.35, dip_width: float = 24.0) -> dict:
+def plan(
+    perils: dict,
+    duration: float = 120.0,
+    fps: int = 30,
+    dip_level: float = 0.35,
+    dip_width: float = 24.0,
+) -> dict:
     """Everything: timeline.json, camera_path.json and events.json contents."""
     scene = Scene(perils)
     window = scene.window_s
@@ -405,7 +527,9 @@ def plan(perils: dict, duration: float = 120.0, fps: int = 30, dip_level: float 
     tor_c = None
     if span:
         mid = 0.5 * (span[0] + span[1])
-        tor_c = solve_dip_centre(window, mid, duration, fps, 36.0, duration - 62.0, dip_width, dip_level)
+        tor_c = solve_dip_centre(
+            window, mid, duration, fps, 36.0, duration - 62.0, dip_width, dip_level
+        )
     tl = build_timeline(window, duration, fps, tor_c, dip_width, dip_level)
     # the ground-level shot follows the tornado shot (or the flyby); pick its station from its time slot
     t_after = (tor_c + dip_width / 2.0) if tor_c is not None else 40.0
@@ -419,18 +543,39 @@ def plan(perils: dict, duration: float = 120.0, fps: int = 30, dip_level: float 
     iso = lambda s: (t0 + timedelta(seconds=float(s))).isoformat().replace("+00:00", "Z")  # noqa: E731
     sp = tl["speedup"]
     timeline = {
-        "data_start": iso(0.0), "data_end": iso(window), "data_window_s": window, "clip_duration_s": duration, "fps": fps, "frames": tl["frames"],
-        "speedup_mean": window / duration, "speedup_min": float(sp.min()), "speedup_max": float(sp.max()),
+        "data_start": iso(0.0),
+        "data_end": iso(window),
+        "data_window_s": window,
+        "clip_duration_s": duration,
+        "fps": fps,
+        "frames": tl["frames"],
+        "speedup_mean": window / duration,
+        "speedup_min": float(sp.min()),
+        "speedup_max": float(sp.max()),
         "note": "t_data_s[i] = seconds after data_start shown at clip time i / fps (monotone); speedup[i] = data seconds per clip second",
-        "tornado_slowdown": None if tor_c is None else {"centre_clip_s": tor_c, "width_s": dip_width, "level": dip_level},
-        "mapping": {"t_clip_s": [round(float(v), 4) for v in tl["t_clip_s"]], "t_data_s": [round(float(v), 4) for v in tl["t_data_s"]]},
+        "tornado_slowdown": None
+        if tor_c is None
+        else {"centre_clip_s": tor_c, "width_s": dip_width, "level": dip_level},
+        "mapping": {
+            "t_clip_s": [round(float(v), 4) for v in tl["t_clip_s"]],
+            "t_data_s": [round(float(v), 4) for v in tl["t_data_s"]],
+        },
         "speedup": [round(float(v), 4) for v in sp],
         "shots": events["shots"],
     }
-    return {"timeline": timeline, "camera": camera, "events": events, "station": station and station["id"], "tl": tl, "shots": shots}
+    return {
+        "timeline": timeline,
+        "camera": camera,
+        "events": events,
+        "station": station and station["id"],
+        "tl": tl,
+        "shots": shots,
+    }
 
 
-def write(perils_path: Path, out_dir: Path, duration: float = 120.0, fps: int = 30, log=print) -> dict:
+def write(
+    perils_path: Path, out_dir: Path, duration: float = 120.0, fps: int = 30, log=print
+) -> dict:
     perils = json.loads(Path(perils_path).read_text())
     res = plan(perils, duration, fps)
     out_dir = Path(out_dir)
@@ -439,14 +584,18 @@ def write(perils_path: Path, out_dir: Path, duration: float = 120.0, fps: int = 
     (out_dir / "camera_path.json").write_text(json.dumps(res["camera"]))
     (out_dir / "events.json").write_text(json.dumps(res["events"]))
     tm = res["timeline"]
-    log(f"data window {tm['data_window_s'] / 60:.1f} min in {duration:g} s: mean x{tm['speedup_mean']:.1f}, range x{tm['speedup_min']:.1f}..x{tm['speedup_max']:.1f}; ground-level station {res['station']}")
+    log(
+        f"data window {tm['data_window_s'] / 60:.1f} min in {duration:g} s: mean x{tm['speedup_mean']:.1f}, range x{tm['speedup_min']:.1f}..x{tm['speedup_max']:.1f}; ground-level station {res['station']}"
+    )
     for s in res["events"]["shots"]:
         log(f"  {s['t0']:6.1f}-{s['t1']:6.1f} s  {s['label']}")
     return res
 
 
 def main(argv=None) -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--perils", required=True, help="perils.json written by convert_bundle.py")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--duration", type=float, default=120.0)

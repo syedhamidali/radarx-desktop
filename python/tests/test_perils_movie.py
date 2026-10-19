@@ -66,7 +66,9 @@ def test_dbz_codes_round_trip_within_the_quantisation():
     d = np.array([-20.0, -10.0, 0.0, 35.3, 70.0, 90.0, np.nan])
     c = convert_bundle.encode_dbz(d)
     assert c[-1] == 0 and c[0] == 1 and c[4] == 255 and c[5] == 255
-    back = convert_bundle.VMIN + (c[2:4].astype(float) - 1) / 254.0 * (convert_bundle.VMAX - convert_bundle.VMIN)
+    back = convert_bundle.VMIN + (c[2:4].astype(float) - 1) / 254.0 * (
+        convert_bundle.VMAX - convert_bundle.VMIN
+    )
     assert np.all(np.abs(back - d[2:4]) < 0.2)
 
 
@@ -75,7 +77,9 @@ def test_sounding_csv_with_speed_and_direction_and_gaps():
     lv = convert_bundle.sounding_levels(csv)
     assert lv["pressure_hpa"][:2] == [1000.0, 850.0]
     assert lv["dewpoint_c"][1] is None
-    assert lv["u_ms"][0] == pytest.approx(10.0, abs=1e-6)  # wind from the west blows toward the east
+    assert lv["u_ms"][0] == pytest.approx(
+        10.0, abs=1e-6
+    )  # wind from the west blows toward the east
     assert abs(lv["v_ms"][0]) < 1e-6
     assert lv["pressure_hpa"][2] is None
 
@@ -101,7 +105,12 @@ def test_conversion_writes_the_clip_bundle(tiny):
     assert (clip / "mosaic_0.bin").stat().st_size == g["nx"] * g["ny"] * g["nz"]
     assert man["storm"]["speed_ms"] > 10
     assert len(p["motion"]) == 4 and all(not m["fallback"] for m in p["motion"])
-    assert p["lma"]["nSources"] > 100 and p["stations"] and p["tornadoes"][0]["path"] and p["rotation"][0]["points"]
+    assert (
+        p["lma"]["nSources"] > 100
+        and p["stations"]
+        and p["tornadoes"][0]["path"]
+        and p["rotation"][0]["points"]
+    )
     # flashes sit at their real positions in km of the scene (no jitter was added)
     f = p["lma"]["flashes"][0]
     assert all(len(row) == 5 for row in f["s"])
@@ -130,7 +139,19 @@ def test_the_v11_parts_are_converted(tiny):
     assert pips
     from convert_extras import convert_stations
 
-    st = convert_stations([{"id": "P1", "lat": 33.0, "lon": -87.5, "series": {"t_s": [0, 1], "rain_rate_mmh": [0, float("nan")]}}], convert_bundle.Geo(33.0, -87.5), root, [{"station": "P1", "t_s": 5, "kind": "hail_candidate", "max_d_mm": 12}])
+    st = convert_stations(
+        [
+            {
+                "id": "P1",
+                "lat": 33.0,
+                "lon": -87.5,
+                "series": {"t_s": [0, 1], "rain_rate_mmh": [0, float("nan")]},
+            }
+        ],
+        convert_bundle.Geo(33.0, -87.5),
+        root,
+        [{"station": "P1", "t_s": 5, "kind": "hail_candidate", "max_d_mm": 12}],
+    )
     assert st[0]["events"][0]["max_d_mm"] == 12 and st[0]["series"]["rain_rate_mmh"][1] is None
     d = pips[0]["dsd"]
     assert len(d["logN"]) == len(d["t"]) and len(d["logN"][0]) == len(d["d"])
@@ -146,7 +167,9 @@ def test_line_geometry_axis_is_perpendicular_to_the_motion(tiny):
     m = p["motion"][0]
     heading = (math.degrees(math.atan2(m["u_ms"], m["v_ms"])) + 360) % 360
     d = abs(((line["perp_deg"] - heading) + 180) % 360 - 180)
-    assert d < 25  # the aperture problem leaves the along-line component loose; the perpendicular one is right
+    assert (
+        d < 25
+    )  # the aperture problem leaves the along-line component loose; the perpendicular one is right
     assert line["half_len_km"] > 30 and line["front_km"] > line["back_km"]
 
 
@@ -200,7 +223,10 @@ def test_camera_path_has_no_jumps_and_stays_in_bounds(tiny):
     assert np.abs(np.diff(pit)).max() < 1.5 and np.abs(pit).max() <= 86.0
     assert all(c["z_km"] >= 0.0019 for c in cam)
     assert next(s["name"] for s in res["events"]["shots"]) == "establishing"
-    assert res["events"]["shots"][-1]["name"] == "topdown" and res["events"]["shots"][-1]["t1"] == 120.0
+    assert (
+        res["events"]["shots"][-1]["name"] == "topdown"
+        and res["events"]["shots"][-1]["t1"] == 120.0
+    )
 
 
 def test_the_ground_level_shot_stands_at_a_station_looking_at_the_approaching_line(tiny):
@@ -235,7 +261,10 @@ def test_events_follow_the_timeline(tiny):
     tc = np.array([f["t_clip_s"] for f in fl])
     order = np.argsort(td)
     assert np.all(np.diff(tc[order]) >= -1e-9)  # later in the data, later in the clip
-    assert ev["tornado"]["rating"] == "EF2" and ev["tornado"]["t_clip_start_s"] < ev["tornado"]["t_clip_end_s"]
+    assert (
+        ev["tornado"]["rating"] == "EF2"
+        and ev["tornado"]["t_clip_start_s"] < ev["tornado"]["t_clip_end_s"]
+    )
     assert ev["nearest_station"][0]["t_clip_s"] == 0.0
     assert ev["observer_station"]["id"] == res["station"]
     tm = res["timeline"]
@@ -268,5 +297,18 @@ def test_two_frames_render_in_chrome(tiny, tmp_path):
     rm = importlib.import_module("render_movie")
     root, _p = tiny
     choreography.write(root / "clip" / "perils.json", root / "clip")
-    rm.main(["--bundle", str(root / "bundle"), "--work", str(root), "--frames", "0:2", "--width", "960", "--height", "540"])
+    rm.main(
+        [
+            "--bundle",
+            str(root / "bundle"),
+            "--work",
+            str(root),
+            "--frames",
+            "0:2",
+            "--width",
+            "960",
+            "--height",
+            "540",
+        ]
+    )
     assert (root / "frames" / "frame_00000.png").stat().st_size > 10_000
