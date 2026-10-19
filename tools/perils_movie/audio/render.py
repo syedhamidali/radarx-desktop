@@ -133,7 +133,13 @@ def render_mix(
             "levels_dbfs_per_s": [round(float(v), 1) for v in _per_second_db(s, sr)],
             **{kk: vv for kk, vv in info[k].items() if kk != "counts"},
         }
-    shown = [_public(r) for r in rows]
+    # the flash table: full rows for the flashes that were considered for the mix; the ones that are out of
+    # range or after the end of the clip keep only what identifies them (the report stays small)
+    shown = [
+        {k: v for k, v in _public(r).items() if k in ("id", "status", "n_sources", "t_flash_clip_s", "dist_nearest_m")}
+        if r["status"] in ("skipped_out_of_range", "outside_clip") else _public(r)
+        for r in rows
+    ]
     provenance = _provenance(b, info, scene, rows)
     report = {
         "label": LABEL,

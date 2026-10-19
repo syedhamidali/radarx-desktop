@@ -942,13 +942,13 @@ def test_radar_reflectivity_gives_the_rain_where_no_instrument_is_near(tmp_path)
     b0 = _radar_bundle(tmp_path / "dry", dbz=5.0)
     b0.stations = b.stations[:1]
     b0.stations[0].lat, b0.stations[0].lon = LAT0 + 0.3, LON0
-    out, info = wx.render_rain(scene(b0, dur=6.0, speedup=50.0), SR, 6 * SR, 3)
+    _out, info = wx.render_rain(scene(b0, dur=6.0, speedup=50.0), SR, 6 * SR, 3)
     assert info["sources"]["rain_rate"]["radar_zr"] > 0.2  # the volume is valid +-90 s of data around its time
     assert info["radar_drivers"] == []
 
 
 def test_listener_is_the_camera_ground_track_capped_in_height():
-    b, tl, camera = synthetic_scenario()
+    b, tl, _camera = synthetic_scenario()
     high = CameraPath([{"t_clip_s": 0.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0},
                        {"t_clip_s": 120.0, "lat": LAT0, "lon": LON0, "alt_m": 58000.0, "heading_deg": 0.0}])
     _, rep, _ = render_mix(b, tl, high, layers={"rain", "wind"})
