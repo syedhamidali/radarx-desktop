@@ -31,6 +31,79 @@ reached; imagery is never invented (without it the ground is a grid). A frame ta
 on an Apple M1 Pro; the first run also downloads the tiles (about 280 tiles, 5 MB), later runs use
 the cache. The sun is computed per frame from the data time and the place.
 
+## Window camera, flow, lightning and sound (phase 2)
+`--camera observer` is a camera standing on the ground (default 10 m eye height) beside the storm
+track, 10 km to its right and 4 km upwind of its middle (`--observer x,y`, `--observer-dist`,
+`--observer-upwind`, `--observer-side`, `--eye-m`, `--pan`, `--pitch` change it), looking at the
+storm like a camera on a window sill. The scene is at TRUE scale (`vexag` 1), the observer stands on
+the terrain, the radar's lowest level is carried down to the ground so rain reaches it, the compass
+strip at the top gives the heading, and an inset map shows where the camera stands, its view cone, the
+storm echo and the storm track. `--timelapse N` sets the pace (clip length = data span / N + 3 s:
+x24 gives 18 min of Mayfield in 48 s). With the terrain and imagery the parallax against the ground
+and the horizon makes the motion obvious; with the orbit camera at 100 km distance the same 20 km
+travel is small.
+
+**Time interpolation along a flow** (all cameras). `clipdata.py` retrieves multi-Doppler winds for
+every step (`--no-winds` to skip; engine/multidoppler.py, radarx) into the bundle. Between two scans
+the echo is carried by a GPU pass (`src/lib/utils/morphPass.ts`): every cell of the interpolated
+volume is traced back to the time of volume A and forward to the time of B along the velocity
+(the tracked storm translation plus the storm-relative observed wind anomaly, midpoint steps), A and B
+are read there and blended by their coverage. The mean wind of the echo at each height is removed
+(that is the translation, which the tracker measures), so what the winds add is the turning and
+shearing: a rotating wind field turns the echo. Where no wind was retrieved for an interval the
+echo is translated only and the screen says so ("carried along the storm motion only"); where it
+was, it says "carried by the storm motion and the observed Doppler wind (4-radar)". It is
+interpolation, not new observations, and it says that too. `verify_morph.py` checks the shader in a
+browser against a synthetic vortex turned by a known solid-body rotation: at s = 0.25, 0.5 and 0.75
+of the interval the echo stands within 1.1 degrees of theta0 + s * omega * dt, as one echo (a plain
+cross-fade of the two pictures has two weaker ones); `flowMorph.test.mjs` checks the same maths on
+the CPU. Limits: the retrieved winds cover about 30% of the cells (where two radars cross at a good
+angle), the interpolated echo keeps the shape of the observed ones (it is carried, not forecast),
+and the flow acts at the level of 2 km wind cells.
+
+**Long series (cyclones).** The clip loads one step at a time: only the two volumes a frame needs
+are in memory (a small LRU), every step is summarised once while it is streamed past (column maximum
+for the inset, the ice-phase volume and lightning candidates, the histogram that sets the opacity), so
+the memory of a one-hour or longer series is bounded by two volumes and the winds of two steps.
+`--orbit cyclone --view-km 330` is the orbit for a wide system; `clipdata.py --track linear` takes
+the straight line through the tracked cell positions for a steady motion (a cyclone's eye, or steps
+where radars repeat a volume); `--detail-m 1000 --crop-km 140` sizes the bundle for a few hundred km.
+The test case in the collection is Hurricane Laura (`laura`: KHGX, KLCH, KLIX, KPOE; the TDWR files
+THOU and TIAH are skipped, named once: THOU cannot be read and TIAH has unscaled site coordinates):
+it has only four time steps over 15 minutes (04:52 to 05:07 UTC), not an hour.
+
+**Lightning** (`src/lib/utils/lightning.ts`, `lightningFx.ts`). Every flash carries its source and
+the screen says which: *OBSERVED* if the bundle has lightning files (`clipdata.py --lightning FILE...`
+reads GLM L2 LCFA netCDF or LMA `.dat` files from DISK; nothing is downloaded: the GLM files
+(`OR_GLM-L2-LCFA_G16_s...nc`, GOES-16/18) must be fetched by the user, for example from NOAA's public
+GOES bucket; only the time and place of a flash are data, the channel is synthetic), otherwise
+*MODELLED from radar echo, NOT observed*. The model (`modelFlashes`) is a Poisson process, with a
+deterministic seed (`--lightning-seed`), whose rate follows the volume of strong echo (35 dBZ and
+above) above the -10 C level (`--t10-km`, default 5 km; the factor is a scale for the clip, not a
+calibrated flash-rate relation) and whose places are the strong columns of the radar volume carried
+with the storm. Flash shape: a jagged channel by midpoint displacement with forks (cloud-to-ground
+from the charge region to the terrain, intracloud as horizontal channels), 2 to 4 return strokes
+within 0.15 to 0.5 s for cloud-to-ground, a hot white core with two blur halos in additive blending,
+and light: the cloud, the ground and the sky brighten around the channel for a moment. The
+channel is drawn over the picture (a bolt behind a dense core is not hidden; the cloud around it
+lights up from inside).
+
+**Sound** (`src/lib/utils/soundscape.ts`; `--no-sound` to skip). Web Audio: an `OfflineAudioContext`
+renders wind, rain and thunder from the data, with a listener at the observer (position and heading
+from the camera) and `PannerNode`s with HRTF; `render_clip.py` muxes it as AAC into the MP4 with PyAV. The
+screen says "Synthesised from the data, not a recording". *Wind*: filtered noise whose level and
+brightness follow the wind speed at the observer: the retrieved multi-Doppler wind of the lowest
+level around the observer (x 0.65 for the ground), with gusts; if the bundle has no wind it is a
+proxy from the storm motion and the rain, labelled "not measured". *Rain*: bright noise whose level
+follows the reflectivity near the ground over the observer (20 to 55 dBZ). *Thunder*: each flash
+starts thunder that arrives after distance / 343 m/s (shortened by `--sound-compress`, default 8,
+because the clip is a time-lapse; 1 is the real physics), every segment of the channel at its own
+arrival time (this makes the rolling), louder the nearer, a lower low-pass cutoff the farther
+(3200 Hz / (1 + d / 3.5 km), floor 70 Hz), a longer tail the farther, three parts panned from where
+the channel is, and a sharp crack on top of the rumble for a strike within 4 km. No samples are used.
+`render_clip.py` prints every flash with its distance and thunder arrival, and writes them into
+`<clip>.audio.json`.
+
 ## Make a clip
 ```
 # 1. the data bundle (sidecar Python: needs the engine and radarx); the case folder is only read

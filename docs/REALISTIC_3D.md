@@ -67,29 +67,55 @@ never invented. The desktop app's content security policy lists the three tile h
 (`src-tauri/tauri.conf.json`).
 
 ## Realistic (stylised) storm
-The scientific colour scale maps dBZ to colours. The realistic look maps it to what the eye sees
-in precipitation:
+The scientific colour scale maps dBZ to colours. The realistic look maps it to what the eye sees in
+a daylight storm photograph:
 
 | reflectivity | look |
 |---|---|
-| light echo (below 25 dBZ) | thin, pale, translucent haze |
-| moderate rain (25 to 40 dBZ) | grey-white |
-| heavy cores (45 dBZ and above) | dense, dark grey |
-| strongest cores (60 dBZ and above) | a subtle warm tint |
+| light echo, high tops (below about 25 dBZ) | thin white haze and cloud |
+| moderate rain (25 to 40 dBZ) | dense, bright white cloud body |
+| heavy cores (45 dBZ and above) | darker blue-grey, translucent grey rain curtains below the base |
+| strongest cores (about 60 dBZ and above) | a faint green-grey tint only (a hail hint) |
 
-Extinction follows `Z^(1/1.4)` (opacity per **true** kilometre along the ray, so the vertical
-stretch does not make the column look denser from above), and the volume fades out softly where it
-leaves the shown box. Lighting: a sun direction, an ambient sky term that is brighter higher up,
-soft self-shadowing by a short secondary march toward the sun (a few jittered steps, fewer while
-the camera moves), a forward-scattering lobe (silver lining on back-lit edges) and a little
-multiple scattering so dense cores stay lit. The quality governor keeps the frame rate; the
-sampling noise changes every frame instead of sticking to the screen.
+There is no purple, violet or pink in the storm (a unit test checks every dBZ of every palette).
 
-**Sun**: computed from the scan time and place (NOAA solar position, `sunPosition.ts`). If the sun is
-at least 6 degrees above the horizon it is used. Otherwise the light is an artistic dusk light: a
-low (9 degrees), warm sun at the azimuth where the sun set that day, with a dusk sky. The Mayfield
-scan (11 Dec 2021, 01:50 to 02:08 UTC, about 19:50 local time) was 37 to 40 degrees below the
-horizon, so it gets the dusk light, and the screen says: *Stylised lighting, not a photograph: dusk
-light at the sunset azimuth (the real sun was 37 degrees below the horizon)*. The style is labelled
-"stylised" in the menu and on screen. It is a rendering aid, not a simulation of light in
-precipitation or an image of what an observer saw.
+How it is lit (`realisticShader.ts`): a sun with a soft self-shadow (a short secondary march) and a
+multiple-scattering floor, so shadows stay blue-grey instead of black; Henyey-Greenstein forward
+(silver lining toward the sun) and back lobes; powder darkening in dense cores (thin edges stay
+bright); a blue fill from the sky above and a green-grey bounce from the ground below; the base is
+darker than the top; sun-lit edges are crisper (shading by the slope of the echo toward the light);
+haze and aerial perspective bluish with distance; a saturated blue sky with a lighter horizon and a
+sun glow. Cloud shadows fall on the terrain.
+
+**Light.** The real sun is used when it is at least 6 degrees up. Otherwise there are two labelled
+options (`light` in the clip settings, `--light daylight|dusk`): **Daylight (assumed)**, the default
+for the realistic clip, a daytime sun at the azimuth the real sun has at 14:30 local solar time on
+that date and place, raised to 36 to 50 degrees of elevation, labelled on screen *Stylised daylight;
+the real sun was 39 degrees below the horizon at this time (not a photograph)*; and **Dusk**, a low
+warm sun at the sunset azimuth with a dusk sky. The Mayfield scan (11 Dec 2021, 01:50 to 02:08 UTC,
+about 19:50 local time) was 37 to 40 degrees below the horizon: the honest options are those two.
+`--sun-azimuth` / `--sun-elevation` choose a direction for the shot.
+
+**Stylised detail.** Four octaves of deterministic fractal noise (riding with the storm) brighten and
+darken the shading and thin the FAINT parts of the echo into wisps and billows. Opacity is only
+ever reduced, and only where it is low: it never adds echo where the radar has none and never moves
+or weakens the cores.
+
+**What radar does not see.** Radar sees precipitation-size particles (rain, graupel, hail, snow), not
+cloud droplets. The cloud above and around the echo (the anvil, the cloud base, clear-air cloud) is
+NOT observed. The realistic look draws the radar echo as if it were cloud, so its extent is the
+echo's, and the screen says so ("radar sees rain and ice, not cloud droplets: cloud look and fine
+detail are stylised, echo position and strength are radar data"). An observed alternative for a
+later version is GOES ABI cloud imagery or the cloud water of a model such as HRRR.
+
+Three variants were rendered on the same frames of the Mayfield storm and of Hurricane Laura
+(`images/storm-palettes.png`): **white** (chosen: brightest, most cloud-like), **soft** (a little
+less white) and **stormy** (grey-white body, darker cores: heavier but flatter). `palette` in the
+clip settings selects one. An earlier grey palette was judged too grey and replaced.
+
+![Three variants on the same frames: Mayfield storm and Hurricane Laura](images/storm-palettes.png)
+
+What still looks fake (honest list): the cloud is the radar's 500 m smooth field, stretched x4
+vertically, so it reads as soft vertical rain shafts and a hazy body, not as a cumulonimbus with a
+hard anvil, cauliflower tops and a defined base; the ground imagery is a summer-biased composite at
+10 m resolution that blurs at ground level; the cloud is only where the echo is.

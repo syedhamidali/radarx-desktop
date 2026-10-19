@@ -169,3 +169,32 @@ test('the shown box is fixed around the track and the camera target follows only
   const path = Math.hypot(7.8 + 9.2, 6.4 + 5.7);
   assert.ok(Math.abs(onScreen / path - 0.7) < 1e-9);
 });
+
+test('clipTimeOf is the inverse of dataTimeAt (the clip time at which a data time is shown)', async () => {
+  const { clipTimeOf, dataTimeAt } = await import('./clipCamera.ts');
+  for (const td of [0, 60, 300, 544, 1000, 1088]) {
+    const t = clipTimeOf(td, 36, 0, 1088);
+    assert.ok(Math.abs(dataTimeAt(t, 36, 0, 1088) - td) < 0.01, `td ${td}`);
+  }
+  // the holds at both ends
+  assert.ok(Math.abs(clipTimeOf(0, 36, 0, 1088) - 1.5) < 1e-6);
+  assert.ok(Math.abs(clipTimeOf(1088, 36, 0, 1088) - 34.5) < 1e-6);
+});
+
+test('the cyclone choreography scales with the scene and ends looking down on the eye', async () => {
+  const { cycloneChoreography, cameraAt } = await import('./clipCamera.ts');
+  const k = cycloneChoreography(48, 330);
+  assert.equal(k[0].t, 0);
+  assert.ok(Math.abs(k[k.length - 1].t - 48) < 1e-9);
+  assert.ok(k.every((q, i) => i === 0 || q.t > k[i - 1].t));
+  assert.ok(Math.max(...k.map((q) => q.phi)) >= 80, 'a view straight down');
+  const big = cycloneChoreography(48, 660);
+  assert.ok(Math.abs(big[2].dist / k[2].dist - 2) < 1e-9);
+  // continuous: no jump between neighbouring frames at 30 fps
+  let prev = cameraAt(k, 0);
+  for (let t = 1 / 30; t <= 48; t += 1 / 30) {
+    const c = cameraAt(k, t);
+    assert.ok(Math.abs(c.theta - prev.theta) < 2.5 && Math.abs(c.phi - prev.phi) < 2 && Math.abs(c.dist - prev.dist) < 15, `jump at ${t}`);
+    prev = c;
+  }
+});

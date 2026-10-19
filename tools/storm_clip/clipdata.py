@@ -14,7 +14,9 @@ For several time steps of N radars it
    merged volumes, the storm track and the radar sites into a bundle directory that the renderer
    (``render_clip.py``) loads in the app's 3-D viewer.
 
-Nothing is written next to the radar files; no wind is retrieved.
+Optionally (on by default, ``--no-winds`` to skip) it also retrieves multi-Doppler winds for every
+step (clipwinds.py) and reads observed lightning files given with ``--lightning`` (lightning_obs.py;
+nothing is downloaded). Nothing is written next to the radar files.
 """
 
 from __future__ import annotations
@@ -268,6 +270,31 @@ def track_storm(
     return best
 
 
+def linear_track(track: list[Cell], times_s: list[float]) -> list[Cell]:
+    """The track replaced by its least-squares straight line in time (a steady motion).
+
+    For a storm that moves steadily and whose "cell" jumps about (a tropical cyclone whose eyewall
+    arcs are found and lost, or radars whose volumes repeat between steps) the fitted line is the
+    better motion; for a storm that accelerates or turns, keep the cell track (the default).
+    """
+    if len(track) < 2:
+        return track
+    t = np.asarray(times_s, dtype=float)
+    fx = np.polyfit(t, [c.x_km for c in track], 1)
+    fy = np.polyfit(t, [c.y_km for c in track], 1)
+    return [
+        Cell(
+            float(np.polyval(fx, ti)),
+            float(np.polyval(fy, ti)),
+            c.max_dbz,
+            c.area_km2,
+            c.top_km,
+            c.score,
+        )
+        for c, ti in zip(track, t, strict=True)
+    ]
+
+
 def storm_motion(
     track_xy_km: list[tuple[float, float]], times_s: list[float]
 ) -> tuple[float, float]:
@@ -295,6 +322,10 @@ def box_around(
 # ---------------------------------------------------------------------------
 
 
+# Radars whose files the engine cannot read (for example the TDWR "V08" files): named once, skipped.
+UNREADABLE: set[str] = set()
+
+
 def _open(path: Path):
     from engine.reader import RadarReader
 
@@ -303,13 +334,48 @@ def _open(path: Path):
     return reader
 
 
+def _open_valid(path: Path):
+    """Open a volume and check that it is usable (complete sweeps, a sane site position)."""
+    reader = _open(path)
+    tree = getattr(reader, "datatree", None)
+    if tree is not None:
+        if not any(k.startswith("sweep_") for k in tree.children):
+            raise ValueError("no complete sweeps in the file")
+        root = tree.root.to_dataset()
+        if "latitude" in root and "longitude" in root:
+            lat = float(np.asarray(root["latitude"].values).ravel()[0])
+            lon = float(np.asarray(root["longitude"].values).ravel()[0])
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                raise ValueError(
+                    f"site position {lat:g}, {lon:g} is out of range "
+                    "(a TDWR file with unscaled coordinates)"
+                )
+    return reader
+
+
+def open_readable(files: dict[str, Path], opener=None) -> list[tuple[str, Any]]:
+    """Open the radars' files; a radar whose file cannot be used is skipped (and named once)."""
+    opener = opener or _open_valid
+    readers = []
+    for radar, path in sorted(files.items()):
+        if radar in UNREADABLE:
+            continue
+        try:
+            readers.append((radar, opener(path)))
+        except ValueError as exc:
+            UNREADABLE.add(radar)
+            print(f"    skipping {radar}: {str(exc)[:110]}")
+    return readers
+
+
 def _mosaic(step: Step, grid: dict[str, Any], keep_volume: bool = True):
     from engine import mosaic
 
-    readers = []
+    readers: list = []
     try:
-        for radar, (path, _off) in sorted(step.files.items()):
-            readers.append((radar, _open(path)))
+        readers = open_readable({r: p for r, (p, _off) in step.files.items()})
+        if len(readers) < 2:
+            raise ValueError("fewer than two readable radars in this time step")
         return mosaic.build_mosaic(
             readers,
             "DBZH",
@@ -334,9 +400,18 @@ def build_bundle(
     crop_half_km: float = 60.0,
     z_max_m: float = 16000.0,
     coarse_m: float = 2000.0,
+    winds: bool = True,
+    wind_dx_m: float = 2000.0,
+    lightning_files: list[str] | None = None,
+    track_mode: str = "cells",
     log=print,
 ) -> dict[str, Any]:
-    """Build the data bundle in ``out`` and return its manifest."""
+    """Build the data bundle in ``out`` and return its manifest.
+
+    ``winds``: also retrieve multi-Doppler winds for every step (clipwinds.py) so the clip can carry
+    the echo along the observed flow; a step without winds is translated only. ``lightning_files``:
+    GLM netCDF or LMA .dat files read from disk (lightning_obs.py), never downloaded here.
+    """
     from engine import mosaic
 
     out.mkdir(parents=True, exist_ok=True)
@@ -380,6 +455,9 @@ def build_bundle(
             )
         )
     track = track_storm(cells_per_step, times_s)
+    if track_mode == "linear":
+        track = linear_track(track, times_s)
+        log("storm track: least-squares straight line through the cell positions")
     assert coarse_geo is not None
     proj0 = mosaic._aeqd(*coarse_geo)
     track_lonlat = [proj0(c.x_km * 1000.0, c.y_km * 1000.0, inverse=True) for c in track]
@@ -405,6 +483,7 @@ def build_bundle(
     manifest_steps = []
     origin = None
     sites: list[dict[str, Any]] = []
+    motion0 = storm_motion([(x / 1000.0, y / 1000.0) for x, y in track_c], times_s)
     for i, step in enumerate(steps):
         log(f"[{i + 1}/{len(steps)}] detail mosaic at {detail_m:g} m")
         rec = _mosaic(step, grid)
@@ -414,6 +493,30 @@ def build_bundle(
         (out / f"{stem}.bin").write_bytes(np.ascontiguousarray(vol).tobytes())
         origin = rec.origin
         sites = header["radars"]
+        wind_files = None
+        if winds:
+            from clipwinds import retrieve_step_winds
+
+            g = header["grid"]
+            extent_km = (
+                g["x0"] / 1000.0,
+                g["y0"] / 1000.0,
+                (g["x0"] + (g["nx"] - 1) * g["cell_m"]) / 1000.0,
+                (g["y0"] + (g["ny"] - 1) * g["cell_m"]) / 1000.0,
+            )
+            got = retrieve_step_winds(
+                {r: p for r, (p, _o) in step.files.items()},
+                (origin[0], origin[1]),
+                extent_km,
+                motion0,
+                _open_valid,
+                dx_m=wind_dx_m,
+                log=log,
+            )
+            if got is not None:
+                (out / f"wind_{i}.json").write_text(json.dumps(got[0]))
+                (out / f"wind_{i}.bin").write_bytes(got[1])
+                wind_files = {"header": f"wind_{i}.json", "bin": f"wind_{i}.bin"}
         manifest_steps.append(
             {
                 "index": i,
@@ -423,6 +526,7 @@ def build_bundle(
                     r: {"name": p.name, "offset_s": off} for r, (p, off) in step.files.items()
                 },
                 "mosaic": {"header": f"{stem}.json", "bin": f"{stem}.bin"},
+                "wind": wind_files,
                 "storm": {
                     "max_dbz": track[i].max_dbz,
                     "area_km2": track[i].area_km2,
@@ -458,6 +562,23 @@ def build_bundle(
         },
         "sites": sites,
     }
+    if lightning_files:
+        from lightning_obs import read_flashes, to_bundle
+
+        kind, flashes = read_flashes(lightning_files)
+        recs = to_bundle(
+            flashes,
+            steps[0].time,
+            steps[-1].time,
+            lambda lon, lat: tuple(v / 1000.0 for v in proj_f(lon, lat)),
+        )
+        manifest["lightning"] = {
+            "source": "observed",
+            "kind": kind.upper(),
+            "file": ", ".join(Path(f).name for f in lightning_files),
+            "flashes": recs,
+        }
+        log(f"observed lightning ({kind.upper()}): {len(recs)} flashes in the clip window")
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     log(
         f"storm motion {math.hypot(u, v):.1f} m/s toward {manifest['storm']['heading_deg']:.0f} deg"
@@ -503,6 +624,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--detail-m", type=float, default=500.0, help="fine mosaic resolution (m)")
     ap.add_argument(
+        "--no-winds",
+        action="store_true",
+        help="do not retrieve multi-Doppler winds (the clip then translates the echo only)",
+    )
+    ap.add_argument("--wind-dx-m", type=float, default=2000.0, help="wind grid spacing (m)")
+    ap.add_argument(
+        "--track",
+        default="cells",
+        choices=["cells", "linear"],
+        help="storm track: the tracked cell positions (default) or their least-squares straight line "
+        "(steady motion: tropical cyclones, steps whose volumes repeat)",
+    )
+    ap.add_argument(
+        "--lightning",
+        nargs="+",
+        default=None,
+        metavar="FILE",
+        help="observed lightning files read from disk: GLM L2 .nc or LMA .dat (never downloaded)",
+    )
+    ap.add_argument(
         "--crop-km",
         type=float,
         default=60.0,
@@ -513,7 +654,18 @@ def main(argv: list[str] | None = None) -> int:
     out = a.out.expanduser().resolve()
     if case in out.parents or out == case:
         ap.error("--out must not be inside the radar case folder")
-    build_bundle(case, out, a.steps, a.reference, a.detail_m, a.crop_km)
+    build_bundle(
+        case,
+        out,
+        a.steps,
+        a.reference,
+        a.detail_m,
+        a.crop_km,
+        winds=not a.no_winds,
+        wind_dx_m=a.wind_dx_m,
+        lightning_files=a.lightning,
+        track_mode=a.track,
+    )
     print(f"bundle written to {out}")
     return 0
 

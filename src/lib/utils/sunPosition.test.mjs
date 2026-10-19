@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sunPosition, sunsetAzimuth, sunLight, sunVector, julianDay, REAL_SUN_MIN_ELEVATION, DUSK_ELEVATION,
+  daylightAssumed, DAYLIGHT_MIN_ELEVATION, DAYLIGHT_MAX_ELEVATION,
 } from './sunPosition.ts';
 
 test('julian day of J2000', () => {
@@ -65,4 +66,22 @@ test('light vector: unit length, heights stretched like the scene', () => {
   // undoing the stretch gives the true elevation back
   const el = (Math.atan2(s[2] / 4, Math.hypot(s[0], s[1])) * 180) / Math.PI;
   assert.ok(Math.abs(el - 30) < 1e-9);
+});
+
+test('assumed daylight: the afternoon azimuth of that date and place, elevation raised into 36-50 degrees, labelled', () => {
+  const night = new Date(Date.UTC(2021, 11, 11, 1, 50, 0));
+  const d = daylightAssumed(night, 36.15, -89.9);
+  assert.equal(d.stylised, true);
+  assert.equal(d.daylightAssumed, true);
+  assert.ok(d.elevationDeg >= DAYLIGHT_MIN_ELEVATION && d.elevationDeg <= DAYLIGHT_MAX_ELEVATION);
+  // a December afternoon sun at 36 N is in the south-west
+  assert.ok(d.azimuthDeg > 200 && d.azimuthDeg < 245, `azimuth ${d.azimuthDeg}`);
+  assert.ok(d.realElevationDeg < -30, 'the label says what the real sun did');
+  assert.match(d.label, /stylised daylight; the real sun was below the horizon at this time/);
+  // a summer afternoon is higher than the minimum and stays below the maximum
+  const summer = daylightAssumed(new Date(Date.UTC(2021, 5, 21, 3, 0, 0)), 36.15, -89.9);
+  assert.ok(summer.elevationDeg <= DAYLIGHT_MAX_ELEVATION);
+  // the same date gives the same light whatever the hour of the scan
+  const later = daylightAssumed(new Date(Date.UTC(2021, 11, 11, 2, 8, 0)), 36.15, -89.9);
+  assert.equal(later.azimuthDeg, d.azimuthDeg);
 });

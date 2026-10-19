@@ -107,6 +107,18 @@ export function dataTimeAt(t: number, duration: number, t0: number, t1: number, 
   return t0 + (t1 - t0) * e;
 }
 
+/** The clip time (s) at which data time `td` (s) is shown (inverse of `dataTimeAt`). */
+export function clipTimeOf(td: number, duration: number, t0: number, t1: number, hold = 1.5): number {
+  const target = Math.max(0, Math.min(1, (td - t0) / Math.max(1e-9, t1 - t0)));
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 40; i++) {
+    const m = (lo + hi) / 2;
+    const e = m * m * (3 - 2 * m) * 0.35 + m * 0.65;
+    if (e < target) lo = m; else hi = m;
+  }
+  return hold + ((lo + hi) / 2) * Math.max(1e-9, duration - 2 * hold);
+}
+
 /** Interval of the observed times `ts` that contains `t` and the position `s` in [0, 1] inside it. */
 export function locate(ts: number[], t: number): { i: number; s: number } {
   if (ts.length < 2) return { i: 0, s: 0 };
@@ -193,4 +205,23 @@ export function trackFrame(track: { x: number; y: number }[], baseHalf: number):
 
 export function lagTarget(anchor: [number, number], storm: [number, number], lag: number): [number, number] {
   return [anchor[0] + lag * (storm[0] - anchor[0]), anchor[1] + lag * (storm[1] - anchor[1])];
+}
+
+/**
+ * Camera for a tropical cyclone or any large, slowly turning system (a scene a few hundred km wide):
+ * a wide oblique view, a slow orbit that comes lower over the eyewall, and a high look straight down
+ * on the eye, where the rotation reads best. `viewKm` is the size of the scene (the distances scale
+ * with it).
+ */
+export function cycloneChoreography(duration = 48, viewKm = 330, altKm = 3): CamKey[] {
+  const f = duration / 36;
+  const k = (t: number, theta: number, phi: number, dist: number, dz: number): CamKey => ({ t: t * f, theta, phi, dist, dx: 0, dy: 0, dz });
+  return [
+    k(0, 200, 30, viewKm * 1.15, altKm),
+    k(8, 235, 24, viewKm * 0.95, altKm),
+    k(17, 305, 20, viewKm * 0.72, altKm * 1.5),
+    k(25, 365, 34, viewKm * 0.85, altKm),
+    k(31, 400, 84, viewKm * 1.2, 0),
+    k(36, 380, 60, viewKm * 1.3, altKm),
+  ];
 }

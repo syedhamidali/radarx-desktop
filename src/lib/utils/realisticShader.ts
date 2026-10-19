@@ -11,7 +11,7 @@
 
 export const REALISTIC_UNIFORM_NAMES = [
   'u_dem', 'u_terrOn', 'u_terrZ', 'u_demTexel', 'u_style', 'u_sunDir', 'u_sunCol', 'u_skyCol',
-  'u_horizonCol', 'u_zenithCol', 'u_sunSteps', 'u_fog', 'u_exposure', 'u_groundGain', 'u_seed',
+  'u_horizonCol', 'u_zenithCol', 'u_sunSteps', 'u_fog', 'u_exposure', 'u_groundGain', 'u_seed', 'u_flashP', 'u_flashN', 'u_flashCol', 'u_flashSky', 'u_noiseOff', 'u_noiseAmt', 'u_glowCol', 'u_bounceCol', 'u_sunGain', 'u_skyGain',
 ] as const;
 
 export const GLSL_REALISTIC_UNIFORMS = `
@@ -29,6 +29,16 @@ export const GLSL_REALISTIC_UNIFORMS = `
     uniform float u_fog;              // haze per km
     uniform float u_exposure;
     uniform float u_groundGain;       // brightness of the imagery
+    uniform vec4  u_flashP[4];        // lightning: scene position (km) and strength of up to four light points
+    uniform int   u_flashN;
+    uniform vec3  u_flashCol;
+    uniform vec3  u_bounceCol;        // light bounced up from the ground
+    uniform float u_sunGain;
+    uniform float u_skyGain;
+    uniform vec3  u_glowCol;          // warm colour near the horizon in the light's direction only
+    uniform float u_flashSky;         // the flash light that reaches the sky and the haze
+    uniform vec3  u_noiseOff;         // km: the storm's translation since the start, so the cloud texture rides with the storm
+    uniform float u_noiseAmt;         // 0 = smooth, 1 = billowy cloud texture (stylised)
     uniform float u_seed;             // changes every frame: the sampling noise does not stick to the screen
 `;
 
@@ -99,6 +109,78 @@ export const GLSL_REALISTIC = `
       return false;
     }
 
+    // light thrown by lightning at a position: points along the channel, about 6 km reach
+    vec3 flashLight(vec3 pos) {
+      vec3 acc = vec3(0.0);
+      for (int i = 0; i < 4; i++) {
+        if (i >= u_flashN) break;
+        vec3 d = pos - u_flashP[i].xyz;
+        d.z /= max(u_vexag, 1e-3);
+        acc += u_flashCol * u_flashP[i].w / (1.0 + dot(d, d) / 36.0);
+      }
+      return acc;
+    }
+
+    // haze: a bluish neutral, warm only toward the light
+    vec3 hazeColor(vec3 d) {
+      float glow = pow(max(dot(normalize(d.xy + 1e-5), normalize(u_sunDir.xy + 1e-5)), 0.0), 4.0);
+      return u_horizonCol + u_glowCol * (0.42 * glow) + u_flashCol * u_flashSky * 0.3;
+    }
+
+    float vnoise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      float a = fract(sin(dot(i, vec2(12.9898, 78.233))) * 43758.5453);
+      float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(12.9898, 78.233))) * 43758.5453);
+      float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(12.9898, 78.233))) * 43758.5453);
+      float e = fract(sin(dot(i + vec2(1.0, 1.0), vec2(12.9898, 78.233))) * 43758.5453);
+      return mix(mix(a, b, u.x), mix(c, e, u.x), u.y);
+    }
+
+    float vnoise3(vec3 p) {
+      vec3 i = floor(p);
+      vec3 f = fract(p);
+      vec3 u = f * f * (3.0 - 2.0 * f);
+      float n000 = fract(sin(dot(i, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n100 = fract(sin(dot(i + vec3(1.0, 0.0, 0.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n010 = fract(sin(dot(i + vec3(0.0, 1.0, 0.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n110 = fract(sin(dot(i + vec3(1.0, 1.0, 0.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n001 = fract(sin(dot(i + vec3(0.0, 0.0, 1.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n101 = fract(sin(dot(i + vec3(1.0, 0.0, 1.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n011 = fract(sin(dot(i + vec3(0.0, 1.0, 1.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      float n111 = fract(sin(dot(i + vec3(1.0, 1.0, 1.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+      return mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y), mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+    }
+
+    // Fractal (four octave) detail in the storm's own frame (true km, deterministic, riding with the
+    // storm). detailShade scales the brightness; erodeOpacity thins the faint parts of the echo into
+    // wisps and billows and leaves dense echo whole. Neither adds echo where the radar has none
+    // (opacity is only ever reduced, and only where it is low) nor moves the cores.
+    float fbm(vec3 q) {
+      float n = 0.5 * vnoise3(q);
+      n += 0.25 * vnoise3(q * 2.07 + 5.3);
+      n += 0.125 * vnoise3(q * 4.19 + 11.7);
+      n += 0.0625 * vnoise3(q * 8.3 + 2.9);
+      return n / 0.9375;
+    }
+    vec3 detailCoord(vec3 pos) {
+      return vec3(pos.xy - u_noiseOff.xy, pos.z / max(u_vexag, 1e-3));
+    }
+    float detailShade(vec3 pos) {
+      if (u_noiseAmt <= 0.0) return 1.0;
+      vec3 q = detailCoord(pos);
+      float n = fbm(vec3(q.xy * 1.5, q.z * 0.7));
+      return 1.0 + u_noiseAmt * 0.8 * (n - 0.5);
+    }
+    float erodeOpacity(vec3 pos, float a0) {
+      if (u_noiseAmt <= 0.0) return 1.0;
+      vec3 q = detailCoord(pos);
+      float n = fbm(vec3(q.xy * 0.7, q.z * 0.35) + 17.0);
+      float thin = 1.0 - smoothstep(0.12, 0.55, a0);          // 1 where the echo is faint
+      return 1.0 - u_noiseAmt * thin * (1.0 - smoothstep(0.3, 0.7, n)) * 0.85;
+    }
+
     // Optical depth of the cloud from p toward the light (a few jittered steps over len scene km).
     float sunTau(vec3 p, float len, int n, float jit) {
       float tau = 0.0;
@@ -118,30 +200,45 @@ export const GLSL_REALISTIC = `
       return tau;
     }
 
-    // Light of a cloud sample: ambient sky (brighter higher up), sun with soft self-shadow, a forward
-    // scattering lobe (silver lining on back-lit edges) and a little multiple scattering in cores.
-    vec3 cloudLight(vec3 pos, vec3 d, vec3 alb, float jit) {
-      float tau = 0.0;
-      if (u_sunSteps > 0) tau = sunTau(pos, 26.0, u_sunSteps, 0.25 + 0.5 * jit);
-      float T = exp(-tau);
-      float fwd = pow(max(dot(d, u_sunDir), 0.0), 4.0);
-      float phase = 0.55 + 1.5 * fwd;
-      float hz = clamp(pos.z / max(u_boxMax.z, 1.0), 0.0, 1.0);
-      vec3 amb = u_skyCol * (0.5 + 0.55 * hz);
-      vec3 lit = amb + u_sunCol * (T * phase * 0.85 + 0.11 * pow(T, 0.3));
-      return toneMap(alb * lit * u_exposure);
+    float hg(float c, float g) {
+      float g2 = g * g;
+      return (1.0 - g2) / (4.0 * 3.14159265 * pow(1.0 + g2 - 2.0 * g * c, 1.5));
     }
 
-    vec3 hazeColor(vec3 d) {
-      float glow = pow(max(dot(normalize(d.xy + 1e-5), normalize(u_sunDir.xy + 1e-5)), 0.0), 3.0);
-      return u_horizonCol * (0.82 + 0.32 * glow);
+    // Light of a cloud sample (dusk and daylight): sun with soft self-shadow and a multiple-scattering
+    // floor (shadows stay blue-grey, not black), Henyey-Greenstein forward and back lobes (silver
+    // lining toward the sun, bright body away from it), powder darkening in dense cores, a blue fill
+    // from the sky above and a green-grey bounce from the ground below. a0 = opacity of the step.
+    vec3 cloudLight(vec3 pos, vec3 d, vec3 alb, float a0, float jit, float dist) {
+      float tau = 0.0;
+      if (u_sunSteps > 0) tau = sunTau(pos, 26.0, u_sunSteps, 0.25 + 0.5 * jit);
+      // multiple scattering keeps a fraction of the light inside dense cloud
+      float T = max(exp(-tau * 0.3), 0.6 * exp(-0.07 * tau));
+      float cs = dot(d, u_sunDir);
+      float phase = 0.8 + 4.0 * mix(hg(cs, 0.62), hg(cs, -0.25), 0.4);
+      float hz = clamp(pos.z / max(u_boxMax.z, 1.0), 0.0, 1.0);
+      // powder: thin cloud edges are not darkened, dense cores are
+      float powder = 1.0 - 0.55 * smoothstep(0.1, 0.7, a0) * (1.0 - exp(-tau * 0.6));
+      vec3 sun = u_sunCol * u_sunGain * T * phase * powder;
+      vec3 sky = u_skyCol * u_skyGain * (0.34 + 0.66 * hz);
+      vec3 bounce = u_bounceCol * (1.0 - hz) * 0.5;
+      vec3 fl = u_flashN > 0 ? flashLight(pos) : vec3(0.0);
+      vec3 lit = sun + sky + bounce + fl * 1.8;
+      // the underside and the base are in the shade of the cloud above: blue-grey
+      float base = 0.78 + 0.22 * smoothstep(0.0, 0.5, hz);
+      vec3 col = toneMap(alb * lit * u_exposure * base + fl * 0.22);
+      // aerial perspective: far cloud takes the colour of the haze
+      return mix(col, hazeColor(d), 0.9 * (1.0 - exp(-dist * u_fog)));
     }
 
     vec3 skyColor(vec3 d) {
       float h = d.z;
-      vec3 col = mix(u_horizonCol, u_zenithCol, pow(clamp(h, 0.0, 1.0), 0.45));
+      vec3 col = mix(u_horizonCol, u_zenithCol, pow(clamp(h, 0.0, 1.0), 0.45)) + u_flashCol * u_flashSky * (0.35 + 0.65 * clamp(h, 0.0, 1.0));
       float s = max(dot(normalize(vec3(d.xy, 1e-4)), normalize(vec3(u_sunDir.xy, 1e-4))), 0.0);
-      col += u_sunCol * 0.3 * pow(s, 6.0) * exp(-5.0 * max(h, 0.0));
+      col += u_glowCol * 0.5 * pow(s, 3.0) * exp(-6.0 * max(h, 0.0));
+      // the sun itself: a soft bright disc glow
+      float sd = max(dot(d, u_sunDir), 0.0);
+      col += u_sunCol * (0.5 * pow(sd, 90.0) + 0.12 * pow(sd, 12.0));
       if (h < 0.0) col = hazeColor(d);   // the haze the ground fades into
       return col;
     }
@@ -151,7 +248,7 @@ export const GLSL_REALISTIC = `
     vec3 terrainColor(vec3 gp, float t, vec3 d, float jit) {
       vec2 uv = demUv(gp.xy);
       float pixAng = 2.0 * u_tanHalfFovY / u_resolution.y;
-      float foot = t * pixAng / max(0.05, abs(d.z));
+      float foot = t * pixAng / max(0.22, abs(d.z));   // grazing views: the filter (anisotropic) does the rest
       float lod = log2(max(1.0, foot / (2.0 * u_groundHalf / u_groundSize)));
       vec2 q = abs(gp.xy - u_groundCenter);
       float outside = max(max(q.x, q.y) - u_groundHalf, 0.0);
@@ -170,7 +267,13 @@ export const GLSL_REALISTIC = `
       relief = mix(relief, 1.0, smoothstep(0.0, 10.0, outside));
       float sh = 1.0;
       if (u_sunSteps > 0) sh = exp(-sunTau(gp + n * 0.05, 90.0, 24, jit) * 0.8);
-      vec3 lit = u_skyCol * 0.6 + u_sunCol * (0.62 * relief * sh);
+      vec3 lit = u_skyCol * 0.6 + u_sunCol * (0.62 * relief * sh) + (u_flashN > 0 ? flashLight(gp) * 0.9 : vec3(0.0));
+      // close to the eye the 55 m imagery would be a blur: add fine, low-contrast texture
+      float near = 1.0 - smoothstep(1.0, 12.0, t);
+      if (near > 0.0) {
+        float dn = 0.6 * vnoise(gp.xy * 40.0) + 0.4 * vnoise(gp.xy * 9.0);
+        alb *= 1.0 + 0.5 * near * (dn - 0.5);
+      }
       vec3 col = toneMap(alb * u_groundGain * lit * u_exposure);
       float haze = 1.0 - exp(-t * u_fog);
       haze = max(haze, smoothstep(10.0, 130.0, outside));

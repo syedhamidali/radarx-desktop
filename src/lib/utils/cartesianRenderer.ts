@@ -30,6 +30,7 @@ import {
 import { GLSL_HASH, GLSL_THRESHOLD, glslGroundColor } from './volumeShaderParts';
 import { GLSL_REALISTIC, GLSL_REALISTIC_UNIFORMS, REALISTIC_UNIFORM_NAMES } from './realisticShader';
 import { lightVector, lookFor, type RealisticLook } from './realisticStyle';
+import { MorphPass, type FlowTex } from './morphPass';
 import { buildArrowMesh } from './windGlyphs';
 import { FlowLayer, type FlowParams } from './flowRenderer';
 import { activeParticles, type FlowField } from './windFlow.ts';
@@ -101,6 +102,7 @@ function volumeFrag(): string {
     uniform vec3  u_wDims;
     uniform vec2  u_wOffset;       // wind frame -> scene frame
     uniform float u_vexag;
+    uniform int   u_extendDown;    // first-person views: the lowest level is repeated down to the ground
 ${GLSL_REALISTIC_UNIFORMS}
     out vec4 fragColor;
 
@@ -108,6 +110,7 @@ ${GLSL_REALISTIC_UNIFORMS}
     // with data (fades at the edges of the echo instead of cutting off).
     bool sampleTex(highp sampler3D tex, vec3 pos, out float val, out float cov) {
       vec3 uvw = (pos - u_boxMin) / (u_boxMax - u_boxMin);
+      if (u_extendDown != 0 && uvw.z < 0.0 && pos.z > -2.0) uvw.z = 0.0;
       val = 0.0; cov = 0.0;
       if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return false;
       vec2 rg = texture(tex, uvw).rg;
@@ -185,7 +188,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
       float t0 = 0.0;
       float t1 = 1e9;
       bool  hit = u_hasVol != 0;
-      vec3 bmin = vec3(u_boxMin.xy, max(u_boxMin.z, 0.0));
+      vec3 bmin = vec3(u_boxMin.xy, u_extendDown != 0 ? -1.0 : max(u_boxMin.z, 0.0));
       vec3 bmax = u_boxMax;
       bmin.xy = max(bmin.xy, u_cropMin);
       bmax.xy = min(bmax.xy, u_cropMax);
@@ -249,7 +252,24 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
 
           vec3 rgb = tf.rgb;
           if (u_style == 1) {
-            rgb = cloudLight(pos, rayDir, tf.rgb, whiteNoise(gl_FragCoord.xy + float(i) * 3.7));
+            a0 *= erodeOpacity(pos, a0);
+            rgb = cloudLight(pos, rayDir, tf.rgb, a0, whiteNoise(gl_FragCoord.xy + float(i) * 3.7), t);
+            // crisper edges: shade by the slope of the echo toward the light (three extra samples)
+            if (a0 > 0.01) {
+              float e1 = 0.45;
+              float fx, cx, fy, cy, fz, cz;
+              bool kx = sampleAdvected(pos + vec3(e1, 0.0, 0.0), fx, cx);
+              bool ky = sampleAdvected(pos + vec3(0.0, e1, 0.0), fy, cy);
+              bool kz = sampleAdvected(pos + vec3(0.0, 0.0, e1), fz, cz);
+              vec3 gr = vec3(kx ? fx : 0.0, ky ? fy : 0.0, kz ? fz : 0.0) - vec3(val);
+              float gm = length(gr);
+              if (gm > 0.01) {
+                vec3 nrm = -gr / gm;
+                float dif = max(dot(nrm, u_sunDir), 0.0);
+                rgb *= mix(1.0, 0.7 + 0.6 * dif, smoothstep(0.01, 0.08, gm) * 0.8);
+              }
+            }
+            rgb *= detailShade(pos);
           } else if (u_light != 0 && a0 > 0.02) {
             float e = max(0.6, stepEff * 0.8);
             float gv[6];
@@ -508,6 +528,24 @@ export class CartesianRenderer {
   private groundTex: WebGLTexture | null = null;
   private demTex: WebGLTexture | null = null;
   private frameSeed = 0;
+  private fpMode = false;
+  private flashPts: Float32Array = new Float32Array(16);
+  private flashN = 0;
+  private noiseOff: [number, number, number] = [0, 0, 0];
+  private noiseAmt = 0;
+  private flashSky = 0;
+  private flashCol: [number, number, number] = [0.75, 0.82, 1];
+  // GPU time interpolation along a flow (clip export): see morphPass.ts
+  private morphPass: MorphPass | null = null;
+  private passOn = false;
+  private passOut: WebGLTexture | null = null;
+  private texDims: [number, number, number] = [0, 0, 0];
+  private flowA: FlowTex | null = null;
+  private flowB: FlowTex | null = null;
+  private morphDt = 1;
+  private morphTrack: [number, number] = [0, 0];
+  private morphFlowOffset: [number, number] = [0, 0];
+  private extendDown = false;
   /** Terrain height field (km ASL) over the ground image's square, or null (flat ground). */
   private terrain: { size: number; heightsKm: Float32Array; minKm: number; maxKm: number; half: number; center: [number, number] } | null = null;
   /** Realistic storm look (light, sky, haze); null = the scientific colour scale. */
@@ -726,7 +764,7 @@ export class CartesianRenderer {
       'u_groundMode', 'u_groundSize', 'u_groundHalf', 'u_ringStep', 'u_light', 'u_themeLight',
       'u_volumeB', 'u_morphOn', 'u_morphW', 'u_shiftA', 'u_shiftB', 'u_cropMin', 'u_cropMax', 'u_groundCenter', 'u_mapGain',
       'u_animOn', 'u_animAmp', 'u_animT', 'u_animPhase', 'u_windTex', 'u_wOrigin', 'u_wCell', 'u_wDims', 'u_wOffset', 'u_vexag',
-      ...REALISTIC_UNIFORM_NAMES,
+      'u_extendDown', ...REALISTIC_UNIFORM_NAMES,
     ]) this.vu[n] = gl.getUniformLocation(this.volProg, n);
     this.au = {};
     for (const n of [
@@ -1024,6 +1062,44 @@ export class CartesianRenderer {
     this.markDirty();
   }
 
+  /**
+   * Interpolate the pair of volumes along a flow on the GPU (see morphPass.ts) instead of the uniform
+   * shift of `setMorph`. `dtSec` = seconds from A to B; `trackKmS` = storm translation (km/s);
+   * `flowOffsetKm` = shift of the flow's frame to the volume frame. Call `setMorph` for the position s.
+   */
+  setMorphMotion(dtSec: number, trackKmS: [number, number], flowOffsetKm: [number, number] = [0, 0]): void {
+    this.passOn = true;
+    this.morphDt = dtSec;
+    this.morphTrack = trackKmS;
+    this.morphFlowOffset = flowOffsetKm;
+  }
+
+  /** Storm-relative flow fields (u, v anomalies in m/s with a confidence) at the times of A and B; null = translation only. */
+  setMorphFlow(
+    a: { data: Float32Array; nx: number; ny: number; nz: number; origin: [number, number, number]; cell: [number, number, number] } | null,
+    b: { data: Float32Array; nx: number; ny: number; nz: number; origin: [number, number, number]; cell: [number, number, number] } | null,
+  ): void {
+    if (this.lost) return;
+    if (!this.morphPass) this.morphPass = new MorphPass(this.gl);
+    this.morphPass.deleteFlow(this.flowA);
+    this.morphPass.deleteFlow(this.flowB);
+    this.flowA = a ? this.morphPass.uploadFlow(a.data, a.nx, a.ny, a.nz, a.origin, a.cell) : null;
+    this.flowB = b ? this.morphPass.uploadFlow(b.data, b.nx, b.ny, b.nz, b.origin, b.cell) : null;
+  }
+
+  /** The interpolated volume of this frame (called by `exportRender`). */
+  private runMorph(): void {
+    if (!this.passOn || !this.volTex || !this.volTexB || !this.volBox || this.lost) { this.passOut = null; return; }
+    if (!this.morphPass) this.morphPass = new MorphPass(this.gl);
+    const vb = this.volBox;
+    this.passOut = this.morphPass.run(
+      this.volTex, this.volTexB, this.texDims,
+      { min: [vb.xMin, vb.yMin, vb.zMin], max: [vb.xMax, vb.yMax, vb.zMax] },
+      { s: this.morphW, dt: this.morphDt, track: this.morphTrack, flowOffset: this.morphFlowOffset },
+      this.flowA, this.flowB,
+    );
+  }
+
   /** Brightness of the ground map on a dark scene (1.5 suits the dark-restyled tiles). */
   setMapGain(g: number): void {
     this.mapGain = g;
@@ -1056,6 +1132,7 @@ export class CartesianRenderer {
       interp: 2, texBudgetMB: 64, weight: 1, relCost: 1,
     };
     this.lastAnimT = 0;
+    this.runMorph();
     if (!this.beginFrame(q, w, h)) return;
     this.useCache = false;
     this.capture = false;
@@ -1064,6 +1141,56 @@ export class CartesianRenderer {
     gl.disable(gl.SCISSOR_TEST);
     this.drawBand(0, h, w, h);
     gl.finish();
+  }
+
+  /**
+   * A first-person frame (an observer standing in the scene): eye position (scene units, z already
+   * exaggerated), yaw (degrees clockwise from north) and pitch (degrees above the horizon, up to
+   * about 80). The lowest radar level is repeated down to the ground, so rain reaches the terrain.
+   */
+  exportRenderFP(eye: Vec3, yawDeg: number, pitchDeg: number): void {
+    const yaw = (yawDeg * Math.PI) / 180;
+    const pit = (pitchDeg * Math.PI) / 180;
+    const fwd: Vec3 = [Math.sin(yaw) * Math.cos(pit), Math.cos(yaw) * Math.cos(pit), Math.sin(pit)];
+    const dist = 1;
+    const target: Vec3 = [eye[0] + fwd[0] * dist, eye[1] + fwd[1] * dist, eye[2] + fwd[2] * dist];
+    // the orbit pose that puts the eye at `eye` looking along `fwd`
+    const theta = (Math.atan2(-fwd[0], -fwd[1]) * 180) / Math.PI;
+    this.fpMode = true;
+    this.extendDown = true;
+    try {
+      this.exportRender({ theta, phi: -pitchDeg, dist, target });
+    } finally {
+      this.fpMode = false;
+    }
+  }
+
+  /**
+   * Lightning light for the next frames: up to four light points (scene km, z exaggerated, strength) and
+   * the strength of the flash on the sky and haze. Cloud, ground and sky brighten around them.
+   */
+  setFlashLight(points: { x: number; y: number; z: number; i: number }[], sky: number, color: [number, number, number] = [0.75, 0.82, 1]): void {
+    const n = Math.min(4, points.length);
+    for (let k = 0; k < n; k++) {
+      this.flashPts[k * 4] = points[k].x;
+      this.flashPts[k * 4 + 1] = points[k].y;
+      this.flashPts[k * 4 + 2] = points[k].z;
+      this.flashPts[k * 4 + 3] = points[k].i;
+    }
+    this.flashN = n;
+    this.flashSky = sky;
+    this.flashCol = color;
+  }
+
+  /** Stylised cloud texture (realistic look): its amount 0..1 and the storm translation (km) it rides along. */
+  setCloudTexture(amount: number, offsetKm: [number, number, number] = [0, 0, 0]): void {
+    this.noiseAmt = amount;
+    this.noiseOff = offsetKm;
+  }
+
+  /** Leave the first-person mode (the next `exportRender` is an orbit frame without the ground extension). */
+  setExtendDown(on: boolean): void {
+    this.extendDown = on;
   }
 
   /** Request a redraw (coalesced); the static layer is redrawn. */
@@ -1119,6 +1246,7 @@ export class CartesianRenderer {
     const onx = Math.ceil(vol.nx / f[0]);
     const ony = Math.ceil(vol.ny / f[1]);
     const onz = Math.ceil(vol.nz / f[2]);
+    this.texDims = [onx, ony, onz];
     const tex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_3D, tex);
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -1336,7 +1464,7 @@ export class CartesianRenderer {
       this.camTgt[2] + this.camDist * Math.sin(ph),
     ];
     const fwd = norm3([this.camTgt[0] - eye[0], this.camTgt[1] - eye[1], this.camTgt[2] - eye[2]]);
-    const upHint: Vec3 = this.camPhi < 0 ? [0, 0, -1] : [0, 0, 1];
+    const upHint: Vec3 = this.camPhi < 0 && !this.fpMode ? [0, 0, -1] : [0, 0, 1];
     const right = norm3(cross3(fwd, upHint));
     const up = cross3(right, fwd);
     return { eye, fwd, right, up };
@@ -1405,7 +1533,7 @@ export class CartesianRenderer {
     gl.uniform2f(u.u_cropMax, cb ? cb.xMax : 1e6, cb ? cb.yMax : 1e6);
     gl.uniform2f(u.u_groundCenter, this.groundCenter[0], this.groundCenter[1]);
     gl.uniform1f(u.u_mapGain, p.lightScene ? 1.0 : this.mapGain);
-    gl.uniform1i(u.u_morphOn, this.volTexB ? 1 : 0);
+    gl.uniform1i(u.u_morphOn, this.volTexB && !this.passOut ? 1 : 0);
     gl.uniform1f(u.u_morphW, this.morphW);
     gl.uniform3f(u.u_shiftA, this.shiftA[0], this.shiftA[1], this.shiftA[2]);
     gl.uniform3f(u.u_shiftB, this.shiftB[0], this.shiftB[1], this.shiftB[2]);
@@ -1437,6 +1565,10 @@ export class CartesianRenderer {
     gl.uniform3f(u.u_skyCol, lk.skyCol[0], lk.skyCol[1], lk.skyCol[2]);
     gl.uniform3f(u.u_horizonCol, lk.horizonCol[0], lk.horizonCol[1], lk.horizonCol[2]);
     gl.uniform3f(u.u_zenithCol, lk.zenithCol[0], lk.zenithCol[1], lk.zenithCol[2]);
+    gl.uniform3f(u.u_glowCol, lk.glowCol[0], lk.glowCol[1], lk.glowCol[2]);
+    gl.uniform3f(u.u_bounceCol, lk.bounceCol[0], lk.bounceCol[1], lk.bounceCol[2]);
+    gl.uniform1f(u.u_sunGain, lk.sunGain);
+    gl.uniform1f(u.u_skyGain, lk.skyGain);
     // soft shadows cost extra samples: fewer while the camera moves in the interactive viewer
     gl.uniform1i(u.u_sunSteps, params.interacting ? Math.min(2, lk.sunSteps) : lk.sunSteps);
     // haze is tuned for a scene about 235 km wide (the storm clip); bigger scenes get proportionally less per km
@@ -1445,6 +1577,13 @@ export class CartesianRenderer {
     gl.uniform1f(u.u_groundGain, this.mapGain);
     this.frameSeed = (this.frameSeed + 17.31) % 211;
     gl.uniform1f(u.u_seed, this.frameSeed);
+    gl.uniform1i(u.u_extendDown, this.extendDown ? 1 : 0);
+    gl.uniform4fv(u.u_flashP, this.flashPts);
+    gl.uniform1i(u.u_flashN, this.flashN);
+    gl.uniform3f(u.u_flashCol, this.flashCol[0], this.flashCol[1], this.flashCol[2]);
+    gl.uniform1f(u.u_flashSky, this.flashSky);
+    gl.uniform3f(u.u_noiseOff, this.noiseOff[0], this.noiseOff[1], this.noiseOff[2]);
+    gl.uniform1f(u.u_noiseAmt, this.noiseAmt);
     gl.uniform1f(u.u_vexag, ve);
     gl.uniform1i(u.u_light, p.light ? 1 : 0);
     gl.uniform1f(u.u_themeLight, p.lightScene ? 1 : 0);
@@ -1559,7 +1698,7 @@ export class CartesianRenderer {
     gl.useProgram(this.volProg);
     gl.bindVertexArray(this.quadVAO);
     gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_3D, this.volTex);
+    gl.bindTexture(gl.TEXTURE_3D, this.passOut ?? this.volTex);
     gl.uniform1i(this.vu.u_volume, 0);
     gl.activeTexture(gl.TEXTURE3);
     gl.bindTexture(gl.TEXTURE_2D, this.tfTex);
@@ -1675,6 +1814,9 @@ export class CartesianRenderer {
     if (!this.lost) {
       const gl = this.gl;
       for (const t of [this.volTex, this.volTexB, this.tfTex, this.lutTex, this.groundTex, this.demTex]) if (t) gl.deleteTexture(t);
+      this.morphPass?.deleteFlow(this.flowA);
+      this.morphPass?.deleteFlow(this.flowB);
+      this.morphPass?.dispose();
       for (const b of this.arrowMeshBuf) gl.deleteBuffer(b);
       if (this.arrowVAO) gl.deleteVertexArray(this.arrowVAO);
       gl.deleteVertexArray(this.quadVAO);

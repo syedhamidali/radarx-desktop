@@ -20,14 +20,22 @@ test('realistic look: opacity grows with reflectivity, nothing is drawn below th
   assert.ok(realisticSample(55).sigma > 2, 'heavy cores are dense');
 });
 
-test('realistic look: pale haze, grey-white rain, dark cores, a warm tint only for the strongest', () => {
-  const light = realisticSample(15).rgb, rain = realisticSample(32).rgb, heavy = realisticSample(52).rgb, core = realisticSample(60).rgb;
-  assert.ok(lum(light) > lum(rain) && lum(rain) > lum(heavy) && lum(heavy) >= lum(core) - 1e-9);
-  assert.ok(lum(light) > 0.9 && lum(heavy) < 0.5 && lum(core) < 0.4);
-  // no warm tint below 55 dBZ (red not above blue by more than a hair), a visible one at 66
-  for (const d of [10, 25, 40, 52]) assert.ok(realisticSample(d).rgb[0] - realisticSample(d).rgb[2] < 0.02, `tint at ${d}`);
-  const warm = realisticSample(66).rgb;
-  assert.ok(warm[0] - warm[2] > 0.05);
+test('realistic look: pale haze, grey rain, dark slate cores, no purple or pink anywhere, a green-grey hint only in the strongest', () => {
+  for (const pal of ['white', 'soft', 'stormy']) {
+    const light = realisticSample(15, pal).rgb, rain = realisticSample(32, pal).rgb, heavy = realisticSample(52, pal).rgb, core = realisticSample(60, pal).rgb;
+    assert.ok(lum(light) >= lum(rain) - 1e-9 && lum(rain) > lum(heavy) && lum(heavy) >= lum(core) - 1e-9, pal);
+    assert.ok(lum(light) > 0.9 && lum(heavy) < 0.9 && lum(core) < 0.5, pal);
+    for (let d = -20; d <= 75; d += 1) {
+      const [r, g, b] = realisticSample(d, pal).rgb;
+      assert.ok(b - g < 0.08, `${pal} ${d} dBZ: violet (b ${b}, g ${g})`);
+      assert.ok(r - g < 0.04 && r - b < 0.06, `${pal} ${d} dBZ: pink or orange (r ${r}, g ${g}, b ${b})`);
+    }
+  }
+  // the green-grey hail hint: none below 55 dBZ, visible at 66
+  const [r0, g0] = realisticSample(50).rgb;
+  assert.ok(g0 - r0 < 0.03);
+  const [r1, g1] = realisticSample(66).rgb;
+  assert.ok(g1 - r1 > 0.03, `hint ${g1 - r1}`);
 });
 
 test('the transfer function has 256 RGBA entries over [vmin, vmax] with a monotone alpha', () => {
@@ -42,6 +50,12 @@ test('the transfer function has 256 RGBA entries over [vmin, vmax] with a monoto
   assert.ok(tf[255 * 4 + 3] > 200); // 75 dBZ is nearly opaque within a step
   // entry 128 is about 27 dBZ: translucent, grey-white
   assert.ok(tf[128 * 4 + 3] > 0 && tf[128 * 4 + 3] < 60);
+});
+
+test('cloud body: the opacity of moderate echo is substantial and white', () => {
+  const body = realisticSample(35, 'white');
+  assert.ok(body.sigma > 0.1 && lum(body.rgb) > 0.95, `${body.sigma} ${lum(body.rgb)}`);
+  assert.ok(realisticSample(10, 'white').sigma < 0.01);
 });
 
 test('look: dusk light is warm, day light is whiter, the light vector follows the vertical stretch', () => {

@@ -14,6 +14,8 @@ TOOLS = Path(__file__).resolve().parents[2] / "tools" / "storm_clip"
 sys.path.insert(0, str(TOOLS))
 
 import clipdata
+import clipwinds
+import lightning_obs
 import tilecache
 
 UTC = timezone.utc
@@ -142,6 +144,25 @@ class TestStorm:
         with pytest.raises(ValueError, match="first time step"):
             clipdata.track_storm([[], []], [0.0, 1.0])
 
+    def test_linear_track_is_a_steady_motion_through_jumpy_cells(self):
+        # a storm moving 6 km east per step whose found cell jumps about (and a repeated volume)
+        cells = [
+            clipdata.Cell(x, 20.0 + dy, 60.0, 500.0, 12.0, 1.0)
+            for x, dy in ((10.0, 0.0), (10.0, 1.0), (22.0, -1.0), (22.5, 0.0))
+        ]
+        times = [0.0, 300.0, 600.0, 900.0]
+        fit = clipdata.linear_track(cells, times)
+        xs = [c.x_km for c in fit]
+        steps = np.diff(xs)
+        assert np.allclose(steps, steps[0])  # uniform
+        assert steps[0] == pytest.approx(4.95, abs=0.05)  # the fitted speed, not the jumps
+        assert (
+            fit[0].max_dbz == 60.0 and fit[0].top_km == 12.0
+        )  # the cell's other properties are kept
+        u, _v = clipdata.storm_motion([(c.x_km, c.y_km) for c in fit], times)
+        assert u == pytest.approx(steps[0] * 1000.0 / 300.0)
+        assert clipdata.linear_track(cells[:1], times[:1]) == cells[:1]
+
     def test_box_around_points(self):
         assert clipdata.box_around([(0.0, 0.0), (10.0, -4.0)], 5.0) == (-5.0, -9.0, 15.0, 5.0)
 
@@ -227,3 +248,125 @@ class TestTileCache:
     def test_requests_say_who_asks(self):
         assert "xradar-desktop" in tilecache.USER_AGENT
         assert tilecache.MIN_INTERVAL_S > 0
+
+
+class TestWinds:
+    """The wind steps of the bundle (tools/storm_clip/clipwinds.py)."""
+
+    def test_pack_layout_and_nan_rule(self):
+        nz, ny, nx = 2, 3, 4
+        u = np.arange(nz * ny * nx, dtype=np.float32).reshape(nz, ny, nx)
+        v = -u
+        u[0, 0, 0] = np.nan  # a cell with only one component is no wind
+        x = np.arange(nx) * 2000.0 - 3000.0
+        y = np.arange(ny) * 2000.0
+        z = np.array([500.0, 1000.0])
+        head, data = clipwinds.pack_wind({"u": u, "v": v}, x, y, z, (36.2, -89.8), 3, "analytic")
+        assert (head["nx"], head["ny"], head["nz"]) == (nx, ny, nz)
+        assert head["x0_km"] == -3.0 and head["dx_km"] == 2.0 and head["dz_km"] == 0.5
+        assert head["origin"] == {"lat": 36.2, "lon": -89.8} and head["n_radars"] == 3
+        assert len(data) == nz * ny * nx * 8
+        flat = np.frombuffer(data, dtype="<f4")
+        n = nz * ny * nx
+        assert np.isnan(flat[0]) and np.isnan(flat[n])  # both blocks lose the cell
+        assert flat[1] == 1.0 and flat[n + 1] == -1.0  # u block then v block
+        assert head["valid_fraction"] == pytest.approx((n - 1) / n)
+
+    def test_axes_must_match(self):
+        u = np.zeros((1, 2, 2), dtype=np.float32)
+        with pytest.raises(ValueError, match="disagree"):
+            clipwinds.pack_wind(
+                {"u": u, "v": u}, np.arange(3.0), np.arange(2.0), np.array([500.0]), (0, 0), 2, "m"
+            )
+
+    def test_fewer_than_two_radars_gives_no_winds(self):
+        got = clipwinds.retrieve_step_winds(
+            {"KAAA": Path("x")},
+            (36.0, -90.0),
+            (-10, -10, 10, 10),
+            (5.0, 5.0),
+            lambda p: None,
+            log=lambda *a: None,
+        )
+        assert got is None
+
+
+class TestObservedLightning:
+    """Lightning files are read from disk only (tools/storm_clip/lightning_obs.py)."""
+
+    def glm(self, tmp_path, base="2021-12-11T01:50:00Z"):
+        import xarray as xr
+
+        ds = xr.Dataset(
+            {
+                "flash_lat": ("number_of_flashes", np.array([36.1, 36.3, 40.0])),
+                "flash_lon": ("number_of_flashes", np.array([-89.9, -89.7, -80.0])),
+                "flash_time_offset_of_first_event": (
+                    "number_of_flashes",
+                    np.array([30.0, 400.0, 100.0]),
+                ),
+                "flash_energy": ("number_of_flashes", np.array([1e-14, 5e-14, 2e-14])),
+                "product_time": ((), np.datetime64(base.replace("Z", ""))),
+            }
+        )
+        path = tmp_path / "OR_GLM-L2-LCFA_G16_s20213450150000.nc"
+        ds.to_netcdf(path)
+        return path
+
+    def test_glm_flashes_time_place_and_relative_strength(self, tmp_path):
+        kind, fl = lightning_obs.read_flashes([self.glm(tmp_path)])
+        assert kind == "glm" and len(fl) == 3
+        assert fl[0].time == datetime(2021, 12, 11, 1, 50, 30, tzinfo=UTC)
+        assert fl[1].time == datetime(2021, 12, 11, 1, 51, 40, tzinfo=UTC)  # sorted by time
+        assert fl[2].time == datetime(2021, 12, 11, 1, 56, 40, tzinfo=UTC)
+        assert (fl[0].lat, fl[0].lon) == (36.1, -89.9)
+        energies = {round(f.lat, 1): f.energy for f in fl}
+        assert energies[36.3] == pytest.approx(1.0) and energies[36.1] == pytest.approx(0.2)
+
+    def test_bundle_keeps_the_window_and_the_box(self, tmp_path):
+        _, fl = lightning_obs.read_flashes([self.glm(tmp_path)])
+        t0 = datetime(2021, 12, 11, 1, 50, 0, tzinfo=UTC)
+        t1 = datetime(2021, 12, 11, 2, 8, 0, tzinfo=UTC)
+        # a flat 111 km per degree frame around (36, -90)
+        to_xy = lambda lon, lat: ((lon + 90) * 90.0, (lat - 36) * 111.0)  # noqa: E731
+        recs = lightning_obs.to_bundle(fl, t0, t1, to_xy, box_km=(-50.0, -50.0, 50.0, 50.0))
+        assert len(recs) == 2  # the far flash (40 N) is outside the box
+        assert recs[0]["t_s"] == pytest.approx(30.0) and recs[1]["t_s"] == pytest.approx(400.0)
+        assert recs[0]["x"] == pytest.approx(9.0) and recs[0]["y"] == pytest.approx(11.1)
+        late = lightning_obs.to_bundle(fl, t0, t0 + timedelta(seconds=60), to_xy)
+        assert [r["t_s"] for r in late] == [pytest.approx(30.0)]
+
+    def test_lma_flash_table_gives_the_initiation_point_and_height(self):
+        import xarray as xr
+
+        ds = xr.Dataset(
+            {
+                "flash_time_start": (
+                    "number_of_flashes",
+                    np.array(
+                        ["2021-12-11T01:55:00", "2021-12-11T01:56:00"], dtype="datetime64[ns]"
+                    ),
+                ),
+                "flash_init_latitude": ("number_of_flashes", np.array([36.2, 36.25])),
+                "flash_init_longitude": ("number_of_flashes", np.array([-89.8, -89.75])),
+                "flash_init_altitude": ("number_of_flashes", np.array([7500.0, np.nan])),
+                "flash_event_count": ("number_of_flashes", np.array([20.0, 400.0])),
+            }
+        )
+        fl = lightning_obs.flashes_from_lma_dataset(ds)
+        assert fl[0].alt_km == pytest.approx(7.5) and fl[1].alt_km is None
+        assert fl[1].energy > fl[0].energy
+        assert fl[0].time == datetime(2021, 12, 11, 1, 55, 0, tzinfo=UTC)
+
+    def test_nothing_is_downloaded_and_a_missing_file_says_so(self, tmp_path):
+        with pytest.raises(FileNotFoundError, match="nothing is downloaded"):
+            lightning_obs.read_flashes([tmp_path / "OR_GLM-L2-LCFA_missing.nc"])
+        with pytest.raises(ValueError, match="no lightning files"):
+            lightning_obs.read_flashes([])
+
+    def test_kinds_are_not_mixed(self, tmp_path):
+        nc = self.glm(tmp_path)
+        dat = tmp_path / "LYLOUT_211211_015000_0600.dat"
+        dat.write_text("x")
+        with pytest.raises(ValueError, match="not both"):
+            lightning_obs.read_flashes([nc, dat])

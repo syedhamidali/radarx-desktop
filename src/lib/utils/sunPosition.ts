@@ -88,8 +88,10 @@ export function sunsetAzimuth(date: Date, latDeg: number): number {
 export interface SunLight {
   azimuthDeg: number;
   elevationDeg: number;
-  /** True when the light is the artistic dusk light, not the real sun. */
+  /** True when the light is an artistic one (dusk or assumed daylight), not the real sun. */
   stylised: boolean;
+  /** True for the assumed daylight: a high daytime sun chosen for the look although the real sun was down. */
+  daylightAssumed?: boolean;
   realElevationDeg: number;
   realAzimuthDeg: number;
   /** One line for the screen. */
@@ -138,4 +140,32 @@ export function sunVector(azimuthDeg: number, elevationDeg: number, vexag = 1): 
   const z = Math.sin(el) * vexag;
   const l = Math.hypot(x, y, z) || 1;
   return [x / l, y / l, z / l];
+}
+
+/** Elevation limits (degrees) of the assumed daylight sun: a bright, modelled-looking daytime light. */
+export const DAYLIGHT_MIN_ELEVATION = 36;
+export const DAYLIGHT_MAX_ELEVATION = 50;
+
+/**
+ * "Daylight (assumed)": a daytime sun for the realistic look when the real sun was down. Its azimuth
+ * and elevation are those of the real sun at the SAME place on the SAME date at 14:30 local solar
+ * time, the elevation raised into [36, 50] degrees (a December afternoon sun at 36 N is only 27
+ * degrees up). It is a stylised choice, not the light of the scene, and the label says so.
+ */
+export function daylightAssumed(date: Date, latDeg: number, lonDeg: number): SunLight {
+  const real = sunPosition(date, latDeg, lonDeg);
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  // local solar time 14:30 -> UTC minutes = 14.5 h * 60 - 4 min per degree of longitude
+  const utcMin = 14.5 * 60 - 4 * lonDeg;
+  const afternoon = sunPosition(new Date(d.getTime() + utcMin * 60000), latDeg, lonDeg);
+  const el = Math.max(DAYLIGHT_MIN_ELEVATION, Math.min(DAYLIGHT_MAX_ELEVATION, afternoon.elevationDeg));
+  return {
+    azimuthDeg: afternoon.azimuthDeg,
+    elevationDeg: el,
+    stylised: true,
+    daylightAssumed: true,
+    realElevationDeg: real.elevationDeg,
+    realAzimuthDeg: real.azimuthDeg,
+    label: 'stylised daylight; the real sun was below the horizon at this time',
+  };
 }

@@ -93,7 +93,56 @@ async def render(a: argparse.Namespace) -> None:
     tiles = TileCache(a.tile_cache, offline=a.offline)
     srv, port = serve(dist, bundle, tiles)
     W, H, fps = a.width, a.height, a.fps
-    settings = {"fps": fps, "duration": a.duration, "vexag": a.vexag}
+    manifest = json.loads((bundle / "manifest.json").read_text())
+    span = manifest["steps"][-1]["t_s"] - manifest["steps"][0]["t_s"]
+    duration = a.duration
+    if (
+        a.timelapse
+    ):  # clip length from the time-lapse factor: the data span / factor + the 1.5 s holds
+        duration = round(span / a.timelapse + 3.0, 1)
+        print(f"time-lapse x{a.timelapse:g}: {span / 60:.1f} min of data in {duration:g} s")
+    settings = {"fps": fps, "duration": duration}
+    if a.vexag is not None:
+        settings["vexag"] = a.vexag
+    else:
+        settings["vexag"] = 1.0 if a.camera == "observer" else 4.0
+    settings["camera"] = a.camera
+    if a.palette:
+        settings["palette"] = a.palette
+    settings["light"] = a.light
+    settings["preset"] = a.orbit
+    if a.view_km:
+        settings["viewKm"] = a.view_km
+    obs: dict = {}
+    if a.observer:
+        ox, oy = (float(v) for v in a.observer.split(","))
+        obs.update(x=ox, y=oy)
+    for key, arg in (
+        ("distKm", a.observer_dist),
+        ("upwindKm", a.observer_upwind),
+        ("eyeM", a.eye_m),
+        ("pan", a.pan),
+        ("pitchDeg", a.pitch),
+    ):
+        if arg is not None:
+            obs[key] = arg
+    if a.observer_side:
+        obs["side"] = a.observer_side
+    if obs:
+        settings["observer"] = obs
+    if a.sun_azimuth is not None or a.sun_elevation is not None:
+        settings["sun"] = {
+            "azimuthDeg": a.sun_azimuth if a.sun_azimuth is not None else 205.0,
+            "elevationDeg": a.sun_elevation if a.sun_elevation is not None else 13.0,
+        }
+    settings["flow"] = not a.no_flow
+    settings["lightning"] = "off" if a.no_lightning else "auto"
+    settings["lightningSeed"] = a.lightning_seed
+    settings["lightningRate"] = a.lightning_rate
+    settings["t10Km"] = a.t10_km
+    settings["soundCompress"] = a.sound_compress
+    with_sound = a.camera == "observer" and not a.no_sound
+    settings["audio"] = with_sound
     ground = "realistic" if a.realistic else a.ground
     storm_style = "realistic" if a.realistic else a.storm_style
     settings["ground"] = ground
@@ -148,12 +197,50 @@ async def render(a: argparse.Namespace) -> None:
         n = await page.evaluate("() => window.__xrClip.frameCount()")
         if a.max_frames:
             n = min(n, a.max_frames)
+        rep_info = await page.evaluate("() => window.__xrClip.report()")
+        print("report:", json.dumps(rep_info))
+        audio = None
+        if with_sound:
+            print("rendering the soundscape (offline Web Audio) ...")
+            audio = await page.evaluate("(sr) => window.__xrClip.renderAudio(sr)", 48000)
+            print(
+                f"audio: {audio['frames'] / audio['sampleRate']:.1f} s, peak {audio['peak']:.3f}, "
+                f"wind {audio['windMs']['min']:.1f}-{audio['windMs']['max']:.1f} m/s ({audio['windSource']})"
+            )
+            report = {k: v for k, v in audio.items() if k != "pcm"}
+            out.with_suffix(".audio.json").write_text(json.dumps(report, indent=1))
+            for th in audio["thunders"]:
+                print(
+                    f"  flash {th['flash']:3d} ({th['kind']}, {th['source']}) at {th['tFlash']:6.2f} s: "
+                    f"{th['distKm']:5.1f} km -> thunder arrives {th['arrival']:6.2f} s (delay {th['delay']:.2f} s)"
+                )
 
         container = av.open(str(out), "w", options={"movflags": "+faststart"})
         stream = container.add_stream("libx264", rate=fps)
         stream.width, stream.height = W - W % 2, H - H % 2
         stream.pix_fmt = "yuv420p"
         stream.options = {"crf": str(a.crf), "preset": a.preset}
+        audio_packets: list = []
+        if audio:
+            import base64
+            from fractions import Fraction
+
+            import numpy as np
+
+            sr = audio["sampleRate"]
+            pcm = np.frombuffer(base64.b64decode(audio["pcm"]), dtype="<i2").reshape(-1, 2)
+            astream = container.add_stream("aac", rate=sr)
+            astream.layout = "stereo"
+            astream.bit_rate = 160_000
+            planar = np.ascontiguousarray((pcm.astype(np.float32) / 32768.0).T)
+            for i0 in range(0, planar.shape[1], 1024):
+                chunk = planar[:, i0 : i0 + 1024]
+                af = av.AudioFrame.from_ndarray(chunk, format="fltp", layout="stereo")
+                af.sample_rate = sr
+                af.pts = i0
+                af.time_base = Fraction(1, sr)
+                audio_packets.extend(astream.encode(af))
+            audio_packets.extend(astream.encode())
         t0 = time.time()
         for i in range(0, n, a.every):
             await page.evaluate("(i) => window.__xrClip.renderFrame(i)", i)
@@ -166,6 +253,11 @@ async def render(a: argparse.Namespace) -> None:
             frame = av.VideoFrame.from_image(img)
             for pkt in stream.encode(frame):
                 container.mux(pkt)
+            # the audio up to this frame's time goes in with it (a well interleaved file)
+            while (
+                audio_packets and audio_packets[0].pts * audio_packets[0].time_base <= (i + 1) / fps
+            ):
+                container.mux(audio_packets.pop(0))
             if i % 30 == 0 or i == n - 1:
                 el = time.time() - t0
                 print(
@@ -173,6 +265,8 @@ async def render(a: argparse.Namespace) -> None:
                     flush=True,
                 )
         for pkt in stream.encode():
+            container.mux(pkt)
+        for pkt in audio_packets:
             container.mux(pkt)
         container.close()
         await browser.close()
@@ -200,7 +294,111 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--height", type=int, default=1080)
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--duration", type=float, default=36.0, help="clip length in seconds")
-    ap.add_argument("--vexag", type=float, default=4.0, help="vertical exaggeration of the scene")
+    ap.add_argument(
+        "--vexag",
+        type=float,
+        default=None,
+        help="vertical exaggeration of the scene (default 4 for the orbit camera, 1 = true scale for the observer)",
+    )
+    ap.add_argument(
+        "--camera",
+        default="orbit",
+        choices=["orbit", "observer"],
+        help="the cinematic orbit (default) or a fixed camera on the ground, like one on a window sill",
+    )
+    ap.add_argument(
+        "--palette",
+        default=None,
+        choices=["white", "soft", "stormy"],
+        help="palette of the realistic storm look (default white)",
+    )
+    ap.add_argument(
+        "--light",
+        default="daylight",
+        choices=["daylight", "dusk"],
+        help="realistic look: a stylised daylight (default; labelled) or the dusk light when the sun was down",
+    )
+    ap.add_argument(
+        "--orbit",
+        default="storm",
+        choices=["storm", "cyclone"],
+        help="orbit choreography: one thunderstorm (default) or a wide system such as a tropical cyclone",
+    )
+    ap.add_argument(
+        "--view-km",
+        type=float,
+        default=None,
+        help="size of the scene for --orbit cyclone (default 330)",
+    )
+    ap.add_argument(
+        "--observer", default=None, help="observer position 'x,y' in km of the bundle's scene frame"
+    )
+    ap.add_argument(
+        "--observer-dist", type=float, default=None, help="km from the storm track (default 10)"
+    )
+    ap.add_argument(
+        "--observer-upwind",
+        type=float,
+        default=None,
+        help="km upwind of the track's middle (default 4)",
+    )
+    ap.add_argument(
+        "--observer-side", default=None, choices=["left", "right"], help="side of the track"
+    )
+    ap.add_argument(
+        "--eye-m", type=float, default=None, help="eye height above the ground, m (default 10)"
+    )
+    ap.add_argument(
+        "--pan",
+        type=float,
+        default=None,
+        help="how much the camera turns with the storm, 0..1 (default 0.3)",
+    )
+    ap.add_argument(
+        "--pitch", type=float, default=None, help="look up by this many degrees (default 12)"
+    )
+    ap.add_argument(
+        "--sun-azimuth",
+        type=float,
+        default=None,
+        help="light direction chosen for the shot (degrees); default: the real sun or the dusk light",
+    )
+    ap.add_argument(
+        "--sun-elevation", type=float, default=None, help="elevation of that light (degrees)"
+    )
+    ap.add_argument(
+        "--timelapse",
+        type=float,
+        default=None,
+        help="time-lapse factor (clip length = data span / factor + 3 s), overrides --duration",
+    )
+    ap.add_argument(
+        "--no-flow", action="store_true", help="translation only, even if the bundle has winds"
+    )
+    ap.add_argument("--no-lightning", action="store_true", help="no lightning")
+    ap.add_argument(
+        "--lightning-seed", type=int, default=7, help="seed of the modelled flashes (deterministic)"
+    )
+    ap.add_argument(
+        "--lightning-rate", type=float, default=0.8, help="most modelled flashes per clip second"
+    )
+    ap.add_argument(
+        "--t10-km",
+        type=float,
+        default=5.0,
+        help="height of the -10 C level (km ASL) for the flash model",
+    )
+    ap.add_argument(
+        "--no-sound",
+        action="store_true",
+        help="no audio track (the observer clip has one by default)",
+    )
+    ap.add_argument(
+        "--sound-compress",
+        type=float,
+        default=8.0,
+        help="thunder delay = distance / 343 m/s / this factor (1 = real physics, longer than a time-lapse clip)",
+    )
     ap.add_argument("--title", default=None, help="title at the top left (default: the bundle's)")
     ap.add_argument("--subtitle", default=None, help="line under the title")
     ap.add_argument(

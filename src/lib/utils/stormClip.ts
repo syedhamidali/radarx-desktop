@@ -1,21 +1,24 @@
 /**
- * Offline renderer of a storm-centred 3D clip, built on the app's own 3D viewer code
- * (CartesianRenderer: the same ray-marched volume, transfer function, lighting, map ground and
- * overlay as the 3D tab).
+ * Offline renderer of a storm clip, built on the app's own 3D viewer code (CartesianRenderer: the
+ * same ray-marched volume, transfer function, lighting, map ground and overlay as the 3D tab).
  *
  * It is driven frame by frame by a script (tools/storm_clip/render_clip.py): every call of
  * `renderFrame(i)` draws ONE complete full-quality frame for the clip time i / fps (no real-time
  * clock anywhere), after which the script takes the pixels. The inputs are a data bundle written by
- * tools/storm_clip/clipdata.py: several time steps of a merged 3D reflectivity mosaic, the tracked
- * storm and the radar sites.
+ * tools/storm_clip/clipdata.py: time steps of a merged 3D reflectivity mosaic (streamed one at a
+ * time: only the two a frame needs are in memory), the tracked storm, the radar sites and, if the
+ * bundle has them, retrieved winds and observed lightning.
  *
- *  - Time: the cloud is interpolated between the observed volumes. The earlier volume is carried
- *    along the storm motion (measured from the tracked cell centre) and the later one is carried back,
- *    then they are cross-faded. The clip says so on screen; it is interpolation, not new observations.
- *  - Storm: the camera target follows the tracked cell centre (Hermite curve through the
- *    observations) and the volume / ground are cropped to a box around it.
- *  - Camera: keyframes (clipCamera.ts), eased.
- *  - No winds, no flow: the clip shows the reflectivity cloud over the map.
+ *  - Time: the cloud is interpolated between the observed volumes along a flow (morphPass.ts): the
+ *    tracked storm translation plus, where multi-Doppler winds exist, the observed wind anomaly, so
+ *    the echo turns and shears as the measured air did. Without winds it is the translation alone.
+ *    The clip says which one is used, and that it is interpolation, not new observations.
+ *  - Cameras: 'orbit' (the cinematic orbit around the storm, partly following it) or 'observer' (a
+ *    fixed camera on the ground, like one on a window sill, with true vertical scale).
+ *  - Lightning: observed flashes of the bundle, or a modelled flash source driven by radar echo.
+ *    The two are labelled differently on screen; modelled flashes are never presented as observed.
+ *  - Sound: wind, rain and thunder synthesised from the data (soundscape.ts), rendered offline for
+ *    the observer camera; labelled "not a recording".
  */
 
 import { CartesianRenderer, type CamFrame } from './cartesianRenderer';
@@ -27,12 +30,19 @@ import { buildTf, thresholdSpec, thresholdToShader, adaptiveShiftDb } from './vo
 import { resolveBasemap, IMAGERY_EOX_S2 } from './basemaps';
 import { buildGroundMap } from './groundMap';
 import { buildTerrain, TERRAIN_ATTRIBUTION, TERRARIUM_URL } from './terrain';
-import { buildRealisticTf, lookFor, realisticSample } from './realisticStyle';
-import { sunLight, type SunLight } from './sunPosition';
+import { buildRealisticTf, lookFor, realisticSample, type Palette } from './realisticStyle';
+import { sunLight, daylightAssumed, type SunLight } from './sunPosition';
 import {
-  cameraAt, stormAt, dataTimeAt, locate, morphShifts, intervalMotion, utcLabel, stormChoreography, trackFrame, lagTarget,
+  cameraAt, stormAt, dataTimeAt, clipTimeOf, locate, intervalMotion, utcLabel, stormChoreography, cycloneChoreography, trackFrame, lagTarget,
   type CamKey,
 } from './clipCamera';
+import { placeObserver, observerPose, bearingDeg, compassLabel, horizontalFovDeg, OBSERVER_DEFAULTS, type ObserverSettings } from './observerCam';
+import { LruLoader, summarise, dbzAt, dbzOfCode, type StepSummary } from './clipSteps';
+import { decodeWindStep, stormRelativeField, type WindStep, type MorphField } from './flowMorph';
+import { modelFlashes, makeFlash, mulberry32, type Flash, type FlashCandidate } from './lightning';
+import { drawFlashes, flashLight } from './lightningFx';
+import { drawCompassStrip, drawInset } from './clipHud';
+import { renderSoundscape, AUDIO_LABEL, type SoundInput } from './soundscape';
 
 export interface ClipManifest {
   version: number;
@@ -42,17 +52,23 @@ export interface ClipManifest {
   units: string;
   origin: { lat: number; lon: number };
   crop_half_km: number;
-  steps: { index: number; time_utc: string; t_s: number; files: Record<string, { name: string; offset_s: number }>; mosaic: { header: string; bin: string } }[];
+  steps: {
+    index: number; time_utc: string; t_s: number; files: Record<string, { name: string; offset_s: number }>;
+    mosaic: { header: string; bin: string };
+    wind?: { header: string; bin: string } | null;
+  }[];
   storm: { track_km: [number, number][]; track_lonlat: [number, number][]; motion_ms: [number, number]; speed_ms: number; heading_deg: number };
   sites: any[];
+  /** Observed flashes (GLM / LMA) read by clipdata.py, positions in the bundle frame. */
+  lightning?: { source: 'observed'; kind: string; file: string; flashes: { t_s: number; x: number; y: number; z?: number; energy?: number }[] } | null;
 }
 
 export interface ClipSettings {
   fps: number;
   duration: number;
-  /** Vertical exaggeration of the scene. */
+  /** Vertical exaggeration of the scene (the observer camera uses 1: true scale). */
   vexag: number;
-  /** Camera keyframes; default: stormChoreography(). */
+  /** Camera keyframes of the orbit camera; default: stormChoreography(). */
   keys?: CamKey[];
   /** Title and subtitle at the top left (default: the manifest's title). */
   title?: string;
@@ -73,19 +89,54 @@ export interface ClipSettings {
    * serves /eox/{z}/{x}/{y} and /terrarium/{z}/{x}/{y} (render_clip.py does this, with a disk cache).
    */
   tileBase?: string;
+  /** Orbit choreography: 'storm' (a single thunderstorm, default) or 'cyclone' (a wide system); viewKm = its size. */
+  preset?: 'storm' | 'cyclone';
+  viewKm?: number;
+  /** 'orbit' (default) or 'observer': a camera on the ground at a fixed place. */
+  camera?: 'orbit' | 'observer';
+  observer?: ObserverSettings;
+  /** Carry the echo along the observed winds where the bundle has them (default true). */
+  flow?: boolean;
+  /** 'auto': observed flashes of the bundle if it has any, otherwise modelled; 'off'. */
+  lightning?: 'auto' | 'off';
+  lightningSeed?: number;
+  /** Most flashes per clip second the model may draw at the strongest echo. */
+  lightningRate?: number;
+  /** Height (km ASL) of the -10 C level used by the modelled flash rate. */
+  t10Km?: number;
+  /** Shortens the light-to-sound delay of thunder by this factor in a time-lapse clip (1 = real physics). */
+  soundCompress?: number;
+  /** Light direction chosen for the shot (degrees); the default is the real sun, or the dusk light at the sunset azimuth. */
+  sun?: { azimuthDeg: number; elevationDeg: number };
+  /** Stylised detail of the realistic look (shading streaks and billows, never the echo), 0..1 (default 1). */
+  cloudTexture?: number;
+  /** Palette of the realistic look: 'white' (default), 'soft' or 'stormy'. */
+  palette?: Palette;
+  /** Light of the realistic look: 'daylight' (assumed: a stylised daytime sun, default) or 'dusk' (the real sun when it is up). */
+  light?: 'daylight' | 'dusk';
+  /** Show the sound labels (the audio itself is rendered by `renderAudio`). */
+  audio?: boolean;
 }
 
-const DEFAULTS: ClipSettings = { fps: 30, duration: 36, vexag: 4, targetLag: 0.3 };
+const DEFAULTS: ClipSettings = { fps: 30, duration: 36, vexag: 4, targetLag: 0.3, camera: 'orbit', flow: true, lightning: 'auto', lightningSeed: 7, lightningRate: 0.8, t10Km: 5.0, soundCompress: 8 };
+
+/** Surface wind from the lowest retrieved level: the wind there is stronger than at the ground. */
+export const SURFACE_WIND_FACTOR = 0.65;
 
 export class StormClip {
   private renderer: CartesianRenderer | null = null;
   private ctx: CanvasRenderingContext2D;
   private manifest!: ClipManifest;
-  private vols: CartVolume[] = [];
+  private baseUrl = '';
+  private g0!: CartVolume;
+  private volumes!: LruLoader<CartVolume>;
+  private windLoader!: LruLoader<WindStep | null>;
+  private summaries: StepSummary[] = [];
   private ts: number[] = [];
   private track: { t: number; x: number; y: number }[] = [];
   private keys: CamKey[] = [];
   private pair = -1;
+  private pairFlow = false;
   private crop: SceneBox | null = null;
   /** Middle of the storm track and half width of the (fixed) shown box, km. */
   private anchor: [number, number] = [0, 0];
@@ -97,13 +148,27 @@ export class StormClip {
   private lookSteps = 7;
   terrainInfo = '';
   private terr: { size: number; h: Float32Array; half: number; cx: number; cy: number } | null = null;
+  private groundImg: { size: number; data: Uint8ClampedArray; half: number; cx: number; cy: number } | null = null;
+  private insetBase: HTMLCanvasElement | null = null;
+  private insetView = { cx: 0, cy: 0, half: 30 };
   private tf: Uint8Array = new Uint8Array(1024);
   private tfShift = 0;
   settings: ClipSettings = { ...DEFAULTS };
   fatal = '';
   mapOk = false;
+  /** The observer's place (km) and eye height above sea level (km, true). */
+  private obs: [number, number] = [0, 0];
+  private obsEyeKm = 0;
+  /** Flashes of the clip and where they came from. */
+  flashes: Flash[] = [];
+  lightningSource: 'observed' | 'modelled' | 'off' = 'off';
+  windSource: 'retrieved' | 'proxy' = 'proxy';
+  private lastFlow = { active: false, nRadars: 0 };
+  private flowOffset: [number, number] = [0, 0];
   /** State of the frame being drawn (for the banner). */
   private cur = { t: 0, td: 0, k: 0, s: 0 };
+  private curPose = { yawDeg: 0, pitchDeg: 0 };
+  flashesDrawn = 0;
 
   constructor(private container: HTMLElement, private overlay: HTMLCanvasElement) {
     this.ctx = overlay.getContext('2d')!;
@@ -113,46 +178,71 @@ export class StormClip {
     return Math.round(this.settings.duration * this.settings.fps);
   }
 
-  /** Load the bundle served at `baseUrl` (manifest.json and the binary volumes). */
+  private get observer(): boolean {
+    return this.settings.camera === 'observer';
+  }
+
+  /** Load the bundle served at `baseUrl`: the manifest, then every volume once (to summarise it) and the winds. */
   async load(baseUrl: string, settings: Partial<ClipSettings> = {}): Promise<{ steps: number; grid: number[]; title: string }> {
     this.settings = { ...DEFAULTS, ...settings };
-    const get = async (u: string) => {
-      const r = await fetch(`${baseUrl}/${u}`);
-      if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`);
-      return r;
-    };
-    this.manifest = await (await get('manifest.json')).json();
+    if (this.observer && settings.vexag === undefined) this.settings.vexag = 1;
+    this.baseUrl = baseUrl;
+    this.manifest = await (await this.get('manifest.json')).json();
     const m = this.manifest;
-    this.vols = [];
-    for (const st of m.steps) {
-      const h = await (await get(st.mosaic.header)).json();
-      const bytes = new Uint8Array(await (await get(st.mosaic.bin)).arrayBuffer());
-      const v = decodeMosaicVolume(h, bytes);
-      if (!v) throw new Error(`step ${st.index}: the volume does not match its header`);
-      this.vols.push(v);
-    }
-    const g0 = this.vols[0];
-    for (const v of this.vols) {
-      if (v.nx !== g0.nx || v.ny !== g0.ny || v.nz !== g0.nz || v.x0 !== g0.x0 || v.y0 !== g0.y0 || v.dx !== g0.dx) {
-        throw new Error('the time steps are not on the same grid');
-      }
-    }
+    this.volumes = new LruLoader<CartVolume>(3, (k) => this.fetchVolume(k));
+    this.windLoader = new LruLoader<WindStep | null>(3, (k) => this.fetchWind(k));
     this.ts = m.steps.map((s) => s.t_s);
     this.track = m.storm.track_km.map((p, i) => ({ t: this.ts[i], x: p[0], y: p[1] }));
-    this.keys = this.settings.keys ?? stormChoreography(this.settings.duration, m.storm.heading_deg, 4);
-    this.fullBox = gridBox(g0);
-    // The shown box is FIXED around the middle of the track (the storm travels across it and past the
-    // map's landmarks); it is wide enough that the storm stays well inside for the whole clip.
+    this.keys = this.settings.keys ?? (this.settings.preset === 'cyclone'
+      ? cycloneChoreography(this.settings.duration, this.settings.viewKm ?? 330)
+      : stormChoreography(this.settings.duration, m.storm.heading_deg, 4));
     const fr = trackFrame(this.track, m.crop_half_km);
     this.anchor = fr.anchor;
     this.cropHalf = fr.cropHalf;
-    return { steps: this.vols.length, grid: [g0.nx, g0.ny, g0.nz], title: m.title };
+    this.obs = placeObserver(this.anchor, m.storm.heading_deg, this.settings.observer);
+
+    // stream every step past once: keep only its summary (memory stays bounded for long series)
+    this.summaries = [];
+    for (let k = 0; k < m.steps.length; k++) {
+      const v = await this.volumes.get(k);
+      if (k === 0) this.g0 = v;
+      else if (v.nx !== this.g0.nx || v.ny !== this.g0.ny || v.nz !== this.g0.nz || v.x0 !== this.g0.x0 || v.y0 !== this.g0.y0 || v.dx !== this.g0.dx) {
+        throw new Error('the time steps are not on the same grid');
+      }
+      this.summaries.push(summarise(v, this.settings.t10Km ?? 5));
+    }
+    this.fullBox = gridBox(this.g0);
+    this.windSource = m.steps.some((s) => s.wind) ? 'retrieved' : 'proxy';
+    return { steps: m.steps.length, grid: [this.g0.nx, this.g0.ny, this.g0.nz], title: m.title };
+  }
+
+  private async get(u: string): Promise<Response> {
+    const r = await fetch(`${this.baseUrl}/${u}`);
+    if (!r.ok) throw new Error(`${u}: HTTP ${r.status}`);
+    return r;
+  }
+
+  private async fetchVolume(k: number): Promise<CartVolume> {
+    const st = this.manifest.steps[k];
+    const h = await (await this.get(st.mosaic.header)).json();
+    const bytes = new Uint8Array(await (await this.get(st.mosaic.bin)).arrayBuffer());
+    const v = decodeMosaicVolume(h, bytes);
+    if (!v) throw new Error(`step ${st.index}: the volume does not match its header`);
+    return v;
+  }
+
+  private async fetchWind(k: number): Promise<WindStep | null> {
+    const st = this.manifest.steps[k];
+    if (!st.wind) return null;
+    const h = await (await this.get(st.wind.header)).json();
+    const bytes = new Uint8Array(await (await this.get(st.wind.bin)).arrayBuffer());
+    return decodeWindStep(h, bytes);
   }
 
   /** Create the renderer, the transfer function and the ground map. */
   async prepare(mapProvider = 'osm'): Promise<void> {
     const m = this.manifest;
-    const g0 = this.vols[0];
+    const g0 = this.g0;
     const r = new CartesianRenderer(this.container, {
       onFatal: (msg) => { this.fatal = msg; },
       onFrame: (f) => this.drawOverlay(f),
@@ -163,7 +253,7 @@ export class StormClip {
     // the same default transfer function as the 3D tab (colours of the colormap, opacity curve of
     // reflectivity, slid for the strength of the scene)
     const hist = new Float64Array(256);
-    for (const v of this.vols) for (let i = 0; i < v.data.length; i += 3) hist[v.data[i]]++;
+    for (const s of this.summaries) for (let i = 0; i < 256; i++) hist[i] += s.hist[i];
     let sum = 0;
     for (let i = 1; i < 256; i++) sum += hist[i];
     let p995 = g0.vmax;
@@ -175,7 +265,7 @@ export class StormClip {
     this.tfShift = adaptiveShiftDb(p995);
     const realisticStorm = this.settings.stormStyle === 'realistic';
     this.tf = realisticStorm
-      ? buildRealisticTf(g0.vmin, g0.vmax, 0.35)
+      ? buildRealisticTf(g0.vmin, g0.vmax, 0.35, this.settings.palette ?? 'white')
       : buildTf('reflectivity', COLORMAP_DATA['NWSRef'], g0.vmin, g0.vmax, 'default', this.tfShift);
     r.setTransfer(this.tf);
     const spec = thresholdSpec('reflectivity', g0.vmin, g0.vmax, 'dBZ')!;
@@ -187,34 +277,37 @@ export class StormClip {
       groundMode: 'map', light: true, lightScene: false, showVolume: true, gridStepKm: 20,
     });
     r.setSceneBox(this.fullBox);
-    await r.setVolumePair(this.vols[0], this.vols[1]);
-    this.pair = 0;
+    await this.ensurePair(0);
 
     // ground map: a high resolution image centred on the storm track, big enough for the whole clip
     const xs = this.track.map((p) => p.x), ys = this.track.map((p) => p.y);
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
     const half = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2 + m.crop_half_km + 14;
-    // lat / lon of that centre (inverse of the spherical AEQD offset, by bisection on the forward map)
     const [lat, lon] = this.latLonOf(cx, cy);
     if (this.settings.ground === 'realistic') {
       await this.prepareRealisticGround(lat, lon, half + 35, [cx, cy]);
-      return;
-    }
-    const bm = resolveBasemap(mapProvider, 'dark');
-    const mt = this.settings.mapTheme ?? 'dark';
-    r.setMapGain(mt === 'light' ? 0.82 : 1.7);
-    let res = null;
-    try {
-      res = await buildGroundMap({ lat, lon, radiusKm: half, size: 2048, provider: bm.provider, theme: mt }, () => false);
-    } catch (e) {
-      console.warn('[clip] ground map failed:', e);
-    }
-    if (res) {
-      r.setGround(res.size, res.data, half, [cx, cy]);
-      this.mapOk = true;
     } else {
-      r.setParams({ groundMode: 'grid' });
+      const bm = resolveBasemap(mapProvider, 'dark');
+      const mt = this.settings.mapTheme ?? 'dark';
+      r.setMapGain(mt === 'light' ? 0.82 : 1.7);
+      let res = null;
+      try {
+        res = await buildGroundMap({ lat, lon, radiusKm: half, size: 2048, provider: bm.provider, theme: mt }, () => false);
+      } catch (e) {
+        console.warn('[clip] ground map failed:', e);
+      }
+      if (res) {
+        r.setGround(res.size, res.data, half, [cx, cy]);
+        this.groundImg = { size: res.size, data: res.data, half, cx, cy };
+        this.mapOk = true;
+      } else {
+        r.setParams({ groundMode: 'grid' });
+      }
     }
+    // the observer stands on the terrain
+    this.obsEyeKm = this.terrainKmAt(this.obs[0], this.obs[1]) + (this.settings.observer?.eyeM ?? OBSERVER_DEFAULTS.eyeM) / 1000;
+    this.prepareInset();
+    this.prepareLightning();
   }
 
   /** Satellite imagery draped on terrain (both cached); anything that fails is reported, never faked. */
@@ -230,6 +323,7 @@ export class StormClip {
     ]);
     if (img) {
       r.setGround(img.size, img.data, half, center);
+      this.groundImg = { size: img.size, data: img.data, half, cx: center[0], cy: center[1] };
       this.mapOk = true;
       if (img.missing) console.warn(`[clip] imagery: ${img.missing} tiles missing`);
     } else {
@@ -257,15 +351,22 @@ export class StormClip {
     return [lat, lon];
   }
 
+  /** Where the observer stands, for the report (lat, lon, km in the scene). */
+  observerInfo(): { lat: number; lon: number; x: number; y: number; eyeM: number } {
+    const [lat, lon] = this.latLonOf(this.obs[0], this.obs[1]);
+    return { lat, lon, x: this.obs[0], y: this.obs[1], eyeM: this.settings.observer?.eyeM ?? OBSERVER_DEFAULTS.eyeM };
+  }
+
   /** The state of clip time `t`: data time, interval and position inside it, storm centre, camera. */
   stateAt(t: number) {
     const td = dataTimeAt(t, this.settings.duration, this.ts[0], this.ts[this.ts.length - 1]);
     const { i: k, s } = locate(this.ts, td);
     const [cx, cy] = stormAt(this.track, td);
-    // camera target: the middle of the track plus a fraction of the storm's displacement from it
+    // orbit camera target: the middle of the track plus a fraction of the storm's displacement from it
     const lag = this.settings.targetLag ?? 0.3;
     const [tx, ty] = lagTarget(this.anchor, [cx, cy], lag);
-    return { t, td, k, s, cx, cy, tx, ty, cam: cameraAt(this.keys, t) };
+    const pose = observerPose(this.obs, [cx, cy], this.anchor, this.settings.observer);
+    return { t, td, k, s, cx, cy, tx, ty, cam: cameraAt(this.keys, t), pose };
   }
 
   /** Light of the realistic look at data time `td` (s): the real sun, or the documented dusk light after sunset. */
@@ -276,7 +377,14 @@ export class StormClip {
     if (key === this.sunKey && this.sun) return;
     this.sunKey = key;
     this.sun = sunLight(when, o.lat, o.lon);
-    this.renderer!.setRealistic(lookFor(this.sun, this.lookSteps));
+    // when the real sun is down the default is a stylised daylight; 'dusk' keeps the dusk light
+    if (this.sun.stylised && (this.settings.light ?? 'daylight') === 'daylight') this.sun = daylightAssumed(when, o.lat, o.lon);
+    if (this.settings.sun) {
+      this.sun = { ...this.sun, azimuthDeg: this.settings.sun.azimuthDeg, elevationDeg: this.settings.sun.elevationDeg, stylised: true, chosen: true } as SunLight & { chosen?: boolean };
+    }
+    // the window camera sees far: more haze than the orbit view
+    const lk = lookFor(this.sun, this.lookSteps, this.observer ? 2.4 : 1);
+    this.renderer!.setRealistic(lk);
   }
 
   /** What the light is, for the info line (null in the scientific style). */
@@ -311,7 +419,7 @@ export class StormClip {
 
   /** Radar sites as [name, x km, y km] (scene frame). */
   siteXY(): [string, number, number][] {
-    return (this.vols[0]?.sites ?? []).map((q: any) => [q.name ?? q.id ?? '', q.x, q.y]);
+    return (this.g0?.sites ?? []).map((q: any) => [q.name ?? q.id ?? '', q.x, q.y]);
   }
 
   /** Screen position (px) of a ground / scene point (km, z exaggerated) in the last drawn frame. */
@@ -326,6 +434,97 @@ export class StormClip {
     return [c.w / 2 + (px / d / c.tanX) * (c.w / 2), c.h / 2 - (py / d / c.tanY) * (c.h / 2)];
   }
 
+  // ── Volumes, flow ───────────────────────────────────────────────────────
+
+  /** Make steps k and k + 1 the pair on the GPU, with the flow between them. */
+  private async ensurePair(k: number): Promise<void> {
+    const r = this.renderer;
+    if (!r || k === this.pair) return;
+    const [a, b] = await Promise.all([this.volumes.get(k), this.volumes.get(k + 1)]);
+    await r.setVolumePair(a, b);
+    let flow = false;
+    if (this.settings.flow !== false) {
+      const [wa, wb] = await Promise.all([this.windLoader.get(k), this.windLoader.get(k + 1)]);
+      if (wa && wb && wa.nx === wb.nx && wa.ny === wb.ny && wa.nz === wb.nz) {
+        r.setMorphFlow(this.flowField(wa, a), this.flowField(wb, b));
+        this.flowOffset = aeqdOffsetKm(a.originLat, a.originLon, wa.originLat, wa.originLon);
+        flow = true;
+        this.lastFlow = { active: true, nRadars: wa.nRadars ?? 0 };
+      }
+    }
+    if (!flow) {
+      r.setMorphFlow(null, null);
+      this.lastFlow = { active: false, nRadars: 0 };
+    }
+    this.pairFlow = flow;
+    this.pair = k;
+  }
+
+  /** Storm-relative flow of a wind step: the mean over the echo is the storm's translation, the rest turns the echo. */
+  private flowField(w: WindStep, v: CartVolume): MorphField {
+    const off = aeqdOffsetKm(v.originLat, v.originLon, w.originLat, w.originLon);
+    return stormRelativeField(w, (x, y, z) => dbzAt(v, x + off[0], y + off[1], z) >= 25);
+  }
+
+  // ── Lightning ───────────────────────────────────────────────────────────
+
+  /** Observed flashes of the bundle, or a modelled source driven by the strong ice-phase echo. */
+  private prepareLightning(): void {
+    const m = this.manifest;
+    const sets = this.settings;
+    if (sets.lightning === 'off') { this.flashes = []; this.lightningSource = 'off'; return; }
+    const first = this.ts[0], last = this.ts[this.ts.length - 1];
+    const obsF = m.lightning?.flashes;
+    if (obsF && obsF.length) {
+      this.lightningSource = 'observed';
+      const rng = mulberry32((sets.lightningSeed ?? 7) + 99);
+      this.flashes = obsF
+        .filter((f) => f.t_s >= first && f.t_s <= last)
+        .map((f, i) => {
+          const kind = rng() < 0.45 ? 'CG' : 'IC';
+          const zTop = f.z ?? 6 + rng() * 3;
+          const g = this.terrainKmAt(f.x, f.y);
+          const origin: [number, number, number] = [f.x, f.y, zTop];
+          const end: [number, number, number] = kind === 'CG'
+            ? [f.x + (rng() - 0.5) * 6, f.y + (rng() - 0.5) * 6, g]
+            : [f.x + (rng() - 0.5) * 24, f.y + (rng() - 0.5) * 24, zTop + (rng() - 0.5) * 2];
+          return makeFlash({ id: i, t: clipTimeOf(f.t_s, sets.duration, first, last), kind, source: 'observed', origin, end, energy: f.energy, seed: sets.lightningSeed });
+        })
+        .sort((a, b) => a.t - b.t);
+      return;
+    }
+    // modelled: rate from the ice-phase echo volume of the steps, places from its strong columns
+    this.lightningSource = 'modelled';
+    const vmax = Math.max(...this.summaries.map((s) => s.iceKm3));
+    if (!(vmax > 0)) { this.flashes = []; return; }
+    const rMax = sets.lightningRate ?? 0.8;
+    const volAt = (td: number) => {
+      const { i, s } = locate(this.ts, td);
+      const a = this.summaries[i]?.iceKm3 ?? 0, b = this.summaries[i + 1]?.iceKm3 ?? a;
+      return a * (1 - s) + b * s;
+    };
+    const dur = sets.duration;
+    const rate = (t: number) => {
+      const td = dataTimeAt(t, dur, first, last);
+      const rel = volAt(td) / vmax;
+      return rel < 0.08 ? 0 : rMax * Math.min(1, rel);
+    };
+    const candidates = (t: number): FlashCandidate[] => {
+      const td = dataTimeAt(t, dur, first, last);
+      const { i, s } = locate(this.ts, td);
+      const k = s < 0.5 ? i : i + 1;
+      const mv = intervalMotion(this.track, Math.min(i, this.ts.length - 2));
+      const dtk = td - this.ts[k];
+      return this.summaries[k].candidates.map((c) => ({ ...c, x: c.x + mv[0] * dtk, y: c.y + mv[1] * dtk }));
+    };
+    this.flashes = modelFlashes({
+      seed: sets.lightningSeed ?? 7, duration: dur, rate, candidates,
+      groundKm: (x, y) => this.terrainKmAt(x, y), headingDeg: m.storm.heading_deg,
+    });
+  }
+
+  // ── Frames ──────────────────────────────────────────────────────────────
+
   /** Draw frame `i` (0-based) completely; resolves when the pixels are final. */
   async renderFrame(i: number): Promise<void> {
     return this.renderAt(i / this.settings.fps);
@@ -337,42 +536,63 @@ export class StormClip {
     if (!r) throw new Error('prepare() first');
     const st = this.stateAt(t);
     if (camOverride) st.cam = { ...st.cam, ...camOverride };
-    if (st.k !== this.pair) {
-      await r.setVolumePair(this.vols[st.k], this.vols[st.k + 1]);
-      this.pair = st.k;
-    }
+    await this.ensurePair(st.k);
     const m = intervalMotion(this.track, st.k);
-    const { shiftA, shiftB } = morphShifts(m, this.ts[st.k + 1] - this.ts[st.k], st.s);
-    r.setMorph(st.s, shiftA, shiftB);
-    const half = this.cropHalf;
-    const [ax, ay] = this.anchor;
-    this.crop = { xMin: ax - half, xMax: ax + half, yMin: ay - half, yMax: ay + half, zMin: this.fullBox.zMin, zMax: this.fullBox.zMax };
-    r.setCropBox(this.crop);
-    if (this.settings.stormStyle === 'realistic') this.updateLight(st.td);
+    r.setMorph(st.s, [0, 0, 0], [0, 0, 0]);
+    r.setMorphMotion(this.ts[st.k + 1] - this.ts[st.k], m, this.flowOffset);
+    if (this.settings.stormStyle === 'realistic') {
+      this.updateLight(st.td);
+      // the cloud texture rides with the storm: its offset is how far the storm centre has moved
+      const [s0x, s0y] = stormAt(this.track, this.ts[0]);
+      r.setCloudTexture(this.settings.cloudTexture ?? 1, [st.cx - s0x, st.cy - s0y, 0]);
+    }
     this.cur = { t: st.t, td: st.td, k: st.k, s: st.s };
+    this.curPose = st.pose;
     const ve = this.settings.vexag;
-    r.exportRender({
-      theta: st.cam.theta, phi: st.cam.phi, dist: st.cam.dist,
-      target: [st.tx + st.cam.dx, st.ty + st.cam.dy, st.cam.dz * ve],
-    });
+    if (this.observer) {
+      const eye: [number, number, number] = [this.obs[0], this.obs[1], this.obsEyeKm * ve];
+      this.crop = this.fullBox;
+      r.setCropBox(null);
+      const fl = flashLight(this.flashes, t, eye, ve);
+      r.setFlashLight(fl.points, fl.sky);
+      r.exportRenderFP(eye, st.pose.yawDeg, st.pose.pitchDeg);
+    } else {
+      const half = this.cropHalf;
+      const [ax, ay] = this.anchor;
+      this.crop = { xMin: ax - half, xMax: ax + half, yMin: ay - half, yMax: ay + half, zMin: this.fullBox.zMin, zMax: this.fullBox.zMax };
+      r.setCropBox(this.crop);
+      r.setExtendDown(false);
+      const fl = flashLight(this.flashes, t, [st.tx, st.ty, 0], ve);
+      r.setFlashLight(fl.points, fl.sky);
+      r.exportRender({
+        theta: st.cam.theta, phi: st.cam.phi, dist: st.cam.dist,
+        target: [st.tx + st.cam.dx, st.ty + st.cam.dy, st.cam.dz * ve],
+      });
+    }
     this.drawBanner();
   }
 
   // ── Overlay ─────────────────────────────────────────────────────────────
 
-  /** Frame, compass letters, radar sites, height axis and scale bar (the 3D tab's overlay). */
+  /** Frame, compass letters, radar sites, height axis and scale bar (the 3D tab's overlay), lightning. */
   private drawOverlay(f: CamFrame): void {
     const c = this.overlay;
     const crop = this.crop;
     if (!crop) return;
     const cam = { eye: f.eye, fwd: f.fwd, right: f.right, up: f.up, tanX: f.tanX, tanY: f.tanY, w: c.width, h: c.height };
-    drawCartesianOverlay(this.ctx, cam, {
-      box: crop, vexag: this.settings.vexag, sites: this.vols[0].sites, lightScene: false, showFrame: this.settings.ground !== 'realistic',
-      showHeightAxis: false, showExaggeration: false,
-    });
-    drawOffBoxSites(this.ctx, cam, crop, this.vols[0].sites, false);
     this.lastCam = cam;
-    this.drawTrack(cam);
+    if (this.observer) {
+      this.ctx.clearRect(0, 0, c.width, c.height);
+      drawCompassStrip(this.ctx, c.width, c.height, this.curPose.yawDeg, f.tanX, c.height / 1080);
+    } else {
+      drawCartesianOverlay(this.ctx, cam, {
+        box: crop, vexag: this.settings.vexag, sites: this.g0.sites, lightScene: false, showFrame: this.settings.ground !== 'realistic',
+        showHeightAxis: false, showExaggeration: false,
+      });
+      drawOffBoxSites(this.ctx, cam, crop, this.g0.sites, false);
+      this.drawTrack(cam);
+    }
+    this.flashesDrawn = drawFlashes(this.ctx, cam, this.flashes, this.cur.t, this.settings.vexag);
   }
 
   /** The storm centre's path on the map: travelled part solid, the rest faint, observed positions as dots. */
@@ -449,6 +669,87 @@ export class StormClip {
     }
   }
 
+  // ── Inset map (observer camera) ─────────────────────────────────────────
+
+  private static INSET_PX = 270;
+  private echoCanvas: HTMLCanvasElement | null = null;
+
+  /** The base of the inset: the ground image around the observer and the storm track. */
+  private prepareInset(): void {
+    if (!this.observer) return;
+    const S = StormClip.INSET_PX;
+    const pts: [number, number][] = [this.obs, ...this.track.map((p) => [p.x, p.y] as [number, number])];
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const half = Math.max(22, (Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2) * 1.5 + 6);
+    this.insetView = { cx, cy, half };
+    const cv = document.createElement('canvas');
+    cv.width = S;
+    cv.height = S;
+    const g = cv.getContext('2d')!;
+    const img = this.groundImg;
+    if (img) {
+      const id = g.createImageData(S, S);
+      for (let j = 0; j < S; j++) {
+        for (let i = 0; i < S; i++) {
+          const x = cx + (i / S - 0.5) * 2 * half, y = cy + (0.5 - j / S) * 2 * half;
+          const gx = Math.max(0, Math.min(img.size - 1, Math.round(((x - img.cx) / (2 * img.half) + 0.5) * img.size)));
+          const gy = Math.max(0, Math.min(img.size - 1, Math.round((0.5 - (y - img.cy) / (2 * img.half)) * img.size)));
+          const o = (gy * img.size + gx) * 4, q = (j * S + i) * 4;
+          id.data[q] = img.data[o]; id.data[q + 1] = img.data[o + 1]; id.data[q + 2] = img.data[o + 2]; id.data[q + 3] = 255;
+        }
+      }
+      g.putImageData(id, 0, 0);
+    }
+    this.insetBase = cv;
+  }
+
+  /** The storm echo (column maximum of the interpolated volume) over the inset area, as an RGBA canvas. */
+  private insetEcho(): HTMLCanvasElement {
+    const S = StormClip.INSET_PX;
+    if (!this.echoCanvas) {
+      this.echoCanvas = document.createElement('canvas');
+      this.echoCanvas.width = S;
+      this.echoCanvas.height = S;
+    }
+    const g = this.echoCanvas.getContext('2d')!;
+    const id = g.createImageData(S, S);
+    const { k, s } = this.cur;
+    const A = this.summaries[k].composite, B = this.summaries[k + 1].composite;
+    const v = this.g0;
+    const m = intervalMotion(this.track, k);
+    const dt = this.ts[k + 1] - this.ts[k];
+    const lut = COLORMAP_DATA['NWSRef'];
+    const { cx, cy, half } = this.insetView;
+    const low = 20; // dBZ: fainter echo is not drawn on the map
+    for (let j = 0; j < S; j++) {
+      for (let i = 0; i < S; i++) {
+        const x = cx + (i / S - 0.5) * 2 * half, y = cy + (0.5 - j / S) * 2 * half;
+        const ca = this.codeAt(A, x - m[0] * s * dt, y - m[1] * s * dt, v);
+        const cb = this.codeAt(B, x + m[0] * (1 - s) * dt, y + m[1] * (1 - s) * dt, v);
+        const wa = ca ? 1 - s : 0, wb = cb ? s : 0;
+        if (wa + wb <= 0) continue;
+        const code = (wa * ca + wb * cb) / (wa + wb);
+        const dbz = dbzOfCode(v, code);
+        if (dbz < low) continue;
+        const idx = Math.max(0, Math.min(255, Math.round(((dbz - v.vmin) / (v.vmax - v.vmin)) * 255)));
+        const q = (j * S + i) * 4;
+        id.data[q] = lut[idx * 3]; id.data[q + 1] = lut[idx * 3 + 1]; id.data[q + 2] = lut[idx * 3 + 2];
+        id.data[q + 3] = Math.round(255 * Math.min(0.85, 0.35 + (dbz - low) / 60));
+      }
+    }
+    g.putImageData(id, 0, 0);
+    return this.echoCanvas;
+  }
+
+  private codeAt(comp: Uint8Array, x: number, y: number, v: CartVolume): number {
+    const i = Math.round((x - v.x0) / v.dx), j = Math.round((y - v.y0) / v.dy);
+    if (i < 0 || j < 0 || i >= v.nx || j >= v.ny) return 0;
+    return comp[j * v.nx + i];
+  }
+
+  // ── Banner ──────────────────────────────────────────────────────────────
+
   private drawBanner(): void {
     const ctx = this.ctx;
     const W = this.overlay.width, H = this.overlay.height;
@@ -456,7 +757,7 @@ export class StormClip {
     const m = this.manifest;
     const t0 = m.steps[0].time_utc;
     const first = this.ts[0], last = this.ts[this.ts.length - 1];
-    const { td, k, s } = this.cur;
+    const { td } = this.cur;
     const font = (px: number, w = 600) => `${w} ${Math.round(px * u)}px system-ui, -apple-system, "Segoe UI", sans-serif`;
     const text = (str: string, x: number, y: number, px: number, color = 'rgba(240,245,255,0.97)', w = 600, align: CanvasTextAlign = 'left') => {
       ctx.font = font(px, w);
@@ -470,21 +771,38 @@ export class StormClip {
       ctx.fillText(str, x, y);
     };
 
-    // title and time
+    // title and time (the observer clip keeps the top centre for the compass strip)
     const pad = 34 * u;
-    text(this.settings.title ?? m.title, pad, pad + 34 * u, 38, 'rgba(255,255,255,0.98)', 700);
-    text(this.settings.subtitle ?? 'merged 3-D radar reflectivity', pad, pad + 64 * u, 19, 'rgba(200,215,240,0.95)', 500);
-    text(utcLabel(t0, td), pad, pad + 128 * u, 58, 'rgba(255,255,255,0.99)', 700);
+    const obsMode = this.observer;
+    const y0 = pad + (obsMode ? 28 : 0) * u;
+    text(this.settings.title ?? m.title, pad, y0 + 34 * u, 38, 'rgba(255,255,255,0.98)', 700);
+    text(this.settings.subtitle ?? 'merged 3-D radar reflectivity', pad, y0 + 64 * u, 19, 'rgba(200,215,240,0.95)', 500);
+    text(utcLabel(t0, td), pad, y0 + 128 * u, 58, 'rgba(255,255,255,0.99)', 700);
     const date = new Date(new Date(t0).getTime() + td * 1000);
     const lapse = (last - first) / Math.max(1, this.settings.duration - 3);
-    text(`${date.toUTCString().slice(5, 16)} · time-lapse ×${lapse.toFixed(0)}`, pad, pad + 156 * u, 19, 'rgba(200,215,240,0.95)', 500);
+    text(`${date.toUTCString().slice(5, 16)} · time-lapse ×${lapse.toFixed(0)}`, pad, y0 + 156 * u, 19, 'rgba(200,215,240,0.95)', 500);
     const [sx0, sy0] = stormAt(this.track, first);
     const [sx1, sy1] = stormAt(this.track, td);
     const moved = Math.hypot(sx1 - sx0, sy1 - sy0);
-    text(`storm centre moved ${moved.toFixed(1)} km since ${utcLabel(t0, 0, false)}`, pad, pad + 184 * u, 19, 'rgba(255,235,150,0.98)', 600);
+    if (obsMode) {
+      const dx = sx1 - this.obs[0], dy = sy1 - this.obs[1];
+      const bd = bearingDeg(dx, dy);
+      text(`storm centre ${Math.hypot(dx, dy).toFixed(1)} km ${compassLabel(bd)} of the observer · moved ${moved.toFixed(1)} km`, pad, y0 + 184 * u, 19, 'rgba(255,235,150,0.98)', 600);
+    } else {
+      text(`storm centre moved ${moved.toFixed(1)} km since ${utcLabel(t0, 0, false)}`, pad, y0 + 184 * u, 19, 'rgba(255,235,150,0.98)', 600);
+    }
+    // lightning provenance: never ambiguous
+    if (this.lightningSource !== 'off') {
+      const obsL = this.lightningSource === 'observed';
+      const n = this.flashes.length;
+      text(
+        obsL ? `Lightning: OBSERVED flashes (${m.lightning?.kind ?? 'lightning data'}), channel shape synthetic · ${n}` : `Lightning: MODELLED from radar echo, NOT observed · ${n} flashes, thinned for the time-lapse`,
+        pad, y0 + 210 * u, 16, obsL ? 'rgba(170,230,255,0.97)' : 'rgba(255,190,150,0.98)', 600,
+      );
+    }
 
     // progress bar with the observation times
-    const lift = this.settings.ground === 'realistic' || this.settings.stormStyle === 'realistic' ? 34 : 0;
+    const lift = this.settings.ground === 'realistic' || this.settings.stormStyle === 'realistic' || this.settings.audio ? 50 : 0;
     const bw = W * 0.56, bx = (W - bw) / 2, by = H - (92 + lift) * u;
     const px = (t: number) => bx + ((t - first) / (last - first)) * bw;
     ctx.fillStyle = 'rgba(8,12,22,0.55)';
@@ -500,7 +818,9 @@ export class StormClip {
       ctx.arc(px(t), by + 2 * u, (on ? 9 : 6) * u, 0, Math.PI * 2);
       ctx.fillStyle = on ? 'rgba(255,214,90,1)' : td >= t ? 'rgba(120,200,255,1)' : 'rgba(255,255,255,0.8)';
       ctx.fill();
-      text(utcLabel(t0, t, false).replace(' UTC', ''), px(t), by - 14 * u, 17, on ? 'rgba(255,214,90,1)' : 'rgba(220,230,250,0.95)', 600, 'center');
+      if (this.ts.length <= 14 || i % Math.ceil(this.ts.length / 12) === 0) {
+        text(utcLabel(t0, t, false).replace(' UTC', ''), px(t), by - 14 * u, 17, on ? 'rgba(255,214,90,1)' : 'rgba(220,230,250,0.95)', 600, 'center');
+      }
     });
     ctx.beginPath();
     ctx.arc(px(td), by + 2 * u, 8 * u, 0, Math.PI * 2);
@@ -509,14 +829,16 @@ export class StormClip {
     const motion = `${m.storm.speed_ms.toFixed(0)} m/s toward ${m.storm.heading_deg.toFixed(0)}°`;
     const status = near >= 0 ? 'OBSERVED VOLUME' : 'INTERPOLATED between observed volumes';
     text(status, bx, by + 34 * u, 19, near >= 0 ? 'rgba(255,214,90,1)' : 'rgba(220,230,250,0.98)', 700);
+    const carried = this.pairFlow
+      ? `carried by the storm motion (${motion}) and the observed Doppler wind (${this.lastFlow.nRadars || 'multi'}-radar), blended; not new observations`
+      : `carried along the storm motion (${motion}) only (no wind retrieval for this interval) and blended; not new observations`;
     text(
-      near >= 0 ? `${Object.keys(m.steps[near].files).join(' ')} · nearest volume of each radar` : `carried along the storm motion (${motion}) and cross-faded; not new observations`,
+      near >= 0 ? `${Object.keys(m.steps[near].files).join(' ')} · nearest volume of each radar` : carried,
       bx, by + 58 * u, 16, 'rgba(200,215,240,0.95)', 500,
     );
-    void k; void s;
 
     // colour bar (the scientific scale) or, in the realistic look, what a dBZ looks like as a shaft
-    const cbx = W - pad - 22 * u, cby = H * 0.28, cbh = H * 0.36;
+    const cbx = W - pad - 22 * u, cby = H * (obsMode ? 0.46 : 0.28), cbh = H * (obsMode ? 0.24 : 0.36);
     const lut = COLORMAP_DATA['NWSRef'];
     const stylised = this.settings.stormStyle === 'realistic';
     if (stylised) {
@@ -526,8 +848,8 @@ export class StormClip {
     for (let y = 0; y < cbh; y++) {
       const i = Math.min(255, Math.round((1 - y / cbh) * 255));
       if (stylised) {
-        const dbz = this.vols[0].vmin + (i / 255) * (this.vols[0].vmax - this.vols[0].vmin);
-        const smp = realisticSample(dbz);
+        const dbz = this.g0.vmin + (i / 255) * (this.g0.vmax - this.g0.vmin);
+        const smp = realisticSample(dbz, this.settings.palette ?? 'white');
         ctx.fillStyle = `rgba(${Math.round(smp.rgb[0] * 255)},${Math.round(smp.rgb[1] * 255)},${Math.round(smp.rgb[2] * 255)},${(1 - Math.exp(-smp.sigma * 5)).toFixed(3)})`;
       } else {
         ctx.fillStyle = `rgb(${lut[i * 3]},${lut[i * 3 + 1]},${lut[i * 3 + 2]})`;
@@ -537,23 +859,44 @@ export class StormClip {
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth = 1;
     ctx.strokeRect(cbx, cby, 22 * u, cbh);
-    const v0 = this.vols[0];
+    const v0 = this.g0;
     for (const dbz of [0, 20, 40, 60]) {
       const f = (dbz - v0.vmin) / (v0.vmax - v0.vmin);
       text(String(dbz), cbx - 8 * u, cby + cbh * (1 - f) + 6 * u, 16, 'rgba(235,240,255,0.97)', 600, 'right');
     }
     text('dBZ', cbx + 11 * u, cby - 12 * u, 17, 'rgba(235,240,255,0.97)', 700, 'center');
 
-    // realistic look: what is stylised, and the attributions that must stay on screen
-    if (this.settings.ground === 'realistic' || stylised) {
-      const l2: string[] = [];
+    // the inset map of the observer clip
+    if (obsMode && this.insetBase) {
+      const S = StormClip.INSET_PX * u;
+      const { cx, cy, half } = this.insetView;
+      const [scx, scy] = stormAt(this.track, td);
+      const passed = this.ts.filter((t) => t <= td + 1e-6).length - 1;
+      const oi = this.observerInfo();
+      drawInset(ctx, {
+        x: W - pad - S, y: pad + 36 * u, size: S, u, cx, cy, half, base: this.insetBase, echo: this.insetEcho(),
+        track: this.track.map((p) => [p.x, p.y]), storm: [scx, scy], passed, observer: this.obs,
+        yawDeg: this.curPose.yawDeg, hfovDeg: this.lastCam ? horizontalFovDeg(this.lastCam.tanY, W / H) : 73,
+        title: 'Where the camera stands', caption: `${Math.abs(oi.lat).toFixed(2)}°${oi.lat >= 0 ? 'N' : 'S'} ${Math.abs(oi.lon).toFixed(2)}°${oi.lon >= 0 ? 'E' : 'W'} · eye ${oi.eyeM} m`,
+      });
+    }
+
+    // realistic look: what is stylised, the sound label, and the attributions that must stay on screen
+    if (this.settings.ground === 'realistic' || stylised || this.settings.audio) {
+      const la: string[] = [];
+      const lb: string[] = [];
       if (stylised) {
-        l2.push(this.sun?.stylised
-          ? `Stylised lighting, not a photograph: dusk light at the sunset azimuth (the real sun was ${Math.round(Math.abs(this.sun.realElevationDeg))}° ${this.sun.realElevationDeg < 0 ? 'below' : 'above'} the horizon)`
-          : `Stylised rendering, not a photograph (${this.sun?.label ?? 'sun light'})`);
+        la.push(this.sun?.daylightAssumed
+          ? `Stylised daylight; the real sun was ${Math.round(Math.abs(this.sun.realElevationDeg))}° below the horizon at this time (not a photograph)`
+          : this.sun?.stylised
+            ? `Stylised lighting, not a photograph: ${this.settings.sun ? 'light direction chosen for the shot' : 'dusk light at the sunset azimuth'} (the real sun was ${Math.round(Math.abs(this.sun.realElevationDeg))}° ${this.sun.realElevationDeg < 0 ? 'below' : 'above'} the horizon)`
+            : `Stylised rendering, not a photograph (${this.sun?.label ?? 'sun light'})`);
+        la.push('radar sees rain and ice, not cloud droplets: cloud look and fine detail are stylised, echo position and strength are radar data');
       }
-      if (this.settings.ground === 'realistic') l2.push(`vertical scale ×${this.settings.vexag} for terrain and storm (relief exaggerated)`);
-      text(l2.join(' · '), W / 2, H - 38 * u, 15, 'rgba(235,240,255,0.97)', 600, 'center');
+      if (this.settings.ground === 'realistic') lb.push(`vertical scale ×${this.settings.vexag}${this.settings.vexag > 1 ? ' for terrain and storm (relief exaggerated)' : ' (true scale)'}`);
+      if (this.settings.audio) lb.push(`Sound: ${AUDIO_LABEL}; wind ${this.windSource === 'retrieved' ? 'from the retrieved multi-Doppler wind at the observer' : 'a proxy, not measured'}`);
+      if (la.length) text(la.join(' · '), W / 2, H - 56 * u, 15, 'rgba(235,240,255,0.97)', 600, 'center');
+      if (lb.length) text(lb.join(' · '), W / 2, H - 36 * u, 15, 'rgba(235,240,255,0.97)', 600, 'center');
       const l1 = [
         this.settings.ground === 'realistic' ? IMAGERY_EOX_S2.attribution : '',
         this.settings.ground === 'realistic' ? TERRAIN_ATTRIBUTION : '',
@@ -563,6 +906,112 @@ export class StormClip {
     } else {
       text(`Height shown up to ${this.fullBox.zMax.toFixed(0)} km · vertical scale ×${this.settings.vexag}`, W - pad, H - 20 * u, 15, 'rgba(200,215,240,0.9)', 500, 'right');
     }
+  }
+
+  // ── Sound ───────────────────────────────────────────────────────────────
+
+  /** Wind speed at the observer (m/s) and the rain level 0..1 for clip time `t`. */
+  private async observerConditions(t: number): Promise<{ wind: number; rain: number }> {
+    const st = this.stateAt(t);
+    const { k, s } = st;
+    const v = await this.volumes.get(k);
+    const vb = await this.volumes.get(k + 1);
+    const m = intervalMotion(this.track, k);
+    const dt = this.ts[k + 1] - this.ts[k];
+    const [ox, oy] = this.obs;
+    // rain: the echo near the ground over the observer, carried like the cloud; 20 dBZ none, 55 dBZ full
+    const da = dbzAt(v, ox - m[0] * s * dt, oy - m[1] * s * dt, 0.5);
+    const db = dbzAt(vb, ox + m[0] * (1 - s) * dt, oy + m[1] * (1 - s) * dt, 0.5);
+    const lv = (d: number) => (Number.isFinite(d) ? Math.max(0, Math.min(1, (d - 20) / 35)) : 0);
+    const rain = (1 - s) * lv(da) + s * lv(db);
+    let wind: number | null = null;
+    if (this.windSource === 'retrieved') {
+      const [wa, wb] = await Promise.all([this.windLoader.get(k), this.windLoader.get(k + 1)]);
+      const sp = (w: WindStep | null, vol: CartVolume): number | null => {
+        if (!w) return null;
+        const off = aeqdOffsetKm(w.originLat, w.originLon, vol.originLat, vol.originLon);
+        const x = ox + off[0], y = oy + off[1];
+        const i0 = Math.round((x - w.x0) / w.dx), j0 = Math.round((y - w.y0) / w.dy);
+        // the nearest valid cell of the lowest levels within a few cells
+        for (let k2 = 0; k2 < w.nz; k2++) {
+          let best: number | null = null, bd = 9;
+          for (let dj = -3; dj <= 3; dj++) {
+            for (let di = -3; di <= 3; di++) {
+              const i = i0 + di, j = j0 + dj;
+              if (i < 0 || j < 0 || i >= w.nx || j >= w.ny) continue;
+              const idx = (k2 * w.ny + j) * w.nx + i;
+              const u = w.u[idx], vv = w.v[idx];
+              if (!Number.isFinite(u) || !Number.isFinite(vv)) continue;
+              const d = Math.hypot(di, dj);
+              if (d < bd) { bd = d; best = Math.hypot(u, vv); }
+            }
+          }
+          if (best !== null) return best * SURFACE_WIND_FACTOR;
+        }
+        return null;
+      };
+      const a = sp(wa, v), b = sp(wb, vb);
+      wind = a !== null && b !== null ? a * (1 - s) + b * s : a ?? b;
+    }
+    if (wind === null) {
+      // a labelled proxy, not a measurement: a light breeze, more when rain is falling on the observer
+      wind = 3 + 6 * rain + 0.2 * this.manifest.storm.speed_ms;
+    }
+    return { wind, rain };
+  }
+
+  /** Render the soundscape of the observer camera offline; returns 16-bit stereo PCM as base64 plus a report. */
+  async renderAudio(sampleRate = 48000): Promise<{ pcm: string; sampleRate: number; frames: number; peak: number; thunders: { flash: number; tFlash: number; arrival: number; delay: number; distKm: number; kind: string; source: string }[]; windMs: { min: number; max: number }; windSource: string }> {
+    if (!this.observer) throw new Error('sound is rendered for the observer camera');
+    const fps = this.settings.fps, dur = this.settings.duration;
+    const nL = Math.ceil(dur * fps) + 1;
+    const x = new Float32Array(nL), y = new Float32Array(nL), z = new Float32Array(nL), yaw = new Float32Array(nL), pit = new Float32Array(nL);
+    for (let i = 0; i < nL; i++) {
+      const p = this.stateAt(i / fps).pose;
+      x[i] = this.obs[0]; y[i] = this.obs[1]; z[i] = this.obsEyeKm; yaw[i] = p.yawDeg; pit[i] = p.pitchDeg;
+    }
+    const dtS = 0.1;
+    const nS = Math.floor(dur / dtS) + 1;
+    const wind = new Float32Array(nS), rain = new Float32Array(nS);
+    for (let i = 0; i < nS; i++) {
+      const c = await this.observerConditions(i * dtS);
+      wind[i] = c.wind;
+      rain[i] = c.rain;
+    }
+    const input: SoundInput = {
+      duration: dur, listener: { dt: 1 / fps, x, y, z, yawDeg: yaw, pitchDeg: pit },
+      windMs: wind, rain, dtSeries: dtS, flashes: this.flashes, compress: this.settings.soundCompress ?? 8, seed: this.settings.lightningSeed ?? 7,
+    };
+    const res = await renderSoundscape(input, sampleRate);
+    const n = res.left.length;
+    const pcm = new Int16Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      pcm[i * 2] = Math.max(-32768, Math.min(32767, Math.round(res.left[i] * 32767)));
+      pcm[i * 2 + 1] = Math.max(-32768, Math.min(32767, Math.round(res.right[i] * 32767)));
+    }
+    const bytes = new Uint8Array(pcm.buffer);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const flashById = new Map(this.flashes.map((f) => [f.id, f]));
+    const thunders = res.thunders.map((th) => {
+      const f = flashById.get(th.flashId)!;
+      return { flash: th.flashId, tFlash: f.t, arrival: th.arrival, delay: th.arrival - f.t, distKm: th.distKm, kind: f.kind, source: f.source };
+    });
+    return { pcm: btoa(bin), sampleRate, frames: n, peak: res.peak, thunders, windMs: { min: Math.min(...wind), max: Math.max(...wind) }, windSource: this.windSource };
+  }
+
+  /** Flashes of the clip (time, kind, source, strength): for reports and tests. */
+  flashList(): { id: number; t: number; kind: string; source: string; energy: number; origin: number[]; strokes: number[] }[] {
+    return this.flashes.map((f) => ({ id: f.id, t: f.t, kind: f.kind, source: f.source, energy: f.energy, origin: [...f.origin], strokes: f.strokes.map((q) => f.t + q.dt) }));
+  }
+
+  /** What the page reports about the clip (lightning, flow, wind source). */
+  report() {
+    return {
+      lightning: { source: this.lightningSource, flashes: this.flashes.length, kinds: { CG: this.flashes.filter((f) => f.kind === 'CG').length, IC: this.flashes.filter((f) => f.kind === 'IC').length } },
+      flow: { winds: this.windSource, steps: this.manifest.steps.length },
+      observer: this.observer ? this.observerInfo() : null,
+    };
   }
 
   dispose(): void {

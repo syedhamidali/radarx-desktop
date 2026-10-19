@@ -6,6 +6,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { StormClip } from '../utils/stormClip';
+  import { runMorphSelfTest } from '../utils/morphSelfTest';
 
   let host = $state<HTMLDivElement | null>(null);
   let overlay = $state<HTMLCanvasElement | null>(null);
@@ -29,6 +30,10 @@
       project: (x: number, y: number, z?: number) => clip!.project(x, y, z),
       sites: () => clip!.siteXY(),
       debugScaleTerrain: (k: number) => clip!.debugScaleTerrain(k),
+      renderAudio: (sr?: number) => clip!.renderAudio(sr),
+      report: () => clip!.report(),
+      flashList: () => clip!.flashList(),
+      morphSelfTest: () => runMorphSelfTest(),
       stateAt: (t: number) => clip!.stateAt(t),
       info: () => ({ fatal: clip!.fatal, mapOk: clip!.mapOk, terrain: clip!.terrainInfo, light: clip!.lightInfo, w: ov.width, h: ov.height }),
       resize: size,
