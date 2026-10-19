@@ -19,6 +19,7 @@ import { isWebMode, engineUrl, basename } from './env';
 import { collectDownloads, triggerDownloads } from './download';
 import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
 import { trackEngine } from './engineIdentity';
+import { findRequestForReply, isForOtherFile } from './sweepMatch';
 
 type MessageHandler = (data: any) => void;
 
@@ -552,7 +553,11 @@ class WebSocketManager {
   /** A sweep payload could not be used: fail the request it answered so nothing waits for it. */
   private failSweepForHeader(header: any, message: string): void {
     if (!header || header.type !== 'sweep_data' || typeof header.variable !== 'string') return;
-    const job = this.sweepInflight.find((j) => j.variable === header.variable && j.sweep === header.sweep);
+    const job = findRequestForReply(this.sweepInflight, {
+      variable: header.variable,
+      sweep: header.sweep,
+      fileId: typeof header.file_id === 'string' ? header.file_id : '',
+    });
     if (job) this.failJob(job, message, 'error');
   }
 
@@ -898,7 +903,7 @@ class WebSocketManager {
       }
     }
 
-    this.finalizeSweepEntry(entry, isQc, msgType);
+    this.finalizeSweepEntry(entry, isQc, msgType, typeof header.file_id === 'string' ? header.file_id : '');
   }
 
   /**
@@ -960,7 +965,7 @@ class WebSocketManager {
    * Common path after binary data has been parsed.
    * Caches the entry, notifies listeners, and triggers prefetch.
    */
-  private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data'): void {
+  private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data', replyFileId = ''): void {
     if (msgType === 'difference_result') {
       // A difference is not the sweep it is named after: it must neither replace that sweep in the
       // cache nor be announced as sweep data (the main PPI would show the difference disk).
@@ -978,7 +983,11 @@ class WebSocketManager {
     const key = `${entry.variable}:${entry.sweep}`;
     let broadcast = true;
     let cache = true;
-    const job = this.sweepInflight.find((j) => j.variable === entry.variable && j.sweep === entry.sweep);
+    const job = findRequestForReply(this.sweepInflight, {
+      variable: entry.variable,
+      sweep: entry.sweep,
+      fileId: replyFileId,
+    });
     if (job) {
       this.retireJob(job);
       this.clearFailedOp(job.key);
@@ -986,7 +995,10 @@ class WebSocketManager {
       // A prefetched neighbour only warms the cache: broadcasting it as sweep_data_ready would make
       // the viewer show it instead of the sweep the user selected. It is announced if it turns out
       // to be the sweep on screen (the user got there while it was loading).
-      broadcast = job.broadcast || this.matchesContext(job.variable, job.sweep, job.fileId);
+      // (A visible request of a file the user has since left is not painted over the new file.)
+      broadcast =
+        (job.broadcast && this.sameAsContextFile(job.fileId)) ||
+        this.matchesContext(job.variable, job.sweep, job.fileId);
       // The cache is not file-aware: another file's lookahead must not poison the shown file's entries.
       cache = broadcast || this.sameAsContextFile(job.fileId);
       this.settleWaiters(job, 'done');
@@ -998,6 +1010,12 @@ class WebSocketManager {
         cache = this.sameAsContextFile(orphan.fileId);
       }
       // else: unsolicited reply — legacy behaviour (cache + announce).
+      // ... except data of a file that is not the one on screen (the user switched tabs while it was
+      // on its way): it must neither be cached for, nor painted over, the file being shown.
+      if (isForOtherFile(replyFileId, this.viewCtx?.fileId)) {
+        broadcast = false;
+        cache = false;
+      }
     }
 
     if (cache) cacheSweepData(entry);
