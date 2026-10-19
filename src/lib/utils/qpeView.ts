@@ -164,3 +164,12 @@ export function uncertaintyText(medianRel: number | null | undefined): string {
   if (medianRel === null || medianRel === undefined || !Number.isFinite(medianRel)) return 'not available';
   return `median ${(100 * medianRel).toFixed(0)} % (1 sigma, fully correlated in time)`;
 }
+
+/** Hyetograph bin (minutes) that gives 5-24 bars: 5 min up to 90 min, 15 min up to 6 h, then 60. */
+export function binMinutesFor(durationS: number): number {
+  if (!Number.isFinite(durationS) || durationS <= 0) return 60;
+  const min = durationS / 60;
+  if (min <= 90) return 5;
+  if (min <= 360) return 15;
+  return 60;
+}

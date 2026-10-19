@@ -12,6 +12,7 @@ import {
   utcMs,
   provenanceLabel,
   uncertaintyText,
+  binMinutesFor,
 } from './qpeView.ts';
 
 test('nice ticks are 1-2-5 steps that cover the maximum', () => {
@@ -80,4 +81,12 @@ test('an estimate is never called an observation', () => {
   assert.doesNotMatch(provenanceLabel('RETRIEVED') + provenanceLabel('ADJUSTED'), /observ/i);
   assert.match(uncertaintyText(0.48), /48 %/);
   assert.equal(uncertaintyText(NaN), 'not available');
+});
+
+test('the hyetograph bin follows the length of the period', () => {
+  assert.equal(binMinutesFor(17 * 60), 5);
+  assert.equal(binMinutesFor(3 * 3600), 15);
+  assert.equal(binMinutesFor(24 * 3600), 60);
+  assert.equal(binMinutesFor(0), 60);
+  assert.equal(binMinutesFor(NaN), 60);
 });

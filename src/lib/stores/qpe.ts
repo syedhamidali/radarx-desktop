@@ -20,6 +20,7 @@ import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { connectionStatus } from './radarData';
 import { mosaicSelectedIds, showExternalLayer, inTauri } from './mosaic';
 import { addToast } from './toasts';
+import { binMinutesFor } from '../utils/qpeView';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -439,7 +440,7 @@ async function onResult(msg: any): Promise<void> {
   qpeSeries.set(null);
   finishRun({ percent: 100, message: 'Done', error: null });
   const first = msg.summary?.basins?.[0]?.id;
-  if (first !== undefined) loadSeries(first, 60);
+  if (first !== undefined) loadSeries(first, binMinutesFor(msg.summary.duration_s));
 }
 
 function onError(msg: any): void {
@@ -485,7 +486,7 @@ async function onLayerLike(msg: any): Promise<void> {
   if (msg.type === 'qpe_adjust_result') {
     // the basin series was re-derived with the adjustment
     const cur = get(qpeSeries);
-    if (cur?.basin !== undefined) loadSeries(cur.basin as string, 60);
+    if (cur?.basin !== undefined) loadSeries(cur.basin as string, binMinutesFor(st.summary.duration_s));
   }
 }
 

@@ -45,6 +45,7 @@
     seriesGeometry,
     provenanceLabel,
     uncertaintyText,
+    binMinutesFor,
     type GaugePoint,
   } from '../utils/qpeView';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
@@ -598,7 +599,7 @@
               <thead><tr><th>Basin</th><th class="num">km²</th><th class="num">Mean mm</th><th class="num">Max mm</th><th class="num">Peak mm/h</th><th class="num">Cover</th></tr></thead>
               <tbody>
                 {#each summary.basins as b (b.id)}
-                  <tr class="click" class:sel={series?.basin === b.id} onclick={() => loadSeries(b.id, 60)}>
+                  <tr class="click" class:sel={series?.basin === b.id} onclick={() => loadSeries(b.id, binMinutesFor(summary.duration_s))}>
                     <td class="strong" title={b.name}>{b.id}</td>
                     <td class="num mono">{formatNumber(b.area_km2)}</td>
                     <td class="num mono">{formatNumber(adjusted ? (b.accumulation_adjusted_mean_mm ?? b.accumulation_mean_mm) : b.accumulation_mean_mm)}</td>
