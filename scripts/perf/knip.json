@@ -1,0 +1,1 @@
+{"entry":["src/main.ts","src/lib/workers/*.ts","src/**/*.test.mjs"],"project":["src/**/*.{ts,svelte,mjs}"],"ignoreDependencies":["@tauri-apps/cli","tslib","@tsconfig/svelte"]}
