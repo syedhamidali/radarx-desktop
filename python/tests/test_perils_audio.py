@@ -295,7 +295,7 @@ def test_tornado_is_silent_without_evidence_or_outside_its_track_time():
     ev = Event("tornado", None, 2.0, None, 4.0, None, None, 0.0, {})
     sc = scene(bundle(tornadoes=[tor_track(500.0, 0.0)]), dur=8.0, events=[ev])
     out, _ = ly.render_tornado(sc, SR, 8 * SR, 9)
-    assert rms(out[:, int(2.5 * SR): int(3.5 * SR)]) > 20 * rms(out[:, int(5.5 * SR):])
+    assert rms(out[:, int(2.5 * SR): int(3.5 * SR)]) > 20 * rms(out[:, int(7.6 * SR):])
 
 
 def test_hail_only_with_events_near_the_listener():
@@ -869,11 +869,11 @@ def test_renderers_events_json_dict_is_parsed_and_gates_the_tornado_without_a_tr
     }
     ev = parse_events(raw, WINDOW_START)
     assert [e.type for e in ev] == ["tornado", "hail", "flash"]
-    sc = scene(bundle([station(rain=5.0)]), dur=8.0, events=ev)
+    sc = scene(bundle([station(rain=5.0)]), dur=14.0, events=ev)
     dist, exist, srcs = sc.tornado()
     assert srcs == ["event"]
-    assert exist[int(4.0 * 100)] > 0.99
-    assert exist[int(7.8 * 100)] == 0.0
+    assert exist[int(4.0 * 100)] > 0.7  # a 4 s event, smoothed by the 4 s ramp
+    assert exist[int(11.0 * 100)] == 0.0
     assert dist[int(4.0 * 100)] == pytest.approx(1500.0, rel=0.1)  # ~0.015 deg of longitude
     out, _ = wx.render_hail(sc, SR, 8 * SR, 1)
     assert np.all(out == 0.0)  # the repeated station hail event is counted only through the station
@@ -892,4 +892,5 @@ def test_thunder_coverage_and_voice_limits_keep_the_mix_readable():
     for r in rows:
         if r["status"] == "rendered":
             occupied[int(r["first_arrival_clip_s"] * 10): int(r["last_arrival_clip_s"] * 10) + 1] = True
-    assert occupied.mean() <= 0.3 + 1e-9
+    window = np.convolve(occupied.astype(float), np.ones(100) / 100, mode="valid")
+    assert window.max() <= 0.3 + 1e-9  # in any 10 s of the clip

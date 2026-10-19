@@ -313,7 +313,7 @@ def render_hail(scene: Scene, sr: int, n: int, seed: int):
     lam_ctl = hail_rate_per_s(h["flux"]) * np.sqrt(w) * (w > 0)
     idx, amps = impulse_train(rng, n, ctl_to_audio(lam_ctl, n, sr) / sr, 0.6)
     d_ev = ctl_to_audio(dmax, n, sr)[idx] * rng.uniform(0.4, 1.0, len(idx))
-    amps = amps * 0.9 * ctl_to_audio(w, n, sr)[idx]
+    amps = amps * 0.35 * ctl_to_audio(w, n, sr)[idx]
     kern = _hail_kernels(sr)
     ref = np.abs(np.log(d_ev[:, None]) - np.log(HAIL_REF_MM)[None, :]).argmin(axis=1) if len(idx) else np.zeros(0, int)
     pans = rng.uniform(-0.9, 0.9, len(idx))

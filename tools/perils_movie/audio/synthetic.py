@@ -14,7 +14,7 @@ import numpy as np
 
 from .bundle import Bundle, parse_flashes, parse_stations, parse_tornadoes
 from .geo import EARTH_RADIUS_M
-from .timeline import CameraPath, Timeline
+from .timeline import CameraPath, Timeline, parse_iso
 
 LAT0, LON0 = 33.50, -88.50
 WINDOW_START = "2022-03-30T20:00:00Z"
@@ -140,3 +140,41 @@ def write_synthetic_bundle(out_dir) -> Path:
     (d.parent / "timeline.json").write_text(json.dumps(raw["timeline"]))
     (d.parent / "camera_path.json").write_text(json.dumps(raw["camera"]))
     return d
+
+
+def invented_clip_inputs(bundle: Bundle, clip_s: float = 120.0, fps: int = 30) -> tuple[dict, list[dict]]:
+    """INVENTED timeline and camera for the REAL bundle, used only until the renderer's
+    ``timeline.json`` / ``camera_path.json`` exist (never a claim about the movie): the whole data window in
+    ``clip_s`` at a constant speedup; the camera flies in towards the tornado track, passes 3 km from it,
+    drops to ground level at the StickNet station nearest the track start and rises again, always
+    looking at the tornado. Returns (timeline dict, camera key list)."""
+    from .geo import bearing_deg, enu
+
+    win = (parse_iso(bundle.window_end) - parse_iso(bundle.window_start)).total_seconds() if bundle.window_end else 960.0
+    tl = {"data_start": bundle.window_start, "data_end": bundle.window_end, "clip_duration_s": clip_s, "fps": fps,
+          "speedup": win / clip_s, "invented": True}
+    main = max(bundle.tornadoes, key=lambda t: max(0.0, min(float(t.t[-1]), win) - max(float(t.t[0]), 0.0)))  # longest in the window
+    t_start = float(main.t[0]) / win * clip_s
+    la0, lo0 = float(main.lat[0]), float(main.lon[0])
+    sticks = [s for s in bundle.stations if s.type.startswith("StickNet")] or bundle.stations
+    near = min(sticks, key=lambda s: float(np.hypot(*enu(la0, lo0, 0, s.lat, s.lon, 0)[:2])))
+    mid = [float(np.interp(0.6 * win, main.t, v)) for v in (main.lat, main.lon)]
+    spots = [
+        (0.0, offset_ll(la0, lo0, -9000.0, -8000.0), 2500.0),
+        (t_start, offset_ll(la0, lo0, -3000.0, -3500.0), 1200.0),
+        (0.6 * clip_s, offset_ll(mid[0], mid[1], 500.0, -3000.0), 450.0),
+        (0.8 * clip_s, (near.lat, near.lon), near.alt_m + 3.0),
+        (clip_s, offset_ll(near.lat, near.lon, 2000.0, 3000.0), 700.0),
+    ]
+    st = [s[0] for s in spots]
+    cam = []
+    for tc in np.linspace(0.0, clip_s, int(clip_s * 2) + 1):
+        la = float(np.interp(tc, st, [s[1][0] for s in spots]))
+        lo = float(np.interp(tc, st, [s[1][1] for s in spots]))
+        al = float(np.interp(tc, st, [s[2] for s in spots]))
+        td = min(max(tc / clip_s * win, float(main.t[0])), float(main.t[-1]))
+        tla, tlo, _ = main.position(td)
+        e, n, _ = enu(la, lo, 0.0, tla, tlo, 0.0)
+        cam.append({"t_clip_s": float(tc), "lat": la, "lon": lo, "alt_m": al, "heading_deg": float(bearing_deg(e, n)),
+                    "pitch_deg": -5.0})
+    return tl, cam

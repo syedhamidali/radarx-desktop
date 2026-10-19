@@ -117,7 +117,7 @@ def select_flashes(rows: list[dict], prm: ThunderParams, duration: float | None 
     """Thin out dense bursts, greedy by loudness. Sets row["status"] to "rendered" or one of
     "skipped_density" (too many flashes within a window), "skipped_masked" (far quieter than a louder
     one at the same time), "skipped_voices" (more than ``max_voices`` at once), "skipped_coverage"
-    (thunder would sound for more than ``max_coverage`` of the clip); returns the count per status."""
+    (thunder would sound for more than ``max_coverage`` of a 10 s window); returns the count per status."""
     cand = [r for r in rows if r["status"] == "pending"]
     cand.sort(key=lambda r: -r["peak_amp"])
     if duration is None:
@@ -149,7 +149,12 @@ def select_flashes(rows: list[dict], prm: ThunderParams, duration: float | None 
             continue
         new = occ.copy()
         new[i0:i1] += 1
-        if (new > 0).mean() > prm.max_coverage:
+        # coverage in any 10 s window around the flash (so the thunder is spread over the clip and does
+        # not use its whole budget in the loudest stretch)
+        w10 = int(10.0 / dt)
+        lo, hi = max(0, i0 - w10), min(len(new), i1 + w10)
+        cov = np.convolve((new[lo:hi] > 0).astype(float), np.ones(w10) / w10, mode="same")
+        if cov.max() > prm.max_coverage:
             r["status"] = "skipped_coverage"
             continue
         occ = new

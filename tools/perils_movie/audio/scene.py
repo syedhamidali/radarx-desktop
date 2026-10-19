@@ -14,6 +14,12 @@ from .geo import enu, slant_distance
 from .timeline import CameraPath, Timeline
 
 CTL_RATE = 100  # Hz
+# a station further than this from the listener is not heard for that variable (rain is local, wind and
+# pressure are broader); stations beyond are simply not data for the listener
+STATION_REACH_M = {"rain_rate_mmh": 30_000.0, "dm_mm": 30_000.0, "mrr_dm_mm": 3_000.0, "mrr_fall_speed_ms": 3_000.0,
+                   "mrr_rain_rate_mmh": 3_000.0, "dbz": 30_000.0}
+DEFAULT_REACH_M = 40_000.0
+TORNADO_REACH_M = 25_000.0  # the roar is silent beyond this (layers.tornado_gain)
 # drop classes of the rain sound (mm): every spectrum bin goes to the nearest class (in log D)
 DROP_CLASS_MM = np.array([0.4, 0.8, 1.2, 1.8, 2.5, 3.5, 5.0, 7.0])
 
@@ -73,7 +79,7 @@ def smooth_edges(mask: np.ndarray, ramp: int) -> np.ndarray:
         return m
     k = np.hanning(2 * ramp + 1)
     k /= k.sum()
-    return np.clip(np.convolve(m, k, mode="same"), 0.0, 1.0)
+    return np.clip(np.convolve(m, k, mode="full")[ramp : ramp + len(m)], 0.0, 1.0)  # ("same" is longer than m for a short m)
 
 
 @dataclass
@@ -126,7 +132,7 @@ class Scene:
             return self._cache[key]
         st = self.bundle.stations
         vals = np.array([s.at(var, self.tw) for s in st]) if st else np.zeros((0, self.n))
-        valid = np.isfinite(vals)
+        valid = np.isfinite(vals) & (self.dist <= STATION_REACH_M.get(var, DEFAULT_REACH_M))
         d = np.where(valid, self.dist, np.inf)
         dmin = d.min(axis=0) if len(st) else np.full(self.n, np.inf)
         with np.errstate(invalid="ignore"):
@@ -193,6 +199,8 @@ class Scene:
                 continue
             d = slant_distance(self.lat, self.lon, self.alt, la, lo, self.ground_alt_m)
             d = np.where(ex, d, np.inf)
+            if not (d < TORNADO_REACH_M).any():
+                continue  # a tornado of the day that is never near the listener: no evidence for this clip
             closer = d < dist
             dist = np.where(closer, d, dist)
             exist = np.maximum(exist, ex.astype(float))
@@ -218,7 +226,7 @@ class Scene:
                 dist = np.minimum(dist, d)
                 exist = np.maximum(exist, ex.astype(float))
                 srcs.append("event")
-        res = (dist, smooth_edges(exist > 0, int(1.5 * CTL_RATE)), sorted(set(srcs)))
+        res = (dist, smooth_edges(exist > 0, int(4.0 * CTL_RATE)), sorted(set(srcs)))
         self._cache["tor"] = res
         return res
 
@@ -399,10 +407,10 @@ class Scene:
         rr = np.zeros((len(st), self.n))
         dm = np.zeros((len(st), self.n))
         valid = np.zeros((len(st), self.n), bool)
-        for j, (_i, s) in enumerate(st):
+        for j, (si, s) in enumerate(st):
             d = s.dsd
             N = d.at(self.tw)
-            valid[j] = np.isfinite(N).all(axis=1)
+            valid[j] = np.isfinite(N).all(axis=1) & (self.dist[si] <= STATION_REACH_M["rain_rate_mmh"])
             N = np.nan_to_num(N)
             f = d.flux(N)  # (n, nd)
             cls = _class_of(d.D)
