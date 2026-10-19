@@ -377,7 +377,10 @@ class QpeResult:
     def stats(self) -> dict[str, Any]:
         a = self.accumulation
         fin = np.isfinite(a)
-        wet = fin & (a >= 0.1)
+        instant = self.duration_s <= 0
+        base = self.rate_last if instant else a  # what "wet" and the uncertainty refer to
+        wet = np.isfinite(base) & (base >= 0.1)
+        big = np.isfinite(base) & (base >= 1.0) & np.isfinite(self.accumulation_sigma)
         area = self.grid.cell_areas_km2()
         out = {
             "cells": int(a.size),
@@ -389,6 +392,10 @@ class QpeResult:
             "max_rate_mm_h": float(np.nanmax(self.rate_max)) if fin.any() else None,
             "mean_valid_fraction": float(np.nanmean(self.valid_fraction[fin]))
             if fin.any()
+            else None,
+            # median relative 1-sigma where there is at least 1 mm (1 mm/h for an instant)
+            "uncertainty_median_rel": float(np.median(self.accumulation_sigma[big] / base[big]))
+            if big.any()
             else None,
         }
         return out
@@ -559,6 +566,12 @@ def accumulate(
     rep = progress or (lambda p, m: None)
     if step_s < 1:
         raise hqpe.QpeError("step_s must be at least 1 second")
+    if not 250.0 <= resolution_m <= 5000.0:
+        raise hqpe.QpeError("resolution_m must be between 250 and 5000 metres")
+    if not 10.0 <= max_range_km <= 600.0:
+        raise hqpe.QpeError("max_range_km must be between 10 and 600 km")
+    if max_gap_s <= 0 or hold_edges_s < 0:
+        raise hqpe.QpeError("max_gap_s must be positive and hold_edges_s must not be negative")
     if composite not in ("weighted", "best"):
         raise hqpe.QpeError("composite must be 'weighted' or 'best'")
     if not readers:
@@ -575,7 +588,12 @@ def accumulate(
     box = extent or hgrid.bbox_for_radars(
         [{"latitude": s.latitude, "longitude": s.longitude} for s in sites.values()], max_range_km
     )
-    grid = hgrid.make_grid(tuple(box), resolution_m)
+    try:
+        grid = hgrid.make_grid(tuple(box), resolution_m)
+    except Exception as exc:  # engine.mosaic.MosaicError: grid too large / box outside the map
+        if type(exc).__name__ != "MosaicError":
+            raise
+        raise hqpe.QpeError(str(exc)) from exc
     geoms = {
         k: hgrid.RadarGeometry.build(grid, s.latitude, s.longitude, s.altitude_m)
         for k, s in sites.items()

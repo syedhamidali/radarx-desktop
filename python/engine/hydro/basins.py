@@ -766,6 +766,8 @@ class BasinSeries:
                 m = np.nan_to_num(self.mean_rate[k], nan=0.0)
                 cum[k, 1:] = np.cumsum(0.5 * (m[1:] + m[:-1]) * dt / 3600.0)
         self.cum_mean = cum
+        # the unadjusted series: a second adjustment starts from these, never from the first
+        self._raw = (self.mean_rate.copy(), self.peak_rate.copy(), self.cum_mean.copy())
         self.stats = [
             self._stats_for(k, result.accumulation, result) for k in range(len(self.weights))
         ]
@@ -847,6 +849,7 @@ class BasinSeries:
         """
         f = np.asarray(factor, dtype=np.float64).ravel()
         dt = np.diff(np.array(self.times, dtype="datetime64[ns]").astype("int64")) / 1e9
+        self.mean_rate, self.peak_rate, self.cum_mean = (a.copy() for a in self._raw)
         for k, bw in enumerate(self.weights):
             fk = np.nan_to_num(f[bw.flat], nan=1.0)
             if self.cell_rates is not None:

@@ -11,6 +11,7 @@
   const PANEL_MAP: Record<string, { lazy: ReturnType<typeof lazy>; label: string; icon: string }> = {
     cloud: { lazy: lazy(() => import('./CloudDataPanel.svelte')), label: 'Cloud Data', icon: '☁' },
     mosaic: { lazy: lazy(() => import('./MosaicPanel.svelte')), label: 'Mosaic', icon: '\u{1F5FA}' },
+    qpe: { lazy: lazy(() => import('./QpePanel.svelte')), label: 'Rainfall', icon: '\u2614' },
     wind: { lazy: lazy(() => import('./WindPanel.svelte')), label: 'Wind (Multi-Doppler)', icon: '\u{1F32C}' },
     volume: { lazy: lazy(() => import('./VolumePanel.svelte')), label: '3D Volume', icon: '\u{1F4E6}' },
     timeseries: { lazy: lazy(() => import('./TimeSeriesChart.svelte')), label: 'Time Series', icon: '\u{1F4C8}' },
@@ -28,6 +29,7 @@
   const PANEL_ICONS: Record<string, string> = {
     cloud: '<path d="M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 8.5a4.5 4.5 0 0 1 0 9.5H7z"/>',
     mosaic: '<rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><path d="M13 17h8M17 13v8"/>',
+    qpe: '<path d="M7 14a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 5.5a4.5 4.5 0 0 1 0 8.5H7z"/><path d="M8 17.5v2M12 17.5v3.5M16 17.5v2"/>',
     wind: '<path d="M3 8h11a3 3 0 1 0-3-3M3 12h16a3 3 0 1 1-3 3M3 16h8a2.5 2.5 0 1 1-2.5 2.5"/>',
     volume: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12L4 7.5M12 12v9"/>',
     timeseries: '<path d="M3 3v18h18"/><path d="M7 15l4-5 3 3 5-7"/>',

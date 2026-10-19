@@ -458,7 +458,12 @@ def mosaic_record(result: QpeResult, name: str = "accumulation", **kw: Any):
     ny, nx = grid.shape
     stats = [
         mosaic.RadarStat(
-            None, x["name"], x["latitude"], x["longitude"], x["altitude_m"], x["first"]
+            f"qpe-{x['name']}",  # unique keys for the map layer / panel lists
+            x["name"],
+            x["latitude"],
+            x["longitude"],
+            x["altitude_m"],
+            x["first"],
         )
         for x in result.radars
     ]
