@@ -16,10 +16,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import xarray as xr
-from PIL import Image
-
 from engine import mosaic
 from engine.reader import RadarReader
+from PIL import Image
+
 from tests import radar_data
 
 HAS_RADARX = importlib.util.find_spec("radarx") is not None

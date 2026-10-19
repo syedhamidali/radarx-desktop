@@ -785,7 +785,8 @@ def _export_inputs(
     # value masks are keyed by the name the viewer uses; the exported tree uses the NetCDF-safe name
     if isinstance(opts.get("value_masks"), dict):
         opts["value_masks"] = {
-            (derived.export_name(k) if k in stored else k): m for k, m in opts["value_masks"].items()
+            (derived.export_name(k) if k in stored else k): m
+            for k, m in opts["value_masks"].items()
         }
     if opts.get("value_mask_variable") in stored:
         opts["value_mask_variable"] = derived.export_name(opts["value_mask_variable"])

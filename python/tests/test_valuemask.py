@@ -7,12 +7,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 import xarray as xr
-
 from engine import valuemask
 from engine.exporter import RadarExporter, render_publication_figure
 
 
-def mk(mode: str, lo: float | None = None, hi: float | None = None, inclusive: bool = False) -> dict:
+def mk(
+    mode: str, lo: float | None = None, hi: float | None = None, inclusive: bool = False
+) -> dict:
     return {"mode": mode, "min": lo, "max": hi, "inclusive": inclusive}
 
 
@@ -152,9 +153,13 @@ def test_image_exports_apply_mask(
         assert b"Value mask: hide below 30" in data
 
 
-def test_csv_omits_masked_gates_and_says_so(synthetic_datatree: xr.DataTree, tmp_path: Path) -> None:
+def test_csv_omits_masked_gates_and_says_so(
+    synthetic_datatree: xr.DataTree, tmp_path: Path
+) -> None:
     exp = RadarExporter()
-    full = exp.export(synthetic_datatree, fmt="csv", output_path=str(tmp_path / "a.csv"), variable="DBZH", sweep=0)
+    full = exp.export(
+        synthetic_datatree, fmt="csv", output_path=str(tmp_path / "a.csv"), variable="DBZH", sweep=0
+    )
     masked = exp.export(
         synthetic_datatree,
         fmt="csv",
@@ -203,7 +208,9 @@ def test_volume_exports_mask_only_the_selected_variable(
         assert np.isnan(back["DBZH"].values).any()
 
 
-def test_batch_uses_each_variables_own_mask(synthetic_datatree: xr.DataTree, tmp_path: Path) -> None:
+def test_batch_uses_each_variables_own_mask(
+    synthetic_datatree: xr.DataTree, tmp_path: Path
+) -> None:
     saved = RadarExporter().batch_export(
         synthetic_datatree,
         variables=["DBZH", "VRADH"],
@@ -216,4 +223,3 @@ def test_batch_uses_each_variables_own_mask(synthetic_datatree: xr.DataTree, tmp
     texts = {Path(p).name: Path(p).read_bytes() for p in saved}
     assert b"Value mask: hide below 30" in texts["DBZH_sweep00.svg"]
     assert b"Value mask" not in texts["VRADH_sweep00.svg"]
-

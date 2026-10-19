@@ -1173,6 +1173,8 @@
   }
   .rn-warn { color: var(--c-scene-warn); }
   .compass-wrap { position: absolute; bottom: 10px; left: 10px; pointer-events: none; z-index: 3; }
+  .light .compass-wrap circle { fill: rgba(var(--c-surface-1-rgb), 0.78); stroke: var(--c-border-strong); }
+  .light .compass-wrap polygon:last-of-type { fill: var(--c-muted); }
   .hint-3d {
     padding: 3px var(--spacing-md); font-size: 10px; color: var(--text-muted); text-align: center;
     background: var(--bg-tertiary); border-top: 1px solid var(--border-color);

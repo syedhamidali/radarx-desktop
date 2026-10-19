@@ -359,7 +359,7 @@ def find_quality_fields(names: list[str], exclude: str = "") -> dict[str, str]:
 
 
 def _mask_hidden(values: np.ndarray, mask: dict[str, Any]) -> np.ndarray | None:
-    """Boolean array of the values a value mask hides (the rules live in :mod:`engine.valuemask`)."""
+    """Boolean array of the values a value mask hides (rules: :mod:`engine.valuemask`)."""
     return valuemask.hidden(values, mask)
 
 

@@ -343,7 +343,7 @@ def _apply_value_mask_to_dataset(
     ds: xr.Dataset, variable: str, vmask: dict[str, Any], text: str
 ) -> xr.Dataset:
     """*ds* with the values of *variable* that the value mask hides set to NaN (a new variable;
-    the original is not modified). The variable's ``value_mask`` attribute records what was hidden."""
+    the original is not modified). The variable's ``value_mask`` attribute says what was hidden."""
     if variable not in ds.data_vars:
         return ds
     da = ds[variable]
@@ -744,7 +744,8 @@ def render_publication_figure(
     dict, see :func:`engine.rhi.parse_clean`); the figure's caption says what was applied.
     *value_mask* hides the values of *variable* the way the viewer does (see
     :mod:`engine.valuemask`); the figure says so in a footnote. For an RHI the mask travels in
-    *rhi_clean* instead. *rhi_view* sets the RHI axes: ``{"height_max": 25, "full": False}``. By default the axes cover
+    *rhi_clean* instead. *rhi_view* sets the RHI axes: ``{"height_max": 25, "full": False}``.
+    By default the axes cover
     the ground range and height that hold valid gates (rounded up), with the height cut at
     ``height_max`` km (25): the beams reach ~95 km but there is no weather up there.
     Returns the Figure object (caller is responsible for saving/closing).
@@ -972,7 +973,9 @@ def render_publication_figure(
             ax.set_title(title, pad=12)
 
         if mask_note:
-            fig.text(0.5, 0.004, mask_note, ha="center", va="bottom", fontsize=font_size - 3, color="gray")
+            fig.text(
+                0.5, 0.004, mask_note, ha="center", va="bottom", color="gray", fontsize=font_size - 3
+            )
             fig.tight_layout(rect=(0, 0.035, 1, 1))
         else:
             fig.tight_layout()

@@ -111,7 +111,7 @@ def _fmt(v: float) -> str:
 
 
 def describe(mask: Any, units: str = "") -> str | None:
-    """"hide below 0 dBZ" (the viewer's wording), or ``None`` when the mask is inactive."""
+    """ "hide below 0 dBZ" (the viewer's wording), or ``None`` when the mask is inactive."""
     m = normalize(mask)
     if m is None:
         return None
