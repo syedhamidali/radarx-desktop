@@ -41,7 +41,8 @@ messages are refused (a service must not download on a visitor's behalf or read 
 
 ## Provenance: what kind of numbers is this?
 
-Every layer the engine sends carries a `provenance` object, and the **Layers** panel lists every
+The policy behind this (what each class must show, how uncertainty is stated) is [SCIENCE.md](SCIENCE.md);
+this page is how the app implements it. Every layer the engine sends carries a `provenance` object, and the **Layers** panel lists every
 layer the app holds with a colour-coded **chip**. The class is always written out next to the colour.
 
 | Chip | Class | Meaning | Colour token |
