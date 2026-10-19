@@ -86,7 +86,10 @@ async def test_repeated_open_and_close_does_not_leak(
         path = gz
     handler, _ = _make_handler()
 
-    for _ in range(5):  # warm-up: imports, caches, thread pool
+    # Warm-up: imports, caches, the thread pool, and whatever descriptors the runtime opens once
+    # (coverage, event loop, executor wake-up pipes). A real leak grows with every cycle, so only
+    # growth after the warm-up counts.
+    for _ in range(5 + CYCLES):
         await _cycle(handler, str(path))
     gc.collect()
     fds_before = _open_descriptors()

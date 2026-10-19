@@ -8,6 +8,7 @@
 # ``hiddenimports`` / collected below.
 import importlib.util
 import os
+import sys
 
 from PyInstaller.utils.hooks import (
     collect_data_files,
@@ -223,6 +224,10 @@ exe = EXE(
     # without a visible window on Windows.
     console=True,
 )
-# strip=True drops local symbols from the bundled shared libraries (-20..25 % on the large ones,
-# e.g. icechunk, libarrow); it is a no-op on Windows. PyInstaller re-signs the result on macOS.
-coll = COLLECT(exe, a.binaries, a.datas, strip=True, upx=False, name="xradar-engine")
+# strip drops local symbols from the bundled shared libraries (-20..25 % on the large ones, e.g.
+# icechunk). macOS only: on Linux it corrupts numpy's bundled OpenBLAS ("ELF load command
+# address/offset not page-aligned") and on Windows it breaks python312.dll. PyInstaller re-signs
+# the result on macOS.
+coll = COLLECT(
+    exe, a.binaries, a.datas, strip=(sys.platform == "darwin"), upx=False, name="xradar-engine"
+)
