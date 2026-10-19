@@ -22,6 +22,11 @@ from xarray.core import indexing
 
 logger = logging.getLogger(__name__)
 
+# The netCDF-C / HDF5 libraries behind most radar formats are not safe for several threads opening
+# files at the same moment (a native "Bus error" was seen with two overlapping open_file requests).
+# Opens therefore take turns; reads of already opened files are not affected.
+_OPEN_GUARD = threading.Lock()
+
 _SWEEP_PREFIX = "sweep_"
 
 # Map of xradar opener functions keyed by format name.
@@ -859,7 +864,8 @@ class RadarReader:
             try:
                 opener = _get_opener(fmt)
                 logger.info("Trying format '%s' for %s", fmt, open_path)
-                dtree = opener(open_path)
+                with _OPEN_GUARD:
+                    dtree = opener(open_path)
                 schema = self._build_schema(dtree, fmt)
                 if not schema["sweeps"]:
                     # Lenient backends (e.g. cfradial2) "open" any netCDF as an empty tree.
