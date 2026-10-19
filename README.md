@@ -81,6 +81,14 @@ polar fields, not just reflectivity.
 
 ![Reflectivity and ZDR before and after quality control](docs/images/qc-before-after.png)
 
+### Or skip the window: command line and Python
+
+Everything above also runs without the GUI, on the same engine: `xrd info -i FILE`, `xrd plot -i FILE`,
+`xrd run radarx_hid -i FILE --all-sweeps`, `xrd pipeline "Doppler velocity" -i FILE`,
+`xrd mosaic -i F1 F2 F3 -o mosaic.nc -p map.png`, `xrd winds -i F1 F2 ...`, `xrd export -i FILE -o out.zarr`
+(see [docs/CLI.md](docs/CLI.md)). From a notebook: `from engine import api; api.open("FILE").run("radarx_hid")`
+(see [docs/API.md](docs/API.md)).
+
 ### Export it
 
 PNG, SVG and PDF figures with colorbar, rings and title; NetCDF (CfRadial1), CfRadial2, Zarr and CSV data; batch
@@ -163,7 +171,7 @@ xradar-desktop/
 │   ├── modules/     plug-in algorithms (drop a file here to add one)
 │   ├── packaging/   builds the self-contained engine for the installers
 │   └── tests/
-└── docs/            MODULES, BUNDLING, MOSAIC, RESPONSIVENESS
+└── docs/            CLI, API, MODULES, BUNDLING, MOSAIC, RESPONSIVENESS
 ```
 
 ## Using the 3D view
