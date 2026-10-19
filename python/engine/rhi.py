@@ -25,6 +25,8 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import valuemask
+
 #: Effective Earth radius of the standard 4/3 beam model (same value as ``engine.volume``), metres.
 EFFECTIVE_RADIUS_M: float = 6_371_000.0 * 4.0 / 3.0
 
@@ -357,22 +359,8 @@ def find_quality_fields(names: list[str], exclude: str = "") -> dict[str, str]:
 
 
 def _mask_hidden(values: np.ndarray, mask: dict[str, Any]) -> np.ndarray | None:
-    """Boolean array of the values a value mask hides (see the viewer's ``stores/valueMask``)."""
-    mode = mask.get("mode")
-    lo, hi = mask.get("min"), mask.get("max")
-    inc = bool(mask.get("inclusive"))
-    with np.errstate(invalid="ignore"):
-        if mode == "below" and lo is not None:
-            return values <= lo if inc else values < lo
-        if mode == "above" and hi is not None:
-            return values >= hi if inc else values > hi
-        if mode in ("between", "outside") and lo is not None and hi is not None:
-            a, b = min(lo, hi), max(lo, hi)
-            inside = (values >= a) & (values <= b) if inc else (values > a) & (values < b)
-            if mode == "between":
-                return inside
-            return (values <= a) | (values >= b) if inc else (values < a) | (values > b)
-    return None
+    """Boolean array of the values a value mask hides (rules: :mod:`engine.valuemask`)."""
+    return valuemask.hidden(values, mask)
 
 
 def _fmt(v: float) -> str:

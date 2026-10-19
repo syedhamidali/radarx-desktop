@@ -28,6 +28,7 @@ import {
   type QualityParams,
 } from './qualityGovernor';
 import { GLSL_HASH, GLSL_THRESHOLD, glslGroundColor } from './volumeShaderParts';
+import { GLSL_VALUE_MASK, MASK_OFF, type MaskVec4 } from './valueMaskGl';
 import { GLSL_REALISTIC, GLSL_REALISTIC_UNIFORMS, REALISTIC_UNIFORM_NAMES } from './realisticShader';
 import { lightVector, lookFor, type RealisticLook } from './realisticStyle';
 import { MorphPass, type FlowTex } from './morphPass';
@@ -74,6 +75,7 @@ function volumeFrag(): string {
     uniform float u_thr;
     uniform float u_thrSoft;
     uniform int   u_thrMode;
+    uniform vec4  u_vmask;   // value mask in normalised units: (mode, lower, upper, inclusive)
     uniform int   u_groundMode;    // 0 off, 1 grid, 2 map
     uniform float u_groundSize;
     uniform float u_groundHalf;
@@ -163,7 +165,7 @@ ${GLSL_REALISTIC_UNIFORMS}
       cov = s;
       return true;
     }
-${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
+${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${glslGroundColor({
     prelude: 'vec3 bmin = vec3(u_groundMin, 0.0); vec3 bmax = vec3(u_groundMax, 0.0);',
     rimDist: 'min(min(gp.x - bmin.x, bmax.x - gp.x), min(gp.y - bmin.y, bmax.y - gp.y))',
     rings: false,
@@ -241,7 +243,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
           if (!sampleAdvected(pos, val, cov)) continue;
 
           vec4 tf = texture(u_transferFn, vec2((val * 255.0 + 0.5) / 256.0, 0.5));
-          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val);
+          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val) * (valueHidden(val, u_vmask) ? 0.0 : 1.0);
           if (a0 < 0.0004) continue;
           if (u_style == 1) {
             // realistic look: opacity per TRUE km along the ray (the scene is stretched vertically)
@@ -419,6 +421,8 @@ export interface SceneParams {
   thr: number;
   thrSoft: number;
   thrMode: 0 | 1;
+  /** Value mask in normalised units (see valueMaskGl.maskVecNorm); off when absent. */
+  vmask?: MaskVec4;
   groundMode: 'off' | 'grid' | 'map';
   light: boolean;
   lightScene: boolean;
@@ -766,7 +770,7 @@ export class CartesianRenderer {
     for (const n of [
       'u_camPos', 'u_camRight', 'u_camUp', 'u_camFwd', 'u_tanHalfFovX', 'u_tanHalfFovY', 'u_resolution',
       'u_volume', 'u_transferFn', 'u_ground', 'u_hasVol', 'u_boxMin', 'u_boxMax', 'u_groundMin', 'u_groundMax',
-      'u_stepSize', 'u_stepUser', 'u_maxSteps', 'u_opacityScale', 'u_thr', 'u_thrSoft', 'u_thrMode',
+      'u_stepSize', 'u_stepUser', 'u_maxSteps', 'u_opacityScale', 'u_thr', 'u_thrSoft', 'u_thrMode', 'u_vmask',
       'u_groundMode', 'u_groundSize', 'u_groundHalf', 'u_ringStep', 'u_light', 'u_themeLight',
       'u_volumeB', 'u_morphOn', 'u_morphW', 'u_shiftA', 'u_shiftB', 'u_cropMin', 'u_cropMax', 'u_groundCenter', 'u_mapGain',
       'u_animOn', 'u_animAmp', 'u_animT', 'u_animPhase', 'u_windTex', 'u_wOrigin', 'u_wCell', 'u_wDims', 'u_wOffset', 'u_vexag',
@@ -1581,6 +1585,7 @@ export class CartesianRenderer {
     gl.uniform1f(u.u_thr, p.thr);
     gl.uniform1f(u.u_thrSoft, p.thrSoft);
     gl.uniform1i(u.u_thrMode, p.thrMode);
+    gl.uniform4fv(u.u_vmask, p.vmask ?? MASK_OFF);
     const mapOn = p.groundMode === 'map' && this.groundImg !== null;
     gl.uniform1i(u.u_groundMode, p.groundMode === 'off' ? 0 : mapOn ? 2 : 1);
     gl.uniform1f(u.u_groundSize, this.groundImg?.size ?? 1);

@@ -31,7 +31,7 @@ import { resolveBasemap, IMAGERY_EOX_S2 } from './basemaps';
 import { buildGroundMap } from './groundMap';
 import { buildTerrain, TERRAIN_ATTRIBUTION, TERRARIUM_URL } from './terrain';
 import { buildRealisticTf, lookFor, lookWith, sampleOptions, realisticSample, type Palette, type LightKind } from './realisticStyle';
-import { defaultLook, applyPreset, validateLook, loadLookText, type LookConfig } from './lookConfig';
+import { defaultLook, applyPreset, validateLook, loadLookText, changedLook, type LookConfig } from './lookConfig';
 import { sunLight, daylightAssumed, type SunLight } from './sunPosition';
 import {
   cameraAt, stormAt, dataTimeAt, clipTimeOf, locate, intervalMotion, utcLabel, stormChoreography, cycloneChoreography, cycloneFlight, flightPose, cameraShake, trackFrame, lagTarget,
@@ -133,6 +133,10 @@ export interface ClipSettings {
   light?: LightKind;
   /** Show the sound labels (the audio itself is rendered by `renderAudio`). */
   audio?: boolean;
+  /** Credit line at the bottom (default: NEXRAD Level II). `xrd animate` names the radars it was given. */
+  radarCredit?: string;
+  /** A frame counts as "observed" when its data time is within this many seconds of a real volume (default 6). */
+  observedTolS?: number;
 }
 
 const DEFAULTS: ClipSettings = { fps: 30, duration: 36, vexag: 4, targetLag: 0.3, camera: 'orbit', flow: true, lightning: 'auto', lightningSeed: 7, lightningRate: 0.8, t10Km: 5.0, soundCompress: 8 };
@@ -297,6 +301,21 @@ export class StormClip {
     if (sets.light && !('light' in ov)) ov.light = sets.light;
     if (Object.keys(ov).length) cfg = validateLook(ov, cfg);
     return cfg;
+  }
+
+  /**
+   * Resolve the look of `settings` (preset, look file, explicit keys) without loading anything: returns
+   * the keys that differ from the defaults, or throws the look error that names the key and the nearest
+   * known one. `xrd animate` calls it first, so a typo fails before any gridding.
+   */
+  checkLook(settings: Partial<ClipSettings>): Record<string, unknown> {
+    const saved = this.settings;
+    try {
+      this.settings = { ...DEFAULTS, ...settings };
+      return changedLook(this.resolveLook());
+    } finally {
+      this.settings = saved;
+    }
   }
 
   /** Change the look (relative to the one loaded: `overrides` replace the loaded values); for tests and previews. */
@@ -758,6 +777,7 @@ export class StormClip {
       r.setExtendDown(false);
       const fl = flashLight(this.flashes, t, [st.tx, st.ty, 0], ve);
       this.applyFlashLook(r, fl);
+      if (st.cam.fov !== undefined && st.cam.fov > 0) r.setFov(st.cam.fov);
       r.exportRender({
         theta: st.cam.theta, phi: st.cam.phi, dist: st.cam.dist,
         target: [st.tx + st.cam.dx, st.ty + st.cam.dy, st.cam.dz * ve],
@@ -1022,7 +1042,7 @@ export class StormClip {
     ctx.fillRect(bx, by, bw, 4 * u);
     ctx.fillStyle = 'rgba(120,200,255,0.95)';
     ctx.fillRect(bx, by, px(td) - bx, 4 * u);
-    const near = this.ts.findIndex((t) => Math.abs(t - td) < 6);
+    const near = this.ts.findIndex((t) => Math.abs(t - td) < (this.settings.observedTolS ?? 6));
     this.ts.forEach((t, i) => {
       const on = i === near;
       ctx.beginPath();
@@ -1116,7 +1136,7 @@ export class StormClip {
       const l1 = [
         this.settings.ground === 'realistic' ? IMAGERY_EOX_S2.attribution : '',
         this.settings.ground === 'realistic' ? TERRAIN_ATTRIBUTION : '',
-        'Radar: NEXRAD Level II (NOAA)',
+        this.settings.radarCredit ?? 'Radar: NEXRAD Level II (NOAA)',
       ].filter(Boolean).join(' · ');
       text(l1, W / 2, H - 14 * u, 12, 'rgba(215,225,245,0.9)', 500, 'center');
     } else {

@@ -33,6 +33,8 @@
     type MosaicResult,
   } from '../stores/mosaic';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+  import ValueMaskControl from './ValueMaskControl.svelte';
+  import { maskDescription, maskOf, valueMasks } from '../stores/valueMask';
   import { viewMosaicIn3D, volume3dLoading } from '../stores/volume3d';
 
   // ── Derived state ────────────────────────────────────────────────────────
@@ -55,6 +57,15 @@
   });
 
   let showAdvanced = $state(false);
+
+  // Value mask of the mosaic variable: applied when the mosaic is made (hidden cells are empty in the
+  // image, probes, statistics and exports). The 3D view of the mosaic masks the volume live.
+  const mask = $derived(maskOf($valueMasks, s.variable));
+  const maskNow = $derived(maskDescription(mask, res?.units ?? ''));
+  /** The mosaic on screen was made with another mask than the one set now. */
+  const maskStale = $derived(
+    !!res && res.variable === s.variable && (res.value_mask_text ?? null) !== maskDescription(mask, res.units ?? ''),
+  );
 
   const PRODUCTS: { value: MosaicProduct; label: string; hint: string }[] = [
     { value: 'composite', label: 'Composite (column max)', hint: 'Maximum over all heights' },
@@ -94,7 +105,7 @@
   function legendGradient(r: MosaicResult): string {
     const span = r.vmax - r.vmin || 1;
     const stops = [...(r.legend ?? [])].sort((a, b) => a[0] - b[0]);
-    if (stops.length === 0) return 'linear-gradient(90deg, #333, #ddd)';
+    if (stops.length === 0) return 'linear-gradient(90deg, var(--c-surface-3), var(--c-text-dim))';
     return `linear-gradient(90deg, ${stops
       .map(([v, c]) => `${c} ${Math.max(0, Math.min(100, ((v - r.vmin) / span) * 100)).toFixed(1)}%`)
       .join(', ')})`;
@@ -354,6 +365,12 @@
       {/if}
     </section>
 
+    <!-- ── Value mask ────────────────────────────────────────────────────── -->
+    <section class="block" aria-label="Value mask">
+      <ValueMaskControl variable={s.variable} units={res?.units ?? ''} compact />
+      <p class="help">Applied when the mosaic is made. Hidden values are empty on the map, in probes and exports.</p>
+    </section>
+
     <!-- ── Run ───────────────────────────────────────────────────────────── -->
     <section class="block run-block">
       {#if run.running}
@@ -390,6 +407,15 @@
           <span class="spacer"></span>
           <span class="mono muted">{res.elapsed_ms >= 1000 ? (res.elapsed_ms / 1000).toFixed(1) + ' s' : Math.round(res.elapsed_ms) + ' ms'}</span>
         </div>
+
+        {#if res.value_mask_text}
+          <p class="help mask-note" data-testid="mosaic-mask-note">Value mask: {res.value_mask_text}</p>
+        {/if}
+        {#if maskStale}
+          <p class="help mask-stale" role="status" data-testid="mosaic-mask-stale">
+            The value mask is {maskNow ?? 'off'} now, this mosaic was made {res.value_mask_text ? `with "${res.value_mask_text}"` : 'without a mask'}. Re-run to apply it.
+          </p>
+        {/if}
 
         <div class="legend">
           <div class="legend-bar" style="background: {legendGradient(res)}"></div>
@@ -527,14 +553,14 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .result h4 {
     text-transform: none;
     letter-spacing: 0;
     font-size: 12px;
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
   }
 
   .spacer {
@@ -547,18 +573,24 @@
   }
 
   .muted {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .help {
     margin: 0;
     font-size: 11px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     line-height: 1.35;
+  }
+  .mask-note {
+    color: var(--c-accent);
+  }
+  .mask-stale {
+    color: var(--c-caution);
   }
 
   .warn-text {
-    color: var(--accent-warning, #fbbf24);
+    color: var(--accent-warning);
   }
 
   .empty-hint {
@@ -566,30 +598,30 @@
     padding: var(--spacing-sm, 8px) 0;
     font-size: 12px;
     text-align: center;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .mini-btn {
     height: auto;
     padding: 2px 8px;
     font-size: 11px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
     background: transparent;
-    border: 1px solid var(--border-light, #2a2a3a);
+    border: 1px solid var(--border-light);
     border-radius: 3px;
     cursor: pointer;
     white-space: nowrap;
   }
 
   .mini-btn:hover:not(:disabled) {
-    color: var(--text-primary, #e4e6f4);
-    border-color: var(--accent-primary, #5b6cf7);
+    color: var(--text-primary);
+    border-color: var(--accent-primary);
     background: transparent;
   }
 
   .mini-btn.danger:hover:not(:disabled) {
-    color: var(--accent-danger, #f87171);
-    border-color: var(--accent-danger, #f87171);
+    color: var(--accent-danger);
+    border-color: var(--accent-danger);
   }
 
   .mini-btn:disabled {
@@ -611,8 +643,8 @@
 
   .file-row {
     padding: 5px 6px;
-    background: var(--bg-primary, #080a14);
-    border: 1px solid var(--border-color, #2a2a3a);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
   }
 
@@ -629,7 +661,7 @@
 
   .file-main input {
     margin-top: 2px;
-    accent-color: var(--accent-primary, #5b6cf7);
+    accent-color: var(--accent-primary);
   }
 
   .file-text {
@@ -641,7 +673,7 @@
   .file-name {
     font-size: 12px;
     font-weight: 600;
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -649,7 +681,7 @@
 
   .file-meta {
     font-size: 10px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .chips {
@@ -663,15 +695,15 @@
     display: inline-block;
     padding: 1px 6px;
     font-size: 10px;
-    color: var(--text-secondary, #9da2c2);
-    border: 1px solid var(--border-light, #2a2a3a);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-light);
     border-radius: 9px;
   }
 
   .chip.warn {
-    color: var(--accent-warning, #fbbf24);
-    border-color: var(--accent-warning, #fbbf24);
-    background: rgba(251, 191, 36, 0.08);
+    color: var(--accent-warning);
+    border-color: var(--accent-warning);
+    background: rgba(var(--c-caution-rgb), 0.08);
   }
 
   /* Form */
@@ -687,7 +719,7 @@
     gap: 3px;
     min-width: 0;
     font-size: 10px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -707,13 +739,13 @@
     align-items: flex-start;
     gap: 6px;
     font-size: 12px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
     cursor: pointer;
   }
 
   .check input {
     margin-top: 2px;
-    accent-color: var(--accent-primary, #5b6cf7);
+    accent-color: var(--accent-primary);
   }
 
   .check.inline {
@@ -722,7 +754,7 @@
 
   .seg {
     display: flex;
-    border: 1px solid var(--border-light, #2a2a3a);
+    border: 1px solid var(--border-light);
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
   }
@@ -732,7 +764,7 @@
     height: 26px;
     padding: 0 6px;
     font-size: 11px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
     background: transparent;
     border: none;
     border-radius: 0;
@@ -741,12 +773,12 @@
   }
 
   .seg-btn + .seg-btn {
-    border-left: 1px solid var(--border-light, #2a2a3a);
+    border-left: 1px solid var(--border-light);
   }
 
   .seg-btn.on {
-    color: #fff;
-    background: var(--accent-primary, #5b6cf7);
+    color: var(--c-on-accent);
+    background: var(--accent-primary);
   }
 
   .disclosure {
@@ -755,7 +787,7 @@
     padding: 0;
     font-size: 11px;
     font-weight: 600;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     background: transparent;
     border: none;
     box-shadow: none;
@@ -763,7 +795,7 @@
   }
 
   .disclosure:hover {
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
     background: transparent;
     box-shadow: none;
   }
@@ -782,14 +814,14 @@
     height: 32px;
     gap: 8px;
     font-weight: 600;
-    color: #fff;
-    background: var(--accent-primary, #5b6cf7);
-    border-color: var(--accent-primary, #5b6cf7);
+    color: var(--c-on-accent);
+    background: var(--accent-primary);
+    border-color: var(--accent-primary);
   }
 
   .run-btn:hover:not(:disabled) {
-    background: var(--accent-hover, #7c8cf8);
-    border-color: var(--accent-hover, #7c8cf8);
+    background: var(--accent-hover);
+    border-color: var(--accent-hover);
   }
 
   .muted-on-btn {
@@ -801,14 +833,14 @@
   .progress {
     height: 6px;
     overflow: hidden;
-    background: var(--bg-primary, #080a14);
-    border: 1px solid var(--border-color, #2a2a3a);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 3px;
   }
 
   .progress-fill {
     height: 100%;
-    background: var(--accent-primary, #5b6cf7);
+    background: var(--accent-primary);
     transition: width 200ms ease;
   }
 
@@ -817,7 +849,7 @@
     align-items: center;
     gap: 8px;
     font-size: 11px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
 
   .progress-msg {
@@ -834,9 +866,9 @@
     gap: 8px;
     padding: 6px 8px;
     font-size: 11px;
-    color: var(--accent-danger, #f87171);
-    background: rgba(248, 113, 113, 0.08);
-    border: 1px solid var(--accent-danger, #f87171);
+    color: var(--accent-danger);
+    background: rgba(var(--c-alarm-rgb), 0.08);
+    border: 1px solid var(--accent-danger);
     border-radius: var(--radius-sm, 4px);
   }
 
@@ -850,12 +882,12 @@
   /* Result */
   .result {
     padding-top: var(--spacing-sm, 8px);
-    border-top: 1px solid var(--border-color, #2a2a3a);
+    border-top: 1px solid var(--border-color);
   }
 
   .legend-bar {
     height: 12px;
-    border: 1px solid var(--border-light, #2a2a3a);
+    border: 1px solid var(--border-light);
     border-radius: 2px;
   }
 
@@ -864,7 +896,7 @@
     justify-content: space-between;
     margin-top: 2px;
     font-size: 10px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .scalars {
@@ -876,8 +908,8 @@
 
   .scalar {
     padding: 4px 6px;
-    background: var(--bg-primary, #080a14);
-    border: 1px solid var(--border-color, #2a2a3a);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
     min-width: 0;
   }
@@ -886,7 +918,7 @@
     font-size: 9px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .scalar dd {
@@ -894,20 +926,20 @@
     font-size: 12px;
     font-family: var(--font-mono, monospace);
     font-variant-numeric: tabular-nums;
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
     white-space: nowrap;
   }
 
   .unit {
     margin-left: 3px;
     font-size: 9px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .table-wrap {
     max-height: 200px;
     overflow: auto;
-    border: 1px solid var(--border-color, #2a2a3a);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
   }
 
@@ -926,15 +958,15 @@
     text-align: left;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted, #5c6088);
-    background: var(--bg-tertiary, #111628);
-    border-bottom: 1px solid var(--border-light, #2a2a3a);
+    color: var(--text-muted);
+    background: var(--bg-tertiary);
+    border-bottom: 1px solid var(--border-light);
   }
 
   .data-table td {
     padding: 3px 6px;
-    color: var(--text-secondary, #9da2c2);
-    border-bottom: 1px solid var(--border-color, #2a2a3a);
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-color);
     white-space: nowrap;
   }
 
@@ -952,7 +984,7 @@
   }
 
   .radar-name {
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
     font-weight: 600;
   }
 
@@ -960,7 +992,7 @@
     display: block;
     margin-left: 15px;
     font-size: 9px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .display-row {
@@ -974,13 +1006,13 @@
     align-items: center;
     gap: 8px;
     font-size: 11px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 
   .slider-row input[type='range'] {
     flex: 1;
     min-width: 0;
-    accent-color: var(--accent-primary, #5b6cf7);
+    accent-color: var(--accent-primary);
   }
 
   .btn-row {

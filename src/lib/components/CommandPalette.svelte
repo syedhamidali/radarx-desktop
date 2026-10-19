@@ -55,6 +55,14 @@
         action: () => dispatch('action', { type: 'toggle-right-sidebar' }),
       },
       {
+        id: 'toggle-map',
+        label: 'Hide / Show Map (2D and 3D)',
+        category: 'View',
+        shortcut: keysFor('toggle-map', bindings),
+        icon: '\u{1F5FA}',
+        action: () => dispatch('action', { type: 'toggle-map' }),
+      },
+      {
         id: 'toggle-animation',
         label: 'Play / Pause Animation',
         category: 'Playback',
@@ -144,6 +152,14 @@
 
     // (Colormap commands are intentionally absent: the viewer keeps its own colormap state and
     // does not read settings.colormap, so such a command would silently do nothing.)
+
+    actions.push({
+      id: 'data-check',
+      label: 'Data Check: what is in this file',
+      category: 'File',
+      icon: '✓',
+      action: () => dispatch('action', { type: 'data-check' }),
+    });
 
     // Export action
     actions.push({

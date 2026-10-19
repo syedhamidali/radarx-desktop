@@ -121,6 +121,8 @@ export interface GlyphOptions {
   offsetY: number;
   /** Upper bound of the number of arrows (strides grow until it fits). */
   maxGlyphs: number;
+  /** Value mask: true = hide the arrow for this wind (u, v, w in m/s; w is 0 where it was not retrieved). */
+  hidden?: ((u: number, v: number, w: number) => boolean) | null;
 }
 
 export const DEFAULT_GLYPH_OPTIONS: GlyphOptions = {
@@ -208,6 +210,7 @@ function cellVisible(w: WindVolume, o: GlyphOptions, q: number, wRet: boolean): 
   if (!(cellConfidence(w, { minCrossing: o.minCrossing, maxUncertainty: o.maxUncertainty, minRadars: 2 }, q, wRet) > 0)) return false;
   const ww = w.fields.w;
   const wv = wRet && ww ? ww[q] : 0;
+  if (o.hidden && o.hidden(w.fields.u[q], w.fields.v[q], wv)) return false;
   return Math.sqrt(w.fields.u[q] ** 2 + w.fields.v[q] ** 2 + wv * wv) >= Math.max(o.minSpeed, 1e-3);
 }
 

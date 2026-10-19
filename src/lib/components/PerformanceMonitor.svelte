@@ -86,15 +86,15 @@
   }
 
   function barColor(ms: number): string {
-    if (ms < 16) return 'var(--perf-green, #4ade80)';
-    if (ms < 33) return 'var(--perf-yellow, #facc15)';
-    return 'var(--perf-red, #f87171)';
+    if (ms < 16) return 'var(--c-nominal)';
+    if (ms < 33) return 'var(--c-caution)';
+    return 'var(--c-alarm)';
   }
 
   function fpsColor(f: number): string {
-    if (f >= 55) return 'var(--perf-green, #4ade80)';
-    if (f >= 30) return 'var(--perf-yellow, #facc15)';
-    return 'var(--perf-red, #f87171)';
+    if (f >= 55) return 'var(--c-nominal)';
+    if (f >= 30) return 'var(--c-caution)';
+    return 'var(--c-alarm)';
   }
 
   function startLoops() {
@@ -200,9 +200,9 @@
     </div>
 
     <div class="perf-chart-legend">
-      <span style="color: var(--perf-green, #4ade80)">&lt;16ms</span>
-      <span style="color: var(--perf-yellow, #facc15)">&lt;33ms</span>
-      <span style="color: var(--perf-red, #f87171)">&gt;33ms</span>
+      <span style="color: var(--c-nominal)">&lt;16ms</span>
+      <span style="color: var(--c-caution)">&lt;33ms</span>
+      <span style="color: var(--c-alarm)">&gt;33ms</span>
     </div>
   </div>
 {/if}
@@ -213,13 +213,13 @@
     top: 8px;
     right: 8px;
     width: 200px;
-    background: rgba(10, 10, 20, 0.92);
+    background: rgba(var(--c-surface-1-rgb), 0.92);
     border: 1px solid rgba(var(--c-line-rgb), 0.1);
     border-radius: 6px;
     padding: 8px 10px;
     font-family: var(--font-mono, monospace);
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.8);
+    color: rgba(var(--c-ink-rgb), 0.8);
     z-index: 9999;
     backdrop-filter: blur(8px);
     pointer-events: auto;
@@ -238,16 +238,16 @@
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: rgba(255, 255, 255, 0.6);
+    color: rgba(var(--c-ink-rgb), 0.6);
   }
 
   .perf-close {
     cursor: pointer;
-    color: rgba(255, 255, 255, 0.4);
+    color: rgba(var(--c-ink-rgb), 0.4);
     font-size: 12px;
     line-height: 1;
   }
-  .perf-close:hover { color: rgba(255, 255, 255, 0.8); }
+  .perf-close:hover { color: rgba(var(--c-ink-rgb), 0.8); }
 
   .perf-row {
     display: flex;
@@ -256,11 +256,11 @@
   }
 
   .perf-label {
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(var(--c-ink-rgb), 0.45);
   }
 
   .perf-value {
-    color: rgba(255, 255, 255, 0.85);
+    color: rgba(var(--c-ink-rgb), 0.85);
     text-align: right;
   }
 

@@ -293,7 +293,7 @@
   .meta-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(var(--c-shadow-rgb), 0.6);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     z-index: 1000;
@@ -306,13 +306,13 @@
     width: 70vw;
     height: 75vh;
     max-width: 900px;
-    background: var(--bg-primary, #0d1117);
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    background: var(--bg-primary);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg, 12px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 24px 80px rgba(var(--c-shadow-rgb), 0.5);
   }
 
   .meta-header {
@@ -321,7 +321,7 @@
     justify-content: space-between;
     padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
     background: rgba(var(--c-surface-2-rgb), 0.8);
-    border-bottom: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-bottom: 1px solid var(--glass-border);
     flex-shrink: 0;
   }
 
@@ -331,7 +331,7 @@
     gap: var(--spacing-sm, 8px);
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
   }
 
   .meta-actions {
@@ -347,16 +347,16 @@
     height: 28px;
     padding: 0; /* the global button padding would squeeze the icon to 2px */
     background: transparent;
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     cursor: pointer;
     transition: all 120ms ease;
   }
 
   .meta-btn:hover {
     background: rgba(var(--c-accent-rgb), 0.1);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
   }
 
   .meta-search-bar {
@@ -365,8 +365,8 @@
     gap: var(--spacing-sm, 8px);
     padding: var(--spacing-xs, 4px) var(--spacing-md, 12px);
     background: rgba(var(--c-surface-2-rgb), 0.5);
-    border-bottom: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
-    color: var(--text-muted, #8b949e);
+    border-bottom: 1px solid var(--glass-border);
+    color: var(--text-muted);
     flex-shrink: 0;
   }
 
@@ -374,15 +374,15 @@
     flex: 1;
     padding: 4px 8px;
     font-size: 12px;
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    background: rgba(var(--c-shadow-rgb), 0.3);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     outline: none;
   }
 
   .meta-search-input:focus {
-    border-color: var(--accent-primary, var(--c-accent));
+    border-color: var(--accent-primary);
   }
 
   .meta-clear-btn {
@@ -394,7 +394,7 @@
     padding: 0;
     background: transparent;
     border: none;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     cursor: pointer;
     border-radius: 50%;
   }
@@ -415,19 +415,19 @@
     justify-content: center;
     gap: var(--spacing-sm, 8px);
     padding: var(--spacing-2xl, 32px);
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     font-size: 13px;
   }
 
   .meta-error {
-    color: var(--error, #f85149);
+    color: var(--error);
   }
 
   .meta-spinner {
     width: 20px;
     height: 20px;
     border: 2px solid rgba(var(--c-accent-rgb), 0.2);
-    border-top-color: var(--accent-primary, var(--c-accent));
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -457,7 +457,7 @@
     padding: 4px var(--spacing-sm, 8px);
     background: transparent;
     border: none;
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     font-size: 12px;
     text-align: left;
     cursor: default;
@@ -482,7 +482,7 @@
     height: 14px;
     flex-shrink: 0;
     transition: transform 200ms ease;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
   }
 
   .tree-chevron.open {
@@ -508,25 +508,25 @@
 
   .icon-group {
     background: rgba(var(--c-accent-rgb), 0.15);
-    color: #7b8cff;
+    color: var(--c-accent);
     border: 1px solid rgba(var(--c-accent-rgb), 0.15);
   }
 
   .icon-var {
-    background: rgba(56, 189, 248, 0.15);
-    color: #38bdf8;
-    border: 1px solid rgba(56, 189, 248, 0.15);
+    background: rgba(var(--c-accent-rgb), 0.15);
+    color: var(--c-accent);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.15);
   }
 
   .icon-coord {
     background: rgba(var(--c-nominal-rgb), 0.15);
-    color: #34d399;
+    color: var(--c-nominal);
     border: 1px solid rgba(var(--c-nominal-rgb), 0.15);
   }
 
   .icon-attr {
     background: rgba(var(--c-caution-rgb), 0.15);
-    color: #fbbf24;
+    color: var(--c-caution);
     border: 1px solid rgba(var(--c-caution-rgb), 0.15);
   }
 
@@ -547,33 +547,33 @@
   }
 
   .tree-badge.dtype {
-    background: rgba(139, 92, 246, 0.12);
-    color: #a78bfa;
-    border: 1px solid rgba(139, 92, 246, 0.12);
+    background: rgba(var(--c-derived-rgb), 0.12);
+    color: var(--c-derived);
+    border: 1px solid rgba(var(--c-derived-rgb), 0.12);
   }
 
   .tree-badge.shape {
-    background: rgba(34, 211, 238, 0.1);
-    color: #22d3ee;
-    border: 1px solid rgba(34, 211, 238, 0.1);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    color: var(--c-accent);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.1);
   }
 
   .tree-badge.units {
-    background: rgba(251, 146, 60, 0.12);
-    color: #fb923c;
-    border: 1px solid rgba(251, 146, 60, 0.12);
+    background: rgba(var(--c-caution-rgb), 0.12);
+    color: var(--c-caution);
+    border: 1px solid rgba(var(--c-caution-rgb), 0.12);
   }
 
   .tree-stats {
     font-size: 10px;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     font-family: var(--font-mono, monospace);
     flex-shrink: 0;
   }
 
   .tree-value {
     font-size: 10px;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     cursor: pointer;
     max-width: 200px;
     overflow: hidden;
@@ -583,16 +583,16 @@
   }
 
   .tree-value:hover {
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
   }
 
   .tree-value.copied {
-    color: #34d399;
+    color: var(--c-nominal);
   }
 
   .tree-longname {
     font-size: 10px;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     font-style: italic;
     opacity: 0.7;
     flex-shrink: 1;

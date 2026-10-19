@@ -122,24 +122,16 @@
   .measure-overlay {
     --halo: rgba(var(--c-surface-0-rgb), 0.8);
   }
-  :global(.theme-light) .measure-overlay {
-    --halo: rgba(255, 255, 255, 0.88);
-  }
-  @media (prefers-color-scheme: light) {
-    :global(.theme-auto) .measure-overlay {
-      --halo: rgba(255, 255, 255, 0.88);
-    }
-  }
 
   .measure-line {
     fill: none;
-    stroke: var(--accent-primary, var(--c-accent));
+    stroke: var(--accent-primary);
     stroke-width: 2;
     stroke-dasharray: 6 3;
   }
 
   .measure-line.bearing {
-    stroke: var(--accent-warning, #fbbf24);
+    stroke: var(--accent-warning);
   }
 
   .measure-line.pending {
@@ -149,14 +141,14 @@
 
   .measure-polygon {
     fill: rgba(var(--c-accent-rgb), 0.12);
-    stroke: var(--accent-primary, var(--c-accent));
+    stroke: var(--accent-primary);
     stroke-width: 2;
     stroke-dasharray: 6 3;
   }
 
   .measure-dot {
-    fill: var(--accent-primary, var(--c-accent));
-    stroke: var(--bg-primary, var(--c-surface-0));
+    fill: var(--accent-primary);
+    stroke: var(--bg-primary);
     stroke-width: 2;
   }
 
@@ -165,7 +157,7 @@
   }
 
   .measure-label {
-    fill: var(--text-primary, #e4e6f4);
+    fill: var(--text-primary);
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     text-anchor: middle;

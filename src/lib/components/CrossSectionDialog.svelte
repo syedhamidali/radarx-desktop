@@ -43,7 +43,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.62);
+    background: rgba(var(--c-shadow-rgb), 0.62);
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
   }
@@ -54,10 +54,10 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: var(--bg-secondary, #0d1020);
-    border: 1px solid var(--glass-border, rgba(140, 160, 250, 0.12));
+    background: var(--bg-secondary);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg, 12px);
-    box-shadow: var(--shadow-lg, 0 20px 60px rgba(0, 0, 0, 0.5));
+    box-shadow: var(--shadow-lg);
     outline: none;
   }
 </style>

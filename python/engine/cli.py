@@ -71,6 +71,7 @@ NON_RADAR_SUFFIXES = {
 
 COMMANDS = (
     "info",
+    "check",
     "plot",
     "pipeline",
     "run",
@@ -78,6 +79,7 @@ COMMANDS = (
     "cells",
     "mosaic",
     "winds",
+    "animate",
     "export",
     "examples",
     "completion",
@@ -364,13 +366,15 @@ def _add_format(p: argparse.ArgumentParser, desc: str) -> None:
 
 GROUPS = (
     ("Look", (("info", "what is in a file: format, radar, time, sweeps, variables"),
+              ("check", "is the data sound? problems with evidence and a suggested QC recipe"),
               ("plot", "draw a PPI picture of one variable"))),
     ("Clean", (("pipeline", "apply a QC recipe: clutter, dealiasing, speckle ... (list | show | run | script)"),)),
     ("Analyse", (("run", "run an algorithm: hydrometeor classes, shear, rain rate ... (= modules run)"),
                  ("modules", "list | show the algorithms and their parameters"),
                  ("cells", "find storm cells; several files are tracked in time"))),
     ("Combine", (("mosaic", "merge several radars onto one map"),
-                 ("winds", "3-D winds from two or more radars (multi-Doppler)"))),
+                 ("winds", "3-D winds from two or more radars (multi-Doppler)"),
+                 ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
     ("Help", (("examples", "a guided tour of copy-paste commands"),
               ("completion", "shell completion script for bash, zsh or fish"))),
@@ -462,6 +466,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_input(p)
     p.set_defaults(func=cmd_info)
+
+    # -- check ---------------------------------------------------------------------------
+    p = command(
+        "check",
+        "Data-quality check: what is wrong or unusual in a file, with evidence and a suggested QC recipe.",
+        "Looks at the data already in the file (aliasing, range folding, noise floor, clutter, blockage\n"
+        "proxy, ZDR offset, PhiDP, time order, coverage, units ...). Nothing is changed or applied; exit\n"
+        "code 0 even when problems are found. See docs/DATA_CHECK.md for every check and threshold.\n"
+        "\n"
+        "examples:\n"
+        f"  xrd check -i {SAMPLE}\n"
+        f"  xrd check -i {SAMPLE} --fix-plan\n"
+        f"  xrd check -i {SAMPLE} --fix-plan -o recipe.json\n"
+        "  xrd check -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --json\n",
+    )
+    _add_input(p)
+    _add_output(p, "with --fix-plan: write the suggested recipe(s) as JSON for 'xrd pipeline'")
+    p.add_argument(
+        "--fix-plan",
+        action="store_true",
+        help="also print the suggested QC recipe step by step with the commands to run it",
+    )
+    p.set_defaults(func=cmd_check)
 
     # -- plot ----------------------------------------------------------------------------
     p = command(
@@ -705,6 +732,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--field", default="speed", help="field shown in colour (default speed)")
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.set_defaults(func=cmd_winds)
+
+    # -- animate -------------------------------------------------------------------------
+    from engine import animate_cli
+
+    animate_cli.add_parser(command, _add_input, _add_output, _add_plot)
 
     # -- export --------------------------------------------------------------------------
     p = command(
@@ -989,6 +1021,69 @@ def _format_info(info: dict[str, Any]) -> str:
             "    (~ = estimated from the largest velocity in the sweep: the file has no Nyquist value)"
         )
     return "\n".join(lines)
+
+
+def cmd_check(args: argparse.Namespace, out: Out) -> int:
+    from engine import api, quality
+
+    files = _inputs(args)
+    if args.output and not args.fix_plan:
+        raise UsageError("check: -o writes the suggested recipe(s); add --fix-plan to ask for it")
+    if args.output and len(files) > 1:
+        raise UsageError("check: -o with several files is ambiguous; run it once per file")
+    reports: list[dict[str, Any]] = []
+    failed = 0
+    for path in files:
+        try:
+            with _open(path) as vol:
+                rep = quality.check_volume(vol)
+        except (api.XrdInputError, FileNotFoundError) as exc:
+            if len(files) == 1:
+                raise
+            print(f"{_err_label(sys.stderr)} {path}: {api.error_message(exc)}", file=sys.stderr)
+            failed += 1
+            continue
+        rep["file"] = path
+        saved: dict[str, str] = {}
+        if args.fix_plan and args.output and rep["recommendation"]["recipes"]:
+            saved = _write_recipes(rep, args.output[0], out)
+        if args.fix_plan:
+            rep["fix_plan"] = quality.fix_plan_lines(rep, saved)
+        reports.append(rep)
+    if out.json:
+        out.emit_json(reports[0] if len(reports) == 1 and len(files) == 1 else reports)
+    else:
+        for i, rep in enumerate(reports):
+            if i:
+                out.result("")
+            out.result(
+                quality.format_report(
+                    rep,
+                    fix_plan=args.fix_plan,
+                    verbose=out.verbose > 0,
+                    label=bold(_show(rep["file"])),
+                )
+            )
+    return EXIT_INPUT if failed else EXIT_OK
+
+
+def _write_recipes(rep: dict[str, Any], target: str, out: Out) -> dict[str, str]:
+    """Save the suggested recipes as JSON (``recipe.json`` -> ``recipe_velocity.json`` ...)."""
+    recipes = rep["recommendation"]["recipes"]
+    base = Path(target)
+    saved: dict[str, str] = {}
+    for item in recipes:
+        if base.suffix.lower() == ".json" and len(recipes) == 1:
+            path = base
+        elif base.suffix.lower() == ".json":
+            path = base.with_name(f"{base.stem}_{item['role']}.json")
+        else:
+            base.mkdir(parents=True, exist_ok=True)
+            path = base / f"recipe_{item['role']}.json"
+        path.write_text(dumps(item["recipe"]) + "\n", encoding="utf-8")
+        saved[item["role"]] = str(path)
+        out.wrote(path)
+    return saved
 
 
 def _nyquist_text(sweep: dict[str, Any]) -> str:
@@ -1692,6 +1787,7 @@ _TOUR: dict[str, str] = {
     "look": f"""\
 # LOOK - what is in the file, and a first picture
 xrd info -i {SAMPLE}
+xrd check -i {SAMPLE} --fix-plan
 xrd plot -i {SAMPLE}
 xrd plot -i {SAMPLE} -V velocity -p velocity.png --theme dark
 xrd info -i mayfield/KHPX mayfield/KNQA --json""",
@@ -1715,6 +1811,11 @@ xrd cells -i 'mayfield/KHPX/*_V06' -o cells.csv --tracks tracks.csv -p tracks.pn
 xrd mosaic -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 KPAH20211211_015935_V06 KVWX20211211_015522_V06
 xrd mosaic -i 'mayfield/*/*_0159*_V06' -o mosaic.nc -p map.png
 xrd winds -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 --extent 80 -o winds.nc -p winds.png --level-km 3""",
+    "animate": """\
+# ANIMATE - a storm-centred 3D animation of many volumes (needs radarx; --no-render needs nothing else)
+xrd animate -i 'mayfield/*/*_V06' --no-render
+xrd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
+xrd animate -i mayfield -p still.png --still-at 12""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images
 xrd export -i {SAMPLE} -o ktlx.nc
@@ -1731,6 +1832,7 @@ TOPICS = tuple(_TOUR)
 #: ``xrd examples mosaic`` works too: a command name selects its topic.
 TOPIC_ALIASES = {
     "info": "look",
+    "check": "look",
     "plot": "look",
     "pipeline": "clean",
     "run": "analyse",
@@ -1738,6 +1840,7 @@ TOPIC_ALIASES = {
     "cells": "analyse",
     "mosaic": "combine",
     "winds": "combine",
+    "animate": "animate",
     "export": "save",
     "config": "reproduce",
 }

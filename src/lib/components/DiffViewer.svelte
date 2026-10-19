@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ink } from '../utils/themeColors';
   import { onMount, onDestroy } from 'svelte';
   import { wsManager } from '../utils/websocket';
   import { openFiles, type FileEntry } from '../stores/fileManager';
@@ -182,12 +183,12 @@
     }
     ctx.putImageData(img, 0, 0);
     // Outer range circle + north tick so the sweep's extent and orientation are readable
-    ctx.strokeStyle = 'rgba(160, 170, 220, 0.35)';
+    ctx.strokeStyle = ink(0.35);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(w / 2, h / 2, w / 2 - 1, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.fillStyle = 'rgba(200, 205, 240, 0.8)';
+    ctx.fillStyle = ink(0.8);
     ctx.font = '11px system-ui';
     ctx.textAlign = 'center';
     ctx.fillText('N', w / 2, 13);

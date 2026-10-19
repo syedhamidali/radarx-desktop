@@ -111,8 +111,8 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    border-top: 1px solid var(--glass-border, rgba(140, 160, 250, 0.12));
-    background: var(--bg-secondary, #0d1020);
+    border-top: 1px solid var(--glass-border);
+    background: var(--bg-secondary);
   }
   .grip {
     position: absolute;
@@ -132,13 +132,13 @@
     width: 44px;
     height: 3px;
     border-radius: 2px;
-    background: var(--border-light, rgba(140, 160, 250, 0.3));
+    background: var(--border-light);
     transition: background 120ms ease;
   }
   .grip:hover span,
   .grip.active span,
   .grip:focus-visible span {
-    background: var(--accent-primary, #5b6cf7);
+    background: var(--accent-primary);
   }
   .body {
     flex: 1 1 0;

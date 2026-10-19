@@ -31,14 +31,14 @@
     gap: var(--spacing-md, 12px);
     padding: var(--spacing-xl, 24px);
     text-align: center;
-    color: var(--text-muted, #5c6088);
-    background: var(--bg-primary, #080a14);
+    color: var(--text-muted);
+    background: var(--bg-primary);
   }
   h2 {
     margin: 0;
     font-size: 16px;
     font-weight: 600;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
   p {
     margin: 0;

@@ -283,7 +283,7 @@
     gap: 8px;
     height: 36px;
     padding: 0 12px;
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.7));
+    background: var(--glass-bg-heavy);
     border-top: 1px solid var(--glass-border);
     flex-shrink: 0;
     user-select: none;
@@ -370,7 +370,7 @@
     top: 0;
     left: 0;
     height: 100%;
-    background: linear-gradient(90deg, var(--accent-primary), var(--accent-hover, #7B8AF9));
+    background: linear-gradient(90deg, var(--accent-primary), var(--accent-hover));
     border-radius: 2px;
     transition: width 100ms ease;
     box-shadow: 0 0 6px rgba(var(--c-accent-rgb), 0.3);
@@ -401,8 +401,8 @@
   }
 
   .tl-marker.hover .tl-marker-dot {
-    background: rgba(255, 255, 255, 0.4);
-    border-color: rgba(255, 255, 255, 0.3);
+    background: rgba(var(--c-ink-rgb), 0.4);
+    border-color: rgba(var(--c-ink-rgb), 0.3);
     width: 8px;
     height: 8px;
   }
@@ -420,8 +420,8 @@
     height: 12px;
     border-radius: 50%;
     background: var(--accent-primary);
-    border: 2px solid rgba(255, 255, 255, 0.9);
-    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+    border: 2px solid rgba(var(--c-ink-rgb), 0.9);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.4), 0 1px 3px rgba(var(--c-shadow-rgb), 0.3);
     transition: transform 100ms ease;
   }
 
@@ -439,7 +439,7 @@
   }
 
   .tl-tooltip-inner {
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.9));
+    background: var(--glass-bg-heavy);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     padding: 4px 8px;

@@ -47,7 +47,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, pipeline, plugins, rhi, varmap, web
+from engine import derived, mosaic, pipeline, plugins, quality, rhi, varmap, web
 from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
@@ -783,6 +783,14 @@ def _export_inputs(
         for key in ("vmin", "vmax"):
             if opts.get(key) is None and isinstance(meta.get(key), (int, float)):
                 opts[key] = meta[key]
+    # value masks are keyed by the name the viewer uses; the exported tree uses the NetCDF-safe name
+    if isinstance(opts.get("value_masks"), dict):
+        opts["value_masks"] = {
+            (derived.export_name(k) if k in stored else k): m
+            for k, m in opts["value_masks"].items()
+        }
+    if opts.get("value_mask_variable") in stored:
+        opts["value_mask_variable"] = derived.export_name(opts["value_mask_variable"])
     return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
 
 
@@ -996,6 +1004,7 @@ class ConnectionHandler:
             "get_metadata_tree": self._handle_get_metadata_tree,
             "get_variable_mapping": self._handle_get_variable_mapping,
             "set_variable_mapping": self._handle_set_variable_mapping,
+            "data_check": self._handle_data_check,
             "ping": self._handle_ping,
             "list_nexrad_stations": self._handle_list_nexrad_stations,
             "list_nexrad_l2_files": self._handle_list_nexrad_l2_files,
@@ -2990,6 +2999,28 @@ class ConnectionHandler:
             }
         )
 
+    async def _handle_data_check(self, msg: dict[str, Any]) -> None:
+        """Data-quality report of an open file (see ``engine/quality.py``, docs/DATA_CHECK.md).
+
+        Request ``{type: "data_check", file_id?}``; reply ``{type: "data_check", file_id, report}``.
+        Read-only: it looks at the data already in memory (a lazily-loaded ARCO sweep is never
+        fetched for it) and applies nothing. One check runs at a time per connection.
+        """
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        tree = reader.datatree
+        if tree is None:
+            await self.send_error("data_check: no file is open")
+            return
+        overrides = _overrides_store().get(resolved_id, reader._path)
+        cs = _cs()
+        lock = (_locks if cs is None else cs.locks).get("data_check")
+        report = await _run_holding(lock, lambda: quality.check_reader(reader, overrides=overrides))
+        if resolved_id is not None and _readers().get(resolved_id) is not reader:
+            return  # closed or replaced while it ran: nobody wants this report
+        await self.send(
+            {"type": "data_check", "file_id": resolved_id or msg.get("file_id"), "report": report}
+        )
+
     async def _handle_get_metadata_tree(self, msg: dict[str, Any]) -> None:
         """Return the full DataTree structure as a nested metadata tree.
 
@@ -3822,6 +3853,7 @@ class ConnectionHandler:
                 min_rhohv=msg.get("min_rhohv"),
                 progress=progress_sync,
                 keep_volume=msg.get("keep_volume"),
+                value_mask=msg.get("value_mask"),
             )
 
         t0 = time.perf_counter()

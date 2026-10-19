@@ -14,13 +14,15 @@
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
   import UpdateChip from './lib/components/UpdateChip.svelte';
+  import DataCheckChip from './lib/components/DataCheckChip.svelte';
+  import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
   import { get } from 'svelte/store';
-  import { sidecarPort, settings } from './lib/stores/settings';
+  import { sidecarPort, settings, toggleMapHidden } from './lib/stores/settings';
   import { recentFiles } from './lib/stores/recentFiles';
   import { openFiles, setActiveFile } from './lib/stores/fileManager';
   import { matchesCombo, SHORTCUT_REGISTRY } from './lib/utils/shortcuts';
@@ -48,6 +50,7 @@
   const crossDock = lazy(() => import('./lib/components/CrossSectionDock.svelte'));
   const crossDialog = lazy(() => import('./lib/components/CrossSectionDialog.svelte'));
   const palette = lazy(() => import('./lib/components/CommandPalette.svelte'));
+  const dataCheckPanel = lazy(() => import('./lib/components/DataCheckPanel.svelte'));
   const tour = lazy(() => import('./lib/components/OnboardingTour.svelte'));
   const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
@@ -131,6 +134,7 @@
   $effect(() => { if (crossSectionDocked) crossDock.load(); });
   $effect(() => { if ($crossSectionStore.layout === 'modal') crossDialog.load(); });
   $effect(() => { if (commandPaletteVisible) palette.load(); });
+  $effect(() => { if ($dataCheckOpen) dataCheckPanel.load(); });
   $effect(() => { if (onboardingVisible) tour.load(); });
   $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
@@ -380,6 +384,7 @@
         case 'toggle-right-sidebar': toggleRightSidebar(); break;
         case 'play-pause': toggleAnimation(); break;
         case 'settings': settingsOpen = !settingsOpen; break;
+        case 'toggle-map': toggleMapHidden(); break;
       }
       return;
     }
@@ -1060,6 +1065,7 @@
         <span class="sb-dim">No file loaded. Drag and drop, or {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+O</span>
       {/if}
     </div>
+    <DataCheckChip />
     <UpdateChip />
     <OperationsTray />
     <div class="statusbar-right">
@@ -1081,6 +1087,7 @@
 
   <ToastContainer />
   <UpdateDialog />
+  {#if $dataCheckOpen && dataCheckPanel.component}<dataCheckPanel.component onshowpanel={showPanel} />{/if}
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
@@ -1088,12 +1095,14 @@
     else if (type === 'toggle-left-sidebar') toggleLeftSidebar();
     else if (type === 'toggle-right-sidebar') toggleRightSidebar();
     else if (type === 'toggle-animation') toggleAnimation();
+    else if (type === 'toggle-map') toggleMapHidden();
     else if (type === 'set-view') { viewMode = value; syncWorkspace(); }
     else if (type === 'open-settings') settingsOpen = true;
     else if (type === 'show-shortcuts') shortcutsSheetVisible = true;
     else if (type === 'show-tour') onboardingVisible = true;
     else if (type === 'about') aboutDialogVisible = true;
     else if (type === 'export') showPanel('export');
+    else if (type === 'data-check') openDataCheck();
   }} />
   {/if}
   {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}

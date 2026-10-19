@@ -6,6 +6,8 @@
  * header; `fieldSlice` returns zero-copy views into it.
  */
 
+import { maskPredicate, type ValueMask } from '../stores/valueMask.ts';
+
 export type WindFieldKey =
   | 'u'
   | 'v'
@@ -172,6 +174,8 @@ export interface WindLayer {
   visible: boolean;
   minCrossing: number;
   maxUncertainty: number | null;
+  /** Value mask of the shown field (stores/valueMask); cells it hides are not drawn. */
+  mask?: ValueMask | null;
   radars: (WindRadar & { color: string })[];
 }
 
@@ -378,8 +382,10 @@ export function drawWindLayer(
   const val = fieldSlice(res, layer.field, k);
   const cross = fieldSlice(res, 'crossing_angle', k);
   const unc = fieldSlice(res, 'uncertainty', k);
+  const hiddenByMask = maskPredicate(layer.mask, { f32: true });
   const ok = (idx: number): boolean => {
     if (!Number.isFinite(val[idx])) return false;
+    if (hiddenByMask && hiddenByMask(val[idx])) return false;
     if (layer.minCrossing > 0 && !(cross[idx] >= layer.minCrossing)) return false;
     if (layer.maxUncertainty !== null && Number.isFinite(unc[idx]) && unc[idx] > layer.maxUncertainty) return false;
     return true;
@@ -549,6 +555,8 @@ export interface SectionOptions {
   vmax: number;
   minCrossing: number;
   maxUncertainty: number | null;
+  /** Value mask of the sectioned field; cells it hides are not drawn. */
+  mask?: ValueMask | null;
 }
 
 /** Paint a vertical slice (distance along the slice vs height) of a field onto a canvas. */
@@ -582,6 +590,7 @@ export function drawSection(canvas: HTMLCanvasElement, res: WindResult, opt: Sec
   const lut = scaleLut(FIELD_STYLES[opt.field].kind);
   const span = opt.vmax - opt.vmin || 1;
   const fg = dark ? '#9da2c2' : '#444';
+  const hiddenByMask = maskPredicate(opt.mask, { f32: true });
   for (let k = 0; k < nz; k++) {
     const val = fieldSlice(res, opt.field, k);
     const cross = fieldSlice(res, 'crossing_angle', k);
@@ -590,6 +599,7 @@ export function drawSection(canvas: HTMLCanvasElement, res: WindResult, opt: Sec
       const idx = opt.axis === 'x' ? opt.index * nx + a : a * nx + opt.index;
       const v = val[idx];
       if (!Number.isFinite(v)) continue;
+      if (hiddenByMask && hiddenByMask(v)) continue;
       if (opt.minCrossing > 0 && !(cross[idx] >= opt.minCrossing)) continue;
       if (opt.maxUncertainty !== null && Number.isFinite(unc[idx]) && unc[idx] > opt.maxUncertainty) continue;
       const t = Math.max(0, Math.min(1, (v - opt.vmin) / span));

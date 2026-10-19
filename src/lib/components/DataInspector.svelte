@@ -128,7 +128,7 @@
     display: flex;
     gap: var(--spacing-xs, 4px);
     padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--glass-border);
     background: rgba(var(--c-surface-2-rgb), 0.3);
     flex-shrink: 0;
   }
@@ -140,7 +140,7 @@
     padding: 4px 10px;
     font-size: 11px;
     font-weight: 500;
-    color: var(--text-secondary, #c9d1d9);
+    color: var(--text-secondary);
     background: rgba(var(--c-accent-rgb), 0.06);
     border: 1px solid rgba(var(--c-accent-rgb), 0.12);
     border-radius: var(--radius-sm, 4px);
@@ -151,7 +151,7 @@
 
   .toolbar-btn:hover {
     background: rgba(var(--c-accent-rgb), 0.14);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     border-color: rgba(var(--c-accent-rgb), 0.3);
   }
 
@@ -170,12 +170,12 @@
     letter-spacing: 0.06em;
     color: var(--text-muted);
     padding: var(--spacing-xs) var(--spacing-sm);
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--glass-border);
   }
 
   .dim-table td {
     padding: var(--spacing-xs) var(--spacing-sm);
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--glass-border);
   }
 
   .dim-table tr:last-child td {
@@ -203,7 +203,7 @@
     flex-direction: column;
     gap: 2px;
     padding: var(--spacing-xs) var(--spacing-sm);
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--glass-border);
     transition: background 120ms ease;
   }
 
@@ -284,7 +284,7 @@
     font-family: var(--font-mono);
     font-size: 10px;
     background: rgba(var(--c-surface-0-rgb), 0.6);
-    border: 1px solid var(--glass-border, var(--border-color));
+    border: 1px solid var(--glass-border);
     border-radius: 4px;
     color: var(--text-secondary);
   }

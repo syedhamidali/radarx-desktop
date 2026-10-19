@@ -620,7 +620,7 @@
 
   .algo-btn:hover:not(:disabled) {
     background: rgba(var(--c-accent-rgb), 0.06);
-    border-color: var(--border-color, rgba(var(--c-line-rgb), 0.08));
+    border-color: var(--border-color);
     color: var(--text-primary);
   }
 
@@ -656,8 +656,8 @@
   }
 
   .pipeline-step {
-    background: var(--bg-secondary, rgba(var(--c-line-rgb), 0.03));
-    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.06));
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
     transition: all var(--transition-fast, 150ms);
     cursor: grab;
@@ -665,11 +665,11 @@
 
   .pipeline-step.dragging {
     opacity: 0.4;
-    border-color: var(--accent-primary, var(--c-accent));
+    border-color: var(--accent-primary);
   }
 
   .pipeline-step.drop-target {
-    border-color: var(--accent-primary, var(--c-accent));
+    border-color: var(--accent-primary);
     box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.15);
   }
 
@@ -716,7 +716,7 @@
   }
 
   .step-name-btn:hover {
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
   }
 
   .step-remove-btn {
@@ -736,8 +736,8 @@
   }
 
   .step-remove-btn:hover {
-    color: var(--accent-danger, #f44336);
-    background: rgba(244, 67, 54, 0.1);
+    color: var(--accent-danger);
+    background: rgba(var(--c-alarm-rgb), 0.1);
   }
 
   .step-params {
@@ -745,7 +745,7 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-    border-top: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.04));
+    border-top: 1px solid var(--border-color);
   }
 
   .param-row {
@@ -770,13 +770,13 @@
   }
 
   .param-input.invalid {
-    border-color: var(--accent-danger, #f44336);
-    box-shadow: 0 0 0 1px var(--accent-danger, #f44336);
+    border-color: var(--accent-danger);
+    box-shadow: 0 0 0 1px var(--accent-danger);
   }
 
   .param-error {
     font-size: 9px;
-    color: var(--accent-danger, #f44336);
+    color: var(--accent-danger);
     white-space: nowrap;
   }
 
@@ -811,14 +811,14 @@
     padding: 3px 6px;
     font-size: 10px;
     color: var(--text-secondary);
-    background: rgba(255, 179, 0, 0.1);
-    border-left: 2px solid #ffb300;
+    background: rgba(var(--c-caution-rgb), 0.1);
+    border-left: 2px solid var(--c-caution);
     border-radius: 2px;
   }
 
   .step-note.block {
-    background: rgba(244, 67, 54, 0.1);
-    border-left-color: var(--accent-danger, #f44336);
+    background: rgba(var(--c-alarm-rgb), 0.1);
+    border-left-color: var(--accent-danger);
   }
 
   .blocked-hint {
@@ -835,7 +835,7 @@
     padding: 0 4px;
     height: auto;
     font-size: inherit;
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
     background: transparent;
     border: none;
     text-decoration: underline;
@@ -872,16 +872,16 @@
   }
 
   .action-btn-sm.active {
-    background: var(--bg-active, rgba(var(--c-accent-rgb), 0.15));
+    background: var(--bg-active);
     border-color: rgba(var(--c-accent-rgb), 0.3);
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
   }
 
   .spinner {
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(var(--c-ink-rgb), 0.3);
     border-top-color: var(--c-on-accent);
     border-radius: 50%;
     animation: spin 600ms linear infinite;
@@ -908,19 +908,19 @@
 
   .progress-pct {
     font-family: var(--font-mono);
-    color: var(--text-accent, var(--accent-primary));
+    color: var(--text-accent);
   }
 
   .progress-bar {
     height: 3px;
-    background: var(--bg-secondary, rgba(var(--c-line-rgb), 0.05));
+    background: var(--bg-secondary);
     border-radius: 2px;
     overflow: hidden;
   }
 
   .progress-bar-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--accent-primary, var(--c-accent)), var(--accent-hover, #7b8cff));
+    background: linear-gradient(90deg, var(--accent-primary), var(--accent-hover));
     transition: width 300ms ease;
     border-radius: 2px;
   }
@@ -929,15 +929,15 @@
   .result-card {
     margin-top: var(--spacing-xs, 4px);
     padding: var(--spacing-sm, 6px) var(--spacing-md, 10px);
-    background: rgba(76, 175, 80, 0.06);
-    border: 1px solid rgba(76, 175, 80, 0.15);
+    background: rgba(var(--c-nominal-rgb), 0.06);
+    border: 1px solid rgba(var(--c-nominal-rgb), 0.15);
     border-radius: 6px;
   }
 
   .result-title {
     font-size: 11px;
     font-weight: 600;
-    color: var(--accent-success, #4caf50);
+    color: var(--accent-success);
     margin-bottom: 3px;
   }
 
@@ -1011,7 +1011,7 @@
 
   .preset-load-btn:hover {
     background: rgba(var(--c-accent-rgb), 0.06);
-    border-color: var(--border-color, rgba(var(--c-line-rgb), 0.08));
+    border-color: var(--border-color);
     color: var(--text-primary);
   }
 
@@ -1044,8 +1044,8 @@
 
   .preset-delete-btn:hover {
     opacity: 1;
-    color: var(--accent-danger, #f44336);
-    background: rgba(244, 67, 54, 0.1);
+    color: var(--accent-danger);
+    background: rgba(var(--c-alarm-rgb), 0.1);
   }
 
   .no-data-msg {

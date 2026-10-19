@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ink, surface, series, themeRevision } from '../utils/themeColors';
   /**
    * VerticalProfile -- Line chart showing value (X) vs height (Y).
    * Supports overlaying multiple variables.
@@ -23,14 +24,11 @@
 
   const margin = { top: 20, right: 20, bottom: 45, left: 65 };
 
-  // Profile colors (for multiple overlays)
-  const PROFILE_COLORS = [
-    '#5b6cf7', '#f7a35c', '#4fd1c5', '#f56565',
-    '#9f7aea', '#48bb78', '#ed64a6', '#ecc94b',
-  ];
+  // Profile colours (for multiple overlays): the chart-series tokens, read when drawing so they follow the theme
+  const profileColor = (i: number) => series(i);
 
   // Also redraw when the profiles are cleared, so the old plot does not linger under the placeholder.
-  $: if (canvasEl && profiles) {
+  $: if (canvasEl && profiles && $themeRevision >= 0) {
     requestAnimationFrame(() => draw());
   }
 
@@ -75,7 +73,7 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Clear
-    ctx.fillStyle = 'rgb(15, 15, 26)';
+    ctx.fillStyle = surface(0);
     ctx.fillRect(0, 0, width, height);
     if (profiles.length === 0) return;
 
@@ -126,7 +124,7 @@
     }
 
     // Draw axes
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.strokeStyle = ink(0.25);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(margin.left, margin.top);
@@ -135,7 +133,7 @@
     ctx.stroke();
 
     // Grid and tick marks - X axis (values)
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillStyle = ink(0.6);
     ctx.font = '11px var(--font-mono, monospace)';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -146,19 +144,19 @@
     for (let v = xStart; v <= valMax; v += xTickSpacing) {
       const x = valToX(v, -1);
       if (x >= margin.left && x <= margin.left + plotW) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.strokeStyle = ink(0.05);
         ctx.beginPath();
         ctx.moveTo(x, margin.top);
         ctx.lineTo(x, margin.top + plotH);
         ctx.stroke();
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.strokeStyle = ink(0.3);
         ctx.beginPath();
         ctx.moveTo(x, margin.top + plotH);
         ctx.lineTo(x, margin.top + plotH + 5);
         ctx.stroke();
 
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillStyle = ink(0.6);
         const tickLabel = normalized
           ? (Math.abs(v) < 1e-9 ? 'min' : Math.abs(v - 1) < 1e-9 ? 'max' : '')
           : v.toFixed(xTickSpacing < 1 ? 1 : 0);
@@ -169,7 +167,7 @@
     // X-axis label (variable names)
     const varNames = profiles.map((p) => p.variable).join(', ');
     const units = profiles[0]?.units ?? '';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillStyle = ink(0.5);
     ctx.font = '12px var(--font-sans, sans-serif)';
     ctx.fillText(
       normalized ? 'each variable scaled to its own min-max' : units ? `${varNames} (${units})` : varNames,
@@ -188,19 +186,19 @@
     for (let h = yStart; h <= hMax; h += yTickSpacing) {
       const y = hToY(h);
       if (y >= margin.top && y <= margin.top + plotH) {
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.strokeStyle = ink(0.05);
         ctx.beginPath();
         ctx.moveTo(margin.left, y);
         ctx.lineTo(margin.left + plotW, y);
         ctx.stroke();
 
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.strokeStyle = ink(0.3);
         ctx.beginPath();
         ctx.moveTo(margin.left - 5, y);
         ctx.lineTo(margin.left, y);
         ctx.stroke();
 
-        ctx.fillStyle = 'rgba(255,255,255,0.6)';
+        ctx.fillStyle = ink(0.6);
         ctx.fillText(h.toFixed(yTickSpacing < 1 ? 1 : 0), margin.left - 8, y);
       }
     }
@@ -211,7 +209,7 @@
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillStyle = ink(0.5);
     ctx.font = '12px var(--font-sans, sans-serif)';
     ctx.fillText('Height (km)', 0, 0);
     ctx.restore();
@@ -219,7 +217,7 @@
     // Draw profile lines
     for (let pi = 0; pi < profiles.length; pi++) {
       const p = profiles[pi];
-      const color = PROFILE_COLORS[pi % PROFILE_COLORS.length];
+      const color = profileColor(pi);
 
       ctx.strokeStyle = color;
       ctx.lineWidth = 2;
@@ -262,10 +260,10 @@
       const legendX = margin.left + 8;
       let legendY = margin.top + 8;
       for (let pi = 0; pi < profiles.length; pi++) {
-        const color = PROFILE_COLORS[pi % PROFILE_COLORS.length];
+        const color = profileColor(pi);
         ctx.fillStyle = color;
         ctx.fillRect(legendX, legendY, 12, 3);
-        ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        ctx.fillStyle = ink(0.7);
         ctx.font = '10px var(--font-mono, monospace)';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
@@ -338,7 +336,7 @@
         variable: p.variable,
         value: p.values[bestIdx],
         units: p.units,
-        color: PROFILE_COLORS[pi % PROFILE_COLORS.length],
+        color: profileColor(pi),
       };
     });
   }
@@ -386,7 +384,7 @@
     cursor: crosshair;
     user-select: none;
     overflow: hidden;
-    background: rgb(15, 15, 26);
+    background: var(--c-surface-0);
     border-radius: var(--radius-sm, 4px);
   }
 
@@ -403,7 +401,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-muted, rgba(255,255,255,0.35));
+    color: var(--text-muted);
     font-size: 13px;
     z-index: 2;
   }
@@ -411,12 +409,12 @@
   .vp-tooltip {
     position: absolute;
     padding: 5px 10px;
-    background: rgba(15, 15, 26, 0.92);
-    border: 1px solid var(--accent-primary, var(--c-accent));
+    background: rgba(var(--c-surface-1-rgb), 0.92);
+    border: 1px solid var(--accent-primary);
     border-radius: 4px;
     font-family: var(--font-mono, monospace);
     font-size: 11px;
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
     pointer-events: none;
     z-index: 50;
     white-space: nowrap;
@@ -424,7 +422,7 @@
   }
 
   .tt-height {
-    color: var(--text-muted, rgba(255,255,255,0.5));
+    color: var(--text-muted);
     font-size: 10px;
     margin-bottom: 2px;
   }
@@ -443,10 +441,10 @@
   }
 
   .tt-var {
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    color: var(--text-secondary);
   }
 
   .tt-val {
-    color: var(--accent-hover, #7b8aff);
+    color: var(--accent-hover);
   }
 </style>

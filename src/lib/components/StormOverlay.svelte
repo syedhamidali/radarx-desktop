@@ -121,7 +121,7 @@
       <!-- Tracks: earlier centroid -> latest centroid -->
       <defs>
         <marker id="storm-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-          <path d="M0,0 L10,5 L0,10 z" fill="#ffffff" />
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--c-text)" />
         </marker>
       </defs>
       {#each tracks as t (t.track_id)}
@@ -167,10 +167,10 @@
   }
 
   .track-line {
-    stroke: #ffffff;
+    stroke: var(--c-text);
     stroke-width: 2;
     stroke-opacity: 0.9;
-    filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.8));
+    filter: drop-shadow(0 0 2px rgba(var(--c-shadow-rgb), 0.8));
   }
 
   .cell-boundary {
@@ -195,12 +195,12 @@
     gap: 3px;
     padding: 2px 6px;
     border-radius: 3px;
-    background: rgba(15, 15, 26, 0.82);
-    border: 1px solid var(--cell-color, #00ccff);
+    background: rgba(var(--c-surface-1-rgb), 0.82);
+    border: 1px solid var(--cell-color, var(--c-accent));
     font-family: var(--font-mono);
     font-size: 10px;
     /* a fixed light-on-dark pill: it floats over the data whatever the app theme */
-    color: #e8e8ee;
+    color: var(--c-text);
     white-space: nowrap;
     pointer-events: auto;
     cursor: pointer;
@@ -216,17 +216,17 @@
 
   .cell-label.selected {
     border-width: 2px;
-    background: rgba(15, 15, 26, 0.92);
+    background: rgba(var(--c-surface-1-rgb), 0.92);
     z-index: 10;
   }
 
   .cell-id {
     font-weight: 700;
-    color: var(--cell-color, #00ccff);
+    color: var(--cell-color, var(--c-accent));
   }
 
   .cell-dbz {
-    color: #b4b4c8;
+    color: var(--c-text-dim);
     font-size: 9px;
   }
 </style>

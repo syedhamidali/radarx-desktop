@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { themeRevision } from '../utils/themeColors';
   /**
    * CrossSectionLarge -- the comfortable cross-section view: a canvas drawn at the real device
    * pixel size with axes, colour bar and title, hover read-out, zoom/pan, vertical exaggeration,
@@ -82,8 +83,9 @@
   type VeSetting = 'fit' | 1 | 2 | 3 | 4 | 5;
   const HEIGHT_CHOICES = [5, 8, 10, 12, 15, 20, 25, 30, 40];
 
-  function loadPrefs(): { ve: VeSetting; top: 'auto' | number; fill: boolean; light: boolean; asl: boolean } {
-    const d = { ve: 'fit' as VeSetting, top: 'auto' as 'auto' | number, fill: true, light: false, asl: false };
+  function loadPrefs(): { ve: VeSetting; top: 'auto' | number; fill: boolean; light: boolean | null; asl: boolean } {
+    // light = null: the plot follows the app theme until the user chooses otherwise (then it is remembered)
+    const d = { ve: 'fit' as VeSetting, top: 'auto' as 'auto' | number, fill: true, light: null as boolean | null, asl: false };
     try {
       const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}');
       if (p.ve === 'fit' || [1, 2, 3, 4, 5].includes(p.ve)) d.ve = p.ve;
@@ -100,11 +102,16 @@
   let ve = $state<VeSetting>(initial.ve);
   let top = $state<'auto' | number>(initial.top);
   let fill = $state(initial.fill);
-  let light = $state(initial.light);
+  let lightPref = $state<boolean | null>(initial.light);
+  const appLight = $derived.by(() => {
+    void $themeRevision; // re-read when the theme changes
+    return typeof document !== 'undefined' && document.documentElement.dataset.theme === 'light';
+  });
+  const light = $derived(lightPref ?? appLight);
   let asl = $state(initial.asl);
 
   $effect(() => {
-    const p = JSON.stringify({ ve, top, fill, light, asl });
+    const p = JSON.stringify({ ve, top, fill, light: lightPref, asl });
     try {
       localStorage.setItem(PREFS_KEY, p);
     } catch {
@@ -118,7 +125,7 @@
   const maskVariable = $derived(data?.variable || style.variable);
   const mask = $derived(maskOf($valueMasks, maskVariable));
   const maskNote = $derived(maskDescription(mask, data?.units ?? ''));
-  const sc = $derived(data && data.n_sweeps > 0 ? buildCells(data, { fill, masked: maskPredicate(mask) }) : null);
+  const sc = $derived(data && data.n_sweeps > 0 ? buildCells(data, { fill, masked: maskPredicate(mask, { f32: true }) }) : null);
   const heightTop = $derived(top === 'auto' ? (sc ? autoHeightTop(sc.cells) : 15) : top);
   const full: View = $derived.by(() => {
     const dist = data?.distance_km ?? [];
@@ -667,8 +674,8 @@
           <label class="csl-check" title={altitudeKm == null ? 'This file does not record the radar altitude' : `Radar altitude ${Math.round(altitudeKm * 1000)} m`}>
             <input type="checkbox" bind:checked={asl} disabled={altitudeKm == null} /> Height above sea level
           </label>
-          <label class="csl-check" title="White background for the saved image">
-            <input type="checkbox" bind:checked={light} /> Light background in the PNG
+          <label class="csl-check" title="White plot background, on screen and in the saved image. Default: follows the app theme">
+            <input type="checkbox" checked={light} onchange={(e) => (lightPref = e.currentTarget.checked)} /> Light background (screen and PNG)
           </label>
         </div>
       </details>
@@ -797,8 +804,8 @@
     width: 100%;
     height: 100%;
     min-height: 0;
-    background: var(--bg-secondary, #0d1020);
-    color: var(--text-primary, #e4e6f4);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
   }
 
   .csl-bar {
@@ -807,7 +814,7 @@
     flex-direction: column;
     gap: 5px;
     padding: 6px 8px;
-    border-bottom: 1px solid var(--glass-border, rgba(140, 160, 250, 0.1));
+    border-bottom: 1px solid var(--glass-border);
   }
 
   .csl-row {
@@ -822,7 +829,7 @@
     align-items: center;
     gap: 5px;
     font-size: 11px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     white-space: nowrap;
   }
   .csl-field > span:first-child {
@@ -842,11 +849,11 @@
     font-family: var(--font-mono, monospace);
   }
   .unit {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     font-size: 11px;
   }
   .pt {
-    color: var(--accent-hover, #7c8cf8);
+    color: var(--accent-hover);
     font-size: 11px;
     margin-left: 2px;
   }
@@ -871,8 +878,8 @@
     font-size: 11px;
     font-weight: 600;
     cursor: pointer;
-    color: var(--text-primary, #e4e6f4);
-    border: 1px solid var(--glass-border, rgba(140, 160, 250, 0.1));
+    color: var(--text-primary);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 6px);
   }
   .csl-more summary::-webkit-details-marker {
@@ -884,7 +891,7 @@
     font-size: 9px;
   }
   .csl-more[open] summary {
-    background: var(--bg-active, rgba(91, 108, 247, 0.15));
+    background: var(--bg-active);
   }
   .csl-pop {
     position: absolute;
@@ -895,16 +902,16 @@
     flex-direction: column;
     gap: 8px;
     padding: 10px 12px;
-    background: var(--bg-surface, #141830);
-    border: 1px solid var(--border-light, rgba(140, 160, 250, 0.2));
+    background: var(--bg-surface);
+    border: 1px solid var(--border-light);
     border-radius: var(--radius-md, 8px);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 8px 28px rgba(var(--c-shadow-rgb), 0.45);
   }
 
   .csl-sep {
     width: 1px;
     align-self: stretch;
-    background: var(--glass-border, rgba(140, 160, 250, 0.1));
+    background: var(--glass-border);
   }
   .csl-grow {
     flex: 1 1 auto;
@@ -925,14 +932,14 @@
   }
   .csl-btn.on,
   .csl-btn.primary {
-    background: rgba(91, 108, 247, 0.2);
-    border-color: rgba(91, 108, 247, 0.45);
-    color: var(--accent-hover, #7c8cf8);
+    background: rgba(var(--c-accent-rgb), 0.2);
+    border-color: rgba(var(--c-accent-rgb), 0.45);
+    color: var(--accent-hover);
     box-shadow: none;
   }
   .csl-btn.primary:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.34);
-    color: #fff;
+    background: rgba(var(--c-accent-rgb), 0.34);
+    color: var(--c-text);
   }
 
   .csl-seg {
@@ -956,9 +963,9 @@
     margin-left: -1px;
   }
   .csl-seg button.on {
-    background: rgba(91, 108, 247, 0.28);
-    border-color: rgba(91, 108, 247, 0.55);
-    color: #fff;
+    background: rgba(var(--c-accent-rgb), 0.28);
+    border-color: rgba(var(--c-accent-rgb), 0.55);
+    color: var(--c-text);
     position: relative;
   }
 
@@ -969,11 +976,11 @@
     overflow: hidden;
     cursor: crosshair;
     user-select: none;
-    background: #0b0d18;
+    background: var(--c-surface-0);
     outline: none;
   }
   .csl-stage:focus-visible {
-    box-shadow: inset 0 0 0 2px rgba(91, 108, 247, 0.5);
+    box-shadow: inset 0 0 0 2px rgba(var(--c-accent-rgb), 0.5);
   }
   .csl-stage.grabbing {
     cursor: grabbing;
@@ -989,7 +996,7 @@
   .csl-cross {
     position: absolute;
     pointer-events: none;
-    background: rgba(255, 255, 255, 0.35);
+    background: rgba(var(--c-ink-rgb), 0.35);
   }
   .csl-cross.v {
     width: 1px;
@@ -1008,10 +1015,10 @@
     transform: translate(14px, -130%);
     font-family: var(--font-mono, monospace);
     font-size: 11px;
-    background: rgba(8, 10, 20, 0.92);
-    border: 1px solid var(--accent-primary, #5b6cf7);
+    background: rgba(var(--c-surface-1-rgb), 0.92);
+    border: 1px solid var(--accent-primary);
     border-radius: 4px;
-    color: #e4e6f4;
+    color: var(--c-text);
     pointer-events: none;
     white-space: nowrap;
     z-index: 5;
@@ -1020,10 +1027,10 @@
     transform: translate(calc(-100% - 14px), -130%);
   }
   .val {
-    color: var(--accent-hover, #9aa6ff);
+    color: var(--accent-hover);
   }
   .none {
-    color: var(--text-muted, #7a7fa6);
+    color: var(--text-muted);
   }
 
   .csl-empty {
@@ -1036,7 +1043,7 @@
     gap: 4px;
     text-align: center;
     padding: 0 24px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
     font-size: 13px;
     pointer-events: none;
   }
@@ -1047,8 +1054,8 @@
     padding: 2px 10px;
     font-size: 11px;
     border-radius: 10px;
-    background: rgba(91, 108, 247, 0.25);
-    color: #cfd5ff;
+    background: rgba(var(--c-accent-rgb), 0.25);
+    color: var(--c-accent-strong);
     pointer-events: none;
   }
   .csl-ve {
@@ -1057,7 +1064,7 @@
     right: 12px;
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(var(--c-ink-rgb), 0.45);
     pointer-events: none;
   }
 
@@ -1071,17 +1078,17 @@
     align-items: center;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, #9da2c2);
-    border-top: 1px solid var(--glass-border, rgba(140, 160, 250, 0.1));
+    color: var(--text-secondary);
+    border-top: 1px solid var(--glass-border);
   }
   .csl-status b {
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
     font-weight: 600;
   }
   .csl-status .val {
-    color: var(--accent-hover, #9aa6ff);
+    color: var(--accent-hover);
   }
   .hint {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 </style>

@@ -15,6 +15,8 @@ export interface DisplaySettings {
   showRangeRings: boolean;
   showCrosshair: boolean;
   rangeRingColor: string;
+  /** Hide the basemap / ground imagery in the 2D and 3D views (a plain background stays). */
+  hideMap: boolean;
 }
 
 export interface RenderingSettings {
@@ -84,6 +86,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     showRangeRings: true,
     showCrosshair: false,
     rangeRingColor: '#3a3a5a',
+    hideMap: false,
   },
   rendering: {
     antialias: true,
@@ -290,4 +293,17 @@ export const mapStyle = derivedWritable<string>('mapStyle');
 export const colormap = derivedWritable<string>('colormap');
 export const sidecarPort = derivedWritable<number | null>('sidecarPort');
 export const themeMode = derived(settings, ($s) => $s.theme.mode);
+
+// ─── Hide the map (2D basemap, 3D ground imagery and terrain) ─────────────────
+
+/** True while the basemap / ground imagery is hidden (persisted in the display settings). */
+export const mapHidden = derived(settings, ($s) => $s.display.hideMap === true);
+
+export function setMapHidden(hidden: boolean): void {
+  settings.updateSetting('display', { hideMap: hidden });
+}
+
+export function toggleMapHidden(): void {
+  setMapHidden(!get(settings).display.hideMap);
+}
 export const accentColor = derived(settings, ($s) => $s.theme.accentColor);

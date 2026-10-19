@@ -174,8 +174,8 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
   }
@@ -186,8 +186,8 @@
     align-items: center;
     justify-content: space-between;
     padding: var(--spacing-xs, 4px) var(--spacing-sm, 6px);
-    background: rgba(17, 22, 40, 0.6);
-    border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: rgba(var(--c-surface-1-rgb), 0.6);
+    border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
     flex-wrap: wrap;
     gap: var(--spacing-sm, 6px);
@@ -211,24 +211,24 @@
     font-weight: 700;
     font-family: var(--font-mono, monospace);
     text-transform: uppercase;
-    color: var(--accent-hover, #7b8aff);
-    background: rgba(91, 108, 247, 0.12);
+    color: var(--accent-hover);
+    background: rgba(var(--c-accent-rgb), 0.12);
     padding: 2px 8px;
     border-radius: 10px;
-    border: 1px solid rgba(91, 108, 247, 0.15);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.15);
     letter-spacing: 0.04em;
   }
 
   .vv-dims {
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
   }
 
   .vv-alpha-label {
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     display: flex;
@@ -239,7 +239,7 @@
 
   .vv-alpha-value {
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
     min-width: 28px;
     text-align: right;
   }
@@ -249,7 +249,7 @@
     height: 4px;
     -webkit-appearance: none;
     appearance: none;
-    background: var(--border-color, rgba(255,255,255,0.1));
+    background: var(--border-color);
     border-radius: 2px;
     outline: none;
     cursor: pointer;
@@ -261,7 +261,7 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--accent-primary, #5b6cf7);
+    background: var(--accent-primary);
     border: none;
     cursor: pointer;
   }
@@ -271,18 +271,18 @@
     font-size: 10px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-    background: rgba(15, 15, 26, 0.6);
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    border: 1px solid var(--border-color);
+    background: rgba(var(--c-surface-1-rgb), 0.6);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 150ms ease;
     white-space: nowrap;
   }
 
   .vv-btn:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.1);
-    border-color: rgba(91, 108, 247, 0.2);
-    color: var(--text-primary, #fff);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border-color: rgba(var(--c-accent-rgb), 0.2);
+    color: var(--text-primary);
   }
 
   .vv-btn:disabled {
@@ -306,17 +306,17 @@
     align-items: center;
     justify-content: center;
     gap: var(--spacing-sm, 6px);
-    background: rgba(15, 15, 26, 0.85);
+    background: rgba(var(--c-surface-1-rgb), 0.85);
     z-index: 5;
   }
 
   .vv-overlay-text {
     font-size: 12px;
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
   }
 
   .vv-overlay-text.placeholder {
-    color: var(--text-muted, rgba(255,255,255,0.35));
+    color: var(--text-muted);
     font-size: 11px;
     text-align: center;
     padding: 0 var(--spacing-md, 12px);
@@ -325,8 +325,8 @@
   .vv-spinner {
     width: 20px;
     height: 20px;
-    border: 2px solid rgba(91, 108, 247, 0.25);
-    border-top-color: var(--accent-primary, #5b6cf7);
+    border: 2px solid rgba(var(--c-accent-rgb), 0.25);
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: vv-spin 600ms linear infinite;
   }
@@ -338,10 +338,10 @@
   .vv-select {
     font-size: 10px;
     padding: 1px 4px;
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
-    background: rgba(15, 15, 26, 0.6);
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    background: rgba(var(--c-surface-1-rgb), 0.6);
+    color: var(--text-secondary);
   }
 
   .vv-quality-hint {
@@ -351,9 +351,9 @@
     gap: 6px;
     padding: 3px var(--spacing-sm, 6px);
     font-size: 10px;
-    color: var(--text-secondary, rgba(255,255,255,0.7));
-    background: rgba(17, 22, 40, 0.8);
-    border-top: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    color: var(--text-secondary);
+    background: rgba(var(--c-surface-1-rgb), 0.8);
+    border-top: 1px solid var(--border-color);
     flex-shrink: 0;
   }
 
@@ -361,10 +361,10 @@
   .vv-hint {
     padding: 3px var(--spacing-sm, 6px);
     font-size: 10px;
-    color: var(--text-muted, rgba(255,255,255,0.3));
+    color: var(--text-muted);
     text-align: center;
-    border-top: 1px solid var(--border-color, rgba(255,255,255,0.06));
-    background: rgba(17, 22, 40, 0.4);
+    border-top: 1px solid var(--border-color);
+    background: rgba(var(--c-surface-1-rgb), 0.4);
     flex-shrink: 0;
   }
 </style>

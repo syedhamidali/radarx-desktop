@@ -264,7 +264,7 @@
     // Simple blue-to-red colormap based on position in data range
     const { min, max, hasData } = colorRange;
     if (!hasData) return 'transparent';
-    if (max === min) return 'rgba(91, 108, 247, 0.2)';
+    if (max === min) return 'rgba(var(--c-accent-rgb), 0.2)';
     const t = Math.max(0, Math.min(1, (v - min) / (max - min)));
     const r = Math.round(t * 255);
     const b = Math.round((1 - t) * 255);
@@ -642,7 +642,7 @@
   .data-table-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(var(--c-shadow-rgb), 0.6);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
     z-index: 1000;
@@ -655,13 +655,13 @@
     width: 90vw;
     height: 80vh;
     max-width: 1400px;
-    background: var(--bg-primary, #0d1117);
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    background: var(--bg-primary);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-lg, 12px);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 24px 80px rgba(var(--c-shadow-rgb), 0.5);
   }
 
   .dt-header {
@@ -670,7 +670,7 @@
     justify-content: space-between;
     padding: var(--spacing-sm, 8px) var(--spacing-md, 12px);
     background: rgba(var(--c-surface-2-rgb), 0.8);
-    border-bottom: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-bottom: 1px solid var(--glass-border);
     flex-shrink: 0;
   }
 
@@ -680,7 +680,7 @@
     gap: var(--spacing-sm, 8px);
     font-size: 13px;
     font-weight: 600;
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
   }
 
   .dt-actions {
@@ -696,16 +696,16 @@
     height: 28px;
     padding: 0; /* the global button padding would squeeze the icon to 2px */
     background: transparent;
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     cursor: pointer;
     transition: all 120ms ease;
   }
 
   .dt-btn:hover {
     background: rgba(var(--c-accent-rgb), 0.1);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     border-color: rgba(var(--c-accent-rgb), 0.3);
   }
 
@@ -715,7 +715,7 @@
     gap: var(--spacing-md, 12px);
     padding: var(--spacing-xs, 4px) var(--spacing-md, 12px);
     background: rgba(var(--c-surface-2-rgb), 0.5);
-    border-bottom: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-bottom: 1px solid var(--glass-border);
     flex-shrink: 0;
     flex-wrap: wrap;
   }
@@ -725,19 +725,19 @@
     align-items: center;
     gap: 4px;
     font-size: 11px;
-    color: var(--text-secondary, #c9d1d9);
+    color: var(--text-secondary);
     cursor: pointer;
     user-select: none;
   }
 
   .dt-filter input[type="checkbox"] {
-    accent-color: var(--accent-primary, var(--c-accent));
+    accent-color: var(--accent-primary);
   }
 
   .dt-separator {
     width: 1px;
     height: 18px;
-    background: var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    background: var(--glass-border);
   }
 
   .dt-pager {
@@ -764,24 +764,24 @@
     padding: 2px 6px;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: rgba(0, 0, 0, 0.3);
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    background: rgba(var(--c-shadow-rgb), 0.3);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     outline: none;
   }
 
   .dt-search-input:focus {
-    border-color: var(--accent-primary, var(--c-accent));
+    border-color: var(--accent-primary);
   }
 
   .dt-search-dash {
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
   }
 
   .dt-search-count {
     font-size: 10px;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     font-family: var(--font-mono, monospace);
   }
 
@@ -792,7 +792,7 @@
     background: rgba(var(--c-accent-rgb), 0.1);
     border: 1px solid rgba(var(--c-accent-rgb), 0.2);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     cursor: pointer;
     transition: all 120ms ease;
   }
@@ -807,19 +807,19 @@
     align-items: center;
     justify-content: center;
     gap: var(--spacing-sm, 8px);
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     font-size: 13px;
   }
 
   .dt-error {
-    color: var(--error, #f85149);
+    color: var(--error);
   }
 
   .dt-spinner {
     width: 20px;
     height: 20px;
     border: 2px solid rgba(var(--c-accent-rgb), 0.2);
-    border-top-color: var(--accent-primary, var(--c-accent));
+    border-top-color: var(--accent-primary);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
   }
@@ -843,14 +843,14 @@
     width: 72px;
     height: 32px;
     background: rgba(var(--c-surface-2-rgb), 0.9);
-    border-right: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
-    border-bottom: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-right: 1px solid var(--glass-border);
+    border-bottom: 1px solid var(--glass-border);
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 9px;
     font-weight: 600;
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     z-index: 3;
@@ -875,9 +875,9 @@
     font-size: 10px;
     font-weight: 600;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, #c9d1d9);
+    color: var(--text-secondary);
     background: rgba(var(--c-surface-2-rgb), 0.9);
-    border-bottom: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-bottom: 1px solid var(--glass-border);
     border-right: 1px solid rgba(var(--c-line-rgb), 0.03);
     cursor: pointer;
     user-select: none;
@@ -889,13 +889,13 @@
   }
 
   .dt-col-header.sorted {
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
     background: rgba(var(--c-accent-rgb), 0.06);
   }
 
   .sort-arrow {
     font-size: 8px;
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
   }
 
   .dt-row-headers {
@@ -916,9 +916,9 @@
     padding-right: 8px;
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, #c9d1d9);
+    color: var(--text-secondary);
     background: rgba(var(--c-surface-2-rgb), 0.9);
-    border-right: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-right: 1px solid var(--glass-border);
     border-bottom: 1px solid rgba(var(--c-line-rgb), 0.03);
   }
 
@@ -935,7 +935,7 @@
   }
 
   .dt-cell.nodata {
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     opacity: 0.7;
   }
 
@@ -946,7 +946,7 @@
     justify-content: center;
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-primary, #e6edf3);
+    color: var(--text-primary);
     border-right: 1px solid rgba(var(--c-line-rgb), 0.03);
     border-bottom: 1px solid rgba(var(--c-line-rgb), 0.03);
     cursor: cell;
@@ -960,13 +960,13 @@
   }
 
   .dt-cell.selected {
-    box-shadow: inset 0 0 0 2px var(--accent-primary, var(--c-accent));
+    box-shadow: inset 0 0 0 2px var(--accent-primary);
     z-index: 2;
     background-color: rgba(var(--c-accent-rgb), 0.15) !important;
   }
 
   .dt-cell.search-hit {
-    box-shadow: inset 0 0 0 2px #e3b341;
+    box-shadow: inset 0 0 0 2px var(--c-caution);
     z-index: 2;
   }
 
@@ -974,9 +974,9 @@
     padding: var(--spacing-xs, 4px) var(--spacing-md, 12px);
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, #8b949e);
+    color: var(--text-muted);
     background: rgba(var(--c-surface-2-rgb), 0.8);
-    border-top: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-top: 1px solid var(--glass-border);
     flex-shrink: 0;
     white-space: nowrap;
     overflow: hidden;

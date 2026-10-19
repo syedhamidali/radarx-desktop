@@ -115,14 +115,14 @@
   }
 
   .selection-rect {
-    fill: rgba(0, 220, 255, 0.1);
-    stroke: rgba(0, 220, 255, 0.8);
+    fill: rgba(var(--c-accent-rgb), 0.1);
+    stroke: rgba(var(--c-accent-rgb), 0.8);
     stroke-width: 1.5;
     stroke-dasharray: 6 3;
   }
 
   .corner-handle {
-    fill: rgba(0, 220, 255, 0.9);
+    fill: rgba(var(--c-accent-rgb), 0.9);
     stroke: none;
   }
 </style>

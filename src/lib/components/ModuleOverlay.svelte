@@ -231,7 +231,7 @@
     pointer-events: auto;
     cursor: pointer;
     fill-opacity: 0.85;
-    stroke: rgba(15, 15, 26, 0.9) !important;
+    stroke: rgba(var(--c-surface-1-rgb), 0.9) !important;
     stroke-width: 1;
     stroke-opacity: 1;
   }
@@ -242,7 +242,7 @@
   }
 
   .feat.point.selected {
-    stroke: #fff !important;
+    stroke: var(--c-text) !important;
     stroke-width: 2;
   }
 

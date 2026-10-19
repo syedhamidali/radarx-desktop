@@ -15,7 +15,7 @@
   import { activeDerived } from '../stores/derived';
   import { get } from 'svelte/store';
   import { rhiNoise } from '../stores/rhiNoise';
-  import { maskOf, valueMasks } from '../stores/valueMask';
+  import { isMaskActive, maskDescription, maskOf, valueMasks } from '../stores/valueMask';
   import { engineCleanOptions } from '../utils/rhiClean';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import { webUi } from '../stores/webInfo';
@@ -112,6 +112,14 @@
 
   // Data export: write module results (cleaned fields, …) next to the measured moments.
   let includeDerived = true;
+  /** Data files: apply the value mask(s) too (recorded in the file); figures always show the mask. */
+  let maskData = true;
+  /** Active value masks of the radar variables (wind / module-field masks belong to their own views). */
+  $: activeMasks = Object.fromEntries(
+    Object.entries($valueMasks).filter(([name, m]) => !name.includes(':') && isMaskActive(m)),
+  );
+  $: selectedMask = $selectedVariable ? maskOf($valueMasks, $selectedVariable) : null;
+  $: selectedMaskNote = selectedMask ? maskDescription(selectedMask) : null;
   let includeOriginal = true;
   $: derivedCount = $activeDerived.length;
 
@@ -282,6 +290,8 @@
       dark_background: darkBackground,
       // an RHI figure hides noise the way the viewer does (ignored for PPI sweeps)
       rhi_clean: engineCleanOptions(get(rhiNoise), maskOf(get(valueMasks), $selectedVariable)),
+      // the value mask of each variable, the same rules as on screen (the figure says so in a footnote)
+      ...(Object.keys(activeMasks).length ? { value_masks: activeMasks } : {}),
     };
   }
 
@@ -345,7 +355,7 @@
       variable: $selectedVariable,
       sweep: $selectedSweep,
       dpi: 300,
-      options: {},
+      options: maskData && Object.keys(activeMasks).length ? { value_masks: activeMasks } : {},
       // CSV is the single selected variable; the volume formats take every derived field too.
       ...(fmt !== 'csv' && derivedCount > 0
         ? { include_derived: includeDerived, include_original: includeOriginal }
@@ -516,6 +526,14 @@
     <div class="export-section">
       <div class="section-header">Data Export</div>
       <p class="section-desc">Export raw data for analysis</p>
+      {#if Object.keys(activeMasks).length}
+        <div class="checkbox-row">
+          <label class="checkbox-label" title="Values hidden by the value mask are written as missing (NaN) and the file records the mask. Untick to write every value.">
+            <input type="checkbox" bind:checked={maskData} disabled={!canExport} data-testid="export-mask-data" />
+            Apply the value mask{selectedMaskNote ? ` (${$selectedVariable}: ${selectedMaskNote})` : ''}
+          </label>
+        </div>
+      {/if}
 
       {#if derivedCount > 0}
         <div class="checkbox-row">

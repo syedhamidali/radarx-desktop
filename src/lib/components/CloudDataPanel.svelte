@@ -676,7 +676,7 @@
 
   .cdp-tabs {
     display: flex;
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
   }
@@ -687,7 +687,7 @@
     font-size: 11px;
     font-weight: 600;
     background: transparent;
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
     border: none;
     border-radius: 0;
     cursor: pointer;
@@ -695,12 +695,12 @@
   }
 
   .cdp-tab:not(:last-child) {
-    border-right: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.08));
+    border-right: 1px solid var(--glass-border);
   }
 
   .cdp-tab.active {
     background: rgba(var(--c-accent-rgb), 0.15);
-    color: var(--accent-hover, #7b8aff);
+    color: var(--accent-hover);
   }
 
   .cdp-row {
@@ -711,7 +711,7 @@
 
   .cdp-label {
     font-size: 11px;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     font-weight: 600;
@@ -736,10 +736,10 @@
     padding: 3px 6px;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .cdp-input.flex1 { flex: 1; }
@@ -752,7 +752,7 @@
 
   .cdp-hint {
     font-size: 10px;
-    color: var(--text-muted, rgba(255,255,255,0.35));
+    color: var(--text-muted);
     line-height: 1.5;
     margin: 0;
   }
@@ -760,7 +760,7 @@
   .cdp-hint code {
     font-family: var(--font-mono, monospace);
     font-size: 10px;
-    color: var(--accent-hover, #7b8aff);
+    color: var(--accent-hover);
   }
 
   .cdp-btn {
@@ -768,9 +768,9 @@
     font-size: 11px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.1));
+    border: 1px solid var(--glass-border);
     background: var(--field-bg);
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 150ms;
     white-space: nowrap;
@@ -778,7 +778,7 @@
 
   .cdp-btn:hover:not(:disabled) {
     background: rgba(var(--c-accent-rgb), 0.1);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .cdp-btn:disabled {
@@ -789,7 +789,7 @@
   .cdp-btn.primary {
     background: rgba(var(--c-accent-rgb), 0.15);
     border-color: rgba(var(--c-accent-rgb), 0.3);
-    color: var(--accent-hover, #7b8aff);
+    color: var(--accent-hover);
   }
 
   .cdp-btn.primary:hover:not(:disabled) {
@@ -805,7 +805,7 @@
     gap: 2px;
     max-height: 200px;
     overflow-y: auto;
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.06));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
     padding: 2px;
   }
@@ -817,7 +817,7 @@
     padding: 4px 8px;
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
     background: transparent;
     border: none;
     border-radius: 3px;
@@ -831,7 +831,7 @@
 
   .cdp-file-row:hover:not(:disabled) {
     background: rgba(var(--c-accent-rgb), 0.08);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .cdp-file-row:disabled {
@@ -842,7 +842,7 @@
   .cdp-file-name { flex: 1; }
 
   .cdp-file-size {
-    color: var(--text-muted, rgba(255,255,255,0.3));
+    color: var(--text-muted);
     font-size: 9px;
     margin-left: 6px;
   }
@@ -854,7 +854,7 @@
   .cdp-val {
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
     min-width: 42px;
     text-align: right;
   }
@@ -863,7 +863,7 @@
 
   .cdp-warn {
     font-size: 10px;
-    color: var(--warning, #f5a524);
+    color: var(--warning);
     line-height: 1.5;
     margin: 0;
   }
@@ -877,13 +877,13 @@
     padding: 3px 8px;
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
     border-radius: 3px;
     cursor: pointer;
   }
 
   .cdp-net-row:hover { background: rgba(var(--c-accent-rgb), 0.08); }
-  .cdp-net-row.centre { cursor: default; color: var(--accent-hover, #7b8aff); }
+  .cdp-net-row.centre { cursor: default; color: var(--accent-hover); }
   .cdp-net-row input { margin: 0; width: auto; }
 
   .cdp-net-progress {
@@ -891,24 +891,24 @@
     flex-direction: column;
     gap: 2px;
     padding: 4px 6px;
-    border: 1px solid var(--glass-border, rgba(var(--c-line-rgb), 0.06));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
   }
 
   .cdp-net-line {
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     overflow-wrap: anywhere;
   }
 
-  .cdp-net-line.running { color: var(--accent-hover, #7b8aff); }
-  .cdp-net-line.ok { color: var(--success, #4ade80); }
-  .cdp-net-line.failed { color: var(--error, #f87171); }
+  .cdp-net-line.running { color: var(--accent-hover); }
+  .cdp-net-line.ok { color: var(--success); }
+  .cdp-net-line.failed { color: var(--error); }
 
   .cdp-empty {
     font-size: 10px;
-    color: var(--text-muted, rgba(255,255,255,0.3));
+    color: var(--text-muted);
     text-align: center;
     padding: 8px 0;
     margin: 0;

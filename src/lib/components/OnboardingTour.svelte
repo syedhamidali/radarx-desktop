@@ -195,7 +195,7 @@
       </defs>
       <rect
         x="0" y="0" width="100%" height="100%"
-        fill="rgba(0, 0, 0, 0.75)"
+        fill="rgba(var(--c-shadow-rgb), 0.75)"
         mask="url(#spotlight-mask)"
       />
     </svg>

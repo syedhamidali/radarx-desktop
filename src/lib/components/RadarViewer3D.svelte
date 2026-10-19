@@ -15,7 +15,8 @@
     type GovernorState,
   } from '../utils/qualityGovernor';
   import TransferFunctionEditor from './TransferFunctionEditor.svelte';
-  import { settings } from '../stores/settings';
+  import { settings, mapHidden, setMapHidden } from '../stores/settings';
+  import { getShortcutDisplay } from '../utils/shortcuts';
   import { resolveBasemap } from '../utils/basemaps';
   import {
     variableKind, buildTf, recolorTf, thresholdSpec, thresholdToShader, significantNorm, adaptiveShiftDb,
@@ -32,6 +33,9 @@
   import type { SceneMarker } from '../utils/scene3d';
   import { GLSL_THRESHOLD, GLSL_HASH, GLSL_GROUND_POLAR } from '../utils/volumeShaderParts';
   import CmapSelect from './CmapSelect.svelte';
+  import MaskPopover from './MaskPopover.svelte';
+  import { maskOf, valueMasks } from '../stores/valueMask';
+  import { GLSL_VALUE_MASK, maskVecNorm } from '../utils/valueMaskGl';
   import { cmapOverrides, effectiveCmap, chooseCmap } from '../stores/cmapChoice';
 
   // ── Reactive state ────────────────────────────────────────────────────────
@@ -177,6 +181,16 @@
   // "Hide below X" threshold (live, applied in the shader on top of the transfer function)
   let thrValue = $state(15);
   const thrSpec = $derived(thresholdSpec(kind, vmin, vmax, varUnits));
+  /**
+   * The shared value mask of this variable, in the volume's normalised units (the volume stores
+   * values over [vmin, vmax] in 8 bits, so a limit is honoured to about 1/254 of that range, and
+   * values outside the colour range cannot be hidden by a limit that lies outside it).
+   */
+  const vmaskVec = $derived(maskVecNorm(maskOf($valueMasks, variable ?? ''), vmin, vmax));
+  $effect(() => {
+    void vmaskVec;
+    untrack(() => interact());
+  });
 
   // Scene: vertical exaggeration, range crop, ground
   let vexag       = $state<number>(loadPref<number>('vexag', VEXAG_DEFAULT, (x) => (x as number) >= VEXAG_MIN && (x as number) <= VEXAG_MAX));
@@ -184,7 +198,10 @@
   let rangeAuto   = $state(true);
   let fullRangeKm = $state(460);
   type GroundMode = 'map' | 'grid' | 'off';
-  let groundMode  = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  /** The Ground choice the user made (kept while the map is hidden, so showing it again restores it). */
+  let groundChoice = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
+  /** What is drawn: no ground plane, imagery or terrain at all while the map is hidden (the volume and axes stay). */
+  const groundMode = $derived<GroundMode>($mapHidden ? 'off' : groundChoice);
   let showLight   = $state<boolean>(loadPref<boolean>('light', false));
   const siteName  = $derived(String($radarData.attributes?.instrument_name ?? $radarData.attributes?.site_name ?? ''));
 
@@ -349,6 +366,7 @@
     uniform float u_thr;           // "hide below" in normalised value units (0 = off)
     uniform float u_thrSoft;
     uniform int   u_thrMode;       // 0: value, 1: |value| about the middle (velocity)
+    uniform vec4  u_vmask;         // value mask in normalised units: (mode, lower, upper, inclusive)
     uniform int   u_groundMode;    // 0 off, 1 grid, 2 map
     uniform float u_groundSize;    // texels of u_ground
     uniform float u_groundHalf;    // km: half extent the map image covers
@@ -444,7 +462,7 @@
       cov = li.y * ws;
       return true;
     }
-${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
+${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     void main() {
       // Reconstruct per-pixel ray direction
       vec2 uv = (gl_FragCoord.xy / u_resolution - 0.5) * 2.0;
@@ -535,7 +553,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
 
           // Map value through transfer function
           vec4 tf = texture(u_transferFn, vec2((val * 255.0 + 0.5) / 256.0, 0.5));
-          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val);
+          float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val) * (valueHidden(val, u_vmask) ? 0.0 : 1.0);
           if (a0 < 0.0004) continue;
           if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
 
@@ -680,7 +698,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       'u_volTotalAz','u_volMaxNRange','u_opacityScale',
       'u_elevMin','u_elevMax',
       'u_volume','u_angleIdx','u_sweepMeta','u_transferFn','u_ground',
-      'u_rangeLimit','u_zTop','u_vexag','u_thr','u_thrSoft','u_thrMode',
+      'u_rangeLimit','u_zTop','u_vexag','u_thr','u_thrSoft','u_thrMode','u_vmask',
       'u_groundMode','u_groundSize','u_groundHalf','u_ringStep','u_light',
       'u_useClip','u_clipMinX','u_clipMinY','u_clipMaxX','u_clipMaxY',
     ];
@@ -1348,7 +1366,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
   }
 
   function setGroundMode(m: GroundMode) {
-    groundMode = m;
+    groundChoice = m;
     savePref('ground', m);
     scheduleGround(0);
     markDirty();
@@ -1362,6 +1380,12 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     if (groundTimer) clearTimeout(groundTimer);
     groundTimer = setTimeout(() => { groundTimer = null; void refreshGround(); }, delay);
   }
+
+  // Hiding / showing the map: drop or bring back the ground (the map image is only fetched while shown).
+  $effect(() => {
+    void $mapHidden;
+    untrack(() => scheduleGround(0));
+  });
 
   /** (Re)build the map image under the volume; no-op without a site, a provider or network. */
   async function refreshGround() {
@@ -1522,6 +1546,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       g.uniform1f(u('u_thr'),          ts.thr);
       g.uniform1f(u('u_thrSoft'),      ts.soft);
       g.uniform1i(u('u_thrMode'),      ts.mode);
+      g.uniform4fv(u('u_vmask'),       vmaskVec);
       g.uniform1i(u('u_groundMode'),   groundMode === 'off' ? 0 : groundMode === 'map' && groundHasMap ? 2 : 1);
       g.uniform1f(u('u_groundSize'),   groundTexSize);
       g.uniform1f(u('u_groundHalf'),   groundHalfKm);
@@ -1917,6 +1942,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
         <button class="reset-btn" onclick={() => resetCamera('top')} title="Top-down view, north up">Top</button>
       </div>
       <button class="reset-btn" class:active={showTfe} onclick={() => showTfe = !showTfe} title="Transfer function editor">TF</button>
+      <MaskPopover variable={variable ?? ''} units={varUnits} label="Hide values" testid="mask-3d" />
 
       {#if $selectedBox}
         {@const bw = Math.round(Math.abs($selectedBox.xMax - $selectedBox.xMin) / 1000)}
@@ -1959,8 +1985,12 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
       </div>
 
       <div class="ctrl-group">
+        <button class="reset-btn" class:active={!$mapHidden} aria-pressed={!$mapHidden} data-testid="map-toggle-3d"
+                onclick={() => setMapHidden(!$mapHidden)}
+                title="{$mapHidden ? 'Show' : 'Hide'} the map: ground imagery and terrain ({getShortcutDisplay('toggle-map')})">Map</button>
         <label for="ground-ctrl">Ground</label>
-        <select id="ground-ctrl" class="quality-sel" value={groundMode}
+        <select id="ground-ctrl" class="quality-sel" value={groundChoice} disabled={$mapHidden}
+                title={$mapHidden ? `The map is hidden (${getShortcutDisplay('toggle-map')} shows it again)` : 'Ground under the volume'}
                 onchange={(e) => setGroundMode((e.target as HTMLSelectElement).value as GroundMode)}>
           <option value="map">Map</option>
           <option value="grid">Grid</option>
@@ -2029,14 +2059,14 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
         <!-- Compass -->
         <div class="compass-wrap">
           <svg viewBox="-20 -20 40 40" width="44" height="44">
-            <circle r="18" fill="rgba(0,0,0,0.45)" stroke="rgba(255,255,255,0.12)" stroke-width="0.5"/>
+            <circle r="18" fill="var(--c-scene-bg)" stroke="var(--c-scene-line)" stroke-width="0.5"/>
             <g transform="rotate({compassAngle})">
-              <polygon points="0,-15 -3,0 0,-6 3,0" fill="#e05252"/>
-              <polygon points="0,15 -3,0 0,6 3,0" fill="#555"/>
+              <polygon points="0,-15 -3,0 0,-6 3,0" fill="var(--c-alarm)"/>
+              <polygon points="0,15 -3,0 0,6 3,0" fill="var(--c-scene-text-dim)"/>
             </g>
             <text transform="rotate({compassAngle}) translate(0,-22)"
                   text-anchor="middle" dominant-baseline="middle"
-                  font-size="6.5" font-weight="bold" fill="#e05252"
+                  font-size="6.5" font-weight="bold" fill="var(--c-alarm)"
                   font-family="system-ui,sans-serif">N</text>
           </svg>
         </div>
@@ -2127,10 +2157,10 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--accent-primary);
-    background: rgba(91,108,247,0.1);
+    background: rgba(var(--c-accent-rgb), 0.1);
     padding: 2px 8px;
     border-radius: var(--radius-sm);
-    border: 1px solid rgba(91,108,247,0.2);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.2);
   }
 
   .ctrl-group {
@@ -2163,16 +2193,16 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     color: var(--text-secondary);
     cursor: pointer;
   }
-  .reset-btn:hover { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
-  .reset-btn.active { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .reset-btn:hover { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
+  .reset-btn.active { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
 
   .clip-badge {
     font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
-    color: rgb(0, 220, 255);
-    background: rgba(0, 220, 255, 0.1);
-    border: 1px solid rgba(0, 220, 255, 0.35);
+    color: var(--c-accent);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.35);
     border-radius: var(--radius-sm);
     padding: 2px 7px;
     white-space: nowrap;
@@ -2232,15 +2262,15 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     align-items: flex-start;
     gap: 3px;
     padding: 6px 8px;
-    background: rgba(15, 15, 26, 0.78);
-    border: 1px solid rgba(255,255,255,0.12);
+    background: var(--c-scene-bg);
+    border: 1px solid var(--c-scene-line);
     border-radius: 4px;
     max-width: 190px;
   }
   .cat-title {
     font-size: 10px;
     font-weight: 600;
-    color: rgba(255,255,255,0.9);
+    color: var(--c-scene-text);
     margin-bottom: 2px;
   }
   .cat-item {
@@ -2248,7 +2278,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     align-items: center;
     gap: 5px;
     font-size: 10px;
-    color: rgba(255,255,255,0.85);
+    color: var(--c-scene-text);
     white-space: nowrap;
   }
   .cat-swatch {
@@ -2256,26 +2286,26 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     width: 11px;
     height: 11px;
     border-radius: 2px;
-    border: 1px solid rgba(255,255,255,0.25);
+    border: 1px solid var(--c-scene-line);
   }
   .cb-bar {
     width: 13px;
     height: 150px;
     border-radius: 2px;
-    border: 1px solid rgba(255,255,255,0.12);
+    border: 1px solid var(--c-scene-line);
   }
   .cb-label {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: rgba(255,255,255,0.85);
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    color: var(--c-scene-text);
+    text-shadow: 0 1px 3px var(--c-scene-shadow);
     line-height: 1;
   }
   .cb-var {
     font-family: var(--font-mono);
     font-size: 9px;
-    color: rgba(255,255,255,0.5);
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    color: var(--c-scene-text-dim);
+    text-shadow: 0 1px 3px var(--c-scene-shadow);
     margin-top: 2px;
     writing-mode: vertical-rl;
     transform: rotate(180deg);
@@ -2339,8 +2369,8 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     border-radius: var(--radius-sm);
     white-space: nowrap;
   }
-  .q-chip.weak { color: var(--accent-warning, #d9a441); border-color: rgba(217,164,65,0.4); }
-  .sweep-count.partial { color: var(--accent-warning, #d9a441); }
+  .q-chip.weak { color: var(--accent-warning); border-color: rgba(var(--c-caution-rgb), 0.4); }
+  .sweep-count.partial { color: var(--accent-warning); }
 
   .banner {
     position: absolute;
@@ -2352,8 +2382,8 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     max-width: calc(100% - 24px);
     padding: 5px 10px;
     font-size: 11px;
-    color: var(--text-primary, #fff);
-    background: rgba(20, 22, 38, 0.92);
+    color: var(--text-primary);
+    background: rgba(var(--c-surface-1-rgb), 0.92);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     z-index: 6;
@@ -2364,7 +2394,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     display: flex; align-items: center; gap: 6px;
     padding: 3px 8px; font-size: 10px;
     color: var(--text-secondary);
-    background: rgba(20, 22, 38, 0.85);
+    background: rgba(var(--c-surface-1-rgb), 0.85);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     pointer-events: none;
@@ -2382,11 +2412,11 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     cursor: pointer;
     white-space: nowrap;
   }
-  .banner-btn:hover { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .banner-btn:hover { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
   .banner-x {
     border: none; background: none; color: var(--text-muted);
     font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px;
   }
-  .overlay.fatal { pointer-events: auto; background: rgba(10, 10, 20, 0.7); text-align: center; }
+  .overlay.fatal { pointer-events: auto; background: rgba(var(--c-surface-1-rgb), 0.7); text-align: center; }
   .overlay .sub { font-size: 11px; color: var(--text-muted); margin: 0; }
 </style>

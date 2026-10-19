@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surface } from '../utils/themeColors';
   /**
    * TransferFunctionEditor — visual editor for volume rendering transfer functions.
    *
@@ -131,7 +132,7 @@
     for (let cy = 0; cy < h; cy += checkerSize) {
       for (let cx = 0; cx < w; cx += checkerSize) {
         const even = ((cx / checkerSize + cy / checkerSize) % 2) === 0;
-        ctx.fillStyle = even ? '#1a1a2e' : '#0f0f1a';
+        ctx.fillStyle = even ? surface(2) : surface(0);
         ctx.fillRect(cx, cy, checkerSize, checkerSize);
       }
     }
@@ -503,7 +504,7 @@
 
   /* Gradient bar */
   .tfe-gradient-wrapper {
-    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
     line-height: 0;
@@ -525,8 +526,8 @@
   .tfe-curve-svg {
     width: 100%;
     height: 80px;
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
     cursor: crosshair;
     overflow: visible; /* end-point handles sit on the border: keep them whole and clickable */
@@ -538,25 +539,25 @@
   }
 
   .tfe-alpha-fill {
-    fill: rgba(0, 220, 255, 0.12);
+    fill: rgba(var(--c-accent-rgb), 0.12);
   }
 
   .tfe-alpha-line {
     fill: none;
-    stroke: rgba(0, 220, 255, 0.6);
+    stroke: rgba(var(--c-accent-rgb), 0.6);
     stroke-width: 1.5;
     stroke-linejoin: round;
   }
 
   .tfe-control-point:focus-visible {
     outline: none;
-    stroke: var(--accent-primary, var(--c-accent));
+    stroke: var(--accent-primary);
     stroke-width: 3;
   }
 
   .tfe-control-point {
-    fill: rgba(0, 220, 255, 0.85);
-    stroke: rgba(0, 220, 255, 0.4);
+    fill: rgba(var(--c-accent-rgb), 0.85);
+    stroke: rgba(var(--c-accent-rgb), 0.4);
     stroke-width: 2;
     cursor: grab;
     transition: r 100ms ease;
@@ -564,8 +565,8 @@
 
   .tfe-control-point:hover,
   .tfe-control-point.dragging {
-    fill: #fff;
-    stroke: rgba(0, 220, 255, 0.9);
+    fill: var(--c-text);
+    stroke: rgba(var(--c-accent-rgb), 0.9);
     r: 6;
   }
 
@@ -578,7 +579,7 @@
     justify-content: space-between;
     font-size: 9px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, rgba(255,255,255,0.3));
+    color: var(--text-muted);
     padding: 0 2px;
   }
 
@@ -592,7 +593,7 @@
   .tfe-presets-label {
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
@@ -607,10 +608,10 @@
     padding: 3px 8px;
     font-size: 10px;
     font-weight: 600;
-    border: 1px solid var(--border-color, rgba(var(--c-line-rgb), 0.1));
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
-    background: rgba(15, 15, 26, 0.6);
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    background: rgba(var(--c-surface-1-rgb), 0.6);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 150ms ease;
     white-space: nowrap;
@@ -619,6 +620,6 @@
   .tfe-preset:hover {
     background: rgba(var(--c-accent-rgb), 0.1);
     border-color: rgba(var(--c-accent-rgb), 0.25);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 </style>

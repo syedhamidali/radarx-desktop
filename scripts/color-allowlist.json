@@ -1,0 +1,19 @@
+{
+  "_about": "Hard-coded colours that are genuine DATA or technical values, not UI chrome. scripts/check-colors.mjs skips them. Everything else must use a token from src/lib/styles/tokens.css. An entry matches a file and, optionally, the exact literal (text), a substring of the line (line) or a regular expression for the trimmed line (lineRegex).",
+  "files": {},
+  "matches": [
+    { "file": "src/lib/components/CartesianViewer3D.svelte", "line": "linear-gradient(90deg, rgb(", "why": "legend ramps of two colormaps (diverging, viridis): colormap data" },
+    { "file": "src/lib/components/DiffViewer.svelte", "lineRegex": "^rgb\\(\\d+, \\d+, \\d+\\),?$", "why": "the diverging colour scale of a difference map: colormap data" },
+    { "file": "src/lib/components/DualPolDashboard.svelte", "line": "{ name: '", "why": "hydrometeor class colours: each class keeps its own colour in both themes" },
+    { "file": "src/lib/components/SettingsDialog.svelte", "lineRegex": "^'#[0-9a-f]{6}', '#[0-9a-f]{6}', '#[0-9a-f]{6}', '#[0-9a-f]{6}',$", "why": "the accent colour swatches the user can pick: their values are stored in the settings" },
+    { "file": "src/lib/components/StormOverlay.svelte", "lineRegex": "^(if \\(dbz >= \\d+\\) )?return '#[0-9a-f]{6}';$", "why": "storm-cell intensity classes (dBZ): data colours, same in both themes" },
+    { "file": "src/App.svelte", "line": "DEFAULT_ACCENTS", "why": "the accent values that count as 'not customised'" },
+    { "file": "src/App.svelte", "line": "--c-on-accent", "why": "computes the text colour on a custom accent colour (needs both literals)" },
+    { "file": "src/lib/components/LogoMark.svelte", "line": "linear-gradient(#000 0 0)", "why": "CSS mask: only the alpha matters, not a visible colour" },
+    { "file": "src/lib/components/MapBackground.svelte", "text": "#e9e8ee", "why": "paper colour under the map tiles (goes through the basemap theme filter with the tiles)" },
+    { "file": "src/lib/components/MapBackground.svelte", "text": "#8b9cf8", "why": "default colour of a radar marker without an assigned colour" },
+    { "file": "src/lib/components/OnboardingTour.svelte", "line": "fill=\"white\"", "why": "SVG mask: white shows, black hides; not a visible colour" },
+    { "file": "src/lib/components/OnboardingTour.svelte", "line": "fill=\"black\"", "why": "SVG mask: white shows, black hides; not a visible colour" },
+    { "file": "src/lib/components/LookPanel.svelte", "text": "#808080", "why": "initial value of a colour input when a look has no colour yet" }
+  ]
+}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surface, text } from '../utils/themeColors';
   /**
    * MapBackground — renders slippy-map tiles on a canvas behind the radar PPI.
    *
@@ -482,14 +483,14 @@
       c.fillStyle = r.color;
       c.fill();
       c.lineWidth = 1.5;
-      c.strokeStyle = 'rgba(8, 10, 20, 0.95)';
+      c.strokeStyle = surface(0, 0.95);
       c.stroke();
       c.font = '600 11px Inter, system-ui, sans-serif';
       c.textBaseline = 'middle';
       c.lineWidth = 3;
-      c.strokeStyle = 'rgba(8, 10, 20, 0.85)';
+      c.strokeStyle = surface(0, 0.85);
       c.strokeText(r.name, x + 9, y);
-      c.fillStyle = '#f2f4ff';
+      c.fillStyle = text();
       c.fillText(r.name, x + 9, y);
     }
     c.restore();
@@ -573,7 +574,7 @@
   function legendGradient(l: MosaicLayer): string {
     const span = l.vmax - l.vmin || 1;
     const stops = [...l.legend].sort((a, b) => a[0] - b[0]);
-    if (stops.length === 0) return 'linear-gradient(90deg, #444, #ddd)';
+    if (stops.length === 0) return 'linear-gradient(90deg, var(--c-surface-3), var(--c-text-dim))';
     return `linear-gradient(90deg, ${stops
       .map(([v, col]) => `${col} ${Math.max(0, Math.min(100, ((v - l.vmin) / span) * 100)).toFixed(1)}%`)
       .join(', ')})`;
@@ -637,8 +638,8 @@
     padding: 1px 6px;
     font-size: 10px;
     line-height: 1.4;
-    color: #333;
-    background: rgba(255, 255, 255, 0.75);
+    color: var(--c-text-dim);
+    background: rgba(var(--c-surface-1-rgb), 0.82);
     border-top-left-radius: 3px;
     pointer-events: none;
     user-select: none;
@@ -663,23 +664,23 @@
     padding: 4px 10px;
     font-family: var(--font-mono, monospace);
     font-size: 10px;
-    color: var(--text-secondary, #9da2c2);
-    background: var(--glass-bg-heavy, rgba(8, 10, 20, 0.85));
-    border: 1px solid var(--glass-border, rgba(140, 160, 250, 0.1));
+    color: var(--text-secondary);
+    background: var(--glass-bg-heavy);
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 6px);
     white-space: nowrap;
   }
 
   .legend-title {
     font-weight: 700;
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
   }
 
   .legend-bar {
     width: 180px;
     height: 10px;
     border-radius: 2px;
-    border: 1px solid var(--border-light, rgba(140, 160, 250, 0.14));
+    border: 1px solid var(--border-light);
   }
 
   .mosaic-tooltip {
@@ -688,9 +689,9 @@
     padding: 5px 8px;
     font-family: var(--font-mono, monospace);
     font-size: 11px;
-    color: var(--text-primary, #e4e6f4);
-    background: var(--glass-bg-heavy, rgba(8, 10, 20, 0.92));
-    border: 1px solid var(--accent-primary, #5b6cf7);
+    color: var(--text-primary);
+    background: var(--glass-bg-heavy);
+    border: 1px solid var(--accent-primary);
     border-radius: 4px;
     white-space: nowrap;
     backdrop-filter: blur(4px);
@@ -702,12 +703,12 @@
   }
 
   .mt-value.muted {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     font-weight: 500;
   }
 
   .mt-pos {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
     font-size: 10px;
     margin-bottom: 3px;
   }
@@ -732,10 +733,10 @@
 
   .mt-num {
     margin-left: auto;
-    color: var(--text-primary, #e4e6f4);
+    color: var(--text-primary);
   }
 
   .mt-sub {
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 </style>

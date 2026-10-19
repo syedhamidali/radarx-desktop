@@ -62,6 +62,7 @@ The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`),
 | Step | Command | Purpose |
 |---|---|---|
 | Look | `xrd info` | format, radar, time, sweeps, variables, Nyquist velocity |
+| | `xrd check` | data-quality report with evidence and a suggested QC recipe ([DATA_CHECK.md](DATA_CHECK.md)) |
 | | `xrd plot` | a PPI picture of one variable |
 | Clean | `xrd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |
 | Analyse | `xrd run MODULE` | an algorithm on one sweep or all sweeps (same as `xrd modules run`) |
@@ -69,6 +70,7 @@ The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`),
 | | `xrd cells` | storm cells; several files are tracked in time |
 | Combine | `xrd mosaic` | several radars on one map |
 | | `xrd winds` | 3-D winds from two or more radars |
+| | `xrd animate` | a storm-centred 3D animation (MP4) from many volumes |
 | Save | `xrd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
 | Help | `xrd examples`, `xrd completion` | a tour of commands; shell completion |
 
@@ -107,6 +109,16 @@ wrote KTLX20130520_201643_V06_VRADH_sweep1.png
 
 `xrd plot` uses the publication renderer of the app (range rings, colour scales per variable, no-echo
 codes masked): `--theme dark`, `--dpi 300`, `--vmin/--vmax`, `-p figure.pdf` for a vector file.
+
+`xrd check` is the same data check the app shows after opening a file: what looks wrong (aliasing,
+range folding, clutter, ZDR offset, time gaps ...), with the evidence, where it is, and a suggested
+QC recipe. It changes nothing and exits 0 even when it finds problems (3 only when a file cannot be
+read). `--fix-plan -o recipe.json` writes the suggested recipe for `xrd pipeline`. Every check, its
+method and thresholds: [DATA_CHECK.md](DATA_CHECK.md).
+
+```console
+$ xrd check -i KTLX20130520_201643_V06.gz --fix-plan -o recipe.json
+```
 
 ### Analyse: `modules`, `run`, `cells`
 
@@ -274,6 +286,32 @@ wrote winds.png
 are passed to the same code the app uses; warnings of the engine are shown, not hidden. The
 vectors are drawn where at least two radars give a usable crossing angle.
 
+### Animate: `animate` (needs radarx; rendering needs the `video` extra)
+
+Many volumes of one or more radars over time become an MP4: the strongest storm in 3D, a camera that flies
+around it while it travels across the map, a UTC clock, the storm's track and labels that say which frames
+are real volumes and which are interpolated. The files are grouped by radar and time, every time step takes
+each radar's nearest volume within a tolerance, the rest is listed with the reason, the radars of one step are
+gridded at a time (bounded memory) and cached on disk, an interrupted job resumes, and the MP4 is written
+atomically at the end. [The full page](ANIMATE.md) has the camera file, the look, the report and the limits.
+
+```console
+$ xrd animate -i mayfield --no-render                    # the plan: steps, offsets, storm track, frames (no browser)
+$ xrd animate -i mayfield -o mayfield.mp4                # the folder with one sub-folder per radar
+$ xrd animate -i mayfield -o top.mp4 --camera top-down --duration 30
+$ xrd animate -i mayfield -o custom.mp4 --camera camera.toml --realistic --look-preset "Golden hour" --set exposure=1.4
+$ xrd animate -i mayfield -p still.png --still-at 12      # one frame, to try a camera or a look
+```
+
+```text
+pip install -e 'python/[video]'      # Playwright (drives the system Chrome) and PyAV (writes the MP4); never a hard dependency
+npm ci && npm run build               # once, in a checkout: dist/, the app that draws (or --app-dist / XRADAR_APP_DIST)
+```
+
+Without PyAV the frames are written as numbered PNG files and the `ffmpeg` line that encodes them is printed.
+The terminal report (or `--json`) gives the track, displacement and speed, the time offsets of every radar,
+the share of interpolated frames and the frame count, so a result can be checked without watching the video.
+
 ### Save: `export`
 
 ```bash
@@ -374,4 +412,4 @@ xrd info -i data --json | jq -r '.[] | [.radar, .time] | @tsv'
 ```
 
 Real runs for this page used the KTLX example volume (20 May 2013) and four radars of the Mayfield
-case (11 Dec 2021: KHPX, KNQA, KPAH, KVWX).
+case (11 Dec 2021: KHPX, KNQA, KPAH, KVWX); `xrd animate` was also run on the Mayfield and Hurricane Laura cases.
