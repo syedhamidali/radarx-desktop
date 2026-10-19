@@ -174,6 +174,7 @@ class SweepSample:
     frac_hail: np.ndarray
     frac_atten: np.ndarray
     frac_block: np.ndarray
+    frac_phase: np.ndarray
 
 
 def _window_indices(
@@ -248,6 +249,7 @@ def sample_sweep(
         "ml": ((sq.flags & hqpe.FLAG_ML) > 0).astype(np.float64),
         "hail": ((sq.flags & hqpe.FLAG_HAIL) > 0).astype(np.float64),
         "att": ((sq.flags & hqpe.FLAG_ATTEN) > 0).astype(np.float64),
+        "ph": ((sq.flags & hqpe.FLAG_PHASE) > 0).astype(np.float64),
     }
     if has_dem:  # quality, height and blockage vary with azimuth only through the terrain
         chans["q"] = np.where(valid_g, sq.quality, 0.0)
@@ -281,7 +283,7 @@ def sample_sweep(
                 ok, np.interp(s_cell, sq.ground_range_m, sq.beam_height_agl_m[0]), np.nan
             )
             cbb = None
-        keys = ("ml", "hail", "att", "blk") if has_dem else ("ml", "hail", "att")
+        keys = ("ml", "hail", "att", "ph", "blk") if has_dem else ("ml", "hail", "att", "ph")
         fr = {k: sums[k] / np.maximum(n_total, 1.0) for k in keys}
         fr.setdefault("blk", np.zeros_like(n_total))
     covered = full(np.ones(idx.size, dtype=bool), False, dtype=bool)
@@ -297,6 +299,7 @@ def sample_sweep(
         frac_hail=full(fr["hail"], 0.0),
         frac_atten=full(fr["att"], 0.0),
         frac_block=full(fr["blk"], 0.0),
+        frac_phase=full(fr["ph"], 0.0),
     )
 
 
@@ -374,6 +377,7 @@ def merge_sweeps(
             | (sm.frac_hail >= CELL_FLAG_FRACTION).astype(np.uint8) * hqpe.FLAG_HAIL
             | (sm.frac_atten >= CELL_FLAG_FRACTION).astype(np.uint8) * hqpe.FLAG_ATTEN
             | (sm.frac_block >= CELL_FLAG_FRACTION).astype(np.uint8) * hqpe.FLAG_BLOCK
+            | (sm.frac_phase >= CELL_FLAG_FRACTION).astype(np.uint8) * hqpe.FLAG_PHASE
         )
         flags = np.where(better, f, flags).astype(np.uint8)
         info.append(

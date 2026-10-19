@@ -112,6 +112,16 @@ calibration and attenuation but noisy below 0.3 deg/km."""
             step=100,
             help="Beams inside the melting layer or above give no rain estimate",
         ),
+        param(
+            "phase_policy",
+            "select",
+            "auto",
+            "Ice-phase classes (hybrid)",
+            options=["auto", "exclude", "rain"],
+            help="auto: gates the classification calls snow / ice get no estimate only when a "
+            "freezing level is given (the classification needs the temperature; without it "
+            "light rain is often labelled snow); otherwise they are estimated as rain and flagged",
+        ),
         param("z_cap", "number", 53.0, "Reflectivity cap (dBZ)", min=40, max=70, step=1),
         param(
             "attenuation",
@@ -145,6 +155,7 @@ def run(
     snow_relation,
     band,
     freezing_level_m,
+    phase_policy,
     z_cap,
     attenuation,
     sigma_z_db,
@@ -159,6 +170,7 @@ def run(
         "band": band,
         "z_cap": float(z_cap) if z_cap else None,
         "attenuation": attenuation,
+        "phase_policy": phase_policy,
         "sigma_z_db": float(sigma_z_db),
         "sigma_zdr_db": float(sigma_zdr_db),
     }

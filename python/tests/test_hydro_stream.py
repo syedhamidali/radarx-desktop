@@ -1,4 +1,4 @@
-"""A long series of files: opened one at a time, grids spilled to disk, same numbers as in memory."""
+"""A long series of files: opened one at a time, grids spilled to disk, same numbers."""
 
 from __future__ import annotations
 

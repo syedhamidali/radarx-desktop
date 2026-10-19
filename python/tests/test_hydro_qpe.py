@@ -288,6 +288,57 @@ class TestAccuracyAgainstDsdTruth:
         assert any("No DEM" in n for n in sq.meta["notes"])
 
 
+class TestPhaseAndKdpRules:
+    def _sweep(self, dbz, zdr, rhohv, kdp):
+        n = len(dbz)
+        return xr.Dataset(
+            {
+                "DBZH": (("azimuth", "range"), np.array([dbz], dtype=float)),
+                "ZDR": (("azimuth", "range"), np.array([zdr], dtype=float)),
+                "RHOHV": (("azimuth", "range"), np.array([rhohv], dtype=float)),
+                "KDP": (("azimuth", "range"), np.array([kdp], dtype=float)),
+            },
+            coords={
+                "azimuth": [10.0],
+                "range": 3000 + 500.0 * np.arange(n),
+                "elevation": ("azimuth", [0.5]),
+                "latitude": LAT,
+                "longitude": LON,
+                "altitude": 300.0,
+            },
+        )
+
+    def test_kdp_below_its_noise_floor_is_no_estimate_not_a_small_rate(self):
+        ds = self._sweep([30.0] * 3, [0.5] * 3, [0.99] * 3, [0.05, 0.5, 2.0])
+        sq = qpe.estimate_sweep(ds, {"method": "kdp", "min_dbz": 0.0})
+        assert np.isnan(sq.rate[0, 0]) and (sq.flags[0, 0] & qpe.FLAG_NOEST)
+        # R = 44 |KDP|^0.822 (Giangrande & Ryzhkov 2008, S band)
+        assert sq.rate[0, 1] == pytest.approx(44.0 * 0.5**0.822, rel=1e-4)
+        assert sq.rate[0, 2] == pytest.approx(44.0 * 2.0**0.822, rel=1e-4)
+
+    def test_without_a_freezing_level_ice_classes_are_estimated_as_rain_and_flagged(self):
+        # weak echo, ZDR ~ 0, high RhoHV: the classification (no temperature) calls it snow / ice
+        n = 8
+        ds = self._sweep([14.0] * n, [0.05] * n, [0.995] * n, [0.0] * n)
+        excl = qpe.estimate_sweep(ds, {"method": "hybrid", "phase_policy": "exclude", "min_dbz": 5})
+        auto = qpe.estimate_sweep(ds, {"method": "hybrid", "min_dbz": 5})
+        dropped = np.isnan(excl.rate)
+        assert dropped.any(), "the test gates should be classified as ice-phase"
+        assert np.isfinite(auto.rate[dropped]).all()
+        assert (auto.flags[dropped] & qpe.FLAG_PHASE).all()
+        assert not (excl.flags[dropped] & qpe.FLAG_PHASE).any()
+        # with a (low) freezing level the same gates are excluded, as the class says
+        low = qpe.estimate_sweep(
+            ds,
+            {"method": "hybrid", "min_dbz": 5, "freezing_level_m": 400.0, "ml_policy": "exclude"},
+        )
+        assert np.isnan(low.rate[dropped]).all()
+
+    def test_phase_policy_is_validated(self):
+        with pytest.raises(qpe.QpeError, match="phase_policy"):
+            qpe.QpeConfig.from_dict({"phase_policy": "maybe"})
+
+
 # ---------------------------------------------------------------------------
 # Gridding: a cell is the mean of its gates
 # ---------------------------------------------------------------------------

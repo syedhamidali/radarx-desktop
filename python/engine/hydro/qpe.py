@@ -61,6 +61,7 @@ FLAG_BLOCK = 8  # cumulative beam blockage above the threshold (needs a DEM)
 FLAG_ZCAP = 16  # reflectivity capped before R(Z)
 FLAG_NONMET = 32  # low correlation coefficient: not weather, rate set to 0
 FLAG_NOEST = 64  # echo present but no valid relation (class excluded or field missing)
+FLAG_PHASE = 128  # class says ice / snow / wet snow, no freezing level given: estimated as rain
 FLAG_MEANINGS = {
     FLAG_ML: "melting_layer_or_ice",
     FLAG_HAIL: "hail_graupel_or_capped",
@@ -69,6 +70,7 @@ FLAG_MEANINGS = {
     FLAG_ZCAP: "reflectivity_capped",
     FLAG_NONMET: "non_meteorological",
     FLAG_NOEST: "no_valid_relation",
+    FLAG_PHASE: "phase_unverified",
 }
 
 
@@ -248,6 +250,10 @@ class QpeConfig:
     freezing_level_m: float | None = None  # m above sea level; None = unknown
     ml_thickness_m: float = 500.0
     ml_policy: str = "exclude"  # "exclude": no estimate in/above the ML; "flag": estimate, flagged
+    # hybrid: what the ice-phase classes (dry snow, ice crystals, wet snow, graupel aloft) do.
+    # "auto": exclude the gate only when a freezing level is given (the classification needs the
+    # temperature: without it light rain is often labelled snow); else estimate it as rain, flagged
+    phase_policy: str = "auto"  # "auto" | "exclude" | "rain"
     attenuation: str = "auto"  # "auto": correct at C/X, flag only at S; "on"; "off"
     atten_flag_db: float = 1.0
     rain_temperature_c: float = 20.0
@@ -287,6 +293,8 @@ class QpeConfig:
             raise QpeError("hail_policy must be 'kdp' or 'exclude'")
         if self.ml_policy not in ("exclude", "flag"):
             raise QpeError("ml_policy must be 'exclude' or 'flag'")
+        if self.phase_policy not in ("auto", "exclude", "rain"):
+            raise QpeError("phase_policy must be 'auto', 'exclude' or 'rain'")
         if self.attenuation not in ("auto", "on", "off"):
             raise QpeError("attenuation must be 'auto', 'on' or 'off'")
         if (self.zr_a is None) != (self.zr_b is None):
@@ -491,9 +499,12 @@ def estimate_sweep(
     1. gates with RhoHV < ``min_rhohv`` are not weather (rate 0, flagged);
     2. rain classes: R(Z) if R(Z) < ``r_light``; R(Z,ZDR) between; R(KDP) above ``r_heavy`` when
        KDP >= ``kdp_min`` (else R(Z,ZDR));
-    3. rain-hail mixture / hail: R(KDP) if usable, else R(Z) with Z capped at ``z_cap``
-       (``hail_policy="kdp"``), or no estimate (``"exclude"``);
-    4. wet snow, ice, snow, unclassified echo: no estimate;
+    3. rain-hail mixture / hail / graupel: R(KDP) if usable, else R(Z) with Z capped at
+       ``z_cap`` (``hail_policy="kdp"``), or no estimate (``"exclude"``);
+    4. wet snow, dry snow, ice crystals: no estimate when a freezing level is given (or
+       ``phase_policy="exclude"``); without a freezing level the classification cannot be
+       trusted (it needs the temperature) and those gates are estimated as rain and flagged
+       ``phase_unverified``;
     5. with a known freezing level, beams inside the melting layer or above it give no
        estimate (``ml_policy``).
     """
@@ -729,11 +740,14 @@ def estimate_sweep(
         rate[sel] = r_zdr[sel]
         relcode[sel] = REL_ZDR
     elif method == "kdp":
-        sel = echo & np.isfinite(r_kdp)
+        # KDP below ``kdp_min`` is noise (radarx kdp docs): no estimate there, not a rate of ~0
+        usable = np.nan_to_num(kdp, nan=-1.0) >= cfg.kdp_min
+        sel = echo & np.isfinite(r_kdp) & usable
         rate[sel] = r_kdp[sel]
         relcode[sel] = REL_KDP
     elif method == "a":
-        sel = echo & np.isfinite(r_a)
+        usable = np.nan_to_num(kdp, nan=-1.0) >= cfg.kdp_min if kdp is not None else echo
+        sel = echo & np.isfinite(r_a) & usable
         rate[sel] = r_a[sel]
         relcode[sel] = REL_A
     else:
@@ -1006,18 +1020,27 @@ def _hybrid(cfg, rt, ds, echo, nonmet, dbz, zdr, kdp, rhohv, r_z, r_zdr, r_kdp, 
     is_mixed = in_group(HYDROMETEOR_MIXED)
     is_graupel = in_group(HYDROMETEOR_GRAUPEL)
     is_wet = in_group(HYDROMETEOR_WET)
-    below_ml = (ml2 == 0) if cfg.freezing_level_m is not None else np.zeros_like(echo)
-    rate = np.where(echo & is_rain, rain_rate, rate)
-    relcode = np.where(echo & is_rain & np.isfinite(rain_rate), rain_rel, relcode)
+    ice = echo & ~is_rain & ~is_mixed & ~is_graupel & ~is_wet & (cls_name > 0)
+    fl_known = cfg.freezing_level_m is not None
+    below_ml = (ml2 == 0) if fl_known else np.zeros_like(echo)
+    # with no freezing level the phase classes cannot be trusted (the classification needs the
+    # temperature): by default those gates are estimated as rain and flagged
+    exclude_phase = cfg.phase_policy == "exclude" or (cfg.phase_policy == "auto" and fl_known)
+    rain_like = echo & is_rain
+    if not exclude_phase:
+        rain_like = rain_like | (echo & (ice | is_wet))
+        flags[echo & (ice | is_wet)] |= FLAG_PHASE
+    rate = np.where(rain_like, rain_rate, rate)
+    relcode = np.where(rain_like & np.isfinite(rain_rate), rain_rel, relcode)
+    graupel_as_mixed = is_graupel & (below_ml if exclude_phase else True)
     if cfg.hail_policy == "kdp":
-        mix = echo & (is_mixed | (is_graupel & below_ml))
+        mix = echo & (is_mixed | graupel_as_mixed)
         rate = np.where(mix, mixed_rate, rate)
         relcode = np.where(mix & np.isfinite(mixed_rate), mixed_rel, relcode)
         flags[mix] |= FLAG_HAIL
     else:
         flags[echo & (is_mixed | is_graupel)] |= FLAG_HAIL
-    flags[echo & (is_wet | is_graupel & ~below_ml)] |= FLAG_ML
-    # ice / dry snow / unclassified: flagged as such
-    ice = echo & ~is_rain & ~is_mixed & ~is_graupel & ~is_wet & (cls_name > 0)
-    flags[ice] |= FLAG_ML
+    if exclude_phase:
+        flags[echo & (is_wet | (is_graupel & ~below_ml))] |= FLAG_ML
+        flags[ice] |= FLAG_ML
     return rate, relcode.astype(np.uint8), classes
