@@ -46,7 +46,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, pipeline, plugins, varmap, web
+from engine import derived, mosaic, pipeline, plugins, rhi, varmap, web
 from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
@@ -551,12 +551,21 @@ def _finite_range(values: np.ndarray) -> tuple[float, float] | None:
 
 
 def _pack_field(
-    data: Any, variable: str, *, nodata: float = NODATA_SENTINEL
+    data: Any,
+    variable: str,
+    *,
+    nodata: float = NODATA_SENTINEL,
+    rays: rhi.RhiRays | None = None,
 ) -> tuple[dict[str, Any], list[np.ndarray]]:
     """Prepare a 2-D field for the ``[azimuth][range][values]`` wire format.
 
     Returns ``(header_fields, [azimuth_f32, range_f32, values_f32])``. Pure CPU
     work — call it from an executor thread.
+
+    For an RHI sweep pass *rays* (:func:`engine.rhi.rhi_rays`): only those rays are sent, in
+    ascending elevation, with a trailing ``[elevation f32]`` frame and the header fields
+    ``sweep_kind="rhi"``, ``rhi_azimuth`` and ``elevation_bytes``. Without it the payload is
+    exactly the PPI one.
     """
     azimuth = (
         np.ascontiguousarray(data.coords["azimuth"].values, dtype=np.float32)
@@ -568,8 +577,14 @@ def _pack_field(
         if "range" in data.coords
         else np.arange(data.shape[-1], dtype=np.float32)
     )
+    raw = np.asarray(data.values)
+    elevation: np.ndarray | None = None
+    if rays is not None and raw.ndim == 2 and rays.order.size and rays.order.max() < raw.shape[0]:
+        raw = raw[rays.order]
+        azimuth = np.ascontiguousarray(rays.azimuth, dtype=np.float32)
+        elevation = np.ascontiguousarray(rays.elevation, dtype=np.float32)
     # One copy (also detaches from any cached source array); sentinel fill is in-place.
-    values = np.array(data.values, dtype=np.float32, order="C", copy=True)
+    values = np.array(raw, dtype=np.float32, order="C", copy=True)
     observed = _finite_range(values)
     np.nan_to_num(values, copy=False, nan=nodata)
 
@@ -590,7 +605,15 @@ def _pack_field(
         "units": str(data.attrs.get("units", data.attrs.get("unit", ""))),
         "max_range": float(range_m.max()) if range_m.size else 0.0,
     }
-    return fields, [azimuth, range_m, values]
+    arrays = [azimuth, range_m, values]
+    if elevation is not None and rays is not None:
+        fields.update(
+            sweep_kind="rhi",
+            rhi_azimuth=float(rays.plane_azimuth),
+            elevation_bytes=elevation.nbytes,
+        )
+        arrays.append(elevation)
+    return fields, arrays
 
 
 def _export_inputs(
@@ -784,6 +807,17 @@ class ConnectionHandler:
             pipeline.SESSION_RECIPES_DIR.reset(recipes_token)
             _SESSION.reset(token)
 
+    async def _send_ppi_only_error(self, msg_type: str, msg: dict[str, Any], text: str) -> None:
+        """Refuse a PPI-only request, using the error message type its UI listens for."""
+        if msg_type == "run_module":
+            await self.send({"type": "module_error", "module": msg.get("module"), "message": text})
+        elif msg_type == "create_mosaic":
+            await self._mosaic_error(msg.get("request_id"), text)
+        elif msg_type == "run_multidoppler":
+            await self._multidoppler_error(msg.get("request_id"), text)
+        else:
+            await self.send_error(text)
+
     async def _handle_message(self, raw: str) -> None:
         try:
             msg = json.loads(raw)
@@ -879,6 +913,11 @@ class ConnectionHandler:
 
         if handler is None:
             await self.send_error(f"Unknown message type: {msg_type}")
+            return
+
+        blocked = _ppi_only_block(msg_type, msg)
+        if blocked is not None:
+            await self._send_ppi_only_error(msg_type, msg, blocked)
             return
 
         _PROGRESS_OPEN.set(False)
@@ -1642,7 +1681,9 @@ class ConnectionHandler:
             served = _derived_sweep_data(reader, sweep, variable)
             if served is not None:
                 return served
-            return _pack_field(reader.get_sweep_data(sweep, variable), variable)
+            return _pack_field(
+                reader.get_sweep_data(sweep, variable), variable, rays=_rhi_rays_of(reader, sweep)
+            )
 
         fields, arrays = await loop.run_in_executor(None, _load_and_pack)
         await self._send_binary_chunks(
@@ -2248,7 +2289,9 @@ class ConnectionHandler:
                 rhohv = None
 
         def _run_and_pack() -> tuple[dict[str, Any], list[np.ndarray]]:
-            return _pack_field(pipeline.run(data, rhohv=rhohv), variable)
+            return _pack_field(
+                pipeline.run(data, rhohv=rhohv), variable, rays=_rhi_rays_of(reader, sweep)
+            )
 
         fields, arrays = await loop.run_in_executor(None, _run_and_pack)
 
@@ -2684,6 +2727,11 @@ class ConnectionHandler:
                 else np.arange(data.shape[-1], dtype=np.float64)
             )
             vals = data.values
+            ray_axis = "azimuth"
+            if "elevation" in data.coords and reader.sweep_kinds()[sweep : sweep + 1] == ["rhi"]:
+                # A range-height scan's rays differ in elevation (azimuth is the same on every row).
+                azimuth = data.coords["elevation"].values
+                ray_axis = "elevation"
 
             total_az = len(azimuth)
             total_range = len(range_m)
@@ -2705,6 +2753,7 @@ class ConnectionHandler:
                 "values": cells.tolist(),
                 "total_az": total_az,
                 "total_range": total_range,
+                "ray_axis": ray_axis,
             }
 
         await self.send(await loop.run_in_executor(None, _build))
@@ -3933,6 +3982,55 @@ def _field_range(block: dict[str, Any], values: np.ndarray) -> dict[str, float]:
     return {"vmin": float(vmin), "vmax": float(vmax)}
 
 
+#: Requests that only make sense for PPI sweeps (rays that differ in azimuth): message type ->
+#: what the user asked for. A range-height (RHI) scan is refused with a clear message instead of
+#: producing nonsense (or an obscure error) from code that assumes a polar map.
+_PPI_ONLY_FEATURES: dict[str, str] = {
+    "get_volume": "3D volume",
+    "get_cross_section_3d": "3D cross-section",
+    "run_module": "Running a module",
+    "create_mosaic": "Building a mosaic",
+    "run_multidoppler": "Wind retrieval",
+    "identify_cells": "Storm cell identification",
+    "track_cells": "Storm cell tracking",
+}
+
+
+def _ppi_only_block(msg_type: Any, msg: dict[str, Any]) -> str | None:
+    """Why *msg* cannot run on the targeted RHI data, or ``None`` when it can."""
+    feature = _PPI_ONLY_FEATURES.get(msg_type) if isinstance(msg_type, str) else None
+    if feature is None:
+        return None
+    ids = msg.get("file_ids") if isinstance(msg.get("file_ids"), list) else [msg.get("file_id")]
+    for fid in ids:
+        try:
+            _, reader = _resolve_reader(fid if isinstance(fid, str) else None)
+            kinds = reader.sweep_kinds()
+        except Exception:  # unknown file etc.: the handler reports that itself
+            continue
+        if not kinds:
+            continue
+        sweep = msg.get("sweep")
+        if msg_type in ("run_module", "identify_cells", "track_cells"):
+            # per-sweep requests: only the targeted sweep matters
+            is_index = isinstance(sweep, int) and not isinstance(sweep, bool)
+            if is_index and 0 <= sweep < len(kinds) and kinds[sweep] == "rhi":
+                return f"{feature} needs PPI sweeps: sweep {sweep} is a range-height (RHI) scan."
+            continue
+        if "ppi" not in kinds:
+            return f"{feature} needs PPI sweeps: this file only holds range-height (RHI) scans."
+    return None
+
+
+def _rhi_rays_of(reader: RadarReader, sweep: int) -> rhi.RhiRays | None:
+    """Ray order of *sweep* when it is an RHI (``None`` for PPIs, and when it cannot be told)."""
+    try:
+        return rhi.rhi_rays(reader.get_sweep_dataset(sweep, mask=False))
+    except Exception as exc:
+        logger.debug("RHI detection failed for sweep %s: %s", sweep, exc)
+        return None
+
+
 def _derived_sweep_data(
     reader: RadarReader, sweep: int, variable: str
 ) -> tuple[dict[str, Any], list[np.ndarray]] | None:
@@ -3961,7 +4059,7 @@ def _derived_sweep_data(
         coords={"azimuth": azimuth, "range": range_m},
         attrs={"units": meta.get("units", "")},
     )
-    fields, arrays = _pack_field(da, variable)
+    fields, arrays = _pack_field(da, variable, rays=rhi.rhi_rays(ds))
     fields.update(
         derived=True,
         label=meta.get("label", variable),

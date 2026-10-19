@@ -8,6 +8,8 @@
 
   // Data state
   let azimuths = $state<number[]>([]);
+  /** What the first column holds: 'azimuth' for a PPI, 'elevation' for an RHI sweep. */
+  let rayAxis = $state<'azimuth' | 'elevation'>('azimuth');
   let ranges = $state<number[]>([]);
   let values = $state<number[][]>([]);
   let loading = $state(false);
@@ -205,6 +207,7 @@
         return;
       }
       azimuths = msg.azimuths || [];
+      rayAxis = msg.ray_axis === 'elevation' ? 'elevation' : 'azimuth';
       ranges = msg.ranges || [];
       values = msg.values || [];
       totalAz = msg.total_az || azimuths.length;
@@ -553,7 +556,7 @@
     {:else}
       <div class="dt-table-wrapper">
         <!-- Fixed corner -->
-        <div class="dt-corner">Az \ Range</div>
+        <div class="dt-corner">{rayAxis === 'elevation' ? 'El' : 'Az'} \ Range</div>
 
         <!-- Fixed column headers -->
         <div class="dt-col-headers" style="left: {ROW_HEADER_WIDTH}px; transform: translateX(-{scrollLeft}px);">

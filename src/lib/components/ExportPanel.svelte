@@ -465,7 +465,7 @@
           {#each $radarData.sweeps as s}
             <label class="checkbox-label">
               <input type="checkbox" checked={selectedBatchSweeps.has(s.index)} on:change={() => toggleBatchSweep(s.index)} disabled={!canExport} />
-              {s.index}{s.elevation != null ? ` (${s.elevation.toFixed(1)})` : ''}
+              {s.kind === 'rhi' ? `${s.index} (RHI ${s.azimuth?.toFixed(1) ?? '?'}\u00B0)` : `${s.index}${s.elevation != null ? ` (${s.elevation.toFixed(1)})` : ''}`}
             </label>
           {/each}
         </div>

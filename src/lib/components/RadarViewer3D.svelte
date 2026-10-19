@@ -63,6 +63,7 @@
     // Split-cut volumes (NEXRAD) carry a variable on only some sweeps; waiting for the others
     // would keep the viewer "loading" forever.
     const list = [...sweeps]
+      .filter((s) => s.kind !== 'rhi') // a range-height scan has no azimuth sweep to stack
       .filter((s) => !s.variables || s.variables.length === 0 || s.variables.includes(variable))
       .sort((a, b) => (a.elevation ?? 0) - (b.elevation ?? 0) || a.index - b.index);
     const out: typeof list = [];

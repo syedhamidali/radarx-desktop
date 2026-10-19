@@ -47,6 +47,14 @@ export interface SweepDataEntry {
   categories?: { value: number; label: string; color: string }[] | null;
   /** Colormap name the producer asked for (derived variables). */
   cmap?: string | null;
+  /**
+   * 'rhi' for a range-height sweep: its rays differ in elevation, not azimuth. `azimuth` then holds
+   * the (nearly constant) ray azimuths, `elevation` the per-ray elevation (ascending, degrees) and
+   * `rhiAzimuth` the plane azimuth. Absent for PPI sweeps.
+   */
+  kind?: 'rhi';
+  elevation?: Float32Array;
+  rhiAzimuth?: number;
 }
 
 // Insertion-ordered Map doubles as an LRU list (oldest first).

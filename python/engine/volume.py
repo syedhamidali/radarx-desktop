@@ -24,6 +24,7 @@ import numpy as np
 import xarray as xr
 from scipy.ndimage import map_coordinates
 
+from engine import rhi
 from engine.reader import sorted_sweep_names
 
 logger = logging.getLogger(__name__)
@@ -248,6 +249,11 @@ def _collect_sweeps(
             ds = sweep_loader(idx) if sweep_loader is not None else dt[name].to_dataset()
         except (KeyError, ValueError, IndexError) as exc:
             logger.debug("Skipping %s: %s", name, exc)
+            continue
+        if rhi.is_rhi(ds):
+            logger.debug(
+                "Skipping %s: range-height (RHI) scans cannot be gridded as PPI sweeps", name
+            )
             continue
         sweep = _prepare_sweep(ds, variable)
         if sweep is not None:
