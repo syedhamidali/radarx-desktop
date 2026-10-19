@@ -807,7 +807,7 @@ export class StormClip {
       this.povNow = { x: pv.x, y: pv.y, yawDeg: pv.yawDeg, altKm: pv.zKm, rKm: pv.rKm };
       this.curPose = { yawDeg: pv.yawDeg, pitchDeg: pv.pitchDeg };
       this.crop = this.fullBox;
-      r.setCropBox(null);
+      r.setCropBox(this.ex?.cropBox?.() ?? null);
       let fl = flashLight(this.flashes, t, eye, ve);
       if (this.ex) {
         const info = this.frameInfo();

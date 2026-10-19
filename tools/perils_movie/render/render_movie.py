@@ -108,7 +108,9 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
     settings = {"vexag": 2.4, "stormStyle": a.style, "palette": a.palette, "light": a.light}
     if a.look_preset:
         settings["lookPreset"] = a.look_preset
-    settings["lookOverrides"] = {}
+    # the film's own look (stylised, said on screen): the stratiform shield below 24 dBZ is not drawn as cloud
+    # (the MRMS ground layer and the 3-D volume above it still show it where it matters), strong echo stands out
+    settings["lookOverrides"] = {"lowDbzCutoff": 24.0, "rampMidDbz": 42.0, "densityScale": 1.5}
     for item in a.set or []:
         k, v = item.split("=", 1)
         try:
@@ -303,7 +305,7 @@ def main(argv=None) -> None:
         choices=["realistic", "scientific"],
         help="the stylised storm look (default) or the dBZ colour scale",
     )
-    ap.add_argument("--palette", default="white", choices=["white", "soft", "stormy", "cyclone"])
+    ap.add_argument("--palette", default="stormy", choices=["white", "soft", "stormy", "cyclone"])
     ap.add_argument(
         "--light", default="overcast", choices=["daylight", "dusk", "overcast", "night"]
     )

@@ -240,7 +240,7 @@ def convert_winds(
     kz = int(np.clip(round((zk - z0) / dz), 0, nz - 1))
     us = np.asarray(z["u_sr"], np.float32) if "u_sr" in z.files else u
     vs = np.asarray(z["v_sr"], np.float32) if "v_sr" in z.files else v
-    st = int(cfg.get("stride", 3))
+    st = int(cfg.get("stride", 5))
     glyph = []
     for j in range(0, ny, st):
         for i in range(0, nx, st):

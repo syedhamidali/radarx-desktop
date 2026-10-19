@@ -387,8 +387,9 @@ export function drawRotation(e: SceneEnv, a: number): void {
 /** Tornadic debris signature: radar cells flagged by low RhoHV with high reflectivity (RETRIEVED), as a small magenta cloud. */
 export function drawTds(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
-  const pts = e.data.tds[e.nearStep];
-  if (!pts || !pts.length) return;
+  // only the cells the data tool flags as near a vortex (2): low RhoHV with high Z alone (1) is weak evidence
+  const pts = (e.data.tds[e.nearStep] ?? []).filter((q) => q[3] >= 2);
+  if (!pts.length) return;
   const { ctx, cam, u } = e;
   ctx.save();
   ctx.globalAlpha = a;
@@ -401,7 +402,7 @@ export function drawTds(e: SceneEnv, a: number): void {
     if (!onScreen(p, cam.w, cam.h)) continue;
     ctx.fillStyle = rgba(TDS_COLOUR, 0.55);
     ctx.beginPath();
-    ctx.arc(p[0], p[1], Math.max(1.6 * u, 0.12 * pxPerKm(cam, p[2])), 0, Math.PI * 2);
+    ctx.arc(p[0], p[1], Math.min(5 * u, Math.max(1.6 * u, 0.12 * pxPerKm(cam, p[2]))), 0, Math.PI * 2);
     ctx.fill();
     cx += p[0];
     cy += p[1];
@@ -528,10 +529,10 @@ export function drawWinds(e: SceneEnv, a: number): void {
   for (let i = 0; i < n; i += stride) {
     const g = viz.glyphs[i];
     const sp = Math.hypot(g[2], g[3]);
-    if (sp < 1.5) continue;
+    if (sp < 4) continue;
     const p0 = pj(cam, g[0], g[1], viz.zKm, e.ve);
     if (!onScreen(p0, cam.w, cam.h)) continue;
-    const L = Math.min(3.2, 0.18 * sp);
+    const L = Math.min(2.6, 0.12 * sp);
     const p1 = pj(cam, g[0] + (g[2] / sp) * L, g[1] + (g[3] / sp) * L, viz.zKm, e.ve);
     if (!p1) continue;
     const col = windColour(sp);

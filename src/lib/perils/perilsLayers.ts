@@ -27,7 +27,7 @@ export const LAYER_TABLE: Record<LayerId, number[]> = {
   balloon: [0.9, 0.5, 0.2, 0.9, 0.3, 0.5],
   mrms: [1, 0.8, 0.5, 0.8, 1, 1],
   isotherms: [0.6, 0.6, 0.5, 0.0, 0.5, 0],
-  flow: [0, 0.8, 1, 0.5, 0.6, 0],
+  flow: [0, 0.3, 1, 0.5, 0.5, 0],
   wsurface: [0, 0, 0, 0, 0, 0],
   captions: [1, 1, 1, 1, 1, 1],
   skewt: [0.95, 0, 0, 0, 0.9, 0],

@@ -99,14 +99,18 @@ def _prep(a: np.ndarray, lo: float = 10.0, hi: float = 55.0) -> np.ndarray:
 
 
 def phase_correlate(
-    a: np.ndarray, b: np.ndarray, max_shift_px: float | None = None
+    a: np.ndarray,
+    b: np.ndarray,
+    max_shift_px: float | None = None,
+    lo: float = 10.0,
+    hi: float = 55.0,
 ) -> tuple[float, float, float]:
     """Shift (dx, dy) in pixels that carries ``a`` onto ``b`` (x = columns, y = rows) and the peak sharpness.
 
     Cross-power spectrum normalised to unit magnitude, sub-pixel peak by a parabola fit. A shift
     larger than ``max_shift_px`` is not searched for (the peak is looked for inside that radius).
     """
-    fa, fb = np.fft.rfft2(_prep(a)), np.fft.rfft2(_prep(b))
+    fa, fb = np.fft.rfft2(_prep(a, lo, hi)), np.fft.rfft2(_prep(b, lo, hi))
     cross = np.conj(fa) * fb
     cross /= np.abs(cross) + 1e-9
     r = np.fft.irfft2(cross, s=a.shape)
@@ -145,7 +149,16 @@ def estimate_motion(
     for k in range(len(colmax) - 1):
         dt = times_s[k + 1] - times_s[k]
         mx = max_speed_ms * dt / 1000.0 / cell_km
-        dx, dy, sh = phase_correlate(colmax[k], colmax[k + 1], max_shift_px=mx)
+        # the pattern of the strong echo moves with the line; weaker echo (stratiform rain, the edge of the
+        # coverage) is what a plain correlation locks onto. Try three thresholds, keep the sharpest peak.
+        best = None
+        for lo in (38.0, 30.0, 15.0):
+            r = phase_correlate(
+                colmax[k], colmax[k + 1], max_shift_px=mx, lo=lo, hi=max(lo + 15.0, 55.0)
+            )
+            if best is None or r[2] > best[2]:
+                best = r
+        dx, dy, sh = best
         out.append(
             {
                 "dx_km": dx * cell_km,
@@ -172,6 +185,73 @@ def estimate_motion(
             o["dx_km"], o["dy_km"], o["fallback"] = mu * o["dt_s"], mv * o["dt_s"], True
         o["u_ms"] = o["dx_km"] * 1000.0 / o["dt_s"]
         o["v_ms"] = o["dy_km"] * 1000.0 / o["dt_s"]
+    return out
+
+
+def estimate_motion_robust(
+    colmax: list[np.ndarray],
+    cell_km: float,
+    times_s: list[float],
+    span_s: float = 300.0,
+    max_speed_ms: float = 35.0,
+    prior: tuple[float, float] | None = None,
+) -> list[dict]:
+    """One translation of the echo pattern for the whole window, from pairs of steps ``span_s`` apart.
+
+    Between steps a minute apart the correlation peak is dominated by what does not move (the coverage edges and
+    range rings of the radars), and a line gives only its motion across it (the aperture problem). So pairs 3
+    to 8 minutes apart are used, three reflectivity thresholds each, a peak must be sharp and within
+    ``max_speed_ms``; the median velocity of the good pairs is returned for every interval (with the
+    median absolute deviation as ``mad_ms``). Without a good pair the ``prior`` (for example the pattern motion
+    of the bundle) or zero is used and ``fallback`` is set.
+    """
+    n = len(colmax)
+    vels: list[tuple[float, float, float]] = []
+    # what is strong in every step at the same place does not move with the storm (coverage edges, range rings,
+    # artefacts of the merge): it is taken out before the correlation
+    persist = np.min([np.nan_to_num(c, nan=-99.0) for c in colmax], axis=0)
+    cleaned: dict[float, list[np.ndarray]] = {}
+    for lo in (38.0,):
+        cleaned[lo] = [
+            np.where(persist >= lo, lo - 1.0, np.nan_to_num(c, nan=-99.0)) for c in colmax
+        ]
+    for i in range(n):
+        for j in range(i + 1, n):
+            dt = times_s[j] - times_s[i]
+            if not (0.6 * span_s <= dt <= 1.6 * span_s):
+                continue
+            mx = max_speed_ms * dt / 1000.0 / cell_km
+            dx, dy, sh = phase_correlate(
+                cleaned[38.0][i], cleaned[38.0][j], max_shift_px=mx, lo=38.0, hi=55.0
+            )
+            u, v = dx * cell_km * 1000.0 / dt, dy * cell_km * 1000.0 / dt
+            if sh >= 6.0 and math.hypot(u, v) <= max_speed_ms:
+                vels.append((u, v, sh))
+    out: list[dict] = []
+    if vels:
+        us, vs = np.array([q[0] for q in vels]), np.array([q[1] for q in vels])
+        mu, mv = float(np.median(us)), float(np.median(vs))
+        mad = float(np.median(np.hypot(us - mu, vs - mv)))
+        sharp = float(np.median([q[2] for q in vels]))
+        fb = False
+    else:
+        mu, mv = prior if prior else (0.0, 0.0)
+        mad, sharp, fb = float("nan"), 0.0, True
+    for k in range(n - 1):
+        dt = times_s[k + 1] - times_s[k]
+        out.append(
+            {
+                "dx_km": mu * dt / 1000.0,
+                "dy_km": mv * dt / 1000.0,
+                "dt_s": dt,
+                "sharpness": sharp,
+                "fallback": fb,
+                "u_ms": mu,
+                "v_ms": mv,
+                "pairs": len(vels),
+                "mad_ms": mad,
+            }
+        )
     return out
 
 
@@ -406,11 +486,54 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             f"  step {k + 1}/{len(steps)}: {st['time']}  {int(np.isfinite(dbz).sum())} echo cells, radars {st.get('radars')}"
         )
 
-    mot = estimate_motion(colmax, cell, times_s)
-    for k, o in enumerate(mot):
-        log(
-            f"  interval {k}: line motion {o['u_ms']:.1f}, {o['v_ms']:.1f} m/s (sharpness {o['sharpness']:.1f}{', FALLBACK' if o['fallback'] else ''})"
+    pm = man.get("pattern_motion") or {}
+    prior = (float(pm["u_ms"]), float(pm["v_ms"])) if "u_ms" in pm and "v_ms" in pm else None
+    if len(colmax) > 2 and times_s[-1] - times_s[0] >= 360.0:
+        mot = estimate_motion_robust(colmax, cell, times_s, prior=prior)
+    else:
+        mot = estimate_motion(colmax, cell, times_s)
+    source = "this tool: phase correlation of the column-maximum reflectivity, pairs of steps"
+    o = mot[0]
+    if (
+        prior
+        and "pairs" in o
+        and (
+            o["fallback"]
+            or not o["mad_ms"] <= 4.0
+            or math.hypot(o["u_ms"] - prior[0], o["v_ms"] - prior[1]) > 6.0
         )
+    ):
+        # our own estimate is not consistent between pairs, or far from the bundle's pattern motion (a long
+        # baseline between two volumes of ONE radar, in the data tool): consecutive merged steps share radar
+        # volumes, so what has not changed between them dominates the correlation. The bundle's value is used
+        for q in mot:
+            q.update(
+                u_ms=prior[0],
+                v_ms=prior[1],
+                dx_km=prior[0] * q["dt_s"] / 1000.0,
+                dy_km=prior[1] * q["dt_s"] / 1000.0,
+                fallback=False,
+            )
+        source = (
+            "the bundle's pattern motion (our own estimate varied too much between pairs of steps)"
+        )
+    for q in mot:
+        q["source"] = source
+    o = mot[0]
+    log(
+        f"  echo motion {o['u_ms']:.1f} east, {o['v_ms']:.1f} north m/s"
+        + (
+            f" from {o['pairs']} pairs of steps (spread {o['mad_ms']:.1f} m/s)"
+            if "pairs" in o
+            else " (adjacent steps)"
+        )
+        + (", FALLBACK to the prior" if o["fallback"] else "")
+        + (
+            f"; the bundle's own pattern motion: {prior[0]:.1f}, {prior[1]:.1f} m/s"
+            if prior
+            else ""
+        )
+    )
     # pseudo-track: the centre of the strong echo of step 0, then the estimated displacement per interval
     c0 = colmax[0]
     jj, ii = np.nonzero(np.nan_to_num(c0, nan=-9) >= 40)

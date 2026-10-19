@@ -62,6 +62,22 @@ def test_motion_of_a_series_and_the_fallback_for_a_bad_pair():
     assert abs(mo[0]["dx_km"] - 2.0) < 0.4
 
 
+def test_robust_motion_ignores_what_does_not_move_and_uses_long_baselines():
+    # blobs move 1.5 cells per minute; a strong feature fixed in place (a coverage edge, a range ring) is added
+    static = np.zeros((128, 128))
+    static[10:30, 100:120] = 50.0
+    frames = [np.fmax(_blobs(1.5 * k, 0.5 * k), np.where(static > 0, static, np.nan)) for k in range(9)]
+    mo = convert_bundle.estimate_motion_robust(frames, 1.0, [60.0 * k for k in range(9)], span_s=300.0)
+    assert len(mo) == 8 and mo[0]["pairs"] >= 3
+    assert abs(mo[0]["u_ms"] - 1.5 * 1000 / 60) < 3.0 and abs(mo[0]["v_ms"] - 0.5 * 1000 / 60) < 3.0
+    assert mo[0]["u_ms"] == mo[5]["u_ms"]  # one translation for the window
+    # without any usable pair the prior is used and flagged
+    rng = np.random.default_rng(0)
+    noise = [rng.uniform(0, 50, (64, 64)) for _ in range(5)]
+    mo = convert_bundle.estimate_motion_robust(noise, 1.0, [0, 120, 240, 360, 480], prior=(10.0, 0.0))
+    assert mo[0]["fallback"] and mo[0]["u_ms"] == 10.0
+
+
 def test_dbz_codes_round_trip_within_the_quantisation():
     d = np.array([-20.0, -10.0, 0.0, 35.3, 70.0, 90.0, np.nan])
     c = convert_bundle.encode_dbz(d)

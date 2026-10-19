@@ -110,6 +110,11 @@ export class PerilsExtras implements ClipExtras {
     return { x: p.x, y: p.y, zKm: p.zKm, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg, vexag: p.vexag, fov: this.opts.fov };
   }
 
+  cropBox(): { xMin: number; xMax: number; yMin: number; yMax: number } | null {
+    const g = this.ground?.spec;
+    return g ? { xMin: g.cx - g.half, xMax: g.cx + g.half, yMin: g.cy - g.half, yMax: g.cy + g.half } : null;
+  }
+
   async prepare(api: ClipApi): Promise<void> {
     this.api = api;
     this.lut = COLORMAP_DATA['NWSRef'];

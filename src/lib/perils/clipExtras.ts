@@ -70,6 +70,8 @@ export interface ClipExtras {
   pose(t: number): ExtrasPose;
   /** Load what the extras need (called once, from `prepare`, after the ground is set up). */
   prepare(api: ClipApi): Promise<void>;
+  /** The square (km) the ground covers: larger than the volume's box to show the ground map beyond it; null = the volume's box. */
+  cropBox?(): { xMin: number; xMax: number; yMin: number; yMax: number } | null;
   /** Called before each frame is drawn (set the ground, the flash light ...). */
   beforeFrame?(info: FrameInfo): void;
   /** Light of the lightning for the 3-D scene at this frame (scene km, z already exaggerated). */
