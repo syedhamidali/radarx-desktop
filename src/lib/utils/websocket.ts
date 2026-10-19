@@ -11,6 +11,7 @@ import {
   exportNotification,
 } from '../stores/radarData';
 import { addToast } from '../stores/toasts';
+import { noteLayerMessage } from '../stores/layers';
 import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './sweepCache';
 import { addFile, clearAllFiles, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
@@ -600,6 +601,9 @@ class WebSocketManager {
       return;
     }
 
+    // Every layer message carries its provenance (stores/layers.ts keeps the registry).
+    noteLayerMessage(type, msg);
+
     // Web mode: the engine announces its limits / features, and hands out downloads.
     if (type === 'web_info') {
       const info = parseWebInfo(msg);
@@ -755,6 +759,17 @@ class WebSocketManager {
       case 'module_volume_result':
       case 'derived_variables':
         // Handled by custom handlers registered in the modules / derived stores
+        break;
+
+      case 'env_status':
+      case 'env_estimate_result':
+      case 'env_progress':
+      case 'env_fetch_result':
+      case 'env_cancelled':
+      case 'env_error':
+      case 'sounding_result':
+      case 'sounding_error':
+        // Handled by custom handlers registered in the environment / sounding stores
         break;
 
       case 'data_table_result':

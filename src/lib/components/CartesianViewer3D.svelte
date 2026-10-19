@@ -22,6 +22,7 @@
   import { sunLight, daylightAssumed, type SunLight } from '../utils/sunPosition';
   import { defaultLook, validateLook, changedLook, applyPreset, type LookConfig } from '../utils/lookConfig';
   import LookPanel from './LookPanel.svelte';
+  import { setStylisedLook } from '../stores/layers';
   import { scaleLut } from '../utils/wind';
   import {
     variableKind, buildTf, recolorTf, thresholdSpec, thresholdToShader, adaptiveShiftDb,
@@ -424,6 +425,11 @@
 
   // transfer function (the realistic storm look has its own: opacity and brightness follow dBZ)
   const realisticStorm = $derived(stormStyle === 'realistic' && kind === 'reflectivity' && !!volume);
+  // The realistic look is appearance, not data: the Layers panel lists it as "stylised".
+  $effect(() => {
+    setStylisedLook(realisticStorm);
+    return () => setStylisedLook(false);
+  });
   $effect(() => {
     const t = tfData;
     const real = realisticStorm;

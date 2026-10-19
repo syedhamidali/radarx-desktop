@@ -1,0 +1,26 @@
+/*
+ * Provenance chip tokens. Only aliases of the design tokens (tokens.css), so both themes follow
+ * with no new colour literal:
+ *
+ *   observed   green  (nominal)  a measurement
+ *   model      cyan   (accent)   a model / reanalysis field
+ *   retrieved  violet (derived)  derived from observations by an algorithm
+ *   simulated  amber  (caution)  synthetic, not real
+ *   stylised   neutral line      drawn for looks, not a data value
+ *
+ * The class is always written next to the colour (OBS, MODEL, RETR, SIM, STYLE).
+ */
+:root {
+  --c-prov-observed: var(--c-nominal);
+  --c-prov-observed-rgb: var(--c-nominal-rgb);
+  --c-prov-model: var(--c-accent);
+  --c-prov-model-rgb: var(--c-accent-rgb);
+  --c-prov-retrieved: var(--c-derived);
+  --c-prov-retrieved-rgb: var(--c-derived-rgb);
+  --c-prov-simulated: var(--c-caution);
+  --c-prov-simulated-rgb: var(--c-caution-rgb);
+  --c-prov-stylised: var(--c-text-dim);
+  --c-prov-stylised-rgb: var(--c-line-rgb);
+  --c-prov-unknown: var(--c-muted);
+  --c-prov-unknown-rgb: var(--c-line-rgb);
+}
