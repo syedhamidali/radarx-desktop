@@ -4,6 +4,8 @@
   import { recentFiles } from '../stores/recentFiles';
   import { webUi } from '../stores/webInfo';
   import { focusTrap } from '../utils/focusTrap';
+  import { isWebMode } from '../utils/env';
+  import UpdatesSettings from './UpdatesSettings.svelte';
   import {
     SHORTCUT_REGISTRY,
     formatKeyCombo,
@@ -18,7 +20,7 @@
 
   const dispatch = createEventDispatcher();
 
-  type TabId = 'general' | 'display' | 'data' | 'export' | 'shortcuts';
+  type TabId = 'general' | 'display' | 'data' | 'export' | 'updates' | 'shortcuts';
   let activeTab: TabId = $state('general');
 
   // Local copy for live editing
@@ -33,6 +35,8 @@
     { id: 'display', label: 'Display' },
     { id: 'data', label: 'Data' },
     { id: 'export', label: 'Export' },
+    // Self-update exists only in the desktop app, never in a browser.
+    ...(isWebMode() ? [] : [{ id: 'updates' as TabId, label: 'Updates' }]),
     { id: 'shortcuts', label: 'Shortcuts' },
   ];
 
@@ -505,6 +509,12 @@
               <button class="reset-btn" on:click={() => settings.resetSection('export_')}>
                 Reset Export
               </button>
+            </div>
+
+          <!-- ═══ Updates (desktop only) ═══ -->
+          {:else if activeTab === 'updates' && !isWebMode()}
+            <div class="settings-section">
+              <UpdatesSettings />
             </div>
 
           <!-- ═══ Shortcuts ═══ -->
