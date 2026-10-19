@@ -11,5 +11,6 @@
     "moduleDetection": "force"
   },
   "include": ["src/**/*", "src/**/*.svelte"],
+  "exclude": ["src/**/*.test.mjs"],
   "references": [{ "path": "./tsconfig.node.json" }]
 }

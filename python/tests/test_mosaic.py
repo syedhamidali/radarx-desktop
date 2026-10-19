@@ -398,6 +398,24 @@ class TestSyntheticMosaic:
         assert np.isnan(rec.image[0, 0]) and np.isnan(rec.image[-1, -1])
         assert np.isfinite(rec.image[rec.image.shape[0] // 2, rec.image.shape[1] // 2 + 10])
 
+    def test_cells_without_any_echo_stay_empty_after_the_merge(self, cache):
+        """radarx gives covered cells without echo a low 'no echo' value for the blend; where no
+        radar measured anything the mosaic must stay transparent, not show a flat plate."""
+
+        def blob(x, y, h):  # one small echo, nothing elsewhere (undefined = no echo)
+            return np.where(np.hypot(x - 10.0, y) < 12.0, 35.0, np.nan).astype(np.float32)
+
+        r1 = make_reader(make_volume(*A, blob, name="ONE"))
+        r2 = make_reader(make_volume(*B, blob, name="TWO"))
+        rec = mosaic.build_mosaic(
+            [("a", r1), ("b", r2)], "DBZH", "composite", GRID, {"time_scale_s": 0}, cache=cache
+        )
+        finite = rec.image[np.isfinite(rec.image)]
+        assert finite.size > 0 and finite.max() == pytest.approx(35.0, abs=1.0)
+        assert finite.min() > 0.0, "a no-echo fill value leaked into the mosaic"
+        # only the two small echoes are drawn, not the radars' whole coverage discs
+        assert np.isfinite(rec.image).mean() < 0.1
+
     def test_unmerged_takes_maximum(self, cache):
         lo = make_reader(make_volume(*A, flat(20.0), name="LOW"))
         hi = make_reader(make_volume(*B, flat(40.0), name="HIGH"))
