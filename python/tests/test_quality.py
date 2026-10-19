@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from typing import Any
 
 import numpy as np
@@ -165,6 +166,16 @@ def covers(interval: list[float], lo: float, hi: float, tol: float) -> bool:
 # ---------------------------------------------------------------------------
 # Clean data
 # ---------------------------------------------------------------------------
+
+
+def test_circular_arc_handles_clusters_and_the_north_seam():
+    c = quality.circular_arc
+    assert c(np.array([10.0] * 800 + [109.0] * 800 + [190.0] * 800 + [289.0] * 800), 0.9) == (
+        109.0,
+        10.0,
+    )
+    assert c(np.array([350.0] * 50 + [5.0] * 50), 0.9) == (350.0, 5.0)  # across north
+    assert c(np.array([100.0, 101.0, 102.0, 250.0]), 0.7) == (100.0, 102.0)
 
 
 def test_clean_volume_has_no_notice_or_warning():
@@ -498,3 +509,80 @@ def test_report_is_stable_json():
     again.pop("elapsed_ms")
     assert json.dumps(rep, sort_keys=True) == json.dumps(again, sort_keys=True)
     assert all(math.isfinite(f["confidence"]) for f in rep["findings"])
+
+
+# ---------------------------------------------------------------------------
+# xrd check
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def fake_open(monkeypatch):
+    from engine import api, cli
+
+    trees = {"aliased.nc": volume(alias=True, zdr_offset=0.5), "clean.nc": volume()}
+
+    def _open(path, mapping=None):
+        return api.Volume.from_tree(trees[path], path=path, format="synthetic")
+
+    monkeypatch.setattr(cli, "_open", _open)
+    monkeypatch.setattr(cli, "expand_inputs", lambda items: list(items))
+    return cli
+
+
+def test_cli_check_exit_zero_with_findings_and_json(fake_open, capsys):
+    code = fake_open.main(["check", "-i", "aliased.nc", "--json"])
+    assert code == 0  # findings are not errors
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["counts"]["warning"] >= 2 and rep["file"] == "aliased.nc"
+    assert {f["id"] for f in rep["findings"]} >= {"velocity_aliasing", "zdr_offset"}
+
+
+def test_cli_check_table_shows_evidence_and_plan(fake_open, capsys):
+    assert fake_open.main(["check", "-i", "aliased.nc", "--fix-plan", "--no-color"]) == 0
+    text = capsys.readouterr().out
+    assert "WARNING" in text and "Velocity looks aliased" in text
+    assert "Nyquist velocity 26 m/s [RETRIEVED]" in text  # evidence with its label
+    assert re.search(r"ZDR offset 0\.[45]\d* dB \[ESTIMATE\]", text)
+    assert "Fix plan" in text and "dealias" in text
+    assert "none of them is applied" in text
+
+
+def test_cli_check_several_files_json_is_a_list(fake_open, capsys):
+    assert fake_open.main(["check", "-i", "aliased.nc", "clean.nc", "--json"]) == 0
+    reps = json.loads(capsys.readouterr().out)
+    assert [r["file"] for r in reps] == ["aliased.nc", "clean.nc"]
+    assert reps[1]["counts"]["warning"] == 0
+
+
+def test_cli_check_writes_recipe_that_pipeline_accepts(fake_open, tmp_path, capsys):
+    from engine import api
+
+    out = tmp_path / "recipe.json"
+    assert fake_open.main(["check", "-i", "aliased.nc", "--fix-plan", "-o", str(out)]) == 0
+    capsys.readouterr()
+    saved = json.loads(out.read_text())
+    assert saved["target"] == "VRADH" and [s["step_id"] for s in saved["steps"]] == ["dealias"]
+    assert api.recipe(str(out)).name.startswith("Data check")
+
+
+def test_cli_check_usage_and_input_errors(fake_open, capsys, monkeypatch):
+    assert fake_open.main(["check", "-i", "aliased.nc", "-o", "x.json"]) == 2  # -o needs --fix-plan
+    assert fake_open.main(["check"]) == 2  # no input
+    capsys.readouterr()
+
+
+def test_cli_check_missing_file_is_an_input_error(tmp_path, capsys):
+    from engine import cli
+
+    assert cli.main(["check", "-i", str(tmp_path / "nope.nc")]) == 3
+    capsys.readouterr()
+
+
+@needs_ktlx
+def test_cli_check_real_file(capsys):
+    from engine import cli
+
+    assert cli.main(["check", "-i", str(KTLX), "--json"]) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["n_sweeps"] == 17

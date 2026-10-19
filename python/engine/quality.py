@@ -190,7 +190,8 @@ def circular_arc(angles: np.ndarray, coverage: float = 0.9) -> tuple[float, floa
         gaps = np.diff(np.concatenate([a, [a[0] + 360.0]]))
         i = int(np.argmax(gaps))
         return (float(a[(i + 1) % n]), float(a[i]))
-    ext = (np.roll(a, -(k - 1)) - a) % 360.0
+    doubled = np.concatenate([a, a + 360.0])  # a window may run past 360 and wrap to the start
+    ext = doubled[k - 1 : k - 1 + n] - a
     i = int(np.argmin(ext))
     return (float(a[i]), float(a[(i + k - 1) % n]))
 
@@ -1590,9 +1591,8 @@ def _f_folding(acc: _Acc) -> list[Finding]:
                 }
                 for r in flagged[:12]
             ],
-            advice="The folded gates are already masked and stay empty: nothing in the data can "
-            "recover them. Use the other cut (lower PRF / SZ-2 sweep) if the volume has "
-            "one.",
+            advice="Folded gates hold no measurement; they are masked and stay empty. Nothing "
+            "in this volume can recover them.",
         )
     ]
 
@@ -2074,9 +2074,9 @@ _STEP_ORDER = (
     "speckle",
 )
 _RECIPE_INFO = {
-    "velocity": ("VRADH", "Doppler velocity: de-alias and clean"),
-    "reflectivity": ("DBZH", "Reflectivity: clean"),
-    "zdr": ("ZDR", "ZDR: clean"),
+    "velocity": ("VRADH", "Doppler velocity"),
+    "reflectivity": ("DBZH", "Reflectivity"),
+    "zdr": ("ZDR", "ZDR"),
 }
 _STEP_WHY = {
     "snr_gate": "Remove noise-dominated gates first so the later steps see a cleaner field.",
@@ -2120,7 +2120,7 @@ def _recommend_recipes(
         try:
             recipe = pipeline.parse_recipe(
                 {
-                    "name": f"Data check: {name}",
+                    "name": f"Data check - {name}",
                     "description": "Suggested from the data check of this file: "
                     + ", ".join(sorted({f.title.lower() for fs in picked.values() for f in fs})),
                     "target": target,
@@ -2389,3 +2389,118 @@ def check_reader(
 def check_volume(vol: Any, *, budget_s: float = BUDGET_S) -> dict[str, Any]:
     """:func:`check_tree` on an :class:`engine.api.Volume` (uses its variable mapping)."""
     return check_reader(vol._reader, overrides=vol.mapping, budget_s=budget_s)
+
+
+# ---------------------------------------------------------------------------
+# Plain-text report (xrd check)
+# ---------------------------------------------------------------------------
+
+
+def _ev_text(e: dict[str, Any]) -> str:
+    value = e["value"]
+    if isinstance(value, float):
+        value = f"{value:.3g}" if abs(value) < 1000 else f"{value:.0f}"
+    unit = f" {e['unit']}" if e.get("unit") else ""
+    return f"{e['label']} {value}{unit} [{e['kind']}]"
+
+
+def _where_text(f: dict[str, Any]) -> str:
+    w = f.get("where") or {}
+    parts = []
+    sweeps = f.get("sweeps") or []
+    if sweeps and f["scope"] == "sweep":
+        parts.append(_sweeps_text(sweeps, 3))
+    text = _fmt_where({k: w.get(k) for k in ("azimuth_deg", "range_km")})
+    if text:
+        parts.append(text)
+    return "; ".join(parts) or "whole file"
+
+
+def recipe_steps_text(item: dict[str, Any]) -> list[str]:
+    """One line per step of a recommended recipe: ``1. clutter_filter: reason``."""
+    out = []
+    for i, r in enumerate(item["reasons"], 1):
+        why = r["reason"].split(" Because:")[0]
+        out.append(f"{i}. {r['step_id']}: {why}")
+    return out
+
+
+def _took(ms: float) -> str:
+    return f"{ms / 1000.0:.1f} s" if ms >= 100 else f"{ms:.0f} ms"
+
+
+def format_report(
+    rep: dict[str, Any], *, fix_plan: bool = False, verbose: bool = False, label: str | None = None
+) -> str:
+    """The report as aligned plain text: findings with evidence, then the recommendation."""
+    lines: list[str] = []
+    c = rep["counts"]
+    band = f", {rep['band']} band" if rep.get("band") else ""
+    lines.append(
+        f"{label or rep.get('file') or 'volume'}  ({rep.get('format') or 'unknown format'}, "
+        f"{rep['n_sweeps']} sweeps{band}; checked in {_took(rep['elapsed_ms'])})"
+    )
+    lines.append(
+        f"  {c['warning']} warning, {c['notice']} notice, {c['info']} info. "
+        "Nothing was changed; ESTIMATE values name their method."
+    )
+    for f in rep["findings"]:
+        lines.append("")
+        lines.append(
+            f"  {f['severity'].upper():8}{f['title']}   "
+            f"(confidence {f['confidence']:.2f}; {_where_text(f)})"
+        )
+        lines.append(f"    {f['summary']}")
+        if f["severity"] != "info" or verbose:
+            lines.extend(f"      - {_ev_text(e)}" for e in f["evidence"])
+        if verbose:
+            lines.append(f"    method: {f['method']}")
+        if f.get("advice"):
+            lines.append(f"    next: {f['advice']}")
+    rec = rep["recommendation"]
+    if rec["recipes"] or rec["first_view"]:
+        lines.append("")
+        lines.append("  Suggested next steps (none of them is applied by this command)")
+    for item in rec["recipes"]:
+        r = item["recipe"]
+        lines.append(f"    recipe '{r['name']}' on {r['target']}:")
+        lines.extend(f"      {t}" for t in recipe_steps_text(item))
+    v = rec["first_view"]
+    if v:
+        scale = v.get("scale")
+        extra = f", scale {scale['vmin']:g} to {scale['vmax']:g} {scale['unit']}" if scale else ""
+        lines.append(
+            f"    first look: {v['variable']} on sweep {v['sweep']}{extra} ({v['reason']})"
+        )
+    if rep["not_checked"]:
+        lines.append("")
+        lines.append("  Not assessed:")
+        lines.extend(f"    - {t}" for t in rep["not_checked"])
+    if rep["errors"]:
+        lines.append("")
+        lines.append("  Checks that failed (the others are unaffected):")
+        lines.extend(f"    - {t}" for t in rep["errors"])
+    if fix_plan:
+        lines.append("")
+        lines.extend(rep.get("fix_plan") or fix_plan_lines(rep))
+    return "\n".join(lines)
+
+
+def fix_plan_lines(rep: dict[str, Any], recipe_files: dict[str, str] | None = None) -> list[str]:
+    """The fix plan as text: what to run, in order, and why (``recipe_files``: saved JSON paths)."""
+    rec = rep["recommendation"]
+    if not rec["recipes"] and not rec["advice"]:
+        return ["  Fix plan: nothing to fix. No notice or warning needs a pipeline step."]
+    out = ["  Fix plan (run these yourself; each is a normal xrd command):"]
+    file = rep.get("file") or "FILE"
+    for item in rec["recipes"]:
+        r = item["recipe"]
+        path = (recipe_files or {}).get(item["role"])
+        out.append(f"    {r['name']} ({', '.join(s['step_id'] for s in r['steps'])})")
+        if path:
+            out.append(f"      xrd pipeline {path} -i {file}")
+        else:
+            out.append(f"      save it:  xrd check -i {file} --fix-plan -o recipe.json")
+            out.append(f"      run it:   xrd pipeline recipe_{item['role']}.json -i {file}")
+    out.extend(f"    {a['id']}: {a['text']}" for a in rec["advice"])
+    return out
