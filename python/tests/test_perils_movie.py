@@ -108,6 +108,38 @@ def test_conversion_writes_the_clip_bundle(tiny):
     assert p["soundings"][0]["levels"]["pressure_hpa"][0] == 1000.0
 
 
+def test_the_v11_parts_are_converted(tiny):
+    root, p = tiny
+    clip = root / "clip"
+    # winds: the clip's flow files (u then v, float32) and the visual layers, with masked cells never drawn
+    assert p["hasWinds"]
+    h = json.loads((clip / "wind_0.json").read_text())
+    assert (clip / "wind_0.bin").stat().st_size == h["nx"] * h["ny"] * h["nz"] * 8
+    man = json.loads((clip / "manifest.json").read_text())
+    assert man["steps"][0]["wind"] == {"header": "wind_0.json", "bin": "wind_0.bin"}
+    viz = p["winds"][0]
+    assert viz["glyphs"] and all(len(g) == 4 for g in viz["glyphs"])
+    assert viz["w"] and all(abs(c[3]) >= 5.0 for c in viz["w"])
+    # the tornado: the survey path is a line between begin and end, flagged as interpolated
+    tor = p["tornadoes"][0]
+    assert tor["path_interpolated"] is True and len(tor["path"]) > 2
+    # rotation tracks from the dict form, with the rotational velocity
+    assert p["rotation"][0]["points"][0]["vrot_ms"] > 20
+    # hail events attach to their station; drop-size spectra are converted to log10 N(D)
+    pips = [s for s in p["stations"] if s.get("dsd")]
+    assert pips
+    from convert_extras import convert_stations
+
+    st = convert_stations([{"id": "P1", "lat": 33.0, "lon": -87.5, "series": {"t_s": [0, 1], "rain_rate_mmh": [0, float("nan")]}}], convert_bundle.Geo(33.0, -87.5), root, [{"station": "P1", "t_s": 5, "kind": "hail_candidate", "max_d_mm": 12}])
+    assert st[0]["events"][0]["max_d_mm"] == 12 and st[0]["series"]["rain_rate_mmh"][1] is None
+    d = pips[0]["dsd"]
+    assert len(d["logN"]) == len(d["t"]) and len(d["logN"][0]) == len(d["d"])
+    # science events and profiles
+    assert {e["kind"] for e in p["science"]} >= {"gust_front", "tornado"}
+    assert p["profiles"]["mrr"]["fields"]["dbz"]["codes"]
+    assert sum(1 for h in p["hail"] if h) >= 1
+
+
 def test_line_geometry_axis_is_perpendicular_to_the_motion(tiny):
     _root, p = tiny
     line = p["line"][0]

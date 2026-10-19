@@ -24,12 +24,21 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+from convert_extras import convert_dsd, convert_profiles, convert_rotation, convert_science, convert_stations, convert_tornadoes, convert_winds  # noqa: F401
 
 VMIN, VMAX = -10.0, 70.0
 # hydrometeor class ids of the data bundle (docs/PERILS_BUNDLE.md); hail = the "hail" class of the
 # CSU HID scheme.  Changed here, in one place, if the bundle's table differs.
-HAIL_IDS = (9,)
-GRAUPEL_IDS = (7, 8)
+HAIL_IDS = (10,)
+GRAUPEL_IDS = (8, 9)
+
+
+def hid_classes(man: dict) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Hail and graupel class codes from the manifest's ``hid_legend`` (abbreviations HA / GR, HG), else the defaults."""
+    codes = ((man.get("hid_legend") or {}).get("codes")) or {}
+    hail = tuple(int(k) for k, v in codes.items() if v.get("abbr") == "HA")
+    grau = tuple(int(k) for k, v in codes.items() if v.get("abbr") in ("GR", "HG"))
+    return hail or HAIL_IDS, grau or GRAUPEL_IDS
 
 
 # ── time and geometry ───────────────────────────────────────────────────────
@@ -248,6 +257,7 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     colmax: list[np.ndarray] = []
     msteps = []
     hail_pts, tds_pts, layers_meta, zdrcol = [], [], [], []
+    hail_ids, _grau_ids = hid_classes(man)
     rng = np.random.default_rng(11)
     for k, st in enumerate(steps):
         z = np.load(bundle / st["volume"])
@@ -272,7 +282,7 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         # extras of this step (all optional)
         hid = z["hid"] if "hid" in z.files else None
         if hid is not None:
-            sel = np.isin(hid, HAIL_IDS)
+            sel = np.isin(hid, hail_ids)
             kk, jj, ii = np.nonzero(sel)
             if len(kk) > hail_cap:
                 pick = rng.choice(len(kk), hail_cap, replace=False)
@@ -281,12 +291,12 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         else:
             hail_pts.append(None)
         tds = first_key(z, "tds", "tds_flag")
-        if tds is not None:
-            kk, jj, ii = np.nonzero(tds > 0) if tds.ndim == 3 else (np.zeros(0, int),) * 3
-            if tds.ndim == 2:
-                jj, ii = np.nonzero(tds > 0)
-                kk = np.zeros_like(jj)
-            tds_pts.append(_round(np.stack([xs[ii], ys[jj], zs[kk]], 1), 2)[:3000])
+        if tds is not None and tds.ndim == 3:
+            kk, jj, ii = np.nonzero(tds > 0)
+            pts = np.stack([xs[ii], ys[jj], zs[kk], tds[kk, jj, ii]], 1)
+            if len(pts) > 3000:
+                pts = pts[np.random.default_rng(5).choice(len(pts), 3000, replace=False)]
+            tds_pts.append(_round(pts, 2))
         else:
             tds_pts.append(None)
         lay = {}
@@ -343,7 +353,6 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         },
         "sites": rsites, "perils": "perils.json",
     }
-    (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
 
     # ── everything else, in the scene frame ──
     line = [line_geometry(colmax[k], xs, ys, (u, v)) for k in range(len(steps))]
@@ -372,13 +381,24 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
                        "s": _round(np.stack([src[:, 0] + lt0, x, y, src[:, 3] / 1000.0, src[:, 4]], 1), 4)})
         p["lma"] = {"flashes": fl, "nSources": int(sum(len(f["s"]) for f in fl))}
         log(f"  LMA: {len(fl)} flashes, {p['lma']['nSources']} sources")
-    # stations
-    p["stations"] = []
-    sts = _load_json(bundle / man["stations"]) if man.get("stations") else None
-    for s in sts or []:
-        x, y = geo.xy(s["lat"], s["lon"])
-        p["stations"].append({"id": s["id"], "name": s.get("name", s["id"]), "type": s.get("type", ""), "x": float(x), "y": float(y), "lat": s["lat"], "lon": s["lon"], "altKm": s.get("alt_m", 0.0) / 1000.0,
-                              "series": read_series(s.get("series")), "events": s.get("events") or s.get("hail_candidates") or []})
+    # stations (with their hail candidate events and drop-size spectra)
+    hail_ev = _load_json(bundle / man["hail_events"]) if man.get("hail_events") else None
+    p["stations"] = convert_stations(_load_json(bundle / man["stations"]) if man.get("stations") else None, geo, bundle, hail_ev)
+    # multi-Doppler winds: the clip's flow files (they make the interpolation follow the observed wind) and the visual layers
+    p["winds"] = []
+    for k, st in enumerate(steps):
+        ref, viz = (None, None)
+        if st.get("winds"):
+            try:
+                ref, viz = convert_winds(bundle / st["winds"], k, out, (lat0, lon0), zs)
+            except Exception as e:  # the movie still works without the winds of a step
+                log(f"  winds step {k}: skipped ({e})")
+        msteps[k]["wind"] = ref
+        p["winds"].append(viz)
+    p["hasWinds"] = any(v for v in p["winds"])
+    p["profiles"] = convert_profiles({n: bundle / f for n, f in (man.get("profiles") or {}).items()})
+    p["science"] = convert_science(_load_json(bundle / man["science_events"]) if man.get("science_events") else None, rel)
+    p["hidLegend"] = man.get("hid_legend")
     # soundings
     p["soundings"] = []
     snd = _load_json(bundle / man["soundings"]) if man.get("soundings") else None
@@ -393,24 +413,13 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         p["soundings"].append({"id": s["id"], "site": s.get("site", s["id"]), "launch": rel(s["launch"]), "launchIso": s["launch"], "x": float(x), "y": float(y), "drift": drift, "levels": levels, "diagnostics": s.get("diagnostics", {})})
     p["environment"] = _load_json(bundle / man["environment"]) if man.get("environment") else None
     # tornadoes and rotation tracks
-    p["tornadoes"] = []
-    for tor in (_load_json(bundle / man["tornadoes"]) if man.get("tornadoes") else None) or []:
-        path = []
-        for q in tor.get("path", []):
-            x, y = geo.xy(q["lat"], q["lon"])
-            path.append({"t": float(q["t_s"]) if "t_s" in q else rel(q["time"]), "x": float(x), "y": float(y)})
-        p["tornadoes"].append({**{k: v for k, v in tor.items() if k not in ("path", "start", "end")}, "path": path})
-    p["rotation"] = []
-    for tr in (_load_json(bundle / man["rotation_tracks"]) if man.get("rotation_tracks") else None) or []:
-        pts = []
-        for q in tr.get("points", []):
-            x, y = geo.xy(q["lat"], q["lon"])
-            pts.append({**{k: v for k, v in q.items() if k not in ("lat", "lon")}, "t": float(q["t_s"]) if "t_s" in q else rel(q["time"]), "x": float(x), "y": float(y)})
-        p["rotation"].append({**{k: v for k, v in tr.items() if k != "points"}, "points": pts})
+    p["tornadoes"] = convert_tornadoes(_load_json(bundle / man["tornadoes"]) if man.get("tornadoes") else None, geo, rel)
+    p["rotation"] = convert_rotation(_load_json(bundle / man["rotation_tracks"]) if man.get("rotation_tracks") else None, geo, rel)
     # MRMS composites
     p["mrms"] = []
     for k, st in enumerate(steps):
         p["mrms"].append(_convert_mrms(bundle, st, k, geo, out) if st.get("mrms") else None)
+    (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     (out / "perils.json").write_text(json.dumps(p))
     log(f"wrote {out} ({len(steps)} steps, {sum(1 for m in p['mrms'] if m)} MRMS frames)")
     return p
