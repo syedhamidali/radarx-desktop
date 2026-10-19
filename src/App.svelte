@@ -14,6 +14,8 @@
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
   import UpdateChip from './lib/components/UpdateChip.svelte';
+  import DataCheckChip from './lib/components/DataCheckChip.svelte';
+  import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
@@ -48,6 +50,7 @@
   const crossDock = lazy(() => import('./lib/components/CrossSectionDock.svelte'));
   const crossDialog = lazy(() => import('./lib/components/CrossSectionDialog.svelte'));
   const palette = lazy(() => import('./lib/components/CommandPalette.svelte'));
+  const dataCheckPanel = lazy(() => import('./lib/components/DataCheckPanel.svelte'));
   const tour = lazy(() => import('./lib/components/OnboardingTour.svelte'));
   const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
@@ -131,6 +134,7 @@
   $effect(() => { if (crossSectionDocked) crossDock.load(); });
   $effect(() => { if ($crossSectionStore.layout === 'modal') crossDialog.load(); });
   $effect(() => { if (commandPaletteVisible) palette.load(); });
+  $effect(() => { if ($dataCheckOpen) dataCheckPanel.load(); });
   $effect(() => { if (onboardingVisible) tour.load(); });
   $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
@@ -1052,6 +1056,7 @@
         <span class="sb-dim">No file loaded. Drag and drop, or {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+O</span>
       {/if}
     </div>
+    <DataCheckChip />
     <UpdateChip />
     <OperationsTray />
     <div class="statusbar-right">
@@ -1073,6 +1078,7 @@
 
   <ToastContainer />
   <UpdateDialog />
+  {#if $dataCheckOpen && dataCheckPanel.component}<dataCheckPanel.component onshowpanel={showPanel} />{/if}
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
@@ -1086,6 +1092,7 @@
     else if (type === 'show-tour') onboardingVisible = true;
     else if (type === 'about') aboutDialogVisible = true;
     else if (type === 'export') showPanel('export');
+    else if (type === 'data-check') openDataCheck();
   }} />
   {/if}
   {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}
