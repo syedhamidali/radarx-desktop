@@ -113,6 +113,8 @@ Python 3.12+; or `pip install -e ".[radarx]"` from `python/`) the app gains `rad
 | `radarx_kdp` | KDP, processed PhiDP or uncertainty field |
 | `radarx_hid` | hydrometeor classification (categorical field + class counts) |
 | `radarx_qpe` | rain-rate field (Z, Z-ZDR, KDP or HID-blended relations) |
+| `hydro_qpe` | hydrology: rain rate with a selectable relation, uncertainty, beam quality and the relation used ({doc}`HYDROLOGY`) |
+| `hydro_basin_rate` | hydrology: area-weighted rain rate over basin polygons from one volume (GeoJSON / shapefile / GeoPackage) |
 | `radarx_dealias` | dealiased velocity / fold-number field |
 | `radarx_shear` | azimuthal shear / radial divergence (LLSD) field |
 | `radarx_couplets` | rotation couplets: table + overlay |

@@ -69,6 +69,8 @@ The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`),
 | | `xrd cells` | storm cells; several files are tracked in time |
 | Combine | `xrd mosaic` | several radars on one map |
 | | `xrd winds` | 3-D winds from two or more radars |
+| Hydrology | `xrd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
+| | `xrd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
 | Save | `xrd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
 | Help | `xrd examples`, `xrd completion` | a tour of commands; shell completion |
 
@@ -273,6 +275,43 @@ wrote winds.png
 `--method variational`, `--dealias auto|always|never` and any further engine option (`-P key=value`)
 are passed to the same code the app uses; warnings of the engine are shown, not hidden. The
 vectors are drawn where at least two radars give a usable crossing angle.
+
+### Hydrology: `qpe` and `basin` (need radarx)
+
+Rainfall from a folder of volumes. Several scans in time are integrated into an accumulation in mm (advection-corrected
+between scans); one volume per radar gives the instantaneous rate. Everything is labelled `RETRIEVED` (a radar estimate)
+or `ADJUSTED` (after gauges); see {doc}`HYDROLOGY` for the equations, references and limits.
+
+```console
+$ xrd qpe -i 'mayfield/KHPX/*_V06' --basins basins.geojson --gauges gauges.csv --gauge-interval-s 1200 \
+          --start 2021-12-11T01:50:00 --end 2021-12-11T02:10:00 --hold-edges-s 300 -o rain.nc -p rain.png
+rainfall accumulation  |  1 radar(s), 4 volume(s)  |  2021-12-11T01:50:00Z to 2021-12-11T02:10:00Z (20.0 min)  |  477 x 469 cells @ 1000 m  |  4.4 s
+  method   hybrid: Z = 300 R^1.4  (R = 0.01701 Z^0.7143) if R(Z) < 6 mm/h; R(Z,ZDR) = 0.0142 Z^0.77 zdr^-1.67 to
+           50 mm/h; R(KDP) = 44 |KDP|^0.822 above (KDP >= 0.3 deg/km); class gated by radarx HID
+  label    ADJUSTED: an estimate, not an observation
+  values   max 19.7 mm  mean 0.14 mm over 166,144 km2  |  max rate 171 mm/h  |  area >= 0.1 mm 15,632 km2
+  uncertainty  median 29 % (1 sigma: relation scatter, calibration; errors fully correlated in time)
+  ...
+  gauges   16 used (16 good records)  |  kriging with external drift
+                             n  rel. bias  RMSE mm  corr   KGE
+  radar (before)            16  -18.2 %       1.42  0.97  0.75
+  adjusted (leave-one-out)  16  -0.3 %        0.75  0.97  0.95
+wrote rain.nc
+wrote rain.png
+```
+
+* `--relation wsr88d|marshall_palmer|tropical|stratiform_east|...` and `--method auto|hybrid|z|kdp|z_zdr|a` choose the
+  estimator (`xrd qpe --list-relations`); `-P zr_a=200 -P zr_b=1.6` a custom Z = a R^b; `--freezing-level-m` excludes the
+  melting layer; `--dem terrain.nc` adds beam blockage and height above ground.
+* `-o .nc` is the CF grid, `.png` the picture plus world file, `.json` the full summary (provenance, statistics, basins,
+  gauge validation, return periods), `.csv` the basin table (and one `<name>_<id>_series.csv` per basin).
+  Without `-o`/`-p`: `qpe_<time>.nc` and `qpe_<time>_map.png`.
+* Gauges are local files (CSV/JSON/NOAA hourly and daily/METAR): `--gauges FILE --adjust mfb|brandes|ked`; the validation
+  (bias, RMSE, correlation, KGE, leave-one-out) is printed and in `--json`. Nothing is downloaded.
+* `xrd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
+  mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
+  with `--frequency table.json`, the return period of the basin-mean depth.
+* A long series is read one file at a time; give `--extent W,S,E,N` so that each file is decoded once.
 
 ### Save: `export`
 

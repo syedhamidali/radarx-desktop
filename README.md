@@ -90,7 +90,7 @@ polar fields, not just reflectivity.
 
 Everything above also runs without the GUI, on the same engine: `xrd info -i FILE`, `xrd plot -i FILE`,
 `xrd run radarx_hid -i FILE --all-sweeps`, `xrd pipeline "Doppler velocity" -i FILE`,
-`xrd mosaic -i F1 F2 F3 -o mosaic.nc -p map.png`, `xrd winds -i F1 F2 ...`, `xrd export -i FILE -o out.zarr`
+`xrd mosaic -i F1 F2 F3 -o mosaic.nc -p map.png`, `xrd winds -i F1 F2 ...`, `xrd qpe -i 'folder/*' -o rain.nc`, `xrd export -i FILE -o out.zarr`
 (see [docs/CLI.md](docs/CLI.md)). From a notebook: `from engine import api; api.open("FILE").run("radarx_hid")`
 (see [docs/API.md](docs/API.md)).
 
@@ -105,6 +105,7 @@ and animation export. Cleaned and derived fields are written into the file next 
   (gzip-wrapped files work as they are)
 - **Cloud data:** open NEXRAD Level II straight from AWS S3, browse the archive, or open ARCO / icechunk data
 - **Mosaics:** grid and merge several radars with radarx
+- **Rainfall:** rain rate and accumulation with a selectable relation (Z-R, KDP, Z-ZDR, hybrid), uncertainty and beam quality, gauge adjustment and validation, basin-average rainfall; labelled as estimates (see [docs/HYDROLOGY.md](docs/HYDROLOGY.md))
 - **Dual-pol:** ZDR, KDP, RhoHV, HID dashboards, scatter plots and histograms
 - **Cross-sections, profiles and time series**, difference between two sweeps or files
 - **Stays responsive:** requests are scheduled and cancellable, and the 3D view lowers its quality on its own if it
