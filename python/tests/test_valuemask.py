@@ -184,7 +184,7 @@ def test_csv_omits_masked_gates_and_says_so(
 def test_volume_exports_mask_only_the_selected_variable(
     synthetic_datatree: xr.DataTree, tmp_path: Path
 ) -> None:
-    """NetCDF / CfRadial2 / Zarr all write ``_netcdf_safe_tree(...)``: check it and that it stores."""
+    """NetCDF / CfRadial2 / Zarr all write ``_netcdf_safe_tree(...)``: check it and it stores."""
     from engine.exporter import _netcdf_safe_tree, _volume_value_masks
 
     options = {"value_masks": {"DBZH": mk("below", 40), "ZDR": mk("above", None, 3)}}
