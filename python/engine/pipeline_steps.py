@@ -21,10 +21,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from scipy import ndimage
 
+from engine._lazy import LazyModule
 from engine.pipeline import StepOutcome, StepSkippedError, WorkingState, step
 from engine.plugins import param
+
+ndimage = LazyModule("scipy.ndimage")  # imported on first use (~150 ms)
 
 # ---------------------------------------------------------------------------
 # Shared helper modules of the built-in plugin modules (loaded by path, like radarx_clean does)

@@ -8,9 +8,11 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from scipy import ndimage
 
+from engine._lazy import LazyModule
 from engine.plugins import ModuleError, Result, module, param, point, polygon
+
+ndimage = LazyModule("scipy.ndimage")  # imported on first use (~150 ms)
 
 MAX_CANDIDATES = 300  # largest regions examined in detail
 MAX_ARCS = 100  # rows / shapes reported
