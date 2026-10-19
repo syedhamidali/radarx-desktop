@@ -15,6 +15,13 @@
   const rows = $derived($layerList);
   const scan = $derived($activeScanTime);
 
+  /** "2022-03-30 00:05 UTC · +12 min" (the active scan itself has no offset); "time unknown" when the engine gave none. */
+  function whenText(r: { id: string; provenance: { valid_time?: string } | null; offset: number | null }): string {
+    const t = r.provenance?.valid_time;
+    if (!t) return 'time unknown';
+    return r.id === `file:${$activeFileId}` ? formatUtc(t) : `${formatUtc(t)} \u00b7 ${formatOffset(r.offset)}`;
+  }
+
   const grouped = $derived.by(() => {
     const out: { group: LayerGroup; items: typeof rows }[] = [];
     for (const r of rows) {
@@ -43,9 +50,7 @@
               <div class="main">
                 <span class="name" title={r.title}>{r.title}</span>
                 <span class="src" title={r.provenance?.source ?? ''}>{r.provenance?.source ?? 'origin not known'}</span>
-                <span class="when mono">
-                  {formatUtc(r.provenance?.valid_time)}{#if r.id !== `file:${$activeFileId}`} · {formatOffset(r.offset)}{/if}
-                </span>
+                <span class="when mono">{whenText(r)}</span>
               </div>
             </li>
           {/each}

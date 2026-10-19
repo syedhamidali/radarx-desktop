@@ -124,9 +124,9 @@
 
 {#snippet numbers()}
   {#if data && diag}
-    <div class="parcels" role="tablist" aria-label="Parcel">
+    <div class="parcels" role="group" aria-label="Parcel">
       {#each PARCEL_KEYS as k (k)}
-        <button role="tab" aria-selected={$selectedParcel === k} class:on={$selectedParcel === k} onclick={() => selectedParcel.set(k)} title={diag.parcel_definitions?.[k]}>{PARCEL_SHORT[k]}</button>
+        <button aria-pressed={$selectedParcel === k} class:on={$selectedParcel === k} onclick={() => selectedParcel.set(k)} title={diag.parcel_definitions?.[k]}>{PARCEL_SHORT[k]}</button>
       {/each}
     </div>
     {#if parcel}
