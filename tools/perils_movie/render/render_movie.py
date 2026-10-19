@@ -118,6 +118,10 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
         except ValueError:
             settings["lookOverrides"][k.strip()] = v.strip()
     perils = {"cloudBaseKm": a.cloud_base_km, "fov": a.fov}
+    if a.title:
+        perils["title"] = a.title
+    if a.subtitle:
+        perils["subtitle"] = a.subtitle
     if a.layers:
         perils["layers"] = {k: float(v) for k, v in (p.split("=") for p in a.layers.split(","))}
     async with async_playwright() as p:
@@ -311,6 +315,11 @@ def main(argv=None) -> None:
     )
     ap.add_argument("--look-preset", default=None)
     ap.add_argument("--set", action="append", default=None, metavar="KEY=VALUE")
+    ap.add_argument("--title", default="PERiLS IOP2: squall line and EF2 tornado", help="title at the top left")
+    ap.add_argument(
+        "--subtitle",
+        default="Mississippi / Alabama, 30 March 2022 local evening · real radar, lightning, surface and sounding data",
+    )
     ap.add_argument("--cloud-base-km", type=float, default=1.0)
     ap.add_argument("--fov", type=float, default=0.0)
     ap.add_argument("--layers", default=None, help="layer switches, e.g. hail=0,flow=1")

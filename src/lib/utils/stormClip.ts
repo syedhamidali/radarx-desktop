@@ -207,6 +207,7 @@ export class StormClip {
   private povNow = { x: 0, y: 0, yawDeg: 0, altKm: 0, rKm: 0 };
   /** Vertical exaggeration of the frame being drawn (a film may change it from shot to shot). */
   private ve = 4;
+  private lookKey = '';
 
   constructor(private container: HTMLElement, private overlay: HTMLCanvasElement) {
     this.ctx = overlay.getContext('2d')!;
@@ -767,6 +768,14 @@ export class StormClip {
     const m = intervalMotion(this.track, st.k);
     r.setMorph(st.s, [0, 0, 0], [0, 0, 0]);
     r.setMorphMotion(this.ts[st.k + 1] - this.ts[st.k], m, this.flowOffset);
+    const exLook = this.ex?.look?.(t);
+    if (exLook) {
+      const key = JSON.stringify(exLook);
+      if (key !== this.lookKey) {
+        this.lookKey = key;
+        this.setLook(exLook);
+      }
+    }
     if (this.realistic) {
       this.updateLight(st.td);
       const fovDeg = (this.look.fov as number) > 0 ? (this.look.fov as number) : this.pov ? 60 : 0;

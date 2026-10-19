@@ -84,13 +84,20 @@ export function drawStripCharts(ctx: CanvasRenderingContext2D, x: number, y: num
     const px = x + 14 * u;
     const pw = w - 28 * u;
     const py = yy + 18 * u;
-    const [lo, hi] = range(c.series.map((q) => q.v), 0.1, c.unit === 'hPa' ? 1.5 : 2);
+    // the range of what is plotted: the window only (the series run some minutes before and after it)
+    const inWin = (vs: (number | null)[]) => vs.map((v, i) => (ts[i] >= 0 && ts[i] <= win ? v : null));
+    const [lo, hi] = range(c.series.map((q) => inWin(q.v)), 0.1, c.unit === 'hPa' ? 1.5 : 2);
     ctx.fillStyle = rgba(ui().panel, 0.35);
     ctx.fillRect(px, py, pw, ch);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(px, py, pw, ch);
+    ctx.clip();
     for (const et of eventTimes) line(ctx, px + (et / win) * pw, py, px + (et / win) * pw, py + ch, 1 * u, rgba(ui().caution, 0.5));
     for (const q of c.series) plot(ctx, ts, q.v, px, py, pw, ch, win, lo, hi, q.col, 1.8 * u);
-    drawText(ctx, hi.toFixed(hi > 100 ? 0 : 1), px - 3 * u, py + 9 * u, u, { size: 10, weight: 500, halo: 0, align: 'right', color: rgba(ui().muted, 1), mono: true });
-    drawText(ctx, lo.toFixed(lo > 100 ? 0 : 1), px - 3 * u, py + ch, u, { size: 10, weight: 500, halo: 0, align: 'right', color: rgba(ui().muted, 1), mono: true });
+    ctx.restore();
+    drawText(ctx, hi.toFixed(hi > 100 ? 0 : 1), px + 3 * u, py + 10 * u, u, { size: 10, weight: 600, halo: 0, align: 'left', color: rgba(ui().dim, 1), mono: true });
+    drawText(ctx, lo.toFixed(lo > 100 ? 0 : 1), px + 3 * u, py + ch - 2 * u, u, { size: 10, weight: 600, halo: 0, align: 'left', color: rgba(ui().dim, 1), mono: true });
     const nx = px + Math.max(0, Math.min(1, td / win)) * pw;
     line(ctx, nx, py - 2 * u, nx, py + ch + 2 * u, 2 * u, rgba(ui().text, 0.95));
     yy += ch + 22 * u + 0;
@@ -237,9 +244,14 @@ export function drawTimeHeight(ctx: CanvasRenderingContext2D, x: number, y: numb
   const ph = h - 62 * u;
   const hTop = th.h[th.h.length - 1];
   const nt = th.t.length;
-  const cw = Math.max(1, pw / nt);
+  const cw = Math.max(1, (pw / Math.max(1, th.t.filter((q) => q >= 0 && q <= win).length)));
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(px, py, pw, ph);
+  ctx.clip();
   for (let i = 0; i < nt; i++) {
     const t = th.t[i];
+    if (t < 0 || t > win) continue;
     const X = px + (t / win) * pw;
     for (let k = 0; k < th.h.length; k++) {
       const code = f.codes[i]?.[k] ?? 0;
@@ -252,6 +264,7 @@ export function drawTimeHeight(ctx: CanvasRenderingContext2D, x: number, y: numb
       ctx.fillRect(X, y0, cw + 0.6, y1 - y0 + 0.6);
     }
   }
+  ctx.restore();
   const nx = px + Math.max(0, Math.min(1, td / win)) * pw;
   line(ctx, nx, py - 2 * u, nx, py + ph + 2 * u, 2 * u, rgba(ui().text, 0.95));
   drawText(ctx, `${(hTop / 1000).toFixed(1)} km`, px - 4 * u, py + 9 * u, u, { size: 10, weight: 500, halo: 0, align: 'right', mono: true, color: rgba(ui().muted, 1) });

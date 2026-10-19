@@ -298,7 +298,7 @@ def plan_shots(
             u = np.clip((t - (tor_c - 12.0)) / 24.0, 0, 1)
             # a safe distance AHEAD of the tornado (the line is behind it), orbiting slowly
             ang = np.radians(scene.perp_deg) + np.radians(-35.0 + 70.0 * smoothstep(u))
-            dist = 9.0 - 2.0 * np.sin(u * math.pi)
+            dist = 7.0 - 1.5 * np.sin(u * math.pi)
             P = q + col(dist) * np.stack([np.sin(ang), np.cos(ang)], -1)
             return P, 0.55 + 0.9 * smoothstep(u), q, _pad(0.8, len(t))
 
@@ -432,6 +432,8 @@ def nearest_station(stations: list[dict], x: float, y: float, z_km: float) -> st
     """Id of the station nearest to the eye (3-D distance in km, stations on the ground)."""
     best, bd = None, 1e18
     for s in stations:
+        if s.get("moving"):
+            continue  # a vehicle is not a place to stand
         d = math.sqrt((s["x"] - x) ** 2 + (s["y"] - y) ** 2 + (z_km - 0.0) ** 2)
         if d < bd:
             best, bd = s["id"], d
@@ -591,6 +593,8 @@ def pick_station(scene: Scene, tl: dict, t0: float, t1: float) -> dict | None:
     tor = [t for t in scene.p.get("tornadoes", []) if len(t.get("path", [])) >= 2]
     path = np.array([[q["x"], q["y"]] for q in tor[0]["path"]]) if tor else None
     for s in sts:
+        if s.get("moving"):
+            continue
         arr = scene.station_arrival(s)
         if arr is None:
             continue

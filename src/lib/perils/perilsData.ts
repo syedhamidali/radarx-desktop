@@ -38,6 +38,19 @@ export interface Station {
   events: { t_s?: number; kind?: string; max_d_mm?: number; n_large?: number; mean_d_large_mm?: number; mean_fall_ms_large?: number; [k: string]: unknown }[];
   dsd?: Dsd;
   credit?: string | null;
+  /** A vehicle: not a fixed point; it is drawn where it was but is not the station nearest the camera. */
+  moving?: boolean;
+  /** Track of a vehicle: [t (s), x km, y km]. */
+  track?: number[][];
+  typeLong?: string;
+}
+
+/** Position (km) of a station at data time `t`: along its track for a vehicle, else the fixed place. */
+export function stationXY(st: Station, t: number): [number, number] {
+  const tr = st.track;
+  if (!tr || tr.length < 2) return [st.x, st.y];
+  const ts = tr.map((q) => q[0]);
+  return [lerpAt(ts, tr.map((q) => q[1]), t), lerpAt(ts, tr.map((q) => q[2]), t)];
 }
 
 /** A time-height field (MRR, wind profiler): 8-bit codes (0 = missing) between `min` and `max`; rows are times, columns heights. */
@@ -223,18 +236,60 @@ export function codeValue(code: number, min: number, max: number): number | null
 
 // ─── soundings ──────────────────────────────────────────────────────────────
 
-/** The sounding whose launch is nearest in time to data time `t`, with the offset (launch - t, seconds). */
-export function nearestSounding(snds: SoundingRec[], t: number): { snd: SoundingRec; offsetS: number } | null {
+/**
+ * The sounding to show at data time `t`: the one whose launch is nearest in time, with the offset (launch - t,
+ * seconds). With a `centre` (km) a far sounding counts less: the score is the hours between launch and `t` plus the
+ * distance of the launch site from the centre in units of 60 km (a sounding 60 km away is as good as one launched an
+ * hour earlier).
+ */
+export function nearestSounding(snds: SoundingRec[], t: number, centre?: [number, number]): { snd: SoundingRec; offsetS: number } | null {
   let best: SoundingRec | null = null;
   let bd = Infinity;
   for (const s of snds) {
-    const d = Math.abs(s.launch - t);
+    const d = Math.abs(s.launch - t) / 3600 + (centre ? Math.hypot(s.x - centre[0], s.y - centre[1]) / 60 : 0);
     if (d < bd) {
       bd = d;
       best = s;
     }
   }
   return best ? { snd: best, offsetS: best.launch - t } : null;
+}
+
+/** One sounding's environment numbers of the bundle's environment.json (engine diagnostics at the launch site). */
+export interface EnvSounding {
+  id: string;
+  site: string;
+  launch: string;
+  launch_t_s: number;
+  x_km?: [number, number];
+  sbcape?: number | null;
+  sbcin?: number | null;
+  mlcape?: number | null;
+  mucape?: number | null;
+  lcl_agl_m?: number | null;
+  lfc_agl_m?: number | null;
+  shear_0_1km_ms?: number | null;
+  shear_0_6km_ms?: number | null;
+  srh_0_1km_right_m2s2?: number | null;
+  srh_0_3km_right_m2s2?: number | null;
+  freezing_level_asl_m?: number | null;
+  minus10_level_asl_m?: number | null;
+  minus20_level_asl_m?: number | null;
+}
+
+/** The environment sounding with numbers that is nearest in time (and, with `centre`, place) to data time `t`; same score as `nearestSounding`. */
+export function pickEnvSounding(list: EnvSounding[], t: number, centre?: [number, number]): EnvSounding | null {
+  let best: EnvSounding | null = null;
+  let bd = Infinity;
+  for (const e of list) {
+    if (typeof e.sbcape !== 'number' && typeof e.mlcape !== 'number') continue;
+    const d = Math.abs(e.launch_t_s - t) / 3600 + (centre && e.x_km ? Math.hypot(e.x_km[0] - centre[0], e.x_km[1] - centre[1]) / 60 : 0);
+    if (d < bd) {
+      bd = d;
+      best = e;
+    }
+  }
+  return best;
 }
 
 /** Balloon position (x, y, height km) at time `t` from the drift track, or null outside the flight. */

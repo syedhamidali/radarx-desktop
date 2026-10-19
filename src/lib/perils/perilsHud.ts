@@ -51,7 +51,7 @@ export interface HudModel {
   vis: (id: string) => number;
   yawDeg: number;
   tanX: number;
-  env: Record<string, unknown> | null;
+  env: EnvPanel | null;
   legendKinds: ProvKind[];
   credits: string;
   shots: { name: string; label: string; t0: number; t1: number }[];
@@ -163,32 +163,30 @@ export function drawLmaPanel(ctx: CanvasRenderingContext2D, W: number, u: number
   return y + h + 10 * u;
 }
 
-const ENV_KEYS: [string, string, string, number][] = [
-  ['cape_jkg', 'CAPE', 'J/kg', 0],
-  ['cin_jkg', 'CIN', 'J/kg', 0],
-  ['shear06_ms', '0-6 km shear', 'm/s', 0],
-  ['srh01_m2s2', '0-1 km SRH', 'm²/s²', 0],
-  ['freezing_level_m', 'freezing level', 'm', 0],
-  ['lcl_m', 'LCL', 'm', 0],
-];
+/** A small panel of labelled numbers with its provenance chip. */
+export interface EnvPanel {
+  title: string;
+  prov: ProvKind;
+  rows: [string, string][];
+  note?: string;
+}
 
-/** The environment of the storm (ERA5 / model / analysis values from the bundle), small. */
-export function drawEnvPanel(ctx: CanvasRenderingContext2D, W: number, u: number, y: number, env: Record<string, unknown> | null, a: number): number {
-  if (a <= 0.02 || !env) return y;
-  const rows = ENV_KEYS.filter(([k]) => typeof env[k] === 'number');
-  if (!rows.length) return y;
+/** The environment of the storm (the radiosonde nearest in time and place, numbers from the engine's diagnostics), small. */
+export function drawEnvPanel(ctx: CanvasRenderingContext2D, W: number, u: number, y: number, env: EnvPanel | null, a: number): number {
+  if (a <= 0.02 || !env || !env.rows.length) return y;
   const w = 330 * u;
-  const h = (44 + rows.length * 21) * u;
+  const h = (50 + env.rows.length * 21 + (env.note ? 18 : 0)) * u;
   const x = W - 34 * u - w;
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
-  const cls = (['model', 'analysis', 'observed', 'retrieved'].includes(String(env.class)) ? env.class : 'analysis') as ProvKind;
-  chip(ctx, cls, x + 12 * u, y + 30 * u, u, `${PROV[cls].short} · environment`, 13);
-  rows.forEach(([k, name, unit], i) => {
-    drawText(ctx, name, x + 14 * u, y + (58 + i * 21) * u, u, { size: 15, weight: 500, color: rgba(ui().dim, 1), halo: 0 });
-    drawText(ctx, `${Math.round(env[k] as number)} ${unit}`, x + w - 14 * u, y + (58 + i * 21) * u, u, { size: 15, weight: 700, mono: true, align: 'right', halo: 0 });
+  chip(ctx, env.prov, x + 12 * u, y + 30 * u, u, PROV[env.prov].short, 12);
+  drawText(ctx, fit(ctx, env.title, w - 140 * u, u, { size: 13, weight: 600 }), x + w - 12 * u, y + 26 * u, u, { size: 13, weight: 600, align: 'right', halo: 0, color: rgba(ui().dim, 1) });
+  env.rows.forEach(([k, v], i) => {
+    drawText(ctx, k, x + 14 * u, y + (58 + i * 21) * u, u, { size: 15, weight: 500, color: rgba(ui().dim, 1), halo: 0 });
+    drawText(ctx, v, x + w - 14 * u, y + (58 + i * 21) * u, u, { size: 15, weight: 700, mono: true, align: 'right', halo: 0 });
   });
+  if (env.note) drawText(ctx, env.note, x + 14 * u, y + h - 10 * u, u, { size: 11, weight: 500, color: rgba(ui().muted, 1), halo: 0 });
   ctx.restore();
   return y + h + 10 * u;
 }
@@ -277,20 +275,29 @@ export function drawCaption(ctx: CanvasRenderingContext2D, W: number, H: number,
   const a = m.vis('captions');
   if (a <= 0.02) return;
   const cx = W / 2;
-  const w = Math.min(W * 0.52, 980 * u);
-  const baseY = H - 168 * u;
+  const w = Math.min(W * 0.56, 1060 * u);
+  const baseY = H - 150 * u;
   ctx.save();
   ctx.globalAlpha = a;
   if (m.caption && m.caption.alpha > 0.02) {
     const c = m.caption;
-    const lines = wrapText(c.text, 92);
-    const h = (46 + lines.length * 22) * u;
+    const data = c.numbers ? wrapText(c.numbers, 112) : [];
+    const lines = wrapText(c.text, 112);
+    const h = (44 + (data.length + lines.length) * 21 + (data.length && lines.length ? 4 : 0)) * u;
     ctx.globalAlpha = a * c.alpha;
-    panel(ctx, cx - w / 2, baseY - h, w, h, u, 0.66);
+    panel(ctx, cx - w / 2, baseY - h, w, h, u, 0.7);
     const cw = chip(ctx, c.prov, cx - w / 2 + 14 * u, baseY - h + 32 * u, u, undefined, 13);
     drawText(ctx, c.title, cx - w / 2 + 14 * u + cw + 12 * u, baseY - h + 28 * u, u, { size: 20, weight: 700, halo: 0 });
-    if (c.numbers) drawText(ctx, c.numbers, cx + w / 2 - 14 * u, baseY - h + 28 * u, u, { size: 16, weight: 600, mono: true, align: 'right', halo: 0, color: rgba(ui().caution, 1) });
-    lines.forEach((ln, i) => drawText(ctx, ln, cx - w / 2 + 14 * u, baseY - h + (54 + i * 22) * u, u, { size: 16, weight: 500, halo: 0, color: rgba(ui().text, 0.95) }));
+    let yy = baseY - h + 54 * u;
+    data.forEach((ln) => {
+      drawText(ctx, ln, cx - w / 2 + 14 * u, yy, u, { size: 15, weight: 600, halo: 0, color: rgba(ui().caution, 1) });
+      yy += 21 * u;
+    });
+    if (data.length && lines.length) yy += 4 * u;
+    lines.forEach((ln) => {
+      drawText(ctx, ln, cx - w / 2 + 14 * u, yy, u, { size: 15, weight: 500, halo: 0, color: rgba(ui().text, 0.95) });
+      yy += 21 * u;
+    });
   } else if (m.sees) {
     ctx.globalAlpha = a * 0.95;
     drawText(ctx, m.sees, cx, baseY - 6 * u, u, { size: 18, weight: 600, align: 'center', color: rgba(ui().text, 0.95) });
@@ -336,7 +343,7 @@ export function drawLegend(ctx: CanvasRenderingContext2D, W: number, H: number, 
   let x = (W - total) / 2;
   const y = H - 60 * u;
   for (const k of kinds) x += chip(ctx, k, x, y, u, undefined, 12) + 8 * u;
-  drawText(ctx, m.credits, W / 2, H - 22 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
+  drawText(ctx, fit(ctx, m.credits, W * 0.9, u, { size: 12, weight: 500 }), W / 2, H - 22 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
   drawText(ctx, `Vertical scale ×${m.vexag.toFixed(1)} · flat ground, no terrain · cloud look and lighting STYLISED, echo position and strength are radar data`, W / 2, H - 40 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
 }
 

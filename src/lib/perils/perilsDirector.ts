@@ -139,10 +139,11 @@ export class Director {
 }
 
 /** Id of the station nearest to the eye (3-D distance, km; stations stand on the flat ground). Ties: first. */
-export function nearestStation<T extends { id: string; x: number; y: number }>(stations: T[], eye: [number, number, number]): T | null {
+export function nearestStation<T extends { id: string; x: number; y: number; moving?: boolean }>(stations: T[], eye: [number, number, number]): T | null {
   let best: T | null = null;
   let bd = Infinity;
   for (const s of stations) {
+    if (s.moving) continue; // a vehicle is not a place to stand
     const d = Math.hypot(s.x - eye[0], s.y - eye[1], eye[2]);
     if (d < bd) {
       bd = d;

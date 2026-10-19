@@ -661,7 +661,9 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         {n: bundle / f for n, f in (man.get("profiles") or {}).items()}
     )
     p["science"] = convert_science(
-        _load_json(bundle / man["science_events"]) if man.get("science_events") else None, rel
+        _load_json(bundle / man["science_events"]) if man.get("science_events") else None,
+        rel,
+        geo,
     )
     p["hidLegend"] = man.get("hid_legend")
     # soundings
@@ -693,7 +695,11 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     p["environment"] = _load_json(bundle / man["environment"]) if man.get("environment") else None
     # tornadoes and rotation tracks
     p["tornadoes"] = convert_tornadoes(
-        _load_json(bundle / man["tornadoes"]) if man.get("tornadoes") else None, geo, rel
+        _load_json(bundle / man["tornadoes"]) if man.get("tornadoes") else None,
+        geo,
+        rel,
+        window_s=times_s[-1],
+        bounds_km=float(max(abs(xs[0]), abs(xs[-1]), abs(ys[0]), abs(ys[-1]))) + 40.0,
     )
     p["rotation"] = convert_rotation(
         _load_json(bundle / man["rotation_tracks"]) if man.get("rotation_tracks") else None,

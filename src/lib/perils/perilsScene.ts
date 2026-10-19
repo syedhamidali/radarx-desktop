@@ -10,7 +10,7 @@
  */
 import type { OverlayCam } from './clipExtras';
 import {
-  type PerilsData, type Station, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, tornadoAt, clockUtc,
+  type PerilsData, type RotationTrack, type Station, type TornadoRec, balloonAt, heightOfTemp, nearestSounding, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
 } from './perilsData.ts';
 import { type RGB, drawText, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR, GRAUPEL_COLOUR } from './perilsStyle.ts';
 import { recentHail } from './perilsInsets.ts';
@@ -26,6 +26,8 @@ export interface SceneEnv {
   tc: number;
   data: PerilsData;
   nearestStation: string | null;
+  /** Centre of the line (km) at this time. */
+  centre: [number, number];
   /** Index of the observed step nearest in time. */
   nearStep: number;
 }
@@ -116,12 +118,14 @@ export function drawStations(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
   for (const s of e.data.stations) {
-    const base = pj(cam, s.x, s.y, 0, e.ve);
+    if (s.moving && !s.track) continue; // a vehicle without a track has no place to draw
+    const [sx, sy] = stationXY(s, e.td);
+    const base = pj(cam, sx, sy, 0, e.ve);
     if (!onScreen(base, cam.w, cam.h, 120)) continue;
     const d = base[2];
     const near = s.id === e.nearestStation;
     const hKm = Math.max(0.1, d * 0.022);
-    const top = pj(cam, s.x, s.y, hKm, e.ve);
+    const top = pj(cam, sx, sy, hKm, e.ve);
     const ro = stationReadout(s, e.td);
     const rain = ro.rain ?? 0;
     const col = near ? ui().text : provColour('observed');
@@ -130,7 +134,7 @@ export function drawStations(e: SceneEnv, a: number): void {
     // rain ring on the ground
     const rKm = Math.max(0.25, d * 0.009) * (0.7 + Math.min(2.2, Math.sqrt(rain) / 3));
     if (rain > 0.2) {
-      polyline(ctx, groundCircle(cam, s.x, s.y, rKm, e.ve), true);
+      polyline(ctx, groundCircle(cam, sx, sy, rKm, e.ve), true);
       ctx.fillStyle = rgba([60, 140, 255], Math.min(0.45, 0.12 + rain / 120));
       ctx.fill();
       ctx.strokeStyle = rgba([120, 190, 255], 0.9);
@@ -141,7 +145,7 @@ export function drawStations(e: SceneEnv, a: number): void {
     if (ro.windMs != null && ro.windDir != null && ro.windMs > 0.5) {
       const to = ((ro.windDir + 180) * Math.PI) / 180;
       const L = Math.max(0.5, d * 0.014) * (0.6 + ro.windMs / 18);
-      const tip = pj(cam, s.x + L * Math.sin(to), s.y + L * Math.cos(to), 0.01, e.ve);
+      const tip = pj(cam, sx + L * Math.sin(to), sy + L * Math.cos(to), 0.01, e.ve);
       if (tip) {
         ctx.strokeStyle = rgba([255, 255, 255], 0.9);
         ctx.lineWidth = 2.2 * u;
@@ -163,7 +167,7 @@ export function drawStations(e: SceneEnv, a: number): void {
     const hail = recentHail(s, e.td, 25);
     if (hail) {
       const f = hail.age / 25;
-      polyline(ctx, groundCircle(cam, s.x, s.y, rKm * (1.5 + 3 * f), e.ve), true);
+      polyline(ctx, groundCircle(cam, sx, sy, rKm * (1.5 + 3 * f), e.ve), true);
       ctx.strokeStyle = rgba(HAIL_COLOUR, 0.9 * (1 - f));
       ctx.lineWidth = 3 * u;
       ctx.stroke();
@@ -188,8 +192,9 @@ export function drawStations(e: SceneEnv, a: number): void {
         ctx.arc(top[0], top[1], 12 * u, 0, Math.PI * 2);
         ctx.stroke();
       }
-      if (d < 140 || near) {
-        const txt = near && ro.rain != null ? `${s.id}  ${ro.rain.toFixed(1)} mm/h${ro.dm != null ? `  Dm ${ro.dm.toFixed(1)} mm` : ''}` : s.id;
+      if (d < 25 || near) {
+        const short = s.id.slice(s.id.lastIndexOf('_') + 1);
+        const txt = near && ro.rain != null ? `${short}  ${ro.rain.toFixed(1)} mm/h${ro.dm != null ? `  Dm ${ro.dm.toFixed(1)} mm` : ''}` : short;
         drawText(ctx, txt, top[0] + 10 * u, top[1] - 6 * u, u, { size: near ? 17 : 14, color: rgba(col, 1) });
       }
     }
@@ -341,6 +346,7 @@ export function drawFunnel(e: SceneEnv, a: number, cloudBaseKm: number): void {
 export function drawRotation(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
+  const now: { tr: RotationTrack; cur: NonNullable<ReturnType<typeof rotationAt>> }[] = [];
   for (const tr of e.data.rotation) {
     if (!tr.points.length) continue;
     ctx.save();
@@ -349,39 +355,49 @@ export function drawRotation(e: SceneEnv, a: number): void {
     const trail = tr.points.filter((p) => p.t <= e.td).map((p) => pj(cam, p.x, p.y, 0.06, e.ve));
     if (trail.length > 1) {
       polyline(ctx, trail);
-      ctx.strokeStyle = rgba(ROTATION_COLOUR, 0.35);
-      ctx.lineWidth = 9 * u;
+      ctx.strokeStyle = rgba(ROTATION_COLOUR, 0.3);
+      ctx.lineWidth = 8 * u;
       ctx.stroke();
       polyline(ctx, trail);
-      ctx.strokeStyle = rgba(ROTATION_COLOUR, 0.85);
-      ctx.lineWidth = 2 * u;
+      ctx.strokeStyle = rgba(ROTATION_COLOUR, 0.8);
+      ctx.lineWidth = 1.8 * u;
       ctx.stroke();
     }
     const cur = rotationAt(tr, e.td, 90);
     if (cur) {
+      now.push({ tr, cur });
       const v = typeof cur.vrot_ms === 'number' ? cur.vrot_ms : 20;
-      const hKm = 2.6;
       const b = pj(cam, cur.x, cur.y, 0.05, e.ve);
-      const t = pj(cam, cur.x, cur.y, hKm, e.ve);
+      const t = pj(cam, cur.x, cur.y, 1.6, e.ve);
       if (b && t) {
-        const k = Math.max(0.35, Math.min(1, v / 40));
+        const k = Math.max(0.3, Math.min(1, v / 40));
         const g = ctx.createLinearGradient(b[0], b[1], t[0], t[1]);
         g.addColorStop(0, rgba(ROTATION_COLOUR, 0.95 * k));
         g.addColorStop(1, rgba(ROTATION_COLOUR, 0.05));
         ctx.strokeStyle = g;
-        ctx.lineWidth = (4 + 6 * k) * u;
+        ctx.lineWidth = (3 + 5 * k) * u;
         ctx.beginPath();
         ctx.moveTo(b[0], b[1]);
         ctx.lineTo(t[0], t[1]);
         ctx.stroke();
-        ctx.strokeStyle = rgba([255, 255, 255], 0.8 * k);
-        ctx.lineWidth = 1.5 * u;
+        ctx.strokeStyle = rgba([255, 255, 255], 0.7 * k);
+        ctx.lineWidth = 1.3 * u;
         ctx.stroke();
-        drawText(ctx, `rotation ${v.toFixed(0)} m/s${tr.radar ? ` · ${tr.radar}` : ''}`, t[0] + 10 * u, t[1], u, { size: 15, color: rgba(ROTATION_COLOUR, 1) });
       }
     }
     ctx.restore();
   }
+  // only the three strongest are named, so that a line of mesovortices does not turn into a wall of text
+  now.sort((x, y) => ((y.cur.vrot_ms as number) ?? 0) - ((x.cur.vrot_ms as number) ?? 0));
+  ctx.save();
+  ctx.globalAlpha = a;
+  for (const { tr, cur } of now.slice(0, 3)) {
+    const t = pj(cam, cur.x, cur.y, 1.6, e.ve);
+    if (!onScreen(t, cam.w, cam.h)) continue;
+    const v = typeof cur.vrot_ms === 'number' ? cur.vrot_ms : 0;
+    drawText(ctx, `rotation ${v.toFixed(0)} m/s${tr.radar ? ` · ${tr.radar}` : ''}`, t[0] + 10 * u, t[1], u, { size: 15, color: rgba(ROTATION_COLOUR, 1) });
+  }
+  ctx.restore();
 }
 
 /** Tornadic debris signature: radar cells flagged by low RhoHV with high reflectivity (RETRIEVED), as a small magenta cloud. */
@@ -567,6 +583,36 @@ export function drawWinds(e: SceneEnv, a: number): void {
   ctx.restore();
 }
 
+/** A pulsing ring and a label at the place of the science event on screen (ground, km). `a` fades it in and out with its caption. */
+export function drawEventMarker(e: SceneEnv, a: number, x: number, y: number, label: string, colour: RGB): void {
+  if (a <= 0.02) return;
+  const { ctx, cam, u } = e;
+  const base = pj(cam, x, y, 0.05, e.ve);
+  if (!onScreen(base, cam.w, cam.h, 200)) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  const d = base[2];
+  for (let k = 0; k < 3; k++) {
+    const f = (e.tc * 0.7 + k / 3) % 1;
+    const rKm = Math.max(0.6, d * 0.012) * (1 + 5 * f);
+    polyline(ctx, groundCircle(cam, x, y, rKm, e.ve), true);
+    ctx.strokeStyle = rgba(colour, 0.9 * (1 - f));
+    ctx.lineWidth = 3 * u;
+    ctx.stroke();
+  }
+  const top = pj(cam, x, y, Math.max(0.8, d * 0.03), e.ve);
+  if (top) {
+    ctx.strokeStyle = rgba(colour, 0.95);
+    ctx.lineWidth = 2.4 * u;
+    ctx.beginPath();
+    ctx.moveTo(base[0], base[1]);
+    ctx.lineTo(top[0], top[1]);
+    ctx.stroke();
+    drawText(ctx, label, top[0] + 10 * u, top[1] - 4 * u, u, { size: 16, weight: 700, color: rgba(colour, 1) });
+  }
+  ctx.restore();
+}
+
 // ─── cold pool ──────────────────────────────────────────────────────────────
 
 /**
@@ -608,13 +654,30 @@ export function drawColdPool(e: SceneEnv, a: number, segs: number[][]): void {
 export function drawBalloons(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
-  // the isotherm ticks are labelled for the sounding nearest in time only
-  let nearest: PerilsData['soundings'][number] | null = null;
-  for (const s of e.data.soundings) if (s.levels && (!nearest || Math.abs(s.launch - e.td) < Math.abs(nearest.launch - e.td))) nearest = s;
+  // one sounding in full: the one the Skew-T shows (nearest in time and place); the others are small dots
+  const nearest = nearestSounding(e.data.soundings.filter((q) => q.levels), e.td, e.centre)?.snd ?? null;
   for (const s of e.data.soundings) {
     ctx.save();
     ctx.globalAlpha = a;
     const base = pj(cam, s.x, s.y, 0, e.ve);
+    if (s !== nearest) {
+      if (onScreen(base, cam.w, cam.h, 20)) {
+        ctx.beginPath();
+        ctx.arc(base[0], base[1], 3.2 * u, 0, Math.PI * 2);
+        ctx.fillStyle = rgba(provColour('observed'), 0.55);
+        ctx.fill();
+      }
+      const bb = balloonAt(s, e.td);
+      const pb = bb ? pj(cam, bb[0], bb[1], bb[2], e.ve) : null;
+      if (pb) {
+        ctx.beginPath();
+        ctx.arc(pb[0], pb[1], 5 * u, 0, Math.PI * 2);
+        ctx.fillStyle = rgba([255, 255, 255], 1);
+        ctx.fill();
+      }
+      ctx.restore();
+      continue;
+    }
     if (onScreen(base, cam.w, cam.h, 100)) {
       const top = pj(cam, s.x, s.y, 12, e.ve);
       if (top) {
@@ -639,17 +702,17 @@ export function drawBalloons(e: SceneEnv, a: number): void {
         ctx.moveTo(p[0] - 9 * u, p[1]);
         ctx.lineTo(p[0] + 9 * u, p[1]);
         ctx.stroke();
-        if (s === nearest) drawText(ctx, `${name} ${hk.toFixed(1)} km`, p[0] + 13 * u, p[1] + 5 * u, u, { size: 13, color: rgba(provColour('observed'), 1) });
+        drawText(ctx, `${name} ${hk.toFixed(1)} km`, p[0] + 13 * u, p[1] + 5 * u, u, { size: 13, color: rgba(provColour('observed'), 1) });
       }
-      drawText(ctx, `${s.site} · launch ${clockUtc(e.data.time0, s.launch)}`, base[0] + 10 * u, base[1] + 18 * u, u, { size: 14, color: rgba(provColour('observed'), 1) });
+      drawText(ctx, `${s.site} sounding · launch ${clockUtc(e.data.time0, s.launch)} UTC`, base[0] + 10 * u, base[1] + 18 * u, u, { size: 14, color: rgba(provColour('observed'), 1) });
     }
     // the balloon track: ascended part solid, the rest faint
     if (s.drift.length > 1) {
       const past = s.drift.filter((q) => q[0] <= e.td).map((q) => pj(cam, q[1], q[2], q[3], e.ve));
       const all = s.drift.map((q) => pj(cam, q[1], q[2], q[3], e.ve));
       polyline(ctx, all);
-      ctx.strokeStyle = rgba(provColour('observed'), 0.18);
-      ctx.lineWidth = 1.5 * u;
+      ctx.strokeStyle = rgba(provColour('observed'), 0.3);
+      ctx.lineWidth = 1.6 * u;
       ctx.stroke();
       polyline(ctx, past);
       ctx.strokeStyle = rgba(provColour('observed'), 0.9);
@@ -679,8 +742,7 @@ export function drawBalloons(e: SceneEnv, a: number): void {
 export function drawIsotherms(e: SceneEnv, a: number, centre: [number, number], radiusKm: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
-  let best: PerilsData['soundings'][number] | null = null;
-  for (const s of e.data.soundings) if (s.levels && (!best || Math.abs(s.launch - e.td) < Math.abs(best.launch - e.td))) best = s;
+  const best = nearestSounding(e.data.soundings.filter((q) => q.levels), e.td, e.centre)?.snd ?? null;
   if (!best) return;
   ctx.save();
   ctx.globalAlpha = a * 0.7;

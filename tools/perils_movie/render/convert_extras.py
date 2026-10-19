@@ -29,8 +29,15 @@ def _num(v):
 # ── tornadoes ───────────────────────────────────────────────────────────────
 
 
-def convert_tornadoes(raw, geo, rel) -> list[dict]:
-    """Survey records: ``path`` points are [t_s, lat, lon] or {t_s, lat, lon}; ``path_kind`` says how they were made."""
+def convert_tornadoes(
+    raw, geo, rel, window_s: float | None = None, bounds_km: float | None = None
+) -> list[dict]:
+    """Survey records: ``path`` points are [t_s, lat, lon] or {t_s, lat, lon}; ``path_kind`` says how they were made.
+
+    The survey of a whole day lists many tornadoes. With ``window_s`` and ``bounds_km`` only those that are alive
+    inside the window AND have a point inside the shown area (+- ``bounds_km`` around the origin) are kept, the one
+    with the longest time inside the window first.
+    """
     if isinstance(raw, dict):
         raw = raw.get("tornadoes", [])
     out = []
@@ -54,7 +61,17 @@ def convert_tornadoes(raw, geo, rel) -> list[dict]:
         keep["path_interpolated"] = (
             "interpolated" in str(tor.get("path_kind", "")).lower() or tor.get("path_kind") is None
         )
+        if window_s is not None and path:
+            ts = [q["t"] for q in path]
+            inside_t = min(ts[-1], window_s) - max(ts[0], 0.0)
+            near = bounds_km is None or any(
+                abs(q["x"]) <= bounds_km and abs(q["y"]) <= bounds_km for q in path
+            )
+            if inside_t < 0 or not near:
+                continue
+            keep["seconds_in_window"] = max(0.0, inside_t)
         out.append({**keep, "path": path})
+    out.sort(key=lambda t: -t.get("seconds_in_window", 0.0))
     return out
 
 
@@ -128,6 +145,23 @@ def _series(s):
     return out
 
 
+_KIND = (
+    ("PIPS", "PIPS disdrometer"),
+    ("StickNet", "StickNet"),
+    ("RaDAPS", "RaDAPS station"),
+    ("Mesonet", "mobile mesonet"),
+    ("FARM", "FARM Parsivel"),
+)
+
+
+def station_label(sid: str, typ: str) -> tuple[str, str]:
+    """A readable name and a short kind for a station id like ``StickNet_0102A``."""
+    kind = next(
+        (k for pre, k in _KIND if sid.startswith(pre)), (typ or "station").split(" (")[0][:28]
+    )
+    return sid.replace("_", " "), kind
+
+
 def convert_stations(raw, geo, bundle: Path, hail_events, log=print) -> list[dict]:
     if isinstance(raw, dict):
         raw = raw.get("stations", [])
@@ -139,10 +173,13 @@ def convert_stations(raw, geo, bundle: Path, hail_events, log=print) -> list[dic
     out = []
     for s in raw or []:
         x, y = geo.xy(s["lat"], s["lon"])
+        label, kind = station_label(str(s["id"]), s.get("type", ""))
         rec = {
             "id": str(s["id"]),
-            "name": s.get("name", s["id"]),
-            "type": s.get("type", ""),
+            "name": s.get("name", label),
+            "type": kind,
+            "typeLong": s.get("type", ""),
+            "moving": bool(s.get("moving")),
             "x": float(x),
             "y": float(y),
             "lat": s["lat"],
@@ -156,6 +193,29 @@ def convert_stations(raw, geo, bundle: Path, hail_events, log=print) -> list[dic
             d = convert_dsd(bundle / s["dsd"])
             if d:
                 rec["dsd"] = d
+        ser = s.get("series") or {}
+        if ser.get("lat") and ser.get("lon") and ser.get("t_s"):
+            # a vehicle: its track (every 10 s), and it counts as moving if it covers more than 2 km
+            lat = np.asarray([np.nan if v is None else v for v in ser["lat"]], float)
+            lon = np.asarray([np.nan if v is None else v for v in ser["lon"]], float)
+            ts = np.asarray(ser["t_s"], float)
+            ok = np.isfinite(lat) & np.isfinite(lon)
+            if ok.sum() > 2:
+                tx, ty = geo.xy(lat[ok], lon[ok])
+                keep = np.arange(
+                    0,
+                    int(ok.sum()),
+                    max(1, int(round(10.0 / max(1e-6, np.median(np.diff(ts[ok])))))),
+                )
+                rec["track"] = [
+                    [round(float(ts[ok][i]), 1), round(float(tx[i]), 3), round(float(ty[i]), 3)]
+                    for i in keep
+                ]
+                span = float(np.hypot(np.ptp(tx), np.ptp(ty)))
+                rec["moving"] = rec["moving"] or span > 2.0
+                rec["trackSpanKm"] = round(span, 2)
+        # the series that the page does not draw as such (the position of a vehicle) are not repeated
+        rec["series"] = {k: v for k, v in rec["series"].items() if k not in ("lat", "lon")}
         out.append(rec)
     return out
 
@@ -316,8 +376,36 @@ def convert_profiles(files: dict, geo=None, site=None, max_cols: int = 600) -> d
 # ── science events ──────────────────────────────────────────────────────────
 
 
-def convert_science(raw, rel) -> list[dict]:
-    """science_events.json -> events {t_s, kind, title?, numbers[], text?, class?, lat?, lon?}."""
+_KIND_ALIAS = {
+    "gust_front_passage": "gust_front",
+    "first_lma_flash": "first_flash",
+    "lma_rate": "flash_rate",
+    "tornado_survey": "tornado",
+    "rear_inflow_candidate": "rear_inflow_jet",
+    "low_level_vorticity_maximum": "vorticity",
+    "updraft_maximum": "updraft",
+    "tornado_radar_rotation": "rotation",
+    "low_level_convergence": "convergence",
+}
+
+
+def science_kind(kind: str, evidence: dict) -> str:
+    """The film's name of a data event kind (the data tool's ``hail_signature`` covers three different things)."""
+    if kind == "hail_signature":
+        if "zdr_column_max_km_series" in evidence:
+            return "zdr_column"
+        if "mesh_max_mm" in evidence:
+            return "hail"
+        return "debris_signature"
+    return _KIND_ALIAS.get(kind, kind)
+
+
+def convert_science(raw, rel, geo=None) -> list[dict]:
+    """science_events.json -> events {t_s, kind, caption, class, where, x, y, evidence numbers}.
+
+    Only events inside the window are kept (``in_window`` is false for context outside it). ``caption`` is the
+    data tool's own sentence with its numbers; the film adds one sentence of physics per kind (perilsCaptions.ts).
+    """
     if raw is None:
         return []
     items = raw.get("events", raw) if isinstance(raw, dict) else raw
@@ -325,25 +413,36 @@ def convert_science(raw, rel) -> list[dict]:
     for e in items:
         if not isinstance(e, dict):
             continue
+        if e.get("in_window") is False:
+            continue
         t = _num(e.get("t_s"))
         if t is None and e.get("time"):
             t = rel(e["time"])
         if t is None:
             continue
+        ev = e.get("evidence") if isinstance(e.get("evidence"), dict) else {}
         nums = e.get("numbers")
-        if nums is None and isinstance(e.get("values"), dict):
-            nums = [f"{k} {v}" for k, v in e["values"].items()]
         if isinstance(nums, dict):
             nums = [f"{k} {v}" for k, v in nums.items()]
+        x, y = _num(ev.get("x_km")), _num(ev.get("y_km"))
+        if (x is None or y is None) and geo is not None and _num(ev.get("lat")) is not None and _num(ev.get("lon")) is not None:
+            gx, gy = geo.xy(ev["lat"], ev["lon"])
+            x, y = float(gx), float(gy)
+        cls = str(e.get("class") or e.get("provenance") or "")
         out.append(
             {
                 "t_s": t,
-                "kind": str(e.get("kind") or e.get("type") or "event"),
+                "kind": science_kind(str(e.get("kind") or e.get("type") or "event"), ev),
+                "kindRaw": str(e.get("kind") or e.get("type") or "event"),
                 "title": e.get("title"),
+                "caption": e.get("caption"),
                 "numbers": [str(n) for n in (nums or [])],
                 "text": e.get("text") or e.get("summary"),
-                "class": e.get("class") or e.get("provenance"),
-                "where": e.get("where") or e.get("station"),
+                "class": "retrieved" if cls.startswith("candidate") else cls.split(" ")[0] if cls else None,
+                "candidate": cls.startswith("candidate"),
+                "where": e.get("where") or e.get("station") or ev.get("station"),
+                "x": x,
+                "y": y,
                 "lat": _num(e.get("lat")),
                 "lon": _num(e.get("lon")),
             }

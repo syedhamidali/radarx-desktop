@@ -72,6 +72,8 @@ export interface ClipExtras {
   prepare(api: ClipApi): Promise<void>;
   /** The square (km) the ground covers: larger than the volume's box to show the ground map beyond it; null = the volume's box. */
   cropBox?(): { xMin: number; xMax: number; yMin: number; yMax: number } | null;
+  /** Look settings (keys of docs/REALISTIC_3D.md) for this clip time, on top of the loaded look; null = unchanged. */
+  look?(t: number): Record<string, number> | null;
   /** Called before each frame is drawn (set the ground, the flash light ...). */
   beforeFrame?(info: FrameInfo): void;
   /** Light of the lightning for the 3-D scene at this frame (scene km, z already exaggerated). */

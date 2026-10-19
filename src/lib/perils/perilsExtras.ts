@@ -11,18 +11,19 @@ import '../styles/provenance.css';
 import type { ClipApi, ClipExtras, ExtrasPose, FrameInfo, OverlayCam } from './clipExtras';
 import { COLORMAP_DATA } from '../utils/colormaps';
 import {
-  type PerilsData, type ProvKind, nearestSounding, observedStepAt, seriesAt, stationReadout, tornadoAt, rotationAt, interpWeights,
+  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, observedStepAt, seriesAt, stationReadout, tornadoAt, rotationAt, interpWeights,
 } from './perilsData';
 import { Director, type CamEntry, type TimelineFile, nearestStation } from './perilsDirector';
-import { LayerVis, type LayerId } from './perilsLayers';
+import { LayerVis, crossfade, type LayerId } from './perilsLayers';
 import { GroundComposer, contourSegments, type PixelFn } from './perilsGround';
 import { decodeSurface, sampleGrid, blendFields, tempColour, coldPoolLevel, swathUpTo, type SurfaceMeta } from './perilsSurface';
 import { compileFlashes, flashFrame, flashesInWindow, lightFrom, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
-import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, type SceneEnv } from './perilsScene';
+import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
 import { drawStripCharts, drawDsdInset, drawTimeHeight, drawRainStreaks } from './perilsInsets';
-import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, drawStationCard, drawTornadoCard, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
-import { activeEvent, captionAlpha, captionOf, type ScienceEvent } from './perilsCaptions';
+import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
+import { activeCaption, captionAlpha, captionOf, scheduleCaptions, type ScheduledCaption, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
+import { provColour } from './perilsStyle';
 import { fmtOffset, clockUtc } from './perilsData';
 
 export interface PerilsOptions {
@@ -30,6 +31,9 @@ export interface PerilsOptions {
   layers?: Partial<Record<LayerId, number>>;
   lma?: Partial<LmaParams>;
   lmaColourBy?: 'time' | 'power';
+  /** Title and subtitle at the top left (default: the bundle's). */
+  title?: string;
+  subtitle?: string;
   /** Cloud base height (km) of the stylised funnel. */
   cloudBaseKm?: number;
   /** Fov of the first-person camera, degrees. */
@@ -62,6 +66,7 @@ export class PerilsExtras implements ClipExtras {
   private lma: LmaParams;
   private lmaNow: FlashFrame = { sprites: [], links: [], active: 0 };
   private events: ScienceEvent[] = [];
+  private sched: ScheduledCaption[] = [];
   private lut: Uint8Array = new Uint8Array(768);
   private frameNo = 0;
   private insetEl: HTMLDivElement | null = null;
@@ -83,6 +88,7 @@ export class PerilsExtras implements ClipExtras {
     for (const [k, v] of Object.entries(opts.layers ?? {})) this.vis.set(k as LayerId, v);
     this.lma = { ...LMA_DEFAULTS, ...(opts.lma ?? {}) };
     this.events = ((data.science as ScienceEvent[] | undefined) ?? []).slice().sort((a, b) => a.t_s - b.t_s);
+    this.sched = scheduleCaptions(this.events, (td) => director.clipTimeOfData(td), director.duration);
     if (data.lma) {
       this.flashes = compileFlashes(data.lma.flashes, (td) => director.clipTimeOfData(td));
       this.maxDur = longestFlash(this.flashes);
@@ -113,6 +119,16 @@ export class PerilsExtras implements ClipExtras {
   cropBox(): { xMin: number; xMax: number; yMin: number; yMax: number } | null {
     const g = this.ground?.spec;
     return g ? { xMin: g.cx - g.half, xMax: g.cx + g.half, yMin: g.cy - g.half, yMax: g.cy + g.half } : null;
+  }
+
+  /**
+   * The echo threshold of the stylised look changes with the shot (24 dBZ in the wide views, 36 in the tornado shot, where
+   * the whole domain is raining and the strong cores must stand out of the haze). A display choice, said on screen; the
+   * data are not changed. Quantised to 1 dBZ so that the transfer function is rebuilt rarely.
+   */
+  look(t: number): Record<string, number> | null {
+    const c = crossfade(this.director.tl.shots, [24, 30, 36, 30, 28, 24], t);
+    return { lowDbzCutoff: Math.round(c) };
   }
 
   async prepare(api: ClipApi): Promise<void> {
@@ -227,7 +243,7 @@ export class PerilsExtras implements ClipExtras {
       metaA: ia >= 0 ? this.data.mrms[ia] : null, metaB: ib >= 0 ? this.data.mrms[ib] : null,
       codesA: ia >= 0 ? this.mrmsCodes[ia] : null, codesB: ib >= 0 ? this.mrmsCodes[ib] : null,
       s: w.s, dt: mo ? mo.dt_s : 1, motion: mo ? [mo.dx_km / mo.dt_s, mo.dy_km / mo.dt_s] : [0, 0],
-      box, lut: this.lut, vmin: this.api.g0.vmin, vmax: this.api.g0.vmax, gain: this.vis.at('mrms', info.t),
+      box, lut: this.lut, vmin: this.api.g0.vmin, vmax: this.api.g0.vmax, gain: 0.6 * this.vis.at('mrms', info.t),
       under: this.surfaceLayer(k, w.s, this.vis.at('surfaceModels', info.t)),
       over: this.swathLayer(w.s < 0.5 ? k : k + 1, this.vis.at('rotation', info.t)),
     });
@@ -306,12 +322,11 @@ export class PerilsExtras implements ClipExtras {
   drawScene(ctx: CanvasRenderingContext2D, cam: OverlayCam, info: FrameInfo): void {
     const u = cam.h / 1080;
     this.lastTanX = cam.tanX;
+    const centre = this.stormCentre(info.td);
     const env: SceneEnv = {
-      ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), nearStep: this.nearStep(info.td),
+      ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, nearStep: this.nearStep(info.td),
     };
     const v = (id: LayerId) => this.vis.at(id, info.t);
-    const tr = this.data.track;
-    const centre: [number, number] = tr.length ? [this.interp(tr, info.td, 'x'), this.interp(tr, info.td, 'y')] : [0, 0];
     drawIsotherms(env, v('isotherms'), centre, 55);
     drawTornadoTrack(env, v('tornadoTrack'));
     drawRadars(env, v('radars'));
@@ -320,6 +335,12 @@ export class PerilsExtras implements ClipExtras {
     drawHail(env, v('hail'));
     drawWinds(env, v('flow'));
     drawColdPool(env, v('surfaceModels'), this.coldPoolSegments(info.td));
+    // where the science event on screen happened (when the data gives a place)
+    const sc = activeCaption(this.sched, info.t);
+    if (sc && typeof sc.ev.x === 'number' && typeof sc.ev.y === 'number') {
+      const cap = captionOf(sc.ev);
+      drawEventMarker(env, captionAlpha(info.t, sc.t0, sc.hold), sc.ev.x, sc.ev.y, cap.title, provColour(cap.prov));
+    }
     drawTds(env, v('rotation'));
     drawRotation(env, v('rotation'));
     drawStations(env, v('stations'));
@@ -379,13 +400,9 @@ export class PerilsExtras implements ClipExtras {
       tornado = { rating: tor.rating ?? 'Tornado', active: !!cur, vrotMs: vrot, radar, resolutionM: res, debris: tds, widthM: tor.width_m ?? null, interpolated: !!cur && cur.interpolated };
     }
     // caption: the science event on screen, else the feature in view
-    const ev = activeEvent(this.events, (t) => this.director.clipTimeOfData(t), info.t);
+    const sc = activeCaption(this.sched, info.t);
     let caption: HudModel['caption'] = null;
-    if (ev) {
-      const c = captionOf(ev);
-      const c0 = this.director.clipTimeOfData(ev.t_s);
-      caption = { ...c, alpha: captionAlpha(info.t, c0, ev.hold_s ?? 7) };
-    }
+    if (sc) caption = { ...captionOf(sc.ev), alpha: captionAlpha(info.t, sc.t0, sc.hold) };
     const nowFlash = this.lmaNow.active;
     let sees = '';
     if (tornado?.active) sees = `${tornado.rating} tornado on the ground (surveyed path)${tornado.vrotMs != null ? ` · radar rotation ${tornado.vrotMs.toFixed(0)} m/s` : ''}`;
@@ -395,12 +412,12 @@ export class PerilsExtras implements ClipExtras {
     const sources = d.sources ?? [];
     const highUp = info.eye[2] / Math.max(info.vexag, 1e-3) > 3.0; // the ground colours matter from above
     const gc = (d.ground as { credit?: string } | undefined)?.credit;
-    const credits = [sources.length ? `Data: ${sources.map((s) => s.name).join(' · ')}` : '', gc ?? ''].filter(Boolean).join(' · ');
+    const credits = [sources.length ? `Data: ${sources.length} datasets and instruments, credited in the closing card` : '', gc ?? ''].filter(Boolean).join(' · ');
     return {
-      data: d, title: d.title || 'PERiLS', subtitle: d.case || '', td, tc: info.t, duration: this.director.duration, speedup: this.director.speedup(info.t), shotLabel: this.director.shotAt(info.t).label,
+      data: d, title: this.opts.title ?? (d.title || 'PERiLS'), subtitle: this.opts.subtitle ?? (d.case || ''), td, tc: info.t, duration: this.director.duration, speedup: this.director.speedup(info.t), shotLabel: this.director.shotAt(info.t).label,
       observed: obs, interval: { k: w.k, s: w.s }, motionNote,
       flash: { perMin: flashesInWindow(this.firstTimes, td, 60), series, binS, total: this.firstTimes.length, nowIdx: Math.min(series.length - 1, Math.floor(td / binS)) },
-      station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: d.environment,
+      station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: this.envPanel(td),
       legendKinds: ['observed', 'model', 'analysis', 'retrieved', 'interpolated', 'stylised'], credits, shots: this.director.tl.shots, layersOn: [], vexag: info.vexag,
       groundKey: {
         temp: highUp && this.surf.some(Boolean) && this.vis.at('surfaceModels', info.t) > 0.12 ? this.tRange : null,
@@ -411,6 +428,47 @@ export class PerilsExtras implements ClipExtras {
   }
 
   private lastTanX = 0.7;
+
+  /** Centre of the line at data time `td` (km), from the pseudo-track of the echo motion. */
+  private stormCentre(td: number): [number, number] {
+    const tr = this.data.track;
+    return tr.length ? [this.interp(tr, td, 'x'), this.interp(tr, td, 'y')] : [0, 0];
+  }
+
+  /**
+   * The environment panel: the numbers of the radiosonde nearest in time and place (engine diagnostics at its launch
+   * site, OBSERVED; there is no model or reanalysis field in this bundle), or a flat set of values (the synthetic bundle).
+   */
+  private envPanel(td: number): EnvPanel | null {
+    const env = this.data.environment as Record<string, unknown> | null;
+    if (!env) return null;
+    const fmt = (v: unknown, unit: string, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(d)} ${unit}` : null);
+    const list = env.soundings as EnvSounding[] | undefined;
+    if (Array.isArray(list)) {
+      const e = pickEnvSounding(list, td, this.stormCentre(td));
+      if (!e) return null;
+      const rows = ([
+        ['surface-based CAPE', fmt(e.sbcape, 'J/kg')],
+        ['mixed-layer CAPE', fmt(e.mlcape, 'J/kg')],
+        ['LCL', fmt(e.lcl_agl_m, 'm AGL')],
+        ['0-6 km shear', fmt(e.shear_0_6km_ms, 'm/s')],
+        ['0-1 km helicity', fmt(e.srh_0_1km_right_m2s2, 'm²/s²')],
+        ['freezing level', typeof e.freezing_level_asl_m === 'number' ? `${(e.freezing_level_asl_m / 1000).toFixed(1)} km` : null],
+      ] as [string, string | null][]).filter((r): r is [string, string] => r[1] !== null);
+      const dt = e.launch_t_s - td;
+      return { title: `${e.site} sonde ${clockUtc(this.data.time0, e.launch_t_s).slice(0, 5)} UTC`, prov: 'observed', rows, note: `launched ${fmtOffset(dt)} from now; not at the storm` };
+    }
+    const flat = ([
+      ['CAPE', fmt(env.cape_jkg, 'J/kg')],
+      ['CIN', fmt(env.cin_jkg, 'J/kg')],
+      ['0-6 km shear', fmt(env.shear06_ms, 'm/s')],
+      ['0-1 km SRH', fmt(env.srh01_m2s2, 'm²/s²')],
+      ['freezing level', fmt(env.freezing_level_m, 'm')],
+      ['LCL', fmt(env.lcl_m, 'm')],
+    ] as [string, string | null][]).filter((r): r is [string, string] => r[1] !== null);
+    const cls = (['model', 'analysis', 'observed', 'retrieved'].includes(String(env.class)) ? env.class : 'analysis') as ProvKind;
+    return flat.length ? { title: 'environment', prov: cls, rows: flat } : null;
+  }
 
   drawHud(ctx: CanvasRenderingContext2D, W: number, H: number, info: FrameInfo): void {
     const u = H / 1080;
@@ -463,7 +521,7 @@ export class PerilsExtras implements ClipExtras {
   private updateInset(info: FrameInfo, top: number, alpha: number): void {
     const el = this.insetEl;
     if (!el) return;
-    const near = nearestSounding(this.data.soundings.filter((s) => s.levels), info.td);
+    const near = nearestSounding(this.data.soundings.filter((s) => s.levels), info.td, this.stormCentre(info.td));
     if (!near || alpha <= 0.02) {
       el.style.opacity = '0';
       return;
