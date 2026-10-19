@@ -16,6 +16,8 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
+from xarray.backends import BackendArray
+from xarray.core import indexing
 
 logger = logging.getLogger(__name__)
 
@@ -93,22 +95,75 @@ def mask_variable(v: xr.DataArray) -> xr.DataArray:
     those are; arrays without such an encoding (synthetic data, already-masked data) are returned
     unchanged.
     """
-    enc = v.encoding
-    scale, offset, dtype = enc.get("scale_factor"), enc.get("add_offset"), enc.get("dtype")
-    if scale is None or offset is None or dtype is None or v.dtype.kind != "f":
+    params = _no_echo_params(v)
+    if params is None:
         return v
-    try:
-        if np.dtype(dtype).kind != "u":
-            return v
-    except TypeError:
-        return v
-    scale, offset = float(scale), float(offset)
-    if scale == 0.0 or not np.isfinite(scale) or not np.isfinite(offset):
-        return v
+    offset, scale = params
     tol = 0.25 * abs(scale)
     vals = v.variable
     bad = (abs(vals - offset) <= tol) | (abs(vals - (offset + scale)) <= tol)
     return v.where(~bad, other=np.nan).assign_attrs(v.attrs)
+
+
+def _no_echo_params(v: xr.DataArray) -> tuple[float, float] | None:
+    """``(offset, scale)`` when *v* is an integer-encoded moment with no-echo codes, else None."""
+    enc = v.encoding
+    scale, offset, dtype = enc.get("scale_factor"), enc.get("add_offset"), enc.get("dtype")
+    if scale is None or offset is None or dtype is None or v.dtype.kind != "f":
+        return None
+    try:
+        if np.dtype(dtype).kind != "u":
+            return None
+    except TypeError:
+        return None
+    scale, offset = float(scale), float(offset)
+    if scale == 0.0 or not np.isfinite(scale) or not np.isfinite(offset):
+        return None
+    return offset, scale
+
+
+class _LazyMasked(BackendArray):
+    """:func:`mask_variable` applied on read: the same values, but only for what is touched."""
+
+    def __init__(self, var: xr.Variable, offset: float, scale: float) -> None:
+        self._var = var
+        self._offset = offset
+        self._scale = scale
+        self.shape = var.shape
+        self.dtype = var.dtype
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        return indexing.explicit_indexing_adapter(
+            key, self.shape, indexing.IndexingSupport.OUTER, self._load
+        )
+
+    def _load(self, key: tuple) -> np.ndarray:
+        vals = np.asarray(self._var[key].values)
+        tol = 0.25 * abs(self._scale)
+        bad = (abs(vals - self._offset) <= tol) | (abs(vals - (self._offset + self._scale)) <= tol)
+        out = vals.copy()
+        out[bad] = np.nan
+        return out
+
+
+def mask_variable_lazy(v: xr.DataArray) -> xr.DataArray:
+    """:func:`mask_variable` that decodes and masks when the values are first read.
+
+    Identical values, attributes and coordinates to the eager version; nothing is read until
+    needed, and the result is cached after the first full read.
+    """
+    params = _no_echo_params(v)
+    if params is None:
+        return v
+    data = indexing.MemoryCachedArray(indexing.LazilyIndexedArray(_LazyMasked(v.variable, *params)))
+    return xr.DataArray(xr.Variable(v.dims, data, v.attrs), coords=v.coords, name=v.name)
+
+
+def lazy_mask_below_threshold(ds: xr.Dataset) -> xr.Dataset:
+    """:func:`mask_below_threshold` where each moment is masked only when it is first read."""
+    masked = {name: mask_variable_lazy(v) for name, v in ds.data_vars.items() if v.ndim >= 2}
+    changed = {k: m for k, m in masked.items() if m is not ds[k]}
+    return ds.assign(changed) if changed else ds
 
 
 def mask_below_threshold(ds: xr.Dataset, only: Iterable[str] | None = None) -> xr.Dataset:

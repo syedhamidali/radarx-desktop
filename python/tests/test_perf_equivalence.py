@@ -15,8 +15,13 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from engine import exporter, mosaic
-from engine.reader import RadarReader, mask_below_threshold, mask_variable
+from engine import exporter, mosaic, plugins
+from engine.reader import (
+    RadarReader,
+    lazy_mask_below_threshold,
+    mask_below_threshold,
+    mask_variable,
+)
 from engine.volume import extract_volume
 
 PYTHON_DIR = Path(__file__).resolve().parent.parent
@@ -115,6 +120,39 @@ def test_mask_only_matches_full_mask_for_the_chosen_variable():
 def test_mask_variable_unchanged_without_encoding():
     da = xr.DataArray(np.array([[1.0, np.nan], [-33.0, 5.0]]), dims=("azimuth", "range"))
     assert mask_variable(da) is da
+
+
+def test_lazy_masking_is_identical_to_eager_masking():
+    tree = make_tree()
+    for name in ("sweep_0", "sweep_1"):
+        ds = tree.children[name].to_dataset()
+        eager, lazy = mask_below_threshold(ds), lazy_mask_below_threshold(ds)
+        assert lazy.identical(eager)
+        for var in eager.data_vars:
+            assert np.array_equal(lazy[var].values, eager[var].values, equal_nan=True)
+            assert lazy[var].dtype == eager[var].dtype
+        part = lazy["DBZH"].isel(azimuth=slice(5, 25), range=[1, 4, 9])
+        assert np.array_equal(
+            part.values,
+            eager["DBZH"].isel(azimuth=slice(5, 25), range=[1, 4, 9]).values,
+            equal_nan=True,
+        )
+        assert float(lazy["DBZH"].mean()) == float(eager["DBZH"].mean())
+    plain = xr.DataArray(np.ones((3, 4)), dims=("azimuth", "range"), name="a")
+    assert lazy_mask_below_threshold(xr.Dataset({"a": plain}))["a"].identical(plain)
+
+
+def test_module_context_tree_equals_the_eagerly_masked_tree():
+    tree = make_tree()
+    ctx = plugins.ModuleContext(
+        tree, 0, get_sweep_dataset=lambda i: tree[f"sweep_{i}"].to_dataset()
+    )
+    lazy = ctx.datatree
+    for name in ("sweep_0", "sweep_1", "sweep_2"):
+        eager = mask_below_threshold(tree.children[name].to_dataset())
+        assert lazy.children[name].to_dataset().identical(eager)
+    # the reader's own tree is never modified
+    assert not np.isnan(tree.children["sweep_0"].to_dataset()["ZDR"].values).any()
 
 
 def test_reader_get_sweep_dataset_only():

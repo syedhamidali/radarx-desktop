@@ -171,14 +171,17 @@ def _apply_overrides(
 
 
 def _masked_copy(tree: xr.DataTree) -> xr.DataTree:
-    """Shallow copy of *tree* whose 2-D moments have the no-echo codes masked (see reader)."""
-    from engine.reader import mask_below_threshold
+    """Shallow copy of *tree* whose 2-D moments have the no-echo codes masked (see reader).
+
+    The masking happens when a moment is first read, so a module only pays for what it uses.
+    """
+    from engine.reader import lazy_mask_below_threshold
 
     try:
         out = tree.copy(deep=False)
         for node in out.subtree:
             if any(v.ndim >= 2 for v in node.to_dataset().data_vars.values()):
-                node.dataset = mask_below_threshold(node.to_dataset())
+                node.dataset = lazy_mask_below_threshold(node.to_dataset())
         return out
     except Exception as exc:  # pragma: no cover - never block a module on masking
         logger.debug("could not mask the volume: %s", exc)
