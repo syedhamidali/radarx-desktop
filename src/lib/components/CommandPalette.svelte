@@ -133,7 +133,7 @@
       const elev = s.elevation != null ? s.elevation.toFixed(1) : '?';
       actions.push({
         id: `sweep-${s.index}`,
-        label: `Select Sweep ${s.index} (${elev}\u00B0)`,
+        label: s.kind === 'rhi' ? `Select RHI ${s.azimuth?.toFixed(1) ?? '?'}\u00B0 (sweep ${s.index})` : `Select Sweep ${s.index} (${elev}\u00B0)`,
         category: 'Sweeps',
         icon: '\u{1F4E1}',
         action: () => {

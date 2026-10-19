@@ -5,11 +5,27 @@
    * changed, only how it is drawn; the settings are remembered and shared by every view of the section.
    */
   import { smoothingStore, setSmoothing } from '../stores/crossSectionSmoothing';
-  import { NO_SMOOTHING, isPlain, MAX_SIGMA, type Interp } from '../utils/crossSectionRaster';
+  import { NO_SMOOTHING, isPlain, MAX_SIGMA, type Interp, type Smoothing } from '../utils/crossSectionRaster';
 
-  let { compact = false }: { compact?: boolean } = $props();
+  /**
+   * By default it edits the shared cross-section setting. Another view (the RHI display) passes its
+   * own `value` and `onChange` to reuse the same controls for settings of its own; `uid` keeps the
+   * element ids apart when two are on screen.
+   */
+  let {
+    compact = false,
+    value = undefined,
+    onChange = undefined,
+    uid = 'cs',
+  }: {
+    compact?: boolean;
+    value?: Smoothing;
+    onChange?: (patch: Partial<Smoothing>) => void;
+    uid?: string;
+  } = $props();
 
-  const s = $derived($smoothingStore);
+  const s = $derived(value ?? $smoothingStore);
+  const apply = (patch: Partial<Smoothing>) => (onChange ? onChange(patch) : setSmoothing(patch));
   const plain = $derived(isPlain(s));
   const INTERPS: { id: Interp; label: string; hint: string }[] = [
     { id: 'nearest', label: 'Nearest', hint: 'Blocky gates, exactly as measured' },
@@ -24,14 +40,14 @@
     <div class="sm-seg">
       {#each INTERPS as o (o.id)}
         <button class:on={s.interp === o.id} aria-pressed={s.interp === o.id} title={o.hint}
-                onclick={() => setSmoothing({ interp: o.id })} data-testid="cs-interp-{o.id}">{o.label}</button>
+                onclick={() => apply({ interp: o.id })} data-testid="cs-interp-{o.id}">{o.label}</button>
       {/each}
     </div>
   </div>
   <div class="sm-row">
-    <label class="sm-label" for="cs-sigma{compact ? '-c' : ''}">Gaussian</label>
-    <input id="cs-sigma{compact ? '-c' : ''}" type="range" min="0" max={MAX_SIGMA} step="0.5" value={s.sigma}
-           oninput={(e) => setSmoothing({ sigma: Number(e.currentTarget.value) })}
+    <label class="sm-label" for="{uid}-sigma{compact ? '-c' : ''}">Gaussian</label>
+    <input id="{uid}-sigma{compact ? '-c' : ''}" type="range" min="0" max={MAX_SIGMA} step="0.5" value={s.sigma}
+           oninput={(e) => apply({ sigma: Number(e.currentTarget.value) })}
            title="Smoothing strength in gate lengths; 0 = off. Missing data is ignored, so echo edges keep their level and shape."
            data-testid="cs-sigma" />
     <span class="sm-val">{s.sigma > 0 ? `${s.sigma} gate${s.sigma === 1 ? '' : 's'}` : 'off'}</span>
@@ -42,10 +58,10 @@
       {#each [1, 2, 3, 4] as u (u)}
         <button class:on={s.upsample === u} aria-pressed={s.upsample === u}
                 title={u === 1 ? 'One sample per gate' : `${u}× finer than the radar gates`}
-                onclick={() => setSmoothing({ upsample: u })} data-testid="cs-up-{u}">{u}&times;</button>
+                onclick={() => apply({ upsample: u })} data-testid="cs-up-{u}">{u}&times;</button>
       {/each}
     </div>
-    <button class="sm-reset" disabled={plain} onclick={() => setSmoothing(NO_SMOOTHING)} title="Back to the gates as measured">Reset</button>
+    <button class="sm-reset" disabled={plain} onclick={() => apply(NO_SMOOTHING)} title="Back to the gates as measured">Reset</button>
   </div>
 </div>
 

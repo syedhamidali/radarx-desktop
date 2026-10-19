@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { sweepLabel } from '../utils/rhiGeometry';
   import { onMount, onDestroy, untrack } from 'svelte';
   import { processingProgress, radarData, connectionStatus, selectedVariable, selectedSweep } from '../stores/radarData';
   import { wsManager } from '../utils/websocket';
@@ -366,7 +367,7 @@
         <label for="retrieval-sweep">Sweep</label>
         <select id="retrieval-sweep" bind:value={retrievalSweep} disabled={!canProcess || retrievalRunning} on:change={() => (retrievalResult = null)}>
           {#each sweeps as s, i}
-            <option value={i}>Sweep {i}{s.elevation != null ? ` (${s.elevation.toFixed(1)}\u00B0)` : ''}</option>
+            <option value={i}>{s.kind === 'rhi' ? sweepLabel(s) : `Sweep ${i}${s.elevation != null ? ` (${s.elevation.toFixed(1)}\u00B0)` : ''}`}</option>
           {/each}
         </select>
       </div>
@@ -430,7 +431,7 @@
         <label for="stat-sweep">Sweep</label>
         <select id="stat-sweep" bind:value={statSweep} disabled={!canProcess || statRunning} on:change={() => (statResult = null)}>
           {#each sweeps as s, i}
-            <option value={i}>Sweep {i}{s.elevation != null ? ` (${s.elevation.toFixed(1)}\u00B0)` : ''}</option>
+            <option value={i}>{s.kind === 'rhi' ? sweepLabel(s) : `Sweep ${i}${s.elevation != null ? ` (${s.elevation.toFixed(1)}\u00B0)` : ''}`}</option>
           {/each}
         </select>
       </div>

@@ -4,6 +4,15 @@ export interface SweepInfo {
   index: number;
   elevation: number | null;
   variables?: string[];
+  /** 'rhi' for a range-height scan (fixed azimuth, rays differ in elevation); 'ppi' otherwise. */
+  kind?: 'ppi' | 'rhi';
+  /** RHI only: azimuth of the scan plane, degrees. */
+  azimuth?: number;
+  /** RHI only: lowest / highest ray elevation (deg), ray count, and radar altitude ASL (m) when known. */
+  elevation_min?: number;
+  elevation_max?: number;
+  n_rays?: number;
+  altitude?: number;
 }
 
 export interface RadarDataState {

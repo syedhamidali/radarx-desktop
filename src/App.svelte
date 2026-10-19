@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack, tick } from 'svelte';
+  import PpiOnlyNotice from './lib/components/PpiOnlyNotice.svelte';
   import DataInspector from './lib/components/DataInspector.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
   import WorkspaceSwitcher from './lib/components/WorkspaceSwitcher.svelte';
@@ -51,6 +52,8 @@
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
   const totalSweeps = $derived($radarData.sweeps.length);
+  /** Every sweep of the file is a range-height scan: nothing for the 3D volume to stack. */
+  const rhiOnly = $derived($radarData.sweeps.length > 0 && $radarData.sweeps.every((s) => s.kind === 'rhi'));
   const currentSweep = $derived($selectedSweep);
   const variableCount = $derived($radarData.variables.length);
   const progress = $derived($processingProgress);
@@ -980,7 +983,9 @@
               <crossDock.component />
             {/if}
           {:else if viewMode === '3d'}
-            {#if viewer3d.component}<viewer3d.component />{/if}
+            {#if rhiOnly}
+              <PpiOnlyNotice title="3D needs PPI sweeps" />
+            {:else if viewer3d.component}<viewer3d.component />{/if}
           {:else}
             {#if dualPol.component}<dualPol.component />{/if}
           {/if}

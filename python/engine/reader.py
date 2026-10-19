@@ -20,6 +20,8 @@ import xarray as xr
 from xarray.backends import BackendArray
 from xarray.core import indexing
 
+from engine import rhi
+
 logger = logging.getLogger(__name__)
 
 # The netCDF-C / HDF5 libraries behind most radar formats are not safe for several threads opening
@@ -747,6 +749,8 @@ class RadarReader:
         self._format: str | None = None
         # (tree, n_children, [sweep nodes]) — rebuilt when the tree object changes
         self._nodes_cache: tuple[xr.DataTree, int, list[xr.DataTree]] | None = None
+        # (tree, ["ppi" | "rhi" per sweep]) -- see sweep_kinds()
+        self._kinds_cache: tuple[xr.DataTree, list[str]] | None = None
         # ARCO lazy-loading state (reset by ``_commit`` whenever a new file is opened)
         self._arco_session: Any = None
         self._arco_scan_key: str | None = None
@@ -1199,6 +1203,23 @@ class RadarReader:
                 da.load()
         return mask_variable(da)
 
+    def sweep_kinds(self) -> list[str]:
+        """Scan type of every sweep, ``"ppi"`` or ``"rhi"`` (cached per tree; ``[]`` if no file)."""
+        tree = self._dtree
+        if tree is None:
+            return []
+        cached = self._kinds_cache
+        if cached is not None and cached[0] is tree:
+            return cached[1]
+        kinds: list[str] = []
+        for node in self._sweep_nodes():
+            try:
+                kinds.append("rhi" if rhi.is_rhi(node.to_dataset()) else "ppi")
+            except Exception:  # never let scan-type detection break a request
+                kinds.append("ppi")
+        self._kinds_cache = (tree, kinds)
+        return kinds
+
     @property
     def datatree(self) -> xr.DataTree | None:
         """Access the underlying DataTree (may be None if no file is open)."""
@@ -1214,6 +1235,7 @@ class RadarReader:
 
     def _reset_caches(self) -> None:
         self._nodes_cache = None
+        self._kinds_cache = None
         self._arco_session = None
         self._arco_scan_key = None
         self._arco_sweep_names = []
@@ -1304,8 +1326,10 @@ class RadarReader:
         for idx, node in enumerate(sweep_nodes):
             elevation: float | None = None
             sweep_vars: list[str] | None = None
+            scan_fields: dict[str, Any] = {"kind": "ppi"}
             try:
                 ds = ds0 if idx == 0 and ds0 is not None else node.to_dataset()
+                scan_fields = rhi.describe_sweep(ds)  # kind 'ppi' | 'rhi' (+ plane azimuth, span)
                 elevation = _finite_or_none(_sweep_elevation(ds))
                 # Per-sweep variable list: from real data_vars or stored attrs
                 if ds.data_vars:
@@ -1315,6 +1339,7 @@ class RadarReader:
             except Exception as exc:
                 logger.debug("Could not read metadata of sweep %d: %s", idx, exc)
             entry: dict[str, Any] = {"index": idx, "elevation": elevation}
+            entry.update(scan_fields)
             if sweep_vars:
                 entry["variables"] = sweep_vars
                 variables.update(sweep_vars)
@@ -1338,6 +1363,14 @@ class RadarReader:
                 root_attrs["latitude"] = lat
             if lon is not None:
                 root_attrs["longitude"] = lon
+
+        if any(sw.get("kind") == "rhi" for sw in sweeps):
+            # Range-height views can show height above sea level when the site altitude is known.
+            altitude = _site_altitude(root_ds, ds0)
+            if altitude is not None:
+                for sw in sweeps:
+                    if sw.get("kind") == "rhi":
+                        sw["altitude"] = altitude
 
         return {
             "variables": sorted(variables),
@@ -1392,6 +1425,20 @@ class RadarReader:
                 logger.debug("Sweep site coordinates unavailable: %s", exc)
 
         return lat, lon
+
+
+def _site_altitude(*datasets: xr.Dataset | None) -> float | None:
+    """Radar site altitude above sea level (metres) from the first dataset that stores it."""
+    for ds in datasets:
+        if ds is None or "altitude" not in ds.variables:
+            continue
+        try:
+            value = _finite_or_none(float(np.asarray(ds.variables["altitude"].values).flat[0]))
+        except (TypeError, ValueError, IndexError):
+            continue
+        if value is not None:
+            return value
+    return None
 
 
 def _moment_names(ds: xr.Dataset) -> list[str]:
