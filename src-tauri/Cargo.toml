@@ -2,6 +2,8 @@
 name = "xradar-desktop"
 version = "0.2.1"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+authors = ["Hamid Ali Syed"]
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
