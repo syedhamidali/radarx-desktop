@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/syedhamidali/xradar-desktop)](https://github.com/syedhamidali/xradar-desktop/releases/latest)
+[![codecov](https://codecov.io/gh/syedhamidali/xradar-desktop/graph/badge.svg)](https://codecov.io/gh/syedhamidali/xradar-desktop)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-orange.svg)](LICENSE)
 
 A desktop app for looking at weather radar data and working with it: open a file, see it in 2D and 3D, clean it,
@@ -52,6 +53,16 @@ Pan and zoom a GPU-rendered PPI on a map, then switch to the 3D volume: every sw
 a transfer-function editor, a map ground plane and adjustable vertical exaggeration.
 
 ![3D volume of the Oklahoma squall line over a map](docs/images/app-3d.png)
+
+### Cross-sections
+
+Draw a line on the PPI, or click an azimuth for an RHI-style cut out of the radar, and get a vertical section of the
+whole volume in a view you can make as large as you like: docked under the PPI (drag its height) or in a window that
+fills the screen. Real pixel size, axes in km, colour bar, hover read-out, vertical exaggeration, height range, mask
+and smoothing controls, and PNG export. Sector scans are not stretched across the part of the circle that was not
+scanned. See [docs/CROSSSECTION.md](docs/CROSSSECTION.md).
+
+![Cross-section docked under the PPI](docs/images/crosssection-dock.png)
 
 ### Run algorithms and see the result right away
 

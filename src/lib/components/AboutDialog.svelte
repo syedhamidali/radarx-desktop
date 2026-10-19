@@ -51,7 +51,7 @@
       <!-- Logo area: the mark over a slow scope -->
       <div class="about-logo">
         <div class="logo-scope"><RadarSweep size={132} period={8} rings={2} labels={false} hub={false} /></div>
-        <div class="logo-icon"><LogoMark size={52} title="xradar" /></div>
+        <div class="logo-icon"><LogoMark size={68} title="xradar" /></div>
       </div>
 
       <div class="about-name">

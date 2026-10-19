@@ -26,6 +26,7 @@ from engine.plugins import ModuleError, run_module
 pytest.importorskip("radarx")
 import radarx.retrieve as rxr
 
+from tests import radar_data
 from tests.test_radarx_modules import (
     GATE_M,
     N_AZ,
@@ -81,8 +82,12 @@ COW = next(
         p
         for p in (
             os.environ.get("XRADAR_TEST_COW", ""),
-            "/Users/syed44/Downloads/Others/XRADAR_EXAMPLES/RADAR_CORRECTED/"
-            "cfrad.20220322_220338.299_to_20220322_220506.977_COW1high_SUR.nc",
+            str(
+                radar_data.example(
+                    "RADAR_CORRECTED/cfrad.20220322_220338.299_to_20220322_220506.977_COW1high_SUR.nc"
+                )
+                or ""
+            ),
         )
         if p and os.path.exists(p)
     ),

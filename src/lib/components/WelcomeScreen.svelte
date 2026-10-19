@@ -5,6 +5,7 @@
   import { workspaceStore, PRESET_WORKSPACES } from '../stores/workspace';
   import { webUi } from '../stores/webInfo';
   import RadarSweep from './RadarSweep.svelte';
+  import LogoMark from './LogoMark.svelte';
 
   const dispatch = createEventDispatcher<{
     'open-file': void;
@@ -66,7 +67,10 @@
   <div class="welcome-inner">
     <!-- Hero -->
     <div class="welcome-hero">
-      <RadarSweep size={176} period={6} />
+      <div class="hero-mark">
+        <RadarSweep size={176} period={6} hub={false} />
+        <span class="hero-icon"><LogoMark size={92} title="xradar" /></span>
+      </div>
       <h1 class="welcome-logo"><span class="logo-x">X</span>RADAR</h1>
       <p class="welcome-subtitle">Weather radar research workstation{$webUi ? ' in your browser' : ''}</p>
       <div class="welcome-meta">
@@ -239,6 +243,8 @@
     gap: var(--space-2);
     text-align: center;
   }
+  .hero-mark { position: relative; width: 176px; height: 176px; }
+  .hero-icon { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
   .welcome-logo {
     margin-top: var(--space-3);
     font-size: 34px;

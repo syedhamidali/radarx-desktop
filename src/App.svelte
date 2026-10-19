@@ -25,6 +25,9 @@
   import Timeline from './lib/components/Timeline.svelte';
   import DiffViewer from './lib/components/DiffViewer.svelte';
   import CrossSectionPanel from './lib/components/CrossSectionPanel.svelte';
+  import CrossSectionDock from './lib/components/CrossSectionDock.svelte';
+  import CrossSectionDialog from './lib/components/CrossSectionDialog.svelte';
+  import { crossSectionStore } from './lib/stores/crossSection';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
   import { get } from 'svelte/store';
@@ -100,6 +103,8 @@
   let leftSidebarOpen = $state(true);
   let rightSidebarOpen = $state(true);
   let viewMode = $state<'2d' | '3d' | 'dualpol'>('2d');
+  /** The cross-section pane under the PPI (only beside the 2D view). */
+  const crossSectionDocked = $derived($crossSectionStore.layout === 'dock' && viewMode === '2d' && $diffMode !== 'diff');
   let commandPaletteVisible = $state(false);
   let shortcutsSheetVisible = $state(false);
   let aboutDialogVisible = $state(false);
@@ -819,7 +824,7 @@
   <header class="toolbar">
     <div class="toolbar-left">
       <div class="app-title" title="xradar {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
-        <LogoMark size={26} animate={$connectionStatus === 'connecting'} />
+        <LogoMark size={28} animate={$connectionStatus === 'connecting'} />
         <span class="title-word"><span class="title-x">X</span>RADAR</span>
         <span class="title-desktop">{$webUi ? 'web' : 'desktop'}</span>
       </div>
@@ -950,12 +955,15 @@
     {/if}
     <div class="viewer-and-timeline">
       <FileTabs on:openfile={openFile} />
-      <section class="viewer-area">
+      <section class="viewer-area" class:with-dock={crossSectionDocked}>
         {#if filePath}
           {#if $diffMode === 'diff'}
             <DiffViewer />
           {:else if viewMode === '2d'}
             <RadarViewer />
+            {#if crossSectionDocked}
+              <CrossSectionDock />
+            {/if}
           {:else if viewMode === '3d'}
             <RadarViewer3D />
           {:else}
@@ -1054,6 +1062,7 @@
   <OnboardingTour bind:visible={onboardingVisible} />
   <ShortcutsSheet bind:visible={shortcutsSheetVisible} />
   <AboutDialog bind:visible={aboutDialogVisible} />
+  <CrossSectionDialog />
   {#if settingsOpen}
     <SettingsDialog open={true} on:close={() => (settingsOpen = false)} />
   {/if}
@@ -1189,6 +1198,9 @@
   .sidebar-right { border-left: 1px solid var(--c-border); }
   .viewer-and-timeline { display: flex; flex-direction: column; flex: 1; overflow: hidden; min-width: 0; background: var(--c-surface-0); }
   .viewer-area { flex: 1; overflow: hidden; min-width: 0; }
+  /* the cross-section dock sits under the PPI, which keeps whatever height is left */
+  .viewer-area.with-dock { display: flex; flex-direction: column; }
+  .viewer-area.with-dock > :global(.radar-viewer) { flex: 1 1 0; height: auto; min-height: 0; }
 
   /* ---- Status bar ---- */
   .statusbar {

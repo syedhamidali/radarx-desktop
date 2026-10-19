@@ -14,6 +14,7 @@ import xarray as xr
 
 from engine import derived, pipeline, plugins
 from engine.plugins import ModuleError, Result, param
+from tests import radar_data
 
 pytestmark = pytest.mark.filterwarnings("ignore")
 
@@ -686,10 +687,9 @@ def test_script_for_every_step_compiles():
 # ---------------------------------------------------------------------------
 
 KTLX = Path(os.path.expanduser("~/Downloads/Others/XRADAR_EXAMPLES/KTLX20130520_201643_V06.gz"))
-COW = Path(
-    "/Users/syed44/Downloads/Others/XRADAR_EXAMPLES/RADAR_CORRECTED/"
-    "cfrad.20220322_220338.299_to_20220322_220506.977_COW1high_SUR.nc"
-)
+COW = radar_data.example(
+    "RADAR_CORRECTED/cfrad.20220322_220338.299_to_20220322_220506.977_COW1high_SUR.nc"
+) or Path("/nonexistent/COW.nc")
 
 
 def _real_run(reader, rec, sweeps=None):

@@ -229,6 +229,24 @@ def _get_sweep_data(
     return da, elev, azimuth.astype(np.float64), range_m.astype(np.float64)
 
 
+# Rays missing from a sweep are filled (nearest ray) up to this many ray steps / degrees, like the
+# PPI mesh does; anything wider (the empty part of a sector scan) stays empty.
+_MAX_FILL_STEPS = 8
+_MAX_FILL_DEG = 10.0
+_BRIDGE_FACTOR = 1.5
+
+
+def _ray_gap_limits(az_sorted: np.ndarray) -> tuple[float, float]:
+    """Typical ray step (deg) and the widest azimuth gap still treated as continuous coverage."""
+    if az_sorted.size < 2:
+        return 1.0, 1.0
+    diffs = np.diff(np.concatenate([az_sorted, az_sorted[:1] + 360.0]))
+    diffs = diffs[diffs > 1e-6]
+    step = float(np.median(diffs)) if diffs.size else 1.0
+    limit = max(_BRIDGE_FACTOR * step, min(_MAX_FILL_DEG, _MAX_FILL_STEPS * step))
+    return step, limit
+
+
 def _sample_sweep(
     values_2d: np.ndarray,
     sweep_az: np.ndarray,
@@ -239,7 +257,8 @@ def _sample_sweep(
     """Vectorised lookup: nearest ray (circular azimuth), linear interpolation in range.
 
     NaN where the slant range lies outside the sweep's range coverage (or either
-    neighbouring gate is NaN).
+    neighbouring gate is NaN), and where the bearing falls in an empty part of the sweep (the
+    unscanned sector of a sector scan, or a run of lost rays wider than a few ray steps).
     """
     az_pts = np.asarray(az_pts, dtype=np.float64)
     rng_pts = np.asarray(rng_pts, dtype=np.float64)
@@ -257,14 +276,23 @@ def _sample_sweep(
     right = pos % az_sorted.size
     d_left = np.abs((az_sorted[left] - az_pts + 180.0) % 360.0 - 180.0)
     d_right = np.abs((az_sorted[right] - az_pts + 180.0) % 360.0 - 180.0)
-    az_idx = order[np.where(d_left <= d_right, left, right)]
+    use_left = d_left <= d_right
+    az_idx = order[np.where(use_left, left, right)]
+
+    # A sector scan (or a hole of lost rays) has no data between its end rays: a bearing in a gap
+    # wider than a few ray steps is empty, not "the nearest ray, stretched across the gap".
+    step, fill_limit = _ray_gap_limits(az_sorted)
+    gap = (az_sorted[right] - az_sorted[left]) % 360.0
+    gap = np.where(gap == 0.0, 360.0, gap)  # one ray, or every ray at the same bearing
+    d_near = np.where(use_left, d_left, d_right)
+    covered = (gap <= fill_limit) | (d_near <= 0.5 * step + 1e-6)
 
     # Range: linear between the two bracketing gates
     rng = sweep_rng
     if rng.size > 1 and np.any(np.diff(rng) < 0):
         ro = np.argsort(rng)
         rng, values_2d = rng[ro], values_2d[:, ro]
-    in_cov = (rng_pts >= rng[0]) & (rng_pts <= rng[-1])
+    in_cov = (rng_pts >= rng[0]) & (rng_pts <= rng[-1]) & covered
     if not in_cov.any():
         return out
     if rng.size == 1:
@@ -341,6 +369,69 @@ def _geodesic_samples(
     return np.asarray(lats, dtype=np.float64), np.asarray(lons, dtype=np.float64), along
 
 
+MAX_SECTION_POINTS = 2000
+
+
+def rhi_line(
+    datatree: xr.DataTree,
+    azimuth_deg: float,
+    max_range_km: float,
+    min_range_km: float = 0.0,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """End points ``(lat, lon)`` of the ground line an RHI at ``azimuth_deg`` would scan.
+
+    The line runs along the geodesic leaving the radar on ``azimuth_deg``, from
+    ``min_range_km`` (0 = right over the radar) to ``max_range_km``.  Feeding it to
+    :func:`extract_cross_section` gives a pseudo-RHI cut out of the PPI volume.
+    """
+    radar_lat, radar_lon = _get_radar_location(datatree)
+    geod = _geod()
+
+    def point(range_km: float) -> tuple[float, float]:
+        if range_km <= 0.0:
+            return radar_lat, radar_lon
+        lon, lat, _ = geod.fwd(radar_lon, radar_lat, float(azimuth_deg) % 360.0, range_km * 1000.0)
+        return float(lat), float(lon)
+
+    return point(float(min_range_km)), point(float(max_range_km))
+
+
+def _get_radar_altitude(datatree: xr.DataTree) -> float | None:
+    """Radar site altitude above mean sea level in metres, or ``None`` when the file has none."""
+    try:
+        root = datatree.to_dataset()
+    except Exception:
+        return None
+    for source in (root.variables, root.attrs):
+        value = source.get("altitude")
+        if value is None:
+            continue
+        try:
+            alt = float(np.nanmean(np.asarray(getattr(value, "values", value), dtype=np.float64)))
+        except (TypeError, ValueError):
+            continue
+        if np.isfinite(alt):
+            return alt
+    return None
+
+
+def _first_time(da: xr.DataArray) -> str | None:
+    """Earliest ray time of a sweep as ``YYYY-MM-DD HH:MM:SS`` (UTC), when it has one."""
+    coord = da.coords.get("time")
+    if coord is None:
+        return None
+    try:
+        t = np.asarray(coord.values)
+        if not np.issubdtype(t.dtype, np.datetime64):
+            return None
+        t = t[~np.isnat(t)]
+        if t.size == 0:
+            return None
+        return str(np.datetime64(t.min(), "s")).replace("T", " ")
+    except Exception:
+        return None
+
+
 def extract_cross_section(
     datatree: xr.DataTree,
     start_point: tuple[float, float],
@@ -378,15 +469,19 @@ def extract_cross_section(
     -------
     dict
         Keys: ``distance_km`` (list), ``height_km`` (list of lists per
-        sweep), ``values`` (list of lists per sweep), ``variable`` (str),
-        ``units`` (str), ``n_sweeps`` (int).
+        sweep, km above the radar), ``values`` (list of lists per sweep), ``variable``
+        (str), ``units`` (str), ``n_sweeps`` (int), plus what a viewer needs to label the
+        section: ``elevations_deg`` (per sweep), ``ground_range_km`` / ``azimuth_deg`` (per
+        sample, from the radar), ``start`` / ``end`` (``[lat, lon]``), ``radar_lat`` /
+        ``radar_lon`` / ``radar_altitude_m`` (``None`` when unknown) and ``time`` (scan start,
+        UTC, or ``None``).
     """
     sweep_names = sorted_sweep_names(datatree)
     radar_lat, radar_lon = _get_radar_location(datatree)
 
     lat1, lon1 = start_point
     lat2, lon2 = end_point
-    n_points = max(int(n_points), 1)
+    n_points = min(max(int(n_points), 1), MAX_SECTION_POINTS)
 
     # Sample points evenly along the geodesic between the two end points, then get each
     # point's ground distance and azimuth from the radar on the WGS84 ellipsoid.
@@ -396,7 +491,9 @@ def extract_cross_section(
 
     all_heights: list[list[float]] = []
     all_values: list[list[float | None]] = []
+    elevations: list[float] = []
     units = ""
+    scan_time: str | None = None
 
     for si in range(len(sweep_names)):
         da, elev_deg, sweep_az, sweep_rng = _get_sweep_data(
@@ -407,12 +504,15 @@ def extract_cross_section(
 
         if not units and "units" in da.attrs:
             units = str(da.attrs["units"])
+        if scan_time is None:
+            scan_time = _first_time(da)
 
         slant, height = slant_range_and_height_from_ground(ground_dist, elev_deg)
         values = _sample_sweep(np.asarray(da.values), sweep_az, sweep_rng, sample_azimuth, slant)
 
         all_heights.append(_nan_to_none(height / 1000.0))
         all_values.append(_nan_to_none(values))
+        elevations.append(elev_deg)
 
     return {
         "distance_km": distance_km.tolist(),
@@ -421,6 +521,15 @@ def extract_cross_section(
         "variable": variable,
         "units": units,
         "n_sweeps": len(all_heights),
+        "elevations_deg": elevations,
+        "ground_range_km": (ground_dist / 1000.0).tolist(),
+        "azimuth_deg": sample_azimuth.tolist(),
+        "start": [float(lats[0]), float(lons[0])],
+        "end": [float(lats[-1]), float(lons[-1])],
+        "radar_lat": radar_lat,
+        "radar_lon": radar_lon,
+        "radar_altitude_m": _get_radar_altitude(datatree),
+        "time": scan_time,
     }
 
 

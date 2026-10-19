@@ -23,9 +23,8 @@ Settings -> General -> Appearance switches between Mission control, Clean room a
 | `src/lib/styles/theme.css` | Reset, scrollbars, form controls, HUD primitives (LED, chip, brackets, grid) |
 | `src/lib/styles/fonts.css` + `fonts/` | Bundled IBM Plex Sans (400/500/600) and Plex Mono (400/500), latin subset, OFL licence texts alongside |
 | `src/lib/utils/theme.ts` | Sets `data-theme` on `<html>` (and the legacy `.theme-light` / `.theme-auto` classes) |
-| `src/lib/components/LogoMark.svelte`, `public/logo.svg` | The mark (themed component and fixed-colour file) |
+| `src/lib/components/LogoMark.svelte`, `src/lib/assets/icon.png` | The app icon, shown **unchanged** (a copy of `src-tauri/icons/icon-256.png`); the component only frames it (hairline ring, optional sweep arc) |
 | `src/lib/components/RadarSweep.svelte` | The decorative scope for empty / boot states |
-| `src-tauri/icons/icon-source.svg` | Source of the app icons |
 
 Fonts are served from the app itself (no font host, the CSP only allows `'self'`).
 
@@ -89,7 +88,7 @@ new code; migrate old components opportunistically.
   areas only).
 * **Panels** are drawn by `PanelManager`: an index (`01`), a line icon, the tracked label, a cyan
   notch and segmented hairline when open. Panel bodies use `CollapsiblePanel`.
-* **Shell**: the top bar carries the mark, workspace, search, transport, view switch, a UTC mission
+* **Shell**: the top bar carries the app icon, workspace, search, transport, view switch, a UTC mission
   clock and the engine LED; the bottom bar is the system status strip (engine state, file,
   open files, FPS, memory where the webview reports it).
 * **Boot / error**: `EngineBoot.svelte` shows `INITIALISING ENGINE` with real status (shell, engine
@@ -123,6 +122,7 @@ instant state change (global rule in `theme.css`) and the sweep is drawn frozen.
 
 ## Do and don't
 
+* Do not redraw or recolour the app icon. Frame it with CSS only.
 * Do keep glow for the active or focused element; do not glow whole panels.
 * Do use violet only for *derived* data (module / retrieval output), amber for caution, red for alarm.
 * Do not put the grid, scan lines or any animation behind data.

@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "open-radar-data"]
 # Building the self-contained engine shipped inside the installers (python/packaging/).
 bundle = ["pyinstaller>=6.16"]
 # Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
