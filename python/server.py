@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import concurrent.futures
 import contextlib
 import contextvars
@@ -56,7 +57,13 @@ from engine.cloud import (
 )
 from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.exporter import _FORMAT_EXT, RadarExporter
-from engine.processor import RadarProcessor, extract_cross_section, extract_vertical_profile
+from engine.processor import (
+    MAX_SECTION_POINTS,
+    RadarProcessor,
+    extract_cross_section,
+    extract_vertical_profile,
+    rhi_line,
+)
 from engine.qc import QC_REGISTRY, QCPipeline
 from engine.reader import (
     RadarReader,
@@ -894,6 +901,7 @@ class ConnectionHandler:
             "run_pipeline": self._handle_run_pipeline,
             "cancel_pipeline": self._handle_cancel_pipeline,
             "save_text_file": self._handle_save_text_file,
+            "save_image_file": self._handle_save_image_file,
             "create_mosaic": self._handle_create_mosaic,
             "mosaic_probe": self._handle_mosaic_probe,
             "export_mosaic": self._handle_export_mosaic,
@@ -2100,24 +2108,50 @@ class ConnectionHandler:
     # ------------------------------------------------------------------
 
     async def _handle_get_cross_section(self, msg: dict[str, Any]) -> None:
-        """Extract an RHI-like cross-section between two geographic points."""
+        """Extract an RHI-like cross-section between two geographic points.
+
+        ``{type: "get_cross_section", variable, start: [lat, lon], end: [lat, lon], n_points?}``,
+        or an RHI-style cut from the radar: ``{variable, azimuth, max_range_km, min_range_km?}``
+        (the geodesic leaving the radar on ``azimuth``).  The reply echoes the line it used.
+        """
         start = msg.get("start")
         end = msg.get("end")
         variable = msg.get("variable")
-        _ = msg.get("n_points", 200)
+        n_points = msg.get("n_points", 200)
+        rhi_az = msg.get("azimuth")
+        rhi_range = msg.get("max_range_km")
+        rhi_min = msg.get("min_range_km", 0)
+
+        def number(v: Any) -> bool:
+            return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
         if not variable or not isinstance(variable, str):
             await self.send_error("get_cross_section: missing or invalid 'variable'")
             return
-        if not isinstance(start, list) or len(start) != 2:
-            await self.send_error("get_cross_section: 'start' must be [lat, lon]")
+        if not number(n_points) or n_points < 2:
+            await self.send_error("get_cross_section: 'n_points' must be a number of at least 2")
             return
-        if not isinstance(end, list) or len(end) != 2:
-            await self.send_error("get_cross_section: 'end' must be [lat, lon]")
-            return
-        if not all(isinstance(v, (int, float)) for v in start + end):
-            await self.send_error("get_cross_section: coordinates must be numbers")
-            return
+        n_points = min(int(n_points), MAX_SECTION_POINTS)
+        rhi = rhi_az is not None or rhi_range is not None
+        if rhi:
+            if not number(rhi_az) or not number(rhi_range) or not number(rhi_min):
+                await self.send_error(
+                    "get_cross_section: 'azimuth' and 'max_range_km' must be numbers"
+                )
+                return
+            if rhi_range <= max(rhi_min, 0):
+                await self.send_error("get_cross_section: 'max_range_km' must be above the start")
+                return
+        else:
+            if not isinstance(start, list) or len(start) != 2:
+                await self.send_error("get_cross_section: 'start' must be [lat, lon]")
+                return
+            if not isinstance(end, list) or len(end) != 2:
+                await self.send_error("get_cross_section: 'end' must be [lat, lon]")
+                return
+            if not all(number(v) for v in start + end):
+                await self.send_error("get_cross_section: coordinates must be numbers")
+                return
 
         datatree = _get_datatree(msg.get("file_id"))
         if datatree is None:
@@ -2128,16 +2162,20 @@ class ConnectionHandler:
 
         loop = asyncio.get_running_loop()
         loader = _get_reader(msg.get("file_id")).get_sweep_dataset
-        result = await loop.run_in_executor(
-            None,
-            lambda: extract_cross_section(
-                datatree,
-                tuple(start),
-                tuple(end),
-                variable,
-                sweep_loader=loader,
-            ),
-        )
+
+        def run() -> dict[str, Any]:
+            if rhi:
+                a, b = rhi_line(datatree, float(rhi_az), float(rhi_range), float(rhi_min))
+            else:
+                a, b = (float(start[0]), float(start[1])), (float(end[0]), float(end[1]))
+            out = extract_cross_section(
+                datatree, a, b, variable, n_points=n_points, sweep_loader=loader
+            )
+            if rhi:
+                out["rhi_azimuth"] = float(rhi_az) % 360.0
+            return out
+
+        result = await loop.run_in_executor(None, run)
 
         await self.send({"type": "cross_section_result", **result})
 
@@ -3519,6 +3557,54 @@ class ConnectionHandler:
             )
             return
 
+        await asyncio.get_running_loop().run_in_executor(
+            None, _atomic_write, target, lambda tmp: tmp.write_bytes(data)
+        )
+        await self.send({"type": "file_saved", "path": str(target)})
+
+    async def _handle_save_image_file(self, msg: dict[str, Any]) -> None:
+        """Write a PNG image (base64) the user chose a path for (desktop only; atomic).
+
+        ``{type: "save_image_file", path, data_base64, overwrite?}`` ->
+        ``{type: "file_saved", path}``.
+        The web service has no user-chosen paths: the browser saves the image itself.
+        """
+        path = msg.get("path")
+        content = msg.get("data_base64")
+        if self.session is not None:
+            await self.send_error("save_image_file: not available in the web service")
+            return
+        if not isinstance(path, str) or not path.strip() or "\x00" in path:
+            await self.send_error("save_image_file: 'path' must be a non-empty string")
+            return
+        if not isinstance(content, str):
+            await self.send_error("save_image_file: 'data_base64' must be a string")
+            return
+        try:
+            data = base64.b64decode(content, validate=True)
+        except ValueError:
+            await self.send_error("save_image_file: 'data_base64' is not valid base64")
+            return
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            await self.send_error("save_image_file: only PNG images are supported")
+            return
+        if len(data) > SAVE_TEXT_MAX_BYTES:
+            await self.send_error(
+                f"save_image_file: image exceeds {SAVE_TEXT_MAX_BYTES // (1024 * 1024)} MB"
+            )
+            return
+        target = Path(path).expanduser()
+        if not target.parent.is_dir():
+            await self.send_error(f"save_image_file: folder does not exist: {target.parent}")
+            return
+        if target.is_dir():
+            await self.send_error(f"save_image_file: path is a folder: {target}")
+            return
+        if target.exists() and msg.get("overwrite") is not True:
+            await self.send_error(
+                f"save_image_file: {target} already exists (pass overwrite=true to replace it)"
+            )
+            return
         await asyncio.get_running_loop().run_in_executor(
             None, _atomic_write, target, lambda tmp: tmp.write_bytes(data)
         )

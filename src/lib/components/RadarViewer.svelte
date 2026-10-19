@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
+  import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { radarData, selectedVariable, selectedSweep, connectionStatus } from '../stores/radarData';
   import { activeFileId } from '../stores/fileManager';
@@ -81,6 +81,7 @@
   // Cross-section / vertical-profile tool state
   const csLineToolActive = $derived($crossSectionStore.lineToolActive);
   const csProbeToolActive = $derived($crossSectionStore.probeToolActive);
+  const csRhiToolActive = $derived($crossSectionStore.rhiToolActive);
 
   // Value probe
   let probeActive = $state(false);
@@ -140,6 +141,26 @@
   const radarLat = $derived(parseFloat($radarData.attributes?.latitude ?? $radarData.attributes?.origin_latitude ?? '0') || 0);
   const radarLon = $derived(parseFloat($radarData.attributes?.longitude ?? $radarData.attributes?.origin_longitude ?? '0') || 0);
   const radarName = $derived(($radarData.attributes?.instrument_name ?? $radarData.attributes?.station_name ?? '') as string);
+
+  // Tell the cross-section what the PPI shows (variable, colormap, range, reach) so the section can
+  // match it and an RHI defaults to the PPI's range.
+  $effect(() => {
+    const v = variable;
+    const cm = currentCmap;
+    const lo = currentVmin;
+    const hi = currentVmax;
+    const un = currentUnits;
+    const km = currentMaxRange > 1 ? currentMaxRange / 1000 : null;
+    const shown = hasRendered && !fieldShown;
+    untrack(() => {
+      if (!v || !shown) return;
+      crossSectionStore.update((st) => {
+        const p = st.ppiStyle;
+        if (p && p.variable === v && p.cmap === cm && p.vmin === lo && p.vmax === hi && p.units === un && st.ppiMaxRangeKm === km) return st;
+        return { ...st, ppiStyle: { variable: v, cmap: cm, vmin: lo, vmax: hi, units: un }, ppiMaxRangeKm: km };
+      });
+    });
+  });
 
   // Re-render when map toggle changes (to update transparent background)
   $effect(() => {
@@ -835,7 +856,7 @@
           {containerHeight}
         />
         <CrossSectionLine
-          active={csLineToolActive}
+          active={csLineToolActive || csRhiToolActive}
           {scale}
           {translateX}
           {translateY}

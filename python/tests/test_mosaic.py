@@ -20,6 +20,7 @@ from PIL import Image
 
 from engine import mosaic
 from engine.reader import RadarReader
+from tests import radar_data
 
 HAS_RADARX = importlib.util.find_spec("radarx") is not None
 needs_radarx = pytest.mark.skipif(not HAS_RADARX, reason="radarx is not installed")
@@ -27,10 +28,7 @@ needs_radarx = pytest.mark.skipif(not HAS_RADARX, reason="radarx is not installe
 ELEVATIONS = [0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.5, 8.0, 10.0, 12.0, 15.0]
 RE_EFF = 4.0 / 3.0 * 6371e3
 
-_DATA = Path("/private/tmp/claude-502/-Users-syed44-Git-Stuff-Git-Projects-xradar-desktop/")
-KATX = os.environ.get("XRADAR_TEST_KATX") or str(
-    _DATA / "4919c2aa-1324-499f-9e5a-79edf19be890/scratchpad/data/KATX20130717_195021_V06"
-)
+KATX = str(radar_data.katx() or "/nonexistent/KATX20130717_195021_V06")
 KATX_RESITED = str(Path(KATX).with_name("KATX_resited_demo.nc"))
 
 

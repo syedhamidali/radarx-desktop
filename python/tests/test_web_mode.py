@@ -569,6 +569,7 @@ class TestEveryPathHandler:
             "_handle_batch_export",
             "_handle_export_animation",
             "_handle_save_text_file",
+            "_handle_save_image_file",  # refused outright in the web service (test below)
             "_export_mosaic",
             "_handle_export_multidoppler",
         }, found
@@ -649,6 +650,17 @@ class TestEveryPathHandler:
             "/t.csv"
         )
         assert (client.ctx.exports_dir / "t.csv").read_text() == "a,b\n"
+
+    @pytest.mark.parametrize("bad", BAD_OUTPUT_NAMES[:-3])
+    async def test_save_image_file_is_refused_in_the_web_service(
+        self, client: WebClient, web_env: Path, bad: str
+    ) -> None:
+        png = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16).decode()
+        replies = await client.call({"type": "save_image_file", "path": bad, "data_base64": png})
+        errors = [m for m in replies if m["type"] == "error"]
+        assert errors and "web service" in errors[-1]["message"], (bad, replies)
+        assert not [m for m in replies if m["type"] == "file_saved"]
+        _no_outside_writes(web_env)
 
     async def test_save_text_file_size_cap_and_quota(self, client: WebClient) -> None:
         big = "x" * (server.WEB_SAVE_TEXT_MAX_BYTES + 1)

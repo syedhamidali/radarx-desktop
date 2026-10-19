@@ -8,7 +8,15 @@
    * the PPI is panned or zoomed; pixel positions are derived from the current view.
    */
   import { onDestroy } from 'svelte';
-  import { crossSectionStore, type CrossSectionLinePoints } from '../stores/crossSection';
+  import {
+    crossSectionStore,
+    dockPreferred,
+    requestRhi,
+    requestSection,
+    setCrossSectionLayout,
+    type CrossSectionLinePoints,
+  } from '../stores/crossSection';
+  import { azRangeToXY, xyToAzRange } from '../utils/crossSectionGeometry';
   import { dataSpaceToLatLon, latLonToDataSpace } from '../utils/geoProjection';
   import { createEventDispatcher } from 'svelte';
 
@@ -115,6 +123,11 @@
     if (!active || draggingEndpoint) return;
     const { x, y } = localXY(e);
 
+    if ($crossSectionStore.rhiToolActive) {
+      pickRhi(x, y);
+      return;
+    }
+
     if (phase === 'idle' || phase === 'complete') {
       // Start a (new) line; a previous one is dropped together with its result.
       geoA = pxToGeo(x, y);
@@ -128,6 +141,32 @@
       phase = 'complete';
       emitLine();
     }
+  }
+
+  /** One click on the PPI: an RHI-style cut out of the radar along that azimuth. */
+  function pickRhi(px: number, py: number) {
+    if (radarLat === 0 && radarLon === 0) return;
+    const [xm, ym] = pxToData(px, py);
+    const { azimuth } = xyToAzRange(xm, ym);
+    const st = $crossSectionStore;
+    const rangeKm = Math.max(1, Math.round(st.rhiRangeKm ?? Math.min(st.ppiMaxRangeKm ?? maxRange / 1000, 150)));
+    const [ex, ey] = azRangeToXY(azimuth, rangeKm);
+    const end = dataToLatLon(ex, ey);
+    const a = geoToPx({ lat: radarLat, lon: radarLon }, scale, translateX, translateY, maxRange, containerWidth, containerHeight, radarLat, radarLon);
+    const b = geoToPx(end, scale, translateX, translateY, maxRange, containerWidth, containerHeight, radarLat, radarLon);
+    const line: CrossSectionLinePoints = {
+      startX: a?.x ?? 0,
+      startY: a?.y ?? 0,
+      endX: b?.x ?? 0,
+      endY: b?.y ?? 0,
+      startLat: radarLat,
+      startLon: radarLon,
+      endLat: end.lat,
+      endLon: end.lon,
+    };
+    crossSectionStore.update((s) => ({ ...s, rhiToolActive: false, lineToolActive: false }));
+    requestRhi(azimuth, rangeKm, line);
+    if ($crossSectionStore.layout === 'panel' && dockPreferred()) setCrossSectionLayout('dock');
   }
 
   function handleMouseMove(e: MouseEvent) {
@@ -201,8 +240,12 @@
     };
 
     // Drawing a line ends the tool so the PPI can be panned again; the endpoints stay draggable.
-    crossSectionStore.update((s) => ({ ...s, line, lineToolActive: false }));
+    // A free line (not an RHI any more); it is extracted right away, and shown large when that is
+    // the user's preference.
+    crossSectionStore.update((s) => ({ ...s, line, lineToolActive: false, rhi: null }));
     dispatch('lineDrawn', line);
+    requestSection();
+    if ($crossSectionStore.layout === 'panel' && dockPreferred()) setCrossSectionLayout('dock');
   }
 
   function requestCrossSection() {
@@ -269,6 +312,9 @@
   <div class="cs-line-actions">
     <button class="cs-action-btn primary" on:click={requestCrossSection} title="Request cross-section along this line">
       Request Cross-Section
+    </button>
+    <button class="cs-action-btn" on:click={() => setCrossSectionLayout('modal')} title="Open the cross-section in a large window">
+      Expand
     </button>
     <button class="cs-action-btn" on:click={clearLine} title="Remove the line">
       Clear
