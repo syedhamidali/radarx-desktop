@@ -278,7 +278,7 @@ def test_cfradial1_export_through_the_exporter(tmp_path):
     )
     with xr.open_dataset(out) as ds:
         assert {"DBZH", "ZDR", "VRADH", "fixed_angle"} <= set(ds.variables)
-        assert ds.attrs["Conventions"] == "Cf/Radial"
+        assert ds.attrs["Conventions"].startswith("CF-1.")  # the standards-clean writer
 
 
 def test_cfradial1_falls_back_to_xradars_mapper(tmp_path, monkeypatch):

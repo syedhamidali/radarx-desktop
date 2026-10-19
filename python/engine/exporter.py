@@ -1599,15 +1599,17 @@ class RadarExporter:
     ) -> str:
         progress(10, "Preparing CfRadial1 NetCDF export")
         mask = bool(options.get("mask_no_echo", True))
-        with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
-            with _fast_cfradial1_mapper():
-                cfwrite.write_cfradial1(
-                    _netcdf_safe_tree(datatree, mask=mask),
-                    target,
-                    source_files=options.get("source_files"),
-                    params={"format": "cfradial1", "mask_no_echo": mask},
-                    masked=mask,
-                )
+        with (
+            _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target,
+            _fast_cfradial1_mapper(),
+        ):
+            cfwrite.write_cfradial1(
+                _netcdf_safe_tree(datatree, mask=mask),
+                target,
+                source_files=options.get("source_files"),
+                params={"format": "cfradial1", "mask_no_echo": mask},
+                masked=mask,
+            )
 
         progress(100, f"CfRadial1 export complete: {target.final}")
         return str(Path(target.final).resolve())

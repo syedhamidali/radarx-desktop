@@ -894,7 +894,8 @@ class TestWindFile:
         mdop.write_netcdf(rec, path)
         with netCDF4.Dataset(path) as d:
             g = {a: d.getncattr(a) for a in d.ncattrs()}
-            assert g["method"] == "variational" and g["boundary_condition"] == "upward"
+            assert g["method"] == "variational"
+            assert g["boundary_condition"] == rec.summary["boundary"]
             assert "uniform" in g["background_wind"] and "u=3" in g["background_wind"]
             assert g["min_crossing_angle_deg"] == 30.0 and g["observation_error_ms"] == 1.0
             assert (

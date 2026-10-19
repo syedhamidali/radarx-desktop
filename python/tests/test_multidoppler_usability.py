@@ -523,7 +523,7 @@ class TestWindFigure:
         from engine import windfig
 
         ds = mdop.to_dataset(record)
-        assert ds.attrs["radar_names"] == ["WESTR", "EASTR"]
+        assert [n for n, _, _ in windfig._radar_xy(ds)] == ["WESTR", "EASTR"]
         fig = windfig.plot_wind(ds, 2.0, kind="publication")
         assert fig is not None
         with pytest.raises(ValueError, match="theme"):

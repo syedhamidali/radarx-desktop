@@ -24,6 +24,11 @@ MAYFIELD = Path("/Users/syed44/Downloads/SEVERE_CASES_TEST/mayfield")
 PYTHON_DIR = Path(__file__).resolve().parents[1]
 
 
+def _csv_header(path: Path) -> str:
+    """The column header line: exported CSV files start with a ``# `` metadata block."""
+    return next(ln for ln in path.read_text().splitlines() if not ln.startswith("#"))
+
+
 def run_cli(capsys, *argv: str | Path) -> tuple[int, str, str]:
     code = cli.main([str(a) for a in argv])
     captured = capsys.readouterr()
@@ -540,7 +545,7 @@ def test_cells_tracking_several_files(capsys, nc: Path, nc2: Path, tmp_path: Pat
         "--tracks", tmp_path / "tracks.csv", "-p", tmp_path / "tracks.png",
     )  # fmt: skip
     assert code == 0 and "track(s)" in out and "2 scans" in out
-    assert "scan,time,id" in (tmp_path / "all.csv").read_text().splitlines()[0]
+    assert "scan,time,id" in _csv_header(tmp_path / "all.csv")
     assert (tmp_path / "tracks.csv").read_text().startswith("track_id,")
     assert (tmp_path / "tracks.png").stat().st_size > 1000
     code, out, _ = run_cli(capsys, "cells", "-i", nc, nc2, "--backend", "numpy", "--json")
@@ -610,7 +615,7 @@ def test_plot_errors(capsys, nc: Path, tmp_path: Path) -> None:
 def test_export_formats_by_extension(capsys, nc: Path, tmp_path: Path) -> None:
     csv = tmp_path / "d.csv"
     code, out, _ = run_cli(capsys, "export", "-i", nc, "-o", csv, "-V", "reflectivity", "-s", "1")
-    assert code == 0 and csv.read_text().splitlines()[0] == "azimuth_deg,range_m,DBZH"
+    assert code == 0 and _csv_header(csv) == "azimuth_deg,range_m,DBZH"
     zarr = tmp_path / "v.zarr"
     code, _, _ = run_cli(capsys, "export", "-i", nc, "-o", zarr)
     assert code == 0 and zarr.is_dir()

@@ -704,6 +704,8 @@ def _conform_sweep(ds: xr.Dataset) -> xr.Dataset:
     remove = (set(ds.data_vars) | set(ds.coords)) - keep
     out = ds.drop_vars(remove)
     out.attrs = dict(ds.attrs)
+    if "time" not in ds.variables:  # a sweep without ray times (synthetic or stripped): keep as is
+        return out
     if dim0 != "time" and dim0 in ds.dims:
         out = out.swap_dims({dim0: "time"})
     return out.sortby("time")
@@ -734,11 +736,8 @@ def cfradial2_tree(
         if "time" in s and s["time"].dtype.kind == "M" and (~np.isnat(s["time"].values)).any()
     ]
     end = max(ends) if ends else None
-    all_times = (
-        np.concatenate([s["time"].values for s in sweeps.values() if "time" in s])
-        if sweeps
-        else np.array([], "datetime64[ns]")
-    )
+    sweep_times = [s["time"].values for s in sweeps.values() if "time" in s]
+    all_times = np.concatenate(sweep_times) if sweep_times else np.array([], "datetime64[ns]")
     root = dtree.to_dataset().drop_vars(["sweep_group_name", "sweep_fixed_angle"], errors="ignore")
     root.attrs = radar_global_attrs(
         dtree.attrs,
