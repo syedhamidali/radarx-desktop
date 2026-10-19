@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod updates;
+
 /// How long to wait for the sidecar's `READY:<port>` line. Generous because the very first start
 /// of an installed app is slow (the OS scans the freshly installed libraries, caches get built).
 const READY_TIMEOUT: Duration = Duration::from_secs(180);
@@ -652,6 +654,40 @@ fn start_sidecar_monitor(state: Arc<SidecarState>, app: AppHandle) {
     });
 }
 
+/// What the UI needs to know before it offers updates: is the updater configured in this build
+/// (public key + endpoint), and can this installation replace itself?
+#[tauri::command]
+fn updater_status(app: AppHandle) -> updates::UpdaterStatus {
+    let exe = std::env::current_exe().unwrap_or_default();
+    #[cfg(target_os = "linux")]
+    let appimage = app.env().appimage.is_some();
+    #[cfg(not(target_os = "linux"))]
+    let appimage = false;
+    updates::status(
+        app.config().plugins.0.get("updater"),
+        &app.package_info().version.to_string(),
+        &exe,
+        appimage,
+    )
+}
+
+/// Windows only: the NSIS installer replaces files that a running engine would keep locked, and the
+/// updater exits the app without running the normal shutdown. So the UI stops the engine just
+/// before handing over to the installer. Elsewhere the engine keeps running until the relaunch.
+#[tauri::command]
+fn stop_engine_for_update(state: State<SharedSidecar>) {
+    if cfg!(windows) {
+        shutdown_sidecar(&state);
+    }
+}
+
+/// Restart into the freshly installed version. Goes through the normal exit path, so the engine is
+/// stopped (RunEvent::Exit) before the new process starts.
+#[tauri::command]
+fn relaunch_app(app: AppHandle) {
+    app.request_restart();
+}
+
 /// Files the OS asked the app to open ("Open with", double click, drop on the Dock icon, command
 /// line) before the window's UI was ready. The UI drains them once at startup; after that they are
 /// delivered as `open-files` events.
@@ -774,6 +810,14 @@ fn main() {
             // Start the background monitor thread
             start_sidecar_monitor(monitor_handle, app.handle().clone());
 
+            // Self-update, only when this build carries an updater key and endpoint (see updates.rs).
+            if matches!(
+                updates::configuration(app.config().plugins.0.get("updater")),
+                updates::Configured::Yes
+            ) {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
+
             // Ctrl-C / SIGTERM: exit through the normal path so the sidecar is stopped.
             let signal_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -792,6 +836,9 @@ fn main() {
             open_file_dialog,
             sidecar_health_check,
             take_pending_open_files,
+            updater_status,
+            stop_engine_for_update,
+            relaunch_app,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

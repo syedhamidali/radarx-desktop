@@ -10,6 +10,9 @@
     "core:window:allow-close",
     "core:window:allow-set-title",
     "dialog:allow-open",
-    "dialog:allow-save"
+    "dialog:allow-save",
+    "updater:allow-check",
+    "updater:allow-download",
+    "updater:allow-install"
   ]
 }
