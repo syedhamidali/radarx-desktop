@@ -33,11 +33,11 @@ export interface DebrisClass {
 }
 
 export const DEBRIS_CLASSES: DebrisClass[] = [
-  { name: 'dust and soil', k: 12, a: 0.05, b: 0.05, pick: 18, share: 0.38, spin: 2, tone: 0.34 },
-  { name: 'leaves and insulation', k: 1.2, a: 0.16, b: 0.12, pick: 24, share: 0.3, spin: 9, tone: 0.3 },
-  { name: 'shingles and boards', k: 0.07, a: 0.9, b: 0.09, pick: 34, share: 0.14, spin: 5, tone: 0.28 },
-  { name: 'sheet metal and panels', k: 0.035, a: 0.9, b: 0.7, pick: 38, share: 0.08, spin: 3.5, tone: 0.55 },
-  { name: 'branches and timber', k: 0.012, a: 1.8, b: 0.12, pick: 40, share: 0.08, spin: 2.2, tone: 0.2 },
+  { name: 'dust and soil', k: 12, a: 0.06, b: 0.06, pick: 18, share: 0.34, spin: 2, tone: 0.34 },
+  { name: 'leaves and insulation', k: 1.2, a: 0.22, b: 0.16, pick: 24, share: 0.3, spin: 9, tone: 0.3 },
+  { name: 'shingles and boards', k: 0.07, a: 1.1, b: 0.12, pick: 34, share: 0.16, spin: 5, tone: 0.3 },
+  { name: 'sheet metal and panels', k: 0.035, a: 1.0, b: 0.8, pick: 38, share: 0.09, spin: 3.5, tone: 0.6 },
+  { name: 'branches and timber', k: 0.012, a: 2.0, b: 0.15, pick: 40, share: 0.09, spin: 2.2, tone: 0.22 },
   { name: 'large objects', k: 0.003, a: 2.2, b: 1.1, pick: 48, share: 0.02, spin: 0.9, tone: 0.24 },
 ];
 
@@ -116,8 +116,8 @@ export class DebrisSim {
     this.r = r;
     this.n = o.count ?? 6000;
     this.dt = o.dt ?? 1 / 60;
-    this.radius = o.radius ?? 1500;
-    this.maxAge = o.maxAge ?? 30;
+    this.radius = o.radius ?? 650;
+    this.maxAge = o.maxAge ?? 26;
     this.seed = o.seed ?? 12345;
     this.pos = new Float32Array(this.n * 3);
     this.vel = new Float32Array(this.n * 3);
@@ -173,7 +173,7 @@ export class DebrisSim {
     // sample a radius where the surface wind exceeds the pick-up speed (rejection sampling on a log-uniform radius)
     let rad = 2 * rm, ok = false;
     for (let tries = 0; tries < 24 && !ok; tries++) {
-      const cand = rm * Math.exp(Math.log(0.25) + R() * (Math.log(10) - Math.log(0.25)));
+      const cand = rm * Math.exp(Math.log(0.3) + R() * (Math.log(4.5) - Math.log(0.3)));
       const spd = horizontalSpeed(r.vortex, cand, 2) * intensityAt(r, t);
       const w = Math.min(1, Math.max(0, (spd - cl.pick * 0.55) / (0.5 * r.vt)));
       if (R() < w) { rad = cand; ok = true; }
@@ -216,7 +216,7 @@ export class DebrisSim {
           if (sp > cl.pick) {
             // saltation / pick-up: a kick proportional to the excess wind, plus the updraft above
             this.onGround[i] = 0;
-            vz = 0.25 * (sp - cl.pick) + 1.5 + 3 * this.rng[i]();
+            vz = 0.45 * (sp - cl.pick) + 3 + 6 * this.rng[i]();
           } else {
             // sliding / resting: relax toward zero and wait; recycle when waited too long near nothing
             vx *= 0.8; vy *= 0.8;

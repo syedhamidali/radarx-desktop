@@ -9,8 +9,12 @@ applySavedTheme(); // first paint already in the right theme
 const target = document.getElementById('app')!;
 
 // `?clip=1`: the offline clip renderer (tools/storm_clip), no sidecar needed; otherwise the app.
-const app = new URLSearchParams(location.search).has('clip')
+// `?tornado=1`: the standalone tornado simulation preview (tools/tornado_sim), also lazy.
+const params = new URLSearchParams(location.search);
+const app = params.has('clip')
   ? import('./lib/components/StormClipView.svelte').then((m) => mount(m.default, { target }))
-  : import('./App.svelte').then((m) => mount(m.default, { target }));
+  : params.has('tornado')
+    ? import('./lib/components/TornadoPreview.svelte').then((m) => mount(m.default, { target }))
+    : import('./App.svelte').then((m) => mount(m.default, { target }));
 
 export default app;

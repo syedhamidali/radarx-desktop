@@ -241,3 +241,18 @@ export function forestFromImagery(L: Landscape, rgba: Uint8ClampedArray | Uint8A
     }
   }
 }
+
+/** Remove trees, buildings and poles within `r` metres of a point (the observer's standing place). */
+export function clearAround(L: Landscape, x: number, y: number, r: number): void {
+  const keep = (arr: Float32Array, stride: number): Float32Array => {
+    const out: number[] = [];
+    for (let i = 0; i < arr.length; i += stride) {
+      if (Math.hypot(arr[i] - x, arr[i + 1] - y) < r) continue;
+      for (let k = 0; k < stride; k++) out.push(arr[i + k]);
+    }
+    return new Float32Array(out);
+  };
+  L.trees = keep(L.trees, 6);
+  L.buildings = keep(L.buildings, 8);
+  L.poles = keep(L.poles, 3);
+}

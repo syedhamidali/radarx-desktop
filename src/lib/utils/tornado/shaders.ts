@@ -196,12 +196,14 @@ uniform vec2 uRes;
 uniform float uFrame;
 uniform vec4 uCloud;        // base height (AGL), wall lowering, wall radius, ragged amplitude
 uniform vec4 uFunnel;       // dpCrit (Pa), dp scale, eye fraction, funnel strength
+uniform vec4 uFunnel2;      // hydrostatic deficit per metre (Pa/m), key light strength, -, -
 uniform vec4 uAmb;          // ambient rgb, glow strength
 uniform vec3 uGlowDir;      // horizon glow direction (unit, horizontal)
 uniform vec3 uFog;          // distance haze colour
 uniform vec4 uFogK;         // density at ground (1/m), height scale, rain extinction scale, fallback rain mm/h
 uniform vec4 uDust;         // damage onset speed, dust strength, debris dark strength, scale
 uniform float uDebug;       // 1 = top-down swirl-noise slice
+uniform float uMask;        // bit mask of the components drawn (1 haze, 2 cloud, 4 funnel, 8 rain, 16 dust, 32 debris): diagnostics
 
 float cloudBaseAt(vec2 pw, out float lowerAmt) {
   vec2 rel = pw - uAxis;
@@ -217,9 +219,9 @@ float rainRateAt(vec2 pw) {
   vec2 uv = (pw - uEchoGrid.xy) * uEchoGrid.zw;
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
     vec2 c = clamp(uv, 0.002, 0.998);
-    return texture(uEcho, c).r * 0.8;
+    return texture(uEcho, c).r * 96.0;
   }
-  return texture(uEcho, uv).r;
+  return texture(uEcho, uv).r * 120.0;
 }
 
 struct Med {
@@ -245,6 +247,8 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
   float lowerAmt;
   float zb = cloudBaseAt(p.xy, lowerAmt);
   float above = p.z - zb;
+  // the sky seen from here: open above the cloud top, mostly closed under the base (overcast)
+  occl = mix(1.0, 0.55, smoothstep(zb + 60.0, zb - 120.0, p.z));
   if (above > -260.0) {
     vec4 cn = noiseAt(vec3((p.xy - uTrans * uTime * 0.7) / 900.0, p.z / 700.0));
     vec4 cn2 = noiseAt(vec3((p.xy - uTrans * uTime * 0.7) / 230.0, p.z / 190.0 + 0.5));
@@ -265,15 +269,17 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     float dp = dpAt(r, z) * uInt;
     vec4 fn1 = flowNoise(rel, 1.0 / 130.0);
     vec4 fn2 = flowNoise(rel * vec3(1.0, 1.0, 0.45), 1.0 / 46.0);
-    float tur = (fn1.r - 0.5) * 0.7 + (fn1.g - 0.5) * 0.35 + (fn2.b - 0.5) * 0.25;
-    float dpe = dp * (1.0 + 0.55 * tur);
-    float ex = (dpe - uFunnel.x) / uFunnel.y;
+    vec4 fn3 = flowNoise(rel * vec3(1.0, 1.0, 0.3), 1.0 / 17.0);
+    float tur = (fn1.r - 0.5) * 0.7 + (fn1.g - 0.5) * 0.35 + (fn2.b - 0.5) * 0.45 + (fn3.g - 0.5) * 0.4 + (fn3.b - 0.5) * 0.25;
+    float dpe = dp * (1.0 + 0.8 * tur);
+    // total deficit: the ambient pressure drop with height plus the vortex's cyclostrophic deficit
+    float ex = (dpe + uFunnel2.x * z - uFunnel.x) / uFunnel.y;
     float body = smoothstep(0.0, 1.0, ex);
     // two-cell core: a clear eye on the axis (modelled)
     float eye = smoothstep(uFunnel.z * 0.6, uFunnel.z * 1.1, r / coreR(z));
-    float streak = 0.55 + 0.9 * fn1.b * fn2.g;
+    float streak = 0.45 + 1.1 * fn1.b * fn2.g + 0.5 * (fn3.r - 0.5);
     float top = 1.0 - smoothstep(zb - 20.0, zb + 80.0, p.z);
-    m.sFunnel = uFunnel.w * body * (0.12 + 0.88 * eye) * streak * (1.0 - 0.6 * (1.0 - top) * 0.0);
+    m.sFunnel = uFunnel.w * body * (0.12 + 0.88 * eye) * streak;
   }
 
   // ---- debris and dust skirt where the surface wind exceeds the damage onset
@@ -281,16 +287,16 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     float vs = uT0.x * swirlShape(r / uT0.y) * 0.8 * uInt;
     float amt = smoothstep(uDust.x * 0.7, uDust.x * 1.7, vs);
     // skirt height grows toward the core and with the swirl, lofted by the updraft
-    float hs = 14.0 + 130.0 * smoothstep(0.0, 1.0, vs / uT0.x) + 2.5 * max(wAt(r, 30.0), 0.0);
-    vec4 dn = flowNoise(rel, 1.0 / 95.0);
-    vec4 dn2 = flowNoise(rel * vec3(1.0, 1.0, 0.7), 1.0 / 28.0);
+    float hs = 12.0 + 75.0 * smoothstep(0.0, 1.0, vs / uT0.x) + 0.9 * max(wAt(r, 30.0), 0.0);
+    vec4 dn = flowNoise(rel, 1.0 / 150.0);
+    vec4 dn2 = flowNoise(rel * vec3(1.0, 1.0, 0.7), 1.0 / 47.0);
     float prof = exp(-z / hs);
-    float dens = amt * prof * (0.25 + 1.3 * dn.r * dn.b) * (0.7 + 0.6 * dn2.g);
+    float dens = amt * prof * (0.35 + 1.1 * dn.r) * (0.6 + 0.8 * dn2.g);
     float edgeR = 1.0 - smoothstep(3.2 * uT0.y, 6.0 * uT0.y, r);
     m.sDust = uDust.y * dens * edgeR;
     // dark debris wrapped around the base: chunky, high contrast
     float ringR = smoothstep(0.35 * uT0.y, 1.0 * uT0.y, r) * (1.0 - smoothstep(1.6 * uT0.y, 3.4 * uT0.y, r));
-    float dh = 60.0 + 90.0 * smoothstep(0.0, 1.0, vs / uT0.x);
+    float dh = 40.0 + 55.0 * smoothstep(0.0, 1.0, vs / uT0.x);
     float dd = smoothstep(0.52, 0.78, dn.g * 0.6 + dn2.r * 0.5) * exp(-z / dh) * amt;
     m.sDebris = uDust.z * dd * ringR;
   }
@@ -310,6 +316,28 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
       m.sRain *= smoothstep(zb + 500.0, zb - 80.0, p.z);
     }
   }
+}
+
+// cheap density for the shadow taps toward the key light (funnel and dust, one noise tap each)
+float lightDens(vec3 p) {
+  vec3 rel = vec3(p.xy - uAxis, p.z);
+  float r = length(rel.xy);
+  float z = max(p.z, 0.0);
+  float s = 0.0;
+  if (uInt > 0.0 && r < 5.0 * coreR(z) + 80.0 && z < 1500.0) {
+    float dp = dpAt(r, z) * uInt;
+    vec4 n = flowNoise(rel, 1.0 / 60.0);
+    float dpe = dp * (1.0 + 0.8 * (n.r - 0.5));
+    float ex = (dpe + uFunnel2.x * z - uFunnel.x) / uFunnel.y;
+    s += uFunnel.w * smoothstep(0.0, 1.0, ex) * 0.8;
+    if (z < 400.) {
+      float vs = uT0.x * swirlShape(r / uT0.y) * 0.8 * uInt;
+      float amt = smoothstep(uDust.x * 0.7, uDust.x * 1.7, vs);
+      float hs = 14.0 + 90.0 * smoothstep(0.0, 1.0, vs / uT0.x);
+      s += uDust.y * amt * exp(-z / hs) * (0.35 + 1.1 * n.g);
+    }
+  }
+  return s;
 }
 
 // Henyey-Greenstein
@@ -359,28 +387,44 @@ void main() {
     Med m;
     float occl;
     sampleMedium(ps, m, occl);
+    int mk = int(uMask + 0.5);
+    if ((mk & 1) == 0) m.sHaze = 0.0;
+    if ((mk & 2) == 0) m.sCloud = 0.0;
+    if ((mk & 4) == 0) m.sFunnel = 0.0;
+    if ((mk & 8) == 0) m.sRain = 0.0;
+    if ((mk & 16) == 0) m.sDust = 0.0;
+    if ((mk & 32) == 0) m.sDebris = 0.0;
     float sFun = m.sFunnel;
     float sum = m.sCloud + sFun + m.sRain + m.sDust + m.sDebris + m.sHaze;
     if (sum > 1e-7) {
       float z = max(ps.z, 0.0);
       // albedo-weighted colour of the mixture
-      vec3 cCloud = vec3(0.60, 0.62, 0.66);
-      vec3 cFun = vec3(0.72, 0.74, 0.78);
+      vec3 cCloud = vec3(0.50, 0.52, 0.56);
+      vec3 cFun = vec3(0.78, 0.80, 0.84);
       vec3 cRain = vec3(0.50, 0.54, 0.60);
-      vec3 cDust = vec3(0.36, 0.30, 0.24);
-      vec3 cDeb = vec3(0.07, 0.06, 0.05);
-      vec3 cHaze = vec3(0.62, 0.66, 0.72);
-      vec3 alb = (m.sCloud * cCloud + sFun * cFun + m.sRain * cRain + m.sDust * cDust + m.sDebris * cDeb + m.sHaze * cHaze) / sum;
+      vec3 cDust = vec3(0.34, 0.27, 0.20);
+      vec3 cDeb = vec3(0.05, 0.045, 0.04);
+      vec3 cHaze = vec3(0.70, 0.74, 0.80);
+      float sO = sum - m.sHaze;
+      vec3 alb = (m.sCloud * cCloud + sFun * cFun + m.sRain * cRain + m.sDust * cDust + m.sDebris * cDeb) / max(sO, 1e-9);
       // self shadowing of the ambient light: by the local density (the thick parts are dark inside) and the cloud above
-      float selfOcc = exp(-min(sum * 55.0, 5.0) * 0.55);
+      float selfOcc = exp(-min(sO * 55.0, 5.0) * 0.55);
       float sky = occl * (0.35 + 0.65 * selfOcc);
       // dim overcast light plus a glow low in the direction of the (stylised) sunset
-      vec3 amb = uAmb.rgb * (0.30 + 0.70 * sky);
-      float glowVis = exp(-z / 800.0) * (0.5 + 0.5 * selfOcc);
-      amb += uAmb.rgb * uAmb.w * hg(cosGlow, 0.55) * 4.0 * glowVis * vec3(1.0, 0.82, 0.62);
+      vec3 amb = uAmb.rgb * (0.10 + 0.90 * sky);
+      // key light: the low glow in the direction of the (stylised) sunset, shadowed by the funnel and the dust
+      float shadow = 1.0;
+      if (sO > 2e-4 && dAxis < 650.0 && z < 500.0) {
+        vec3 Lg = normalize(vec3(uGlowDir.xy, 0.10));
+        float tau = lightDens(ps + Lg * 7.0) * 7.0 + lightDens(ps + Lg * 20.0) * 14.0 + lightDens(ps + Lg * 52.0) * 33.0 + lightDens(ps + Lg * 120.0) * 70.0;
+        shadow = exp(-tau * 0.9);
+      }
+      float glowVis = exp(-z / 800.0);
+      amb += uAmb.rgb * uAmb.w * (0.2 + 0.8 * hg(cosGlow, 0.45) * 4.0) * 1.3 * glowVis * shadow * vec3(1.0, 0.82, 0.62);
       // lightning: lights the cloud from within and around
       vec3 fl = flashLight(ps, 3500.0) * (0.45 + 0.55 * (1.0 - selfOcc * 0.6));
-      vec3 Ls = alb * (amb + fl);
+      vec3 hazeL = uFog * (0.55 + 0.45 * hg(cosGlow, 0.25) * 4.0) + flashLight(ps, 6000.0) * 0.35;
+      vec3 Ls = (m.sHaze * hazeL + sO * alb * (amb + fl)) / sum;
       float stepT = exp(-sum * dt);
       vec3 S = Ls * (1.0 - stepT);
       col += T * S;
@@ -390,7 +434,7 @@ void main() {
   }
   // beyond the march: distance haze colour (far cloud deck / horizon)
   float haze = T;
-  vec3 farc = uFog * (0.55 + 0.45 * hg(cosGlow, 0.35) * 4.0) + flashLight(ro + rd * 6000.0, 9000.0) * 0.5;
+  vec3 farc = uFog * (0.55 + 0.45 * hg(cosGlow, 0.25) * 4.0) + flashLight(ro + rd * 6000.0, 9000.0) * 0.5;
   if (sceneT >= 17999.0) {
     col += T * farc;
     T = 0.0;
@@ -446,7 +490,8 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outDist;
 
 uniform vec3 uCam;
-uniform sampler2D uLand;      // R class, G variation, B road, A tree density
+uniform sampler2D uLand;      // R class, G variation, B road, A tree density (nearest)
+uniform sampler2D uLandL;     // the same, linear (road mask, tree density)
 uniform vec4 uLandGrid;       // x0, y0, 1/(2 half), land on
 uniform sampler2D uImagery;   // satellite imagery
 uniform vec4 uImageryGrid;    // x0, y0, 1/(2 half), imagery on
@@ -499,11 +544,13 @@ void main() {
     albedo = mix(albedo, albedo * (0.85 + 0.3 * n1.g), fine);
   } else {
     vec2 uv = (xy - uLandGrid.xy) * uLandGrid.z;
-    vec4 L = texture(uLand, clamp(uv, 0.001, 0.999));
+    vec2 uvj = uv + (vec2(n2.g, n2.b) - 0.5) * 7.0 * uLandGrid.z;
+    vec4 L = texture(uLand, clamp(uvj, 0.001, 0.999));
+    vec4 LL = texture(uLandL, clamp(uv, 0.001, 0.999));
     cls = floor(L.r * 255.0 + 0.5);
     float vr = L.g;
-    road = smoothstep(0.35, 0.65, L.b);
-    treeD = L.a;
+    road = smoothstep(0.35, 0.65, LL.b);
+    treeD = LL.a;
     // base colours (dusk, linear): pasture, hay, ploughed, crop, woodland, wet, yard
     vec3 pasture = mix(vec3(0.075, 0.12, 0.04), vec3(0.11, 0.15, 0.05), vr);
     vec3 hay = mix(vec3(0.20, 0.17, 0.07), vec3(0.24, 0.20, 0.08), vr);
@@ -534,9 +581,9 @@ void main() {
   }
 
   // wet ground: darker, glossy; puddles in the low spots
-  float puddle = smoothstep(0.62, 0.78, n3.r * 0.6 + n1.g * 0.4) * uWet;
-  float wet = clamp(uWet * (0.45 + 0.4 * n1.r) + puddle, 0.0, 1.0);
-  albedo *= mix(1.0, 0.55, uWet * 0.8);
+  float puddle = smoothstep(0.70, 0.82, n3.r * 0.6 + n1.g * 0.4) * uWet;
+  float wet = clamp(uWet * (0.25 + 0.3 * n1.r) + puddle, 0.0, 1.0);
+  albedo *= 1.7 * mix(1.0, 0.6, uWet * 0.7);
 
   vec3 N = vec3(0.0, 0.0, 1.0);
   // terrain normal
@@ -551,12 +598,12 @@ void main() {
 
   vec3 V = normalize(uCam - vWorld);
   float up = N.z;
-  vec3 amb = uAmb.rgb * (0.35 + 0.65 * up);
+  vec3 amb = uAmb.rgb * 1.3 * (0.35 + 0.65 * up);
   vec3 fl = flashLight(vWorld + vec3(0.0, 0.0, 2.0), 3500.0) * (0.35 + 0.65 * max(up, 0.0));
   vec3 colr = albedo * (amb + fl);
   // glossy sheen of wet ground: reflects the dim sky and the lightning
   float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 4.0);
-  vec3 sheen = (uAmb.rgb * 1.6 + fl * 2.2) * (0.04 + 0.55 * fres) * wet;
+  vec3 sheen = (uAmb.rgb * 0.18 + fl * 1.2) * (0.02 + 0.16 * fres) * wet;
   colr += sheen;
   outColor = vec4(colr, 1.0);
   outDist = vec4(vDist, 0.0, 0.0, 1.0);
@@ -588,6 +635,7 @@ vec3 rodrigues(vec3 v, vec3 k, float a) {
 }
 
 void main() {
+  if (iPosCls.w < -0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
   int ci = int(iPosCls.w + 0.5);
   vec4 cl = uCls[ci];
   float ang = iVelPhase.w + iAxisSpin.w * uTime;
@@ -625,6 +673,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outDist;
 uniform vec3 uCam;
 uniform vec4 uAmb;
+uniform float uFrame;
 void main() {
   float a;
   if (vKind < 0.5) {            // dust grain: soft round
@@ -635,11 +684,11 @@ void main() {
   } else {                      // boards, sheet, timber: crisp rectangle with a soft edge
     a = smoothstep(1.0, 0.85, max(abs(vUv.x), abs(vUv.y)));
   }
-  a *= vStretch;
-  if (a < 0.04) discard;
+  a *= mix(0.55, 1.0, vStretch);
+  if (a < 0.04 || a < hash12(gl_FragCoord.xy + fract(uFrame * 0.37) * 131.0)) discard;
   vec3 N = normalize(vN);
   float lam = 0.55 + 0.45 * abs(N.z);
-  vec3 L = vec3(vTone) * (uAmb.rgb * lam * 1.2 + flashLight(vWorld, 3500.0) * (0.5 + 0.5 * abs(N.y)));
+  vec3 L = vec3(vTone) * (uAmb.rgb * 0.6 * lam * 1.2 + flashLight(vWorld, 3500.0) * (0.5 + 0.5 * abs(N.y)));
   // metal catches the lightning
   if (vCls > 2.5 && vCls < 3.5) L += flashLight(vWorld, 3500.0) * 0.8;
   outColor = vec4(L, a);
@@ -729,11 +778,11 @@ void main() {
   if (vPart < 0.5) {
     col = vec3(0.05, 0.04, 0.035);
   } else {
-    vec4 n = noiseAt(vWorld * 0.9 + vec3(0.0, 0.0, uTime * 0.0));
-    vec4 n2 = noiseAt(vWorld * 2.6);
+    vec4 n = noiseAt(vWorld * 0.7);
+    vec4 n2 = noiseAt(vWorld * 2.1 + n.rgb * 0.4);
     float leaf = n.r * 0.55 + n2.g * 0.5;
     float dist = length(vWorld - uCam);
-    float cut = mix(0.34, 0.5, smoothstep(40.0, 400.0, dist));
+    float cut = mix(0.44, 0.52, smoothstep(40.0, 400.0, dist));
     if (leaf < cut) discard;
     vec3 hw = mix(vec3(0.030, 0.052, 0.020), vec3(0.050, 0.075, 0.028), vVar);
     vec3 pine = mix(vec3(0.016, 0.03, 0.018), vec3(0.025, 0.042, 0.022), vVar);
@@ -741,7 +790,7 @@ void main() {
   }
   col *= (1.0 - 0.35 * uWet);
   float up = 0.45 + 0.55 * N.z;
-  vec3 L = col * (uAmb.rgb * up * 1.3 + flashLight(vWorld, 3500.0) * (0.6 + 0.4 * N.y));
+  vec3 L = col * (uAmb.rgb * 0.6 * up * 1.3 + flashLight(vWorld, 3500.0) * (0.6 + 0.4 * N.y));
   outColor = vec4(L, 1.0);
   outDist = vec4(length(vWorld - uCam), 0.0, 0.0, 1.0);
 }`;
@@ -804,7 +853,7 @@ void main() {
   vec4 n = noiseAt(vWorld * 0.5);
   alb *= 0.85 + 0.3 * n.g;
   vec3 fl = flashLight(vWorld, 3500.0);
-  vec3 L = alb * (uAmb.rgb * (0.5 + 0.5 * max(N.z, 0.0)) * 1.2 + fl * (0.6 + 0.4 * abs(N.y)));
+  vec3 L = alb * (uAmb.rgb * 0.6 * (0.5 + 0.5 * max(N.z, 0.0)) * 1.2 + fl * (0.6 + 0.4 * abs(N.y)));
   L += metal * fl * 0.5 * pow(max(N.z, 0.0), 2.0);
   outColor = vec4(L * (1.0 - 0.15 * uWet), 1.0);
   outDist = vec4(length(vWorld - uCam), 0.0, 0.0, 1.0);
@@ -839,7 +888,7 @@ void main() {
   vec3 side = normalize(cross(vdir, toCam));
   vec3 wp = a + side * 0.01 * aEnd.y * (1.0 + 0.3 * length(pos - uCam));
   vWorld = wp;
-  vAlpha = iSeed.w * (1.0 - aEnd.x * 0.6) * (0.5 + 0.5 * smoothstep(0.4, 6.0, length(pos - uCam)));
+  vAlpha = iSeed.w * (1.0 - aEnd.x * 0.6) * smoothstep(1.2, 5.0, length(pos - uCam)) * clamp(uRainRate / 40.0, 0.2, 1.0);
   gl_Position = uViewProj * vec4(wp, 1.0);
 }`;
 
@@ -851,9 +900,11 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outDist;
 uniform vec3 uCam;
 uniform vec4 uAmb;
+uniform float uFrame;
 void main() {
+  if (vAlpha * 0.3 < hash12(gl_FragCoord.xy + fract(uFrame * 0.37) * 131.0)) discard;
   vec3 L = vec3(0.6, 0.65, 0.72) * (uAmb.rgb * 2.2 + flashLight(vWorld, 3500.0) * 0.9);
-  outColor = vec4(L, vAlpha * 0.5);
+  outColor = vec4(L, 1.0);
   outDist = vec4(length(vWorld - uCam), 0.0, 0.0, 1.0);
 }`;
 
@@ -887,6 +938,9 @@ uniform float uBloomK;
 uniform float uFrame;
 uniform vec2 uRes;
 uniform float uGrain;
+uniform float uTime;
+uniform vec3 uRainK;    // intensity 0..1, screen slope (dx per dy), flash brightness
+uniform vec3 uRainCol;
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -896,12 +950,31 @@ vec3 aces(vec3 x) {
   const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
   return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
+float rainLayer(vec2 uv, float aspect, float scale, float speed, float dens, float width, float slope) {
+  vec2 p = vec2(uv.x * aspect * scale, uv.y * scale);
+  p.x += p.y * slope;
+  p.y += uTime * speed;
+  vec2 id = floor(p);
+  vec2 f = fract(p);
+  float h = hash12(id);
+  if (h > dens) return 0.0;
+  float x0 = 0.15 + 0.7 * hash12(id + 7.3);
+  float len = 0.45 + 0.55 * hash12(id + 3.1);
+  float line = smoothstep(width, 0.0, abs(f.x - x0));
+  return line * smoothstep(len, len * 0.2, f.y) * smoothstep(0.0, 0.08, f.y) * (0.5 + 0.5 * hash12(id + 1.7));
+}
 void main() {
   vec3 c = texture(uHdr, vUv).rgb + texture(uBloom, vUv).rgb * uBloomK;
+  float aspect = uRes.x / uRes.y;
+  float rn = rainLayer(vUv, aspect, 14.0, 17.0, 0.10, 0.030, uRainK.y)
+           + rainLayer(vUv, aspect, 30.0, 26.0, 0.16, 0.040, uRainK.y) * 0.8
+           + rainLayer(vUv, aspect, 64.0, 34.0, 0.20, 0.055, uRainK.y) * 0.6;
+  c += rn * uRainK.x * uRainCol * (1.0 + uRainK.z);
   // gentle vignette
   vec2 q = vUv - 0.5;
   float vig = 1.0 - 0.35 * dot(q, q) * 2.2;
   c *= vig * uExposure;
+  c += vec3(0.004, 0.0048, 0.0065);   // a lifted toe: the dark parts of a graded storm scene keep some texture
   c = aces(c);
   // film-like: lifted blacks, a little cool shadow tint
   c = mix(c, c * vec3(0.96, 1.0, 1.05), 0.5);

@@ -93,8 +93,10 @@ export interface ResolvedSeed {
   vortex: Vortex;
   meso: Vortex | null;
   condition: FunnelCondition;
-  /** Condition of the ambient cloud base (the inflow air). */
+  /** Condition of the ambient cloud base: the warm inflow air (default: the same as `condition`). */
   cloudCondition: FunnelCondition;
+  /** The near-surface air at the nearest station (often rain-cooled, nearly saturated): the humidity of the haze. */
+  nearCondition: FunnelCondition;
   /** Time span of the tornado (s) and the lifecycle ramps (s). */
   span: [number, number];
   ramp: { form: number; decay: number };
@@ -167,8 +169,11 @@ export function resolveSeed(seed: SeedData): ResolvedSeed {
   const th: Thermo = seed.thermo
     ? { t0: seed.thermo.t0, td0: seed.thermo.td0, p0: seed.thermo.p0 }
     : { t0: 20 + (seed.lcl ?? 600) / 125, td0: 20, p0: 990 }; // T - Td = LCL / 125 K (Espy), only as a fallback
-  const condition = makeCondition(th);
-  const cloudCondition = seed.inflowThermo ? makeCondition({ t0: seed.inflowThermo.t0, td0: seed.inflowThermo.td0, p0: seed.inflowThermo.p0 }) : condition;
+  const nearCondition = makeCondition(th);
+  // the air that the funnel's pressure drop condenses is the warm inflow when the caller gives one: the nearest
+  // station is usually in rain-cooled, saturated air, where ANY pressure drop makes cloud and the funnel would be a fog bank
+  const condition = seed.inflowThermo ? makeCondition({ t0: seed.inflowThermo.t0, td0: seed.inflowThermo.td0, p0: seed.inflowThermo.p0 }) : nearCondition;
+  const cloudCondition = condition;
   const flashes = (seed.lightningFlashes ?? []).map((f) => {
     const [x, y] = toLocal(origin, f.lat, f.lon);
     return { ...f, x, y, z: f.altM };
@@ -181,8 +186,8 @@ export function resolveSeed(seed: SeedData): ResolvedSeed {
   const observed = [
     `survey: ${seed.ef}, swath ${Math.round(seed.width)} m, path and time (${a.t.toFixed(0)}-${b.t.toFixed(0)} s)`,
     seed.meso ? `radar: parent circulation Vrot ${seed.meso.vrot.toFixed(0)} m/s, couplet radius ${(seed.meso.radiusM ?? 900).toFixed(0)} m${seed.meso.radar ? ` (${seed.meso.radar})` : ''}, ${sense > 0 ? 'cyclonic' : 'anticyclonic'}; period ~${(2 * Math.PI * (seed.meso.radiusM ?? 900) / seed.meso.vrot / 60).toFixed(0)} min, too slow to see` : 'radar couplet: none supplied',
-    seed.thermo ? `T ${seed.thermo.t0} / Td ${seed.thermo.td0} C, LCL ${condition.lcl.toFixed(0)} m${seed.thermo.source ? ` (${seed.thermo.source})` : ''}` : `LCL ${condition.lcl.toFixed(0)} m`,
-    ...(seed.inflowThermo ? [`cloud base ${cloudCondition.lcl.toFixed(0)} m from T ${seed.inflowThermo.t0} / Td ${seed.inflowThermo.td0} C${seed.inflowThermo.source ? ` (${seed.inflowThermo.source})` : ''}`] : []),
+    seed.thermo ? `nearest station T ${seed.thermo.t0} / Td ${seed.thermo.td0} C (LCL ${nearCondition.lcl.toFixed(0)} m, rain-cooled)${seed.thermo.source ? `: ${seed.thermo.source}` : ''}` : `LCL ${condition.lcl.toFixed(0)} m`,
+    ...(seed.inflowThermo ? [`warm inflow T ${seed.inflowThermo.t0} / Td ${seed.inflowThermo.td0} C: LCL (cloud base, funnel condensation) ${condition.lcl.toFixed(0)} m${seed.inflowThermo.source ? `: ${seed.inflowThermo.source}` : ''}`] : []),
     `${flashes.length} lightning flashes (position and time)`,
   ];
   const modelled = [
@@ -190,7 +195,7 @@ export function resolveSeed(seed: SeedData): ResolvedSeed {
     'funnel shape (from the cyclostrophic pressure deficit), debris, noise detail, rain curtains',
   ];
   return {
-    origin, vortex, meso, condition, cloudCondition, span, ramp: { form: 25, decay: 40 },
+    origin, vortex, meso, condition, cloudCondition, nearCondition, span, ramp: { form: 25, decay: 40 },
     track, translation, headingDeg, speed, width: seed.width, ef: seed.ef, vt, rm, coreSource,
     flashes, echo: seed.echo ?? null, credits, summary: { observed, modelled },
   };

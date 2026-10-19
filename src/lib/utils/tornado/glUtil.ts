@@ -93,7 +93,7 @@ export function viewProj(b: CamBasis, fovYRad: number, aspect: number, near: num
   return m;
 }
 
-export function makeTex2D(gl: WebGL2RenderingContext, w: number, h: number, internal: number, format: number, type: number, data: ArrayBufferView | null, filter: number, wrap = gl.CLAMP_TO_EDGE): WebGLTexture {
+export function makeTex2D(gl: WebGL2RenderingContext, w: number, h: number, internal: number, format: number, type: number, data: ArrayBufferView | null, filter: number, wrap: number = gl.CLAMP_TO_EDGE): WebGLTexture {
   const t = gl.createTexture()!;
   gl.bindTexture(gl.TEXTURE_2D, t);
   gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, data);

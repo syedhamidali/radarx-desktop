@@ -27,8 +27,9 @@ test('the seed resolves to survey-implied numbers', () => {
   assert.ok(Math.abs(r.speed - 24.6) < 0.6, `speed ${r.speed}`);
   assert.ok(Math.abs(r.headingDeg - 46) < 3, `heading ${r.headingDeg}`);
   assert.equal(r.vortex.sense, 1);
-  assert.ok(Math.abs(r.condition.lcl - 125 * 0.3) < 10, `station LCL ${r.condition.lcl}`);
-  assert.ok(Math.abs(r.cloudCondition.lcl - 125 * 2.1) / (125 * 2.1) < 0.08, `inflow LCL ${r.cloudCondition.lcl}`);
+  assert.ok(Math.abs(r.nearCondition.lcl - 125 * 0.3) < 10, `station LCL ${r.nearCondition.lcl}`);
+  assert.ok(Math.abs(r.condition.lcl - 125 * 2.1) / (125 * 2.1) < 0.08, `inflow LCL ${r.condition.lcl}`);
+  assert.equal(r.cloudCondition.lcl, r.condition.lcl);
   assert.equal(r.flashes.length, 1);
   assert.ok(r.summary.observed.length >= 4 && r.summary.modelled.length >= 2);
   assert.ok(!r.summary.observed.join(' ').includes('29 m/s'), 'the superseded Vrot 29 m/s is not presented');
@@ -38,10 +39,10 @@ test('spin periods: the core turns in ~8 s, the funnel surface slower; the surve
   const r = resolveSeed(SEED);
   const z = 60;
   const rf = vortexOnlyRadius(r.condition, r.vortex, z);
-  assert.ok(rf > 100 && rf < 330, `funnel radius at 60 m ${rf} m`);
+  assert.ok(rf > 40 && rf < 200, `funnel radius at 60 m ${rf} m`);
   const periodSurface = (2 * Math.PI) / omega(r.vortex, rf, z);
   const periodSwathEdge = (2 * Math.PI) / omega(r.vortex, 183, z);
-  assert.ok(periodSurface > 8 && periodSurface < 60 && periodSwathEdge > 8 && periodSwathEdge < 60 && 2 * Math.PI * r.rm / r.vt < 19, `period at the funnel surface ${periodSurface} s`);
+  assert.ok(periodSurface > 5 && periodSurface < 60 && periodSwathEdge > 19 && periodSwathEdge < 60 && 2 * Math.PI * r.rm / r.vt < 19, `period at the funnel surface ${periodSurface} s`);
   const rc = coreRadius(r.vortex, z);
   assert.ok(Math.abs(omega(r.vortex, rc, z) - tangential(r.vortex, rc, z) / rc) < 1e-12);
   const T = rotationPeriod(r);
