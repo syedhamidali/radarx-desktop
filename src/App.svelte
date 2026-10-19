@@ -12,6 +12,9 @@
   import FileTabs from './lib/components/FileTabs.svelte';
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
+  import UpdateChip from './lib/components/UpdateChip.svelte';
+  import UpdateDialog from './lib/components/UpdateDialog.svelte';
+  import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
@@ -220,6 +223,7 @@
     // The main view is needed the moment a file opens: fetch it as soon as the first paint is done.
     whenIdle(() => { void radarViewer.load(); void timeline.load(); void crossDock.load(); });
     startUiHealth();
+    void initUpdater(); // desktop only; a no-op in a browser or when updates are not configured
     tickClock();
     clockTimer = setInterval(tickClock, 1000);
 
@@ -1047,6 +1051,7 @@
         <span class="sb-dim">No file loaded. Drag and drop, or {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+O</span>
       {/if}
     </div>
+    <UpdateChip />
     <OperationsTray />
     <div class="statusbar-right">
       <span class="hud-label sb-key">FILES</span><span class="mono sb-val">{pad2($openFiles.length)}</span>
@@ -1066,6 +1071,7 @@
   </footer>
 
   <ToastContainer />
+  <UpdateDialog />
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
