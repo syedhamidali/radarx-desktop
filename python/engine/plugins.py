@@ -786,6 +786,13 @@ def _call_module(
     def target() -> None:
         try:
             box["result"] = spec.func(ctx, **params)
+        except (SystemExit, KeyboardInterrupt, GeneratorExit) as exc:
+            # Re-raised in the caller's thread these would stop the whole engine (asyncio lets
+            # them escape the event loop), e.g. a plug-in that calls sys.exit().
+            box["exc"] = ModuleError(
+                f"{spec.title} tried to stop the program ({type(exc).__name__}) and was "
+                "cancelled. A module must return a Result or raise an error instead."
+            )
         except BaseException as exc:  # handed back to (or dropped by) the waiting caller
             box["exc"] = exc
         finally:

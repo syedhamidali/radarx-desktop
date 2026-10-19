@@ -267,7 +267,11 @@ class _ContextExecutor(concurrent.futures.ThreadPoolExecutor):
 
     def submit(self, fn, /, *args, **kwargs):  # type: ignore[override]
         ctx = contextvars.copy_context()
-        return super().submit(ctx.run, fn, *args, **kwargs)
+        future = super().submit(ctx.run, fn, *args, **kwargs)
+        session = _SESSION.get()
+        if session is not None:
+            session.track_job(future)  # lets the session folder be cleaned up after late writes
+        return future
 
 
 _context_loops: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
@@ -433,6 +437,81 @@ def _describe_open_error(path: str, exc: BaseException) -> str:
     return f"Could not open {name} ({type(exc).__name__}: {exc}). The file may be damaged."
 
 
+#: Fragments of the messages HDF5 / NetCDF / zlib / xradar raise when the bytes of an already
+#: opened file turn out to be damaged (opening is lazy, so this shows up on the first data read).
+_DAMAGED_DATA_MARKERS = (
+    "netcdf: hdf error",
+    "netcdf: unknown file format",
+    "filter returned failure",
+    "can't synchronously read",
+    "unable to synchronously",
+    "file signature not found",
+    "unexpected file end",
+    "bad crc",
+    "while decompressing",
+    "compressed file ended",
+    "incorrect header check",
+    "invalid block type",
+    "truncated",
+)
+
+_MAX_ERROR_TEXT = 400
+
+
+def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
+    """``(log level, user-facing text)`` for an exception raised while handling *msg_type*.
+
+    The text names the handler (``... in <type>`` / ``... for <type>``: the UI uses that to decide
+    which request a failure belongs to), says what is wrong in plain words and, where the user can
+    do something about it, what to do next. It never contains a traceback.
+    """
+    import errno
+
+    detail = " ".join(str(exc).split())
+    if len(detail) > _MAX_ERROR_TEXT:
+        detail = detail[:_MAX_ERROR_TEXT] + "..."
+    low = detail.lower()
+    if isinstance(exc, MemoryError):
+        return logging.ERROR, (
+            f"Not enough memory in {msg_type}. Close other open files or applications, or ask "
+            "for a smaller area / lower resolution, and try again."
+        )
+    if isinstance(exc, (FileNotFoundError, PermissionError, KeyError, IndexError)):
+        pass  # handled below; these are never "damaged data"
+    elif any(marker in low for marker in _DAMAGED_DATA_MARKERS):
+        return logging.WARNING, (
+            f"Unreadable data in {msg_type}: the open file looks truncated or damaged ({detail}). "
+            "Re-download or re-copy it, then open it again."
+        )
+    if isinstance(exc, (ValueError, TypeError, OverflowError)):
+        return logging.WARNING, f"Invalid input for {msg_type}: {detail}"
+    if isinstance(exc, FileNotFoundError):
+        return logging.WARNING, f"File not found: {detail}. Check that the file or folder exists."
+    if isinstance(exc, (KeyError, IndexError)):
+        return logging.WARNING, f"Not found: {detail}"
+    if isinstance(exc, OSError):
+        where = (
+            f" ({os.path.basename(str(exc.filename))})" if getattr(exc, "filename", None) else ""
+        )
+        if exc.errno == errno.ENOSPC:
+            tail = f"the disk is full{where}. Free some space or choose another folder, then retry."
+        elif exc.errno in (errno.EACCES, errno.EPERM):
+            tail = f"permission denied{where}. Choose a folder you are allowed to write to."
+        elif exc.errno == errno.EROFS:
+            tail = f"the location is read-only{where}. Choose another folder."
+        elif exc.errno == errno.ENAMETOOLONG:
+            tail = f"the file name is too long{where}. Choose a shorter name."
+        else:
+            tail = f"{detail}. Check that the file or folder is still available."
+        return logging.ERROR, f"I/O error in {msg_type}: {tail}"
+    if isinstance(exc, ImportError):
+        return logging.ERROR, f"Missing dependency: {detail}. Reinstall xradar-desktop's engine."
+    return logging.ERROR, (
+        f"Unexpected error in {msg_type}: {detail}. Try again; if it keeps happening, restart "
+        "the app (details are in the engine log)."
+    )
+
+
 def _cache_token(file_id: str | None) -> tuple[str, int] | None:
     """Identity of the data behind a reader: (file_id, generation)."""
     if file_id is None:
@@ -514,9 +593,12 @@ def _byte_views(arrays: Sequence[Any]) -> list[memoryview]:
     views: list[memoryview] = []
     for arr in arrays:
         if isinstance(arr, (bytes, bytearray, memoryview)):
-            views.append(memoryview(arr).cast("B"))
+            view = memoryview(arr).cast("B")
+        elif getattr(arr, "size", 1) == 0:
+            continue  # nothing to send (and memoryview cannot cast a zero-length shape)
         else:
-            views.append(memoryview(np.ascontiguousarray(arr)).cast("B"))
+            view = memoryview(np.ascontiguousarray(arr)).cast("B")
+        views.append(view)
     return views
 
 
@@ -794,8 +876,11 @@ class ConnectionHandler:
     async def _handle_message(self, raw: str) -> None:
         try:
             msg = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            await self.send_error(f"Invalid JSON: {exc}")
+        except RecursionError:
+            await self.send_error("Invalid JSON: nested too deeply")
+            return
+        except ValueError as exc:  # JSONDecodeError, or e.g. an integer with thousands of digits
+            await self.send_error(f"Invalid JSON: {str(exc)[:200]}")
             return
 
         if not isinstance(msg, dict):
@@ -892,29 +977,21 @@ class ConnectionHandler:
         _PROGRESS_OPEN.set(False)
         try:
             await handler(msg)
-        except (ValueError, TypeError) as exc:
-            logger.warning("Validation error in '%s': %s", msg_type, exc)
-            await self.send_error(f"Invalid input for {msg_type}: {exc}")
-        except FileNotFoundError as exc:
-            logger.warning("File not found in '%s': %s", msg_type, exc)
-            await self.send_error(f"File not found: {exc}")
-        except (KeyError, IndexError) as exc:
-            logger.warning("Lookup error in '%s': %s", msg_type, exc)
-            await self.send_error(f"Not found: {exc}")
-        except OSError as exc:
-            logger.error("I/O error in '%s': %s", msg_type, exc)
-            await self.send_error(f"I/O error in {msg_type}: {exc}")
-        except ImportError as exc:
-            logger.error("Missing dependency in '%s': %s", msg_type, exc)
-            await self.send_error(f"Missing dependency: {exc}")
-        except Exception as exc:
-            logger.error(
-                "Unexpected error handling '%s': %s\n%s",
-                msg_type,
-                exc,
-                traceback.format_exc(),
+        except (SystemExit, KeyboardInterrupt, GeneratorExit) as exc:
+            # Code that runs on a worker thread (a plug-in module, a library) must not be able to
+            # stop the whole engine: asyncio re-raises these out of the event loop.
+            logger.error("'%s' tried to stop the engine (%s)", msg_type, type(exc).__name__)
+            await self.send_error(
+                f"Unexpected error in {msg_type}: the operation tried to stop the program "
+                f"({type(exc).__name__}). Nothing was changed; try again."
             )
-            await self.send_error(f"Unexpected error in {msg_type}: {exc}")
+        except Exception as exc:
+            level, text = _failure_text(str(msg_type), exc)
+            if level == logging.ERROR:
+                logger.error("Error handling '%s': %s\n%s", msg_type, exc, traceback.format_exc())
+            else:
+                logger.warning("Error in '%s': %s", msg_type, exc)
+            await self.send_error(text)
         finally:
             if _PROGRESS_OPEN.get():
                 _PROGRESS_OPEN.set(False)
@@ -986,7 +1063,7 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: histogram_data(datatree, variable, sweep, bins=int(bins), overrides=overrides),
+            lambda: histogram_data(datatree, variable, sweep, bins=bins, overrides=overrides),
         )
 
         await self.send({"type": "histogram_result", "sweep": sweep, **result})

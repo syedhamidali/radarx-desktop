@@ -14,6 +14,7 @@ import xarray as xr
 
 from engine import varmap
 from engine.reader import mask_below_threshold, sorted_sweep_names
+from engine.statistics import _clamp_bins
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +190,7 @@ def histogram_data(
             **({"notes": notes} if notes else {}),
         }
 
-    counts, bin_edges = np.histogram(valid, bins=int(bins))
+    counts, bin_edges = np.histogram(valid, bins=_clamp_bins(bins))
 
     mean = float(np.mean(valid))
     std = float(np.std(valid))

@@ -1041,6 +1041,11 @@ class RadarReader:
             available = sorted(str(v) for v in ds.data_vars)
             raise KeyError(f"Variable '{variable}' not in sweep {sweep}. Available: {available}")
         da = ds[variable]
+        if da.size == 0:
+            raise ValueError(
+                f"Sweep {sweep} has no {variable} data (0 rays or 0 gates). The file may be "
+                "truncated or incomplete; try another sweep."
+            )
         if self._arco_active(sweep):
             # Remote (zarr/S3) arrays: read once under a per-sweep lock so concurrent
             # renders of the same sweep don't download it several times.
