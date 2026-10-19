@@ -66,8 +66,23 @@ export const PHYSICS: Record<string, Physics> = {
   },
   debris_signature: {
     title: 'Debris signature',
-    text: 'Low correlation coefficient with high reflectivity: lofted debris of different shapes and sizes, so a tornado is on the ground doing damage.',
+    text: 'Low correlation coefficient with high reflectivity can come from lofted debris, but also from large drops, hail and X-band effects: here it is weak evidence, a candidate, not a confirmation.',
     prov: 'retrieved',
+  },
+  tornado_rotation: {
+    title: 'What the radars saw of the tornado',
+    text: 'A radar measures velocity along its beam; a vortex shows as inbound and outbound winds side by side. Here that pair is 1-2 km wide, the parent circulation: a tornado a few hundred metres wide is smaller than the radar grid.',
+    prov: 'retrieved',
+  },
+  winds_at_tornado: {
+    title: 'Winds near the tornado',
+    text: 'Winds retrieved from several radars on a 1 km grid show the flow around the circulation, not the tornado itself.',
+    prov: 'retrieved',
+  },
+  lightning_near_tornado: {
+    title: 'Lightning near the tornado',
+    text: 'The lightning mapping array shows how active the storm was around the tornado; lightning does not tell whether a tornado is on the ground.',
+    prov: 'observed',
   },
   tornado: {
     title: 'Tornado',
@@ -80,8 +95,8 @@ export const PHYSICS: Record<string, Physics> = {
     prov: 'retrieved',
   },
   hail: {
-    title: 'Hail core',
-    text: 'Hail looks different from rain to a polarimetric radar: very high reflectivity with low differential reflectivity and large, tumbling stones.',
+    title: 'Hail signature (weak evidence)',
+    text: 'A polarimetric radar class and a size estimate (MESH) are indirect: no hailstone of 8 mm or more was measured at the surface in this case.',
     prov: 'retrieved',
   },
   first_flash: {
@@ -155,11 +170,11 @@ export function captionOf(ev: ScienceEvent): { title: string; numbers: string; t
 
 /** Importance of a kind when captions compete for the 120 seconds (higher is kept first). */
 export const CAPTION_PRIORITY: Record<string, number> = {
-  tornado: 10, rotation: 9, hail: 8, debris_signature: 8, gust_front: 7, rear_inflow_jet: 7, zdr_column: 6, updraft: 6, first_flash: 6,
+  tornado: 10, tornado_rotation: 10, rotation: 9, hail: 8, debris_signature: 7, winds_at_tornado: 6, lightning_near_tornado: 5, gust_front: 7, rear_inflow_jet: 7, zdr_column: 6, updraft: 6, first_flash: 6,
   vorticity: 5, flash_rate: 5, line_motion: 5, rain_dsd: 4, gust_front_speed: 4, convergence: 4, size_sorting: 4,
 };
 /** How many captions of one kind the film shows (default 1). */
-const MAX_PER_KIND: Record<string, number> = { tornado: 2, gust_front: 2, rain_dsd: 1 };
+const MAX_PER_KIND: Record<string, number> = { tornado: 2, gust_front: 2, rain_dsd: 1, tornado_rotation: 1 };
 
 export interface ScheduledCaption {
   ev: ScienceEvent;

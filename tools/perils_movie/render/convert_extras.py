@@ -386,6 +386,9 @@ _KIND_ALIAS = {
     "updraft_maximum": "updraft",
     "tornado_radar_rotation": "rotation",
     "low_level_convergence": "convergence",
+    "tornado_rotation_kinematics": "tornado_rotation",
+    "low_level_winds_at_tornado": "winds_at_tornado",
+    "lightning_near_tornado": "lightning_near_tornado",
 }
 
 
