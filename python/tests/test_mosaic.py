@@ -692,3 +692,111 @@ class TestRealKatx:
         assert res["value"] == pytest.approx(float(rec.image[iy, ix]), abs=1e-4)
         vals = [r["value"] for r in res["radars"] if r["value"] is not None]
         assert vals and min(vals) - 3.0 <= res["value"] <= max(vals) + 3.0
+
+
+def decode_volume(rec: mosaic.MosaicRecord) -> np.ndarray:
+    """uint8 codes -> float (NaN = no data), the way the 3-D view reads them."""
+    assert rec.volume is not None and rec.volume_range is not None
+    lo, hi = rec.volume_range
+    out = lo + (rec.volume.astype(np.float32) - 1.0) * (hi - lo) / 254.0
+    out[rec.volume == 0] = np.nan
+    return out
+
+
+@needs_radarx
+class TestVolume:
+    def test_composite_keeps_the_merged_volume(self, cache):
+        rd = make_reader(make_volume(*A, layered(40.0, 6.0)))
+        rec = mosaic.build_mosaic([("f", rd)], "DBZH", "composite", GRID, cache=cache)
+        z = np.arange(1000.0, 12001.0, 1000.0)
+        assert rec.volume.dtype == np.uint8 and rec.volume.shape[0] == z.size
+        assert rec.volume.shape[1:] == rec.level_m.shape
+        np.testing.assert_allclose(rec.volume_z_m, z)
+        assert rec.volume_range == (-20.0, 75.0) and rec.header()["has_volume"] is True
+        vol = decode_volume(rec)
+        ny, nx = vol.shape[1:]
+        col = vol[:, ny // 2, nx // 2 + 40]  # 40 km east of the radar
+        # echo (40 dBZ) up to the layer top at 6 km, nothing above
+        assert np.nanmax(col[:5]) == pytest.approx(40.0, abs=0.5)
+        assert not (col[8:] > 0).any()  # -10 dBZ above the layer, never an echo
+        # the composite is the column maximum of this very volume
+        assert np.nanmax(vol) == pytest.approx(np.nanmax(rec.image), abs=0.5)
+        comp = np.max(np.where(np.isfinite(vol), vol, -np.inf), axis=0)
+        assert np.isfinite(comp).sum() > 100
+
+    def test_codes_round_trip_and_range(self):
+        buf = np.array([[[np.nan, -30.0, -20.0, 0.0, 27.5, 75.0, 90.0]]], dtype=np.float16)
+        codes = mosaic._quantise_volume(buf, -20.0, 75.0)[0, 0]
+        assert list(codes[:2]) == [0, 0]  # NaN and below the range: no data
+        assert codes[2] == 1 and codes[-2] == 255 and codes[-1] == 255  # saturates
+        back = -20.0 + (codes[3:5].astype(float) - 1.0) * 95.0 / 254.0
+        assert back == pytest.approx([0.0, 27.5], abs=0.2)
+
+    def test_no_echo_rule_holds_on_every_level(self, cache):
+        """Covered cells where no radar measured an echo are empty on all levels."""
+
+        def blob(x, y, h):
+            return np.where(np.hypot(x - 10.0, y) < 12.0, 35.0, np.nan).astype(np.float32)
+
+        r1 = make_reader(make_volume(*A, blob, name="ONE"))
+        r2 = make_reader(make_volume(*B, blob, name="TWO"))
+        rec = mosaic.build_mosaic(
+            [("a", r1), ("b", r2)], "DBZH", "composite", GRID, {"time_scale_s": 0}, cache=cache
+        )
+        vol = decode_volume(rec)
+        finite = vol[np.isfinite(vol)]
+        assert finite.size > 0 and finite.max() == pytest.approx(35.0, abs=1.0)
+        assert finite.min() > 0.0, "a no-echo fill value leaked into the 3-D volume"
+        per_level = np.isfinite(vol).mean(axis=(1, 2))
+        assert per_level.max() < 0.1  # small echoes, not the radars' coverage discs
+
+    def test_cappi_can_keep_the_volume_and_keeps_its_image(self, cache):
+        rd = make_reader(make_volume(*A, layered(30.0, 5.0)))
+        with_vol = mosaic.build_mosaic(
+            [("f", rd)], "DBZH", "cappi", GRID, height_m=2500, cache=cache, keep_volume=True
+        )
+        without = mosaic.build_mosaic(
+            [("f", rd)], "DBZH", "cappi", GRID, height_m=2500, cache=cache, keep_volume=False
+        )
+        assert without.volume is None and "not kept" in (without.volume_note or "")
+        np.testing.assert_array_equal(with_vol.image, without.image)
+        # the 2.5 km cappi level is not one of the volume levels (1 km steps)
+        assert with_vol.volume.shape[0] == 12
+        assert 2500.0 not in with_vol.volume_z_m.tolist()
+
+    def test_too_large_a_volume_is_skipped_with_a_note(self, cache, monkeypatch):
+        monkeypatch.setattr(mosaic, "VOLUME_MAX_VOXELS", 1000)
+        rd = make_reader(make_volume(*A, flat(30.0)))
+        rec = mosaic.build_mosaic([("f", rd)], "DBZH", "composite", GRID, cache=cache)
+        assert rec.volume is None and rec.header()["has_volume"] is False
+        assert any("3-D volume" in w for w in rec.warnings)
+        assert np.isfinite(rec.image).any()  # the 2-D product is unaffected
+        with pytest.raises(mosaic.MosaicError, match="not kept"):
+            mosaic.volume_message(rec.mosaic_id, cache)
+
+    def test_volume_counts_towards_the_cache_bound(self, cache):
+        rd = make_reader(make_volume(*A, flat(30.0)))
+        rec = mosaic.build_mosaic([("f", rd)], "DBZH", "composite", GRID, cache=cache)
+        small = mosaic.build_mosaic(
+            [("f", rd)], "DBZH", "composite", GRID, cache=cache, keep_volume=False
+        )
+        assert rec.nbytes - small.nbytes == rec.volume.nbytes
+
+    def test_volume_message_geometry(self, cache):
+        a = make_reader(make_volume(*A, flat(25.0), name="WEST"))
+        b = make_reader(make_volume(*B, flat(25.0), name="EAST"))
+        rec = mosaic.build_mosaic([("a", a), ("b", b)], "DBZH", "composite", GRID, cache=cache)
+        header, vol = mosaic.volume_message(rec.mosaic_id, cache)
+        g = header["grid"]
+        assert vol.shape == (g["nz"], g["ny"], g["nx"]) and vol is rec.volume
+        assert g["cell_m"] == 1000.0 and len(g["z"]) == g["nz"]
+        assert header["dtype"] == "uint8" and header["scale"]["nodata"] == 0
+        assert header["scale"]["step"] == pytest.approx(95.0 / 254.0)
+        west, east = header["radars"]
+        assert west["name"] == "WEST" and east["name"] == "EAST"
+        # B is ~100 km east of A, both on the same latitude (the origin is the box centre)
+        assert east["x_m"] - west["x_m"] == pytest.approx(100e3, rel=0.03)
+        assert east["y_m"] == pytest.approx(west["y_m"], abs=2000.0)
+        for r in header["radars"]:  # the radars sit inside the grid
+            assert g["x0"] <= r["x_m"] <= g["x0"] + g["nx"] * g["cell_m"]
+            assert g["y0"] <= r["y_m"] <= g["y0"] + g["ny"] * g["cell_m"]

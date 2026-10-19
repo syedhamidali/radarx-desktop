@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack, tick } from 'svelte';
   import RadarViewer from './lib/components/RadarViewer.svelte';
-  import RadarViewer3D from './lib/components/RadarViewer3D.svelte';
+  import Viewer3D from './lib/components/Viewer3D.svelte';
   import DualPolDashboard from './lib/components/DualPolDashboard.svelte';
   import DataInspector from './lib/components/DataInspector.svelte';
   import ProcessingPanel from './lib/components/ProcessingPanel.svelte';
@@ -909,7 +909,7 @@
           {:else if viewMode === '2d'}
             <RadarViewer />
           {:else if viewMode === '3d'}
-            <RadarViewer3D />
+            <Viewer3D />
           {:else}
             <DualPolDashboard />
           {/if}

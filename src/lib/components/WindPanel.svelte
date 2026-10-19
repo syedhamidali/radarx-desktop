@@ -7,6 +7,7 @@
   import { connectionStatus } from '../stores/radarData';
   import { openFiles } from '../stores/fileManager';
   import { RADAR_COLORS, inTauri } from '../stores/mosaic';
+  import { viewWindIn3D, volume3dLoading } from '../stores/volume3d';
   import {
     windSettings,
     windFileRows,
@@ -450,6 +451,8 @@
 
         <div class="btn-row">
           <button type="button" class="mini-btn" onclick={fitWindToMap}>Fit to analysis</button>
+          <button type="button" class="mini-btn" disabled={$volume3dLoading.wind} onclick={() => viewWindIn3D(res.wind_id)}
+            title="Show the wind vectors (3D arrows, optionally over the reflectivity volume) in the 3D tab">{$volume3dLoading.wind ? 'Loading…' : 'View in 3D'}</button>
           <span class="spacer"></span>
           <button type="button" class="mini-btn" disabled={!desktop || $windExporting} onclick={() => exportWind()}
             title={desktop ? 'Save the gridded fields as NetCDF' : 'Exporting needs the desktop app'}>NetCDF</button>

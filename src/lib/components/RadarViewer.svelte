@@ -27,6 +27,7 @@
   import { boxSelectActive, selectedBox } from '../stores/volumeSelect';
   import { mosaicLayer, mosaicDisplay, registerViewBoundsProvider, type GeoBounds } from '../stores/mosaic';
   import { windLayer } from '../stores/wind';
+  import { effectiveCmap, chooseCmap } from '../stores/cmapChoice';
   import { dataSpaceToLatLon, latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
   import type { SweepInfo } from '../stores/radarData';
 
@@ -173,7 +174,7 @@
     // Changing variable/sweep/file leaves the displayed module field.
     dropFieldOverride();
     lastRequestKey = key;
-    currentCmap = getDefaultCmap(v);
+    currentCmap = effectiveCmap(v); // the user's choice for this variable (shared with the 3D view)
     const range = getDefaultRange(v);
     if (range) {
       currentVmin = range[0];
@@ -368,7 +369,7 @@
       currentUnits = field.spec.units;
     } else if (entry.derived && styleFor(entry.variable)) {
       // Derived variable: its registered style (it may have arrived after the request was issued)
-      currentCmap = getDefaultCmap(entry.variable);
+      currentCmap = effectiveCmap(entry.variable);
       const r = getDefaultRange(entry.variable);
       if (r) {
         currentVmin = r[0];
@@ -402,6 +403,8 @@
   // ── Colormap/range callbacks ──────────────────────────────────────────────
   function handleCmapChange(name: string) {
     currentCmap = name;
+    // remember it for the variable (not for a module field, which brings its own colours)
+    if (!fieldShown && $selectedVariable) chooseCmap($selectedVariable, name);
     renderFrame();
   }
 

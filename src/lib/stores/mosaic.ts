@@ -41,6 +41,8 @@ export interface MosaicSettings {
   /** File id used as the calibration reference ('' = first selected file). */
   referenceFileId: string;
   advect: boolean;
+  /** Keep the merged 3D field so the mosaic can be shown in the 3D view. */
+  keepVolume: boolean;
   /** Optional colour range override (null = automatic). */
   vmin: number | null;
   vmax: number | null;
@@ -63,6 +65,7 @@ export const DEFAULT_SETTINGS: MosaicSettings = {
   calibrate: false,
   referenceFileId: '',
   advect: false,
+  keepVolume: true,
   vmin: null,
   vmax: null,
 };
@@ -105,6 +108,10 @@ export interface MosaicHeader {
   stats: { valid_fraction: number; min: number; max: number; mean: number };
   radars: MosaicRadarInfo[];
   overlap_fraction: number;
+  /** The merged 3D field was kept (see get_mosaic_volume / the 3D view). */
+  has_volume?: boolean;
+  volume_shape?: [number, number, number] | null;
+  volume_note?: string | null;
   elapsed_ms: number;
   png_bytes: number;
   chunks: number;
@@ -561,6 +568,7 @@ export function runMosaic(opts: RunOptions = {}): string | null {
   };
   if (s.vmin !== null) msg.vmin = s.vmin;
   if (s.vmax !== null) msg.vmax = s.vmax;
+  msg.keep_volume = s.keepVolume;
 
   pendingRingKm.set(requestId, s.maxRangeKm);
   if (mosaicOp) {

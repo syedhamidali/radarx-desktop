@@ -3,7 +3,7 @@
   import { radarData, selectedVariable, connectionStatus } from '../stores/radarData';
   import { selectedBox } from '../stores/volumeSelect';
   import { wsManager } from '../utils/websocket';
-  import { getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
+  import { getCachedSweep, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import { COLORMAP_DATA } from '../utils/colormaps';
   import { styleFor, variableStylesRevision } from '../utils/variableStyles';
   import {
@@ -18,7 +18,7 @@
   import { settings } from '../stores/settings';
   import { resolveBasemap } from '../utils/basemaps';
   import {
-    variableKind, buildTf, thresholdSpec, thresholdToShader, significantNorm, adaptiveShiftDb,
+    variableKind, buildTf, recolorTf, thresholdSpec, thresholdToShader, significantNorm, adaptiveShiftDb,
     type VolumeVarKind,
   } from '../utils/volumeTf';
   import {
@@ -27,6 +27,9 @@
     type Cam, type CameraPreset,
   } from '../utils/scene3d';
   import { buildGroundMap } from '../utils/groundMap';
+  import { GLSL_THRESHOLD, GLSL_HASH, GLSL_GROUND_POLAR } from '../utils/volumeShaderParts';
+  import CmapSelect from './CmapSelect.svelte';
+  import { cmapOverrides, effectiveCmap, chooseCmap } from '../stores/cmapChoice';
 
   // ── Reactive state ────────────────────────────────────────────────────────
   let container = $state<HTMLDivElement | null>(null);
@@ -110,6 +113,33 @@
     tfSyncKey++;
     uploadTransferFn();
   }
+
+  /** Swap the colours of the transfer function for colormap `name`; the opacity curve is kept. */
+  function applyCmap(name: string) {
+    if (!(name in COLORMAP_DATA)) return;
+    cmap = name;
+    tfData = recolorTf(tfData, COLORMAP_DATA[name]);
+    uploadTransferFn();
+    markDirty();
+  }
+
+  /** The user picked a colormap here: remember it for this variable (the 2D view uses it too). */
+  function onCmapPick(name: string) {
+    if (variable) chooseCmap(variable, name);
+    applyCmap(name);
+  }
+
+  // A colormap chosen elsewhere (2D view, other 3D source) for the variable on screen.
+  $effect(() => {
+    const o = $cmapOverrides;
+    void o;
+    const v = variable;
+    if (!v || categories) return;
+    untrack(() => {
+      const want = effectiveCmap(v);
+      if (want !== cmap) applyCmap(want);
+    });
+  });
 
   /**
    * Once the whole volume is packed: if it is a weak scene (light rain), slide the default opacity
@@ -408,53 +438,7 @@
       cov = li.y * ws;
       return true;
     }
-
-    // Opacity multiplier of a value: the "hide below" threshold with a soft edge.
-    float thresholdFactor(float val) {
-      if (u_thr <= 0.0) return 1.0;
-      float m = (u_thrMode == 1) ? abs(val * 2.0 - 1.0) : val;
-      return smoothstep(u_thr, u_thr + u_thrSoft, m);
-    }
-
-    float hash12(vec2 p) {
-      return fract(52.9829189 * fract(0.06711056 * p.x + 0.00583715 * p.y));
-    }
-
-    // Ground disc shading at scene position gp (z = 0), seen along d from distance t.
-    vec3 groundColor(vec3 gp, float t, vec3 d) {
-      float R = u_rangeLimit;
-      float pixAng = 2.0 * u_tanHalfFovY / u_resolution.y;
-      float foot = t * pixAng / max(0.05, -d.z);          // km covered by one pixel on the ground
-      float g = length(gp.xy);
-
-      vec3 col;
-      if (u_groundMode == 2 && abs(gp.x) < u_groundHalf && abs(gp.y) < u_groundHalf) {
-        vec2 tuv = vec2(gp.x / (2.0 * u_groundHalf) + 0.5, 0.5 - gp.y / (2.0 * u_groundHalf));
-        float lod = log2(max(1.0, foot / (2.0 * u_groundHalf / u_groundSize)));
-        col = min(textureLod(u_ground, tuv, lod).rgb * 1.5, vec3(1.0));
-      } else {
-        col = vec3(0.07, 0.085, 0.12);
-        // faint grid every half ring step
-        float gs = u_ringStep * 0.5;
-        vec2 gm = abs(mod(gp.xy + 0.5 * gs, gs) - 0.5 * gs);
-        float gl = 1.0 - smoothstep(0.5 * max(foot, 0.3), 1.5 * max(foot, 0.3), min(gm.x, gm.y));
-        col += vec3(0.05, 0.06, 0.09) * gl;
-      }
-
-      float w = max(foot * 0.9, 0.3);
-      // range rings
-      float rd = abs(mod(g + 0.5 * u_ringStep, u_ringStep) - 0.5 * u_ringStep);
-      float ring = 1.0 - smoothstep(0.5 * w, 1.5 * w, rd);
-      col = mix(col, vec3(0.72, 0.8, 0.95), ring * (u_groundMode == 2 ? 0.42 : 0.35));
-      // N-S / E-W axes through the radar
-      float ax = 1.0 - smoothstep(0.5 * w, 1.5 * w, min(abs(gp.x), abs(gp.y)));
-      col = mix(col, vec3(0.72, 0.8, 0.95), ax * 0.12);
-      // rim
-      float rim = 1.0 - smoothstep(0.5 * w, 2.0 * w, abs(g - R));
-      col = mix(col, vec3(0.85, 0.9, 1.0), rim * 0.6);
-      return col;
-    }
-
+${GLSL_THRESHOLD}${GLSL_HASH}${GLSL_GROUND_POLAR}
     void main() {
       // Reconstruct per-pixel ray direction
       vec2 uv = (gl_FragCoord.xy / u_resolution - 0.5) * 2.0;
@@ -1579,7 +1563,7 @@
       resetVolume();
       if (v !== prevVariable) {
         prevVariable = v;
-        cmap = getDefaultCmap(v);
+        cmap = effectiveCmap(v);
         const range = getDefaultRange(v);
         if (range) { vmin = range[0]; vmax = range[1]; }
         applyDefaultTf(v);
@@ -1945,6 +1929,10 @@
           <option value="grid">Grid</option>
           <option value="off">Off</option>
         </select>
+      </div>
+
+      <div class="ctrl-group">
+        <label>Colormap <CmapSelect value={cmap} disabled={!!categories} onchange={onCmapPick} /></label>
       </div>
 
       {#if !categories}

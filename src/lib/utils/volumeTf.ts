@@ -118,6 +118,17 @@ export function buildTf(
   return tf;
 }
 
+/** Same opacity as `tf` (the curve the user may have edited), colours taken from the colormap `rgb` (256x3). */
+export function recolorTf(tf: Uint8Array, rgb: ArrayLike<number>): Uint8Array {
+  const out = new Uint8Array(tf);
+  for (let i = 0; i < 256; i++) {
+    out[i * 4] = rgb[i * 3];
+    out[i * 4 + 1] = rgb[i * 3 + 1];
+    out[i * 4 + 2] = rgb[i * 3 + 2];
+  }
+  return out;
+}
+
 /** Same colours as `tf`, opacity replaced by a preset curve. */
 export function withPresetAlpha(tf: Uint8Array, kind: VolumeVarKind, vmin: number, vmax: number, preset: TfPreset, shift = 0): Uint8Array {
   const out = new Uint8Array(tf);

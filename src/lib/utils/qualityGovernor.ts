@@ -528,6 +528,11 @@ export interface ProgressiveOptions {
   job: ProgressiveJob;
   /** Called when drawing throws; the renderer then stops. */
   onError: (err: unknown) => void;
+  /**
+   * Give the render target a depth buffer (for jobs that draw depth-tested geometry on top of the
+   * ray-marched volume). The job clears it itself in `drawBand`. Default: colour only.
+   */
+  depth?: boolean;
 }
 
 /** Bands cost no more than this fraction of the fence floor, clamped to [MIN, MAX] ms. */
@@ -545,6 +550,8 @@ export class ProgressiveRenderer {
 
   private fbo: WebGLFramebuffer | null = null;
   private fboTex: WebGLTexture | null = null;
+  private fboDepth: WebGLRenderbuffer | null = null;
+  private withDepth = false;
   private fboW = 0;
   private fboH = 0;
   private hasImage = false;
@@ -599,6 +606,7 @@ export class ProgressiveRenderer {
     this.gov = o.governor;
     this.job = o.job;
     this.onError = o.onError;
+    this.withDepth = o.depth === true;
   }
 
   isInteracting(): boolean {
@@ -633,6 +641,7 @@ export class ProgressiveRenderer {
       this.cancelWork();
       this.fbo = null;
       this.fboTex = null;
+      this.fboDepth = null;
       this.fboW = this.fboH = 0;
       this.hasImage = false;
     } else {
@@ -655,12 +664,14 @@ export class ProgressiveRenderer {
       try {
         if (this.fbo) this.gl.deleteFramebuffer(this.fbo);
         if (this.fboTex) this.gl.deleteTexture(this.fboTex);
+        if (this.fboDepth) this.gl.deleteRenderbuffer(this.fboDepth);
       } catch {
         /* context gone */
       }
     }
     this.fbo = null;
     this.fboTex = null;
+    this.fboDepth = null;
   }
 
   /** Show the last completed image again (e.g. right after a canvas resize cleared the canvas). */
@@ -695,6 +706,8 @@ export class ProgressiveRenderer {
     if (this.fbo && this.fboTex && w === this.fboW && h === this.fboH) return;
     if (this.fbo) gl.deleteFramebuffer(this.fbo);
     if (this.fboTex) gl.deleteTexture(this.fboTex);
+    if (this.fboDepth) gl.deleteRenderbuffer(this.fboDepth);
+    this.fboDepth = null;
     this.fboTex = gl.createTexture();
     gl.activeTexture(gl.TEXTURE7); // keep clear of the job's texture units
     gl.bindTexture(gl.TEXTURE_2D, this.fboTex);
@@ -708,6 +721,13 @@ export class ProgressiveRenderer {
     this.fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this.fboTex, 0);
+    if (this.withDepth) {
+      this.fboDepth = gl.createRenderbuffer();
+      gl.bindRenderbuffer(gl.RENDERBUFFER, this.fboDepth);
+      gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+      gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, this.fboDepth);
+      gl.bindRenderbuffer(gl.RENDERBUFFER, null);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.fboW = w;
     this.fboH = h;
