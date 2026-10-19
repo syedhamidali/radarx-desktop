@@ -389,7 +389,13 @@ def stage_arc(c: Ctx) -> None:
         )
         try:
             out = rxr.zdr_arc(
-                ds, zdr="ZDR", dbz="REF", rhohv="RHO", kdp="KDP", ffd_direction=ffd, storm_motion=motion["toward_deg"]
+                ds,
+                zdr="ZDR",
+                dbz="REF",
+                rhohv="RHO",
+                kdp="KDP",
+                ffd_direction=ffd,
+                storm_motion=motion["toward_deg"],
             )
         except Exception as exc:
             m.setdefault("diagnostics", {})["zdr_arc"] = {"error": str(exc)[:200]}
@@ -556,6 +562,13 @@ def stage_tornadoes(c: Ctx) -> None:
         for key in ("begin", "end_point"):
             x, y = c.xy_km(r[key]["lat"], r[key]["lon"])
             r[key]["x_km"], r[key]["y_km"] = round(float(x), 2), round(float(y), 2)
+        r["in_domain"] = any(
+            abs(r[key]["x_km"]) <= 90.0 and abs(r[key]["y_km"]) <= 90.0
+            for key in ("begin", "end_point")
+        )
+        r["distance_of_begin_from_grid_origin_km"] = round(
+            float(np.hypot(r["begin"]["x_km"], r["begin"]["y_km"])), 1
+        )
     bundle.write_json(c.out / "tornadoes" / "tornadoes.json", bundle.clean_nan(recs), indent=1)
     c.log(
         f"tornadoes: {len(recs)} records, {sum(1 for r in recs if r['overlaps_window'])} overlap the window"
@@ -699,8 +712,12 @@ def stage_context(c: Ctx) -> None:
                     "shear_0_1km_ms": (sh.get("0-1km") or {}).get("speed_ms") if sh else None,
                     "shear_0_3km_ms": (sh.get("0-3km") or {}).get("speed_ms") if sh else None,
                     "shear_0_6km_ms": (sh.get("0-6km") or {}).get("speed_ms") if sh else None,
-                    "srh_0_1km_right_m2s2": ((srh.get("0-1km") or {}).get("right_mover")) if srh else None,
-                    "srh_0_3km_right_m2s2": ((srh.get("0-3km") or {}).get("right_mover")) if srh else None,
+                    "srh_0_1km_right_m2s2": ((srh.get("0-1km") or {}).get("right_mover"))
+                    if srh
+                    else None,
+                    "srh_0_3km_right_m2s2": ((srh.get("0-3km") or {}).get("right_mover"))
+                    if srh
+                    else None,
                     "freezing_level_asl_m": iso.get("freezing_asl_m"),
                     "minus10_level_asl_m": iso.get("minus10_asl_m"),
                     "minus20_level_asl_m": iso.get("minus20_asl_m"),
@@ -711,17 +728,36 @@ def stage_context(c: Ctx) -> None:
         sj = c.out / "stations" / "stations.json"
         sfc_series = None
         if sj.exists():
-            st = [s for s in json.loads(sj.read_text()) if not s.get("moving") and s["id"].startswith("StickNet")]
+            st = [
+                s
+                for s in json.loads(sj.read_text())
+                if not s.get("moving") and s["id"].startswith("StickNet")
+            ]
             if st:
                 grid_t = np.arange(-600.0, c.duration + 601.0, 60.0)
                 sfc_series = {"t_s": grid_t.tolist(), "n_stations": len(st)}
-                for var in ("temperature_c", "dewpoint_c", "theta_e_k", "pressure_hpa", "wind_speed_ms"):
+                for var in (
+                    "temperature_c",
+                    "dewpoint_c",
+                    "theta_e_k",
+                    "pressure_hpa",
+                    "wind_speed_ms",
+                ):
                     cols = []
                     for s in st:
                         if var in s["series"]:
                             tt = np.array(s["series"]["t_s"], float)
-                            vv = np.array([np.nan if v is None else v for v in s["series"][var]], float)
-                            cols.append([np.nanmean(vv[np.abs(tt - g) <= 30]) if (np.abs(tt - g) <= 30).any() else np.nan for g in grid_t])
+                            vv = np.array(
+                                [np.nan if v is None else v for v in s["series"][var]], float
+                            )
+                            cols.append(
+                                [
+                                    np.nanmean(vv[np.abs(tt - g) <= 30])
+                                    if (np.abs(tt - g) <= 30).any()
+                                    else np.nan
+                                    for g in grid_t
+                                ]
+                            )
                     if cols:
                         arr = np.array(cols, float)
                         sfc_series[var + "_median"] = np.nanmedian(arr, axis=0).tolist()
@@ -752,12 +788,15 @@ def stage_context(c: Ctx) -> None:
         for m in plans
     ]
     per_step = [m["diagnostics"].get("vortices", []) for m in plans]
-    trs = tracks.link_vortices(per_step, times_s)
+    all_trs = tracks.link_vortices(per_step, times_s)
+    trs = [
+        t for t in all_trs if t["n_steps"] >= 3
+    ]  # a candidate that lasts at least 3 steps (2 min)
     comparison = {}
     tj = c.out / "tornadoes" / "tornadoes.json"
     if tj.exists():
         for t in json.loads(tj.read_text()):
-            if not t["overlaps_window"]:
+            if not (t["overlaps_window"] and t.get("in_domain")):
                 continue
             survey = []
             for p in t["path"]:
@@ -782,6 +821,8 @@ def stage_context(c: Ctx) -> None:
                     for m, t, v in zip(plans, times_s, per_step, strict=True)
                 ],
                 "tracks": trs,
+                "n_candidate_tracks_all": len(all_trs),
+                "tracks_note": "only tracks of at least 3 steps are listed; per_step has every candidate",
                 "survey_comparison": comparison,
                 "pattern_motion": mot,
                 "uncertainty": "position: about one grid cell (0.5 km) to the radius of influence of the data (up to 2.5 km), plus the time offset of the radar volume (up to 150 s) times the vortex motion (up to 20 m/s = 3 km)",
@@ -876,6 +917,7 @@ def stage_manifest(c: Ctx) -> None:
             "radars": m["radars"],
             "offsets_s": m["offsets_s"],
             "volume": m["volume"],
+            "volume_bytes": m.get("volume_bytes"),
             "files": m.get("files"),
             "diagnostics": m.get("diagnostics"),
         }

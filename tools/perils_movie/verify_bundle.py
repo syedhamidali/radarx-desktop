@@ -117,7 +117,7 @@ def flash_map(b: Path, man, out: Path, num: dict) -> None:
     a.set_aspect("equal")
     tj = b / man["tornadoes"]
     for t in load_json(tj):
-        if t["overlaps_window"]:
+        if t["overlaps_window"] and t.get("in_domain"):
             p = np.array(t["path"])
             a.plot((p[:, 2] - ORIGIN[1]) * 111.2 * ref, (p[:, 1] - ORIGIN[0]) * 111.2, "w-", lw=3)
             a.plot(
@@ -269,7 +269,9 @@ def skewt(b: Path, man, out: Path, num: dict) -> None:
 
 
 def tornado_panels(b: Path, man, out: Path, num: dict) -> None:
-    tors = [t for t in load_json(b / man["tornadoes"]) if t["overlaps_window"]]
+    tors = [
+        t for t in load_json(b / man["tornadoes"]) if t["overlaps_window"] and t.get("in_domain")
+    ]
     if not tors:
         return
     t = tors[0]
@@ -317,10 +319,13 @@ def tornado_panels(b: Path, man, out: Path, num: dict) -> None:
         a.set_xlim(cx - 28, cx + 28)
         a.set_ylim(cy - 24, cy + 24)
         a.set_aspect("equal")
-        a.set_title(
-            f"{s['time'][11:19]}Z dBZ 0.5 km; rotation 0.01/0.02/0.03 s-1; cyan: low-RHO flag; * survey; o vortex cand.",
-            fontsize=8,
-        )
+        a.set_title(f"{s['time'][11:19]}Z")
+    fg.suptitle(
+        "merged dBZ at 0.5 km; contours: low-level azimuthal shear 0.01 (white) / 0.02 (black) / 0.03 (magenta) s-1; "
+        "cyan dots: debris-like low-RHO flag; black-white line: surveyed tornado path (interpolated), star: its position "
+        "at the step time; yellow rings: vortex candidates; triangles: radars",
+        fontsize=10,
+    )
     fg.savefig(out / "fig5_tornado_track.png", dpi=55, bbox_inches="tight")
     plt.close(fg)
     comp = rt.get("survey_comparison", {}).get(t["id"])
@@ -343,7 +348,9 @@ def tornado_panels(b: Path, man, out: Path, num: dict) -> None:
 
 
 def cross_section(b: Path, man, out: Path, num: dict) -> None:
-    tors = [t for t in load_json(b / man["tornadoes"]) if t["overlaps_window"]]
+    tors = [
+        t for t in load_json(b / man["tornadoes"]) if t["overlaps_window"] and t.get("in_domain")
+    ]
     if not tors:
         return
     t = tors[0]
@@ -584,6 +591,43 @@ def radar_vs_pips(b: Path, man, out: Path, num: dict) -> None:
     num["radar_vs_pips"] = rows
 
 
+def mrms_compare(b: Path, man, out: Path, num: dict) -> None:
+    """Merged reflectivity (lowest valid level in 0.25 to 1.5 km) against the MRMS merged base reflectivity at the step."""
+    rows = []
+    proj = pgrid.projection(*ORIGIN)
+    gx, gy = np.meshgrid(X[::4], X[::4])  # every 2 km
+    lat, lon = pgrid.latlon(proj, gx, gy)
+    for s in man["steps"][::4]:
+        if not s.get("mrms"):
+            continue
+        m = np.load(b / s["mrms"])
+        if "mergedref_dbz" not in m.files:
+            continue
+        v = np.load(b / s["volume"])
+        d = v["dbz"][1:7, ::4, ::4]  # 0.25 .. 1.5 km
+        first = np.argmax(np.isfinite(d), axis=0)
+        md = np.take_along_axis(d, first[None], axis=0)[0]
+        md[~np.isfinite(d).any(axis=0)] = np.nan
+        la, lo = m["lat"], m["lon"]
+        ii = np.clip(np.round((lat - la[0]) / (la[1] - la[0])).astype(int), 0, la.size - 1)
+        jj = np.clip(np.round((lon - lo[0]) / (lo[1] - lo[0])).astype(int), 0, lo.size - 1)
+        inside = (lat >= la.min()) & (lat <= la.max()) & (lon >= lo.min()) & (lon <= lo.max())
+        mr = m["mergedref_dbz"][ii, jj]
+        ok = inside & np.isfinite(md) & np.isfinite(mr)
+        if ok.sum() > 100:
+            dd = md[ok] - mr[ok]
+            rows.append(
+                {
+                    "step": s["index"],
+                    "n": int(ok.sum()),
+                    "mean_diff_dB": round(float(dd.mean()), 2),
+                    "rms_diff_dB": round(float(np.sqrt((dd**2).mean())), 2),
+                    "corr": round(float(np.corrcoef(md[ok], mr[ok])[0, 1]), 3),
+                }
+            )
+    num["merged_vs_mrms"] = rows
+
+
 def qc_numbers(b: Path, man, num: dict) -> None:
     n = len(man["steps"])
     size = sum(s.get("volume_bytes", 0) for s in man["steps"])
@@ -636,6 +680,7 @@ def main(argv=None) -> int:
         cross_section,
         winds_figure,
         radar_vs_pips,
+        mrms_compare,
     ):
         try:
             fn(b, man, out, num)

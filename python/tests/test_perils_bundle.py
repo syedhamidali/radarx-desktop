@@ -253,12 +253,14 @@ class TestRotation:
         z = np.arange(nz) * 0.25
         dbz = np.full((nz, ny, nx), 45.0, np.float32)
         rho = np.full((nz, ny, nx), 0.97, np.float32)
-        rho[0, 15, 15] = 0.6  # low RHO + high Z at the lowest level
-        rho[0, 2, 2] = 0.6  # far from the vortex
+        rho[0, 14:17, 14:17] = 0.6  # a coherent low-RHO patch with high Z at the lowest level
+        rho[0, 1:4, 1:4] = 0.6  # another one, far from the vortex
+        rho[0, 25, 25] = 0.5  # one noisy gate: not coherent, not flagged
         as_ll = np.zeros((ny, nx), np.float32)
         as_ll[14:17, 14:17] = 0.05
         f = rotation.tds_flag(dbz, rho, as_ll, x, x, z)
         assert f[0, 15, 15] == 2 and f[0, 2, 2] == 1 and f[0, 10, 10] == 0
+        assert f[0, 25, 25] == 0 and f[3, 15, 15] == 0  # a single noisy gate; normal RHO higher up
 
 
 # ---------------------------------------------------------------------------
@@ -791,3 +793,61 @@ def test_build_step_end_to_end_on_synthetic_radars():
     )  # the 40+ dBZ core is convective, the 15 dBZ rest stratiform
     assert np.isfinite(arrays["echotop30_km"]).any() and summ["echotop30_max_km"] > 7.0
     assert arrays["tds"].max() == 0  # no low RHO anywhere
+
+
+class TestMoreStationsAndContext:
+    def test_despike_removes_single_sample_dropouts_only(self):
+        a = 20.0 + 0.01 * np.arange(60)
+        a[30] = 5.0  # a one-sample sensor dropout
+        out, n = stations.despike(a, 3.0)
+        assert n == 1 and np.isnan(out[30]) and np.isfinite(out[29]) and np.isfinite(out[31])
+        step = np.where(np.arange(60) < 30, 22.0, 17.0)  # a real step (a front) is kept
+        out2, n2 = stations.despike(step, 3.0)
+        assert n2 == 0 and np.isfinite(out2).all()
+
+    def test_gradual_outflow_is_found_with_the_four_minute_window(self):
+        t = np.arange(-600, 900, 10.0)
+        ramp = np.clip((t + 240) / 480.0, 0, 1)
+        T = 19.0 - 3.2 * ramp  # 3.2 K over 8 min: 1.6 K per 4 min but only 0.8 K per 2 min
+        P = 993.0 + 1.4 * ramp
+        ws = 5.0 + 6.0 * np.clip((t + 60) / 120.0, 0, 1)
+        st = {
+            "id": "S2",
+            "lat": 33.0,
+            "lon": -88.0,
+            "x_km": 0.0,
+            "y_km": 0.0,
+            "series": {
+                "t_s": t.tolist(),
+                "temperature_c": T.tolist(),
+                "pressure_hpa": P.tolist(),
+                "wind_speed_ms": ws.tolist(),
+            },
+        }
+        g = events.gust_front_passage(st)
+        assert g is not None and g["dT_window"] == "4min"
+        assert abs(g["t_s"]) <= 150.0
+
+    def test_tobac_track_rows_and_motion(self, tmp_path):
+        import netCDF4
+
+        p = tmp_path / "Track.nc"
+        with netCDF4.Dataset(p, "w") as ds:
+            ds.createDimension("index", 4)
+            tv = ds.createVariable("time", "f8", ("index",))
+            tv.units = "seconds since 2022-03-31 01:00:00.000000"
+            tv[:] = [0.0, 378.0, 756.0, 1134.0]
+            for name, vals in (
+                ("cell", [36, 36, 36, -1]),
+                ("projection_x_coordinate", [10000.0, 13780.0, 17560.0, 0.0]),
+                ("projection_y_coordinate", [0.0, 0.0, 756.0, 0.0]),
+                ("areas", [100000.0, 99000.0, 98000.0, 5.0]),
+                ("max_reflectivity", [58.0, 59.0, 60.0, 20.0]),
+            ):
+                v = ds.createVariable(name, "f8", ("index",))
+                v[:] = vals
+        r = context.read_tobac_track(p, T0, T0 + timedelta(minutes=16), margin_s=600.0)
+        assert len(r["rows"]) == 3  # the untracked feature (cell -1) is dropped
+        m = r["centroid_motion"]
+        assert m["u_ms"] == pytest.approx(7560.0 / 756.0, abs=0.01)
+        assert m["v_ms"] == pytest.approx(1.0, abs=0.01)

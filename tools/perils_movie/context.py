@@ -87,8 +87,9 @@ def read_mrms_crop(
     )
     subprocess.run([exe, str(small), "-netcdf", str(nc)], check=True, capture_output=True)
     with netCDF4.Dataset(nc) as ds:
-        names = [v for v in ds.variables if ds[v].ndim == 2]
+        names = [v for v in ds.variables if ds[v].ndim >= 2]
         field = np.ma.filled(np.ma.asarray(ds[names[0]][:]).astype(np.float32), np.nan)
+        field = np.squeeze(field)  # (time, lat, lon) with one time
         lat = np.asarray(ds["latitude"][:], float)
         lon = np.asarray(ds["longitude"][:], float)
     lon = np.where(lon > 180, lon - 360.0, lon)

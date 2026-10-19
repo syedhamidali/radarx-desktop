@@ -283,12 +283,22 @@ def tds_flag(
     z_max_km: float = 2.0,
     as_thr: float = AS_THRESHOLD,
 ) -> np.ndarray:
-    """uint8 (nz, ny, nx): 1 = RHO < ``rho_max`` and Z >= ``dbz_min`` below ``z_max_km``;
-    2 = the same within ``near_km`` of a region of azimuthal shear >= ``as_thr``. Evidence only."""
+    """uint8 (nz, ny, nx): 1 = RHO < ``rho_max`` and Z >= ``dbz_min`` below ``z_max_km`` and the mean RHO of the
+    3 x 3 neighbours (valid ones) below ``rho_max + 0.08`` (a coherent low-RHO patch, not single noisy gates
+    of an X-band radar); 2 = the same within ``near_km`` of a region of azimuthal shear >= ``as_thr``.
+    Evidence only."""
     flag = np.zeros(dbz.shape, np.uint8)
     lowz = z_km <= z_max_km + 1e-6
     cand = np.isfinite(dbz) & np.isfinite(rho) & (rho < rho_max) & (dbz >= dbz_min)
     cand[~lowz] = False
+    if cand.any():
+        ok = np.isfinite(rho).astype(np.float32)
+        filled = np.where(np.isfinite(rho), rho, 0.0).astype(np.float32)
+        num = ndimage.uniform_filter(filled, size=(1, 3, 3), mode="constant") * 9.0
+        den = ndimage.uniform_filter(ok, size=(1, 3, 3), mode="constant") * 9.0
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mean3 = np.where(den >= 5.0, num / den, np.nan)
+        cand &= mean3 < rho_max + 0.08
     flag[cand] = 1
     dx = float(np.median(np.diff(x_km)))
     near = ndimage.binary_dilation(

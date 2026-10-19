@@ -60,6 +60,24 @@ def _epoch_s(times) -> np.ndarray:
     return ((t - pd.Timestamp("1970-01-01")) / pd.Timedelta(seconds=1)).to_numpy(float)
 
 
+def despike(a: np.ndarray, threshold: float, size: int = 7) -> tuple[np.ndarray, int]:
+    """Values further than ``threshold`` from the running median (``size`` samples) become NaN: single-sample
+    dropouts of the humidity, temperature or pressure sensors (they otherwise make spikes in the dew point and
+    theta-e). Returns the cleaned array and the number of samples removed."""
+    from scipy import ndimage
+
+    a = np.asarray(a, float)
+    ok = np.isfinite(a)
+    if ok.sum() < size:
+        return a, 0
+    filled = np.where(ok, a, np.nanmedian(a))
+    med = ndimage.median_filter(filled, size=size, mode="nearest")
+    bad = ok & (np.abs(a - med) > threshold)
+    out = a.copy()
+    out[bad] = np.nan
+    return out, int(bad.sum())
+
+
 def _window_mask(t_abs: np.ndarray, start: datetime, end: datetime) -> np.ndarray:
     s = start.timestamp() - MARGIN_S
     e = end.timestamp() + MARGIN_S
@@ -278,9 +296,9 @@ def read_sticknet(
         return None
     d = d[m]
     t_s = t_abs[m] - start.timestamp()
-    T = d["T"].to_numpy(float)
-    rh = d["RH"].to_numpy(float)
-    P = d["P"].to_numpy(float)
+    T, n_t = despike(d["T"].to_numpy(float), 3.0)
+    rh, n_rh = despike(d["RH"].to_numpy(float), 12.0)
+    P, n_p = despike(d["P"].to_numpy(float), 1.5)
     td = thermo.dewpoint_c(T, rh)
     sid = Path(path).name.split("_")[1]
     rec = {
@@ -308,7 +326,11 @@ def read_sticknet(
             mixing_ratio_gkg=(thermo.mixing_ratio(td, P), 2),
         ),
         "credit": "TTU StickNet (PERiLS 2022, NCAR/EOL 610.028), 10 s file prepared by the data owner; dew point and theta-e derived here (Bolton 1980)",
-        "qc": "As delivered (level 2/3 products are not used: this is the 10 s file); no further QC; WSMAX = 10 s maximum wind (gust) where the file has it",
+        "qc": (
+            "As delivered (level 2/3 products are not used: this is the 10 s file); single-sample dropouts removed "
+            f"(running median of 7 samples; T > 3 K, RH > 12 %, p > 1.5 hPa away): {n_t} T, {n_rh} RH, {n_p} p samples; "
+            "WSMAX = 10 s maximum wind (gust) where the file has it"
+        ),
         "moving": False,
     }
     return rec
@@ -403,12 +425,14 @@ def read_mesonet(
         return None
     d = d[m]
     t_s = t_abs[m] - start.timestamp()
-    T = d["Temperature"].to_numpy(float)
-    rh = d["Relative_Humidity"].to_numpy(float)
-    P = (
+    T, _ = despike(d["Temperature"].to_numpy(float), 3.0, 31)
+    rh, _ = despike(d["Relative_Humidity"].to_numpy(float), 12.0, 31)
+    P, _ = despike(
         d["Corr_Pressure"].to_numpy(float)
         if "Corr_Pressure" in d
-        else d["Pressure"].to_numpy(float)
+        else d["Pressure"].to_numpy(float),
+        1.5,
+        31,
     )
     td = thermo.dewpoint_c(T, rh)
     lat = d["Latitude"].to_numpy(float)

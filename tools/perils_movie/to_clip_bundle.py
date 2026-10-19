@@ -131,7 +131,11 @@ def main(argv=None) -> int:
             }
         )
     if a.track == "tornado":
-        tor = [t for t in json.loads((b / man["tornadoes"]).read_text()) if t["overlaps_window"]]
+        tor = [
+            t
+            for t in json.loads((b / man["tornadoes"]).read_text())
+            if t["overlaps_window"] and t.get("in_domain")
+        ]
         if not tor:
             ap.error("no tornado in the window: use --track cells")
         path = tor[0]["path"]

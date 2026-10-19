@@ -7,7 +7,7 @@ larger than the duration = after it; ``in_window`` says which). If a number cann
 data of this window, the event is not written (the ``skipped`` list in the file says why).
 
 Event kinds: ``gust_front_passage`` (station: temperature drop, pressure rise, wind jump), ``gust_front_speed``,
-``cold_pool_sounding`` (post-storm vs pre-storm sounding at the same site), ``first_lma_flash``, ``lma_rate``,
+``cold_pool_sounding`` (post-storm vs pre-storm sounding at the same site), ``lma_rate``,
 ``lightning_near_tornado``, ``tornado_survey``, ``tornado_radar_rotation``, ``hail_signature`` (radar and station
 evidence), ``line_motion``, ``updraft_maximum``, ``rear_inflow_candidate``, ``low_level_convergence``,
 ``low_level_vorticity_maximum``, ``rain_dsd`` (disdrometer drop size distribution and its relation to rain rate).
@@ -60,14 +60,21 @@ def gust_front_passage(
     dt = float(np.nanmedian(np.diff(t)))
     n = max(1, round(10.0 / dt))
     Ts = _movavg(T, n)
-    h = max(1, round(60.0 / dt))
-    d2 = np.full_like(Ts, np.nan)
-    d2[h:-h] = Ts[2 * h :] - Ts[: -2 * h]
-    if not np.isfinite(d2).any():
+    # temperature change across 2 min (a sharp front) and across 4 min (a gradual one), the stronger relative
+    # to its threshold (1.0 K / 2 min or 1.5 K / 4 min) is used
+    best = None
+    for half_s, thr, label in ((60.0, dt_min_k, "2min"), (120.0, 1.5 * dt_min_k, "4min")):
+        h = max(1, round(half_s / dt))
+        dd = np.full_like(Ts, np.nan)
+        dd[h:-h] = Ts[2 * h :] - Ts[: -2 * h]
+        if np.isfinite(dd).any() and np.nanmin(dd) <= -thr:
+            score = -float(np.nanmin(dd)) / thr
+            if best is None or score > best[0]:
+                best = (score, dd, label)
+    if best is None:
         return None
+    _score, d2, window_label = best
     k = int(np.nanargmin(d2))
-    if d2[k] > -dt_min_k:
-        return None
     # a sharp step makes a plateau of equal 2-minute differences: take the middle of the contiguous plateau (>= 95 % of the fall)
     lo = k
     while lo - 1 >= 0 and np.isfinite(d2[lo - 1]) and d2[lo - 1] <= 0.95 * d2[k]:
@@ -76,7 +83,11 @@ def gust_front_passage(
     while hi + 1 < d2.size and np.isfinite(d2[hi + 1]) and d2[hi + 1] <= 0.95 * d2[k]:
         hi += 1
     tp = float(0.5 * (t[lo] + t[hi]))
-    out: dict[str, Any] = {"t_s": round(tp, 1), "dT_2min_K": round(float(d2[k]), 2)}
+    out: dict[str, Any] = {
+        "t_s": round(tp, 1),
+        "dT_2min_K": round(float(d2[k]), 2),
+        "dT_window": window_label,
+    }
     # pressure
     P = _arr(s.get("pressure_hpa", np.full(t.size, np.nan)))
     if np.isfinite(P).sum() > 30:
@@ -212,7 +223,9 @@ def build_all(c) -> None:
             continue
         if g:
             passes.append(g)
-            parts = [f"temperature fell {abs(g['dT_2min_K']):.1f} K in 2 min"]
+            parts = [
+                f"temperature fell {abs(g['dT_2min_K']):.1f} K in {g.get('dT_window', '2min').replace('min', ' min')}"
+            ]
             if "dP_hPa" in g:
                 parts.append(f"pressure rose {g['dP_hPa']:.1f} hPa")
             if "wind_peak_ms" in g:
@@ -244,18 +257,25 @@ def build_all(c) -> None:
                 A = np.vstack([t_, np.ones_like(t_)]).T
                 sl, ic = np.linalg.lstsq(A, s_, rcond=None)[0]
                 res = s_ - (sl * t_ + ic)
-                add(
-                    "gust_front_speed",
-                    float(np.mean(t_)),
-                    f"Passage times at {len(pts)} stations give an outflow-boundary speed of {sl * 1000:.1f} m/s along the pattern motion.",
-                    {
-                        "speed_ms": round(float(sl * 1000), 1),
-                        "n_stations": len(pts),
-                        "rms_residual_km": round(float(np.sqrt(np.mean(res**2))), 2),
-                        "stations": [p["station"] for p in passes if p.get("x_km") is not None],
-                    },
-                    "observed",
-                )
+                rms = float(np.sqrt(np.mean(res**2)))
+                if rms <= 3.0 and 2.0 <= sl * 1000 <= 40.0:
+                    add(
+                        "gust_front_speed",
+                        float(np.mean(t_)),
+                        f"Passage times at {len(pts)} stations give an outflow-boundary speed of {sl * 1000:.1f} m/s along the pattern motion (rms residual {rms:.1f} km).",
+                        {
+                            "speed_ms": round(float(sl * 1000), 1),
+                            "n_stations": len(pts),
+                            "rms_residual_km": round(rms, 2),
+                            "stations": [p["station"] for p in passes if p.get("x_km") is not None],
+                        },
+                        "observed",
+                    )
+                else:
+                    skipped.append(
+                        f"gust_front_speed: the {len(pts)} passage times do not line up on one boundary "
+                        f"(fit {sl * 1000:.1f} m/s, rms residual {rms:.1f} km > 3 km): not written"
+                    )
     else:
         skipped.append(
             f"gust_front_speed: only {len(passes)} stations with a clear passage in the data around the window (need 3)"
@@ -351,18 +371,11 @@ def build_all(c) -> None:
 
     # ---------------------------------------------------------------- lightning
     lj = out_dir / "lma" / "flashes.json"
+    L = None
     if lj.exists():
         L = json.loads(lj.read_text())
         fl = L["flashes"]
         if fl:
-            f0 = fl[0]
-            add(
-                "first_lma_flash",
-                f0["t_start_s"],
-                f"First LMA flash of the window starts at t = {f0['t_start_s']:.1f} s at {f0['centroid'][0]:.3f} N {abs(f0['centroid'][1]):.3f} W, {f0['centroid'][2] / 1000:.1f} km altitude ({f0['n_sources']} sources).",
-                {"centroid": f0["centroid"], "n_sources": f0["n_sources"]},
-                "observed",
-            )
             starts = np.array([f["t_start_s"] for f in fl])
             nmin = math.ceil(dur / 60.0)
             per_min = [
@@ -392,7 +405,7 @@ def build_all(c) -> None:
         else None
     )
     for t in tors:
-        if not t["overlaps_window"]:
+        if not (t["overlaps_window"] and t.get("in_domain")):
             continue
         t0 = datetime.fromisoformat(t["start"].replace("Z", "+00:00"))
         t1 = datetime.fromisoformat(t["end"].replace("Z", "+00:00"))
@@ -421,6 +434,39 @@ def build_all(c) -> None:
             "observed (survey)",
             tornado=t["id"],
         )
+        if L is not None and L["flashes"]:
+            from tornadoes import position_at
+
+            t_end_s = (t1 - c.start).total_seconds()
+            near, per_min = [], np.zeros(math.ceil(dur / 60.0))
+            for f in L["flashes"]:
+                if not (ts <= f["t_start_s"] <= t_end_s):
+                    continue
+                pos = position_at(t, f["t_start_s"])
+                if pos is None:
+                    continue
+                d = math.hypot(
+                    (f["centroid"][0] - pos[0]) * 111.2,
+                    (f["centroid"][1] - pos[1]) * 111.2 * math.cos(math.radians(pos[0])),
+                )
+                if d <= 15.0:
+                    near.append(d)
+                    per_min[min(int(f["t_start_s"] // 60), per_min.size - 1)] += 1
+            life_min = max((t_end_s - ts) / 60.0, 1e-9)
+            add(
+                "lightning_near_tornado",
+                ts,
+                f"{len(near)} LMA flashes started within 15 km of the surveyed tornado position during its {life_min:.0f} min life ({len(near) / life_min:.1f} per minute).",
+                {
+                    "tornado": t["id"],
+                    "n_flashes_within_15km": len(near),
+                    "per_minute": [int(v) for v in per_min],
+                    "median_distance_km": round(float(np.median(near)), 1) if near else None,
+                    "note": "the position is the interpolated survey track; the flash position is the centroid of its LMA sources",
+                },
+                "observed",
+                tornado=t["id"],
+            )
         add(
             "tornado_survey",
             (t1 - c.start).total_seconds(),
@@ -566,8 +612,20 @@ def build_all(c) -> None:
         for m, tt in wsteps:
             w = np.load(out_dir / m["winds"])
             x, y, z = w["x_km"], w["y_km"], w["z_km"]
-            u, v, ww = w["u"], w["v"], w["w"]
+            vol = np.load(out_dir / m["volume"])
             X, Y = np.meshgrid(x, y)
+            # only cells where the analysis is well constrained and inside the domain (not at its edge), under echo:
+            # error <= 3 m/s, beam crossing >= 45 deg, at least 3 radars, |x|,|y| <= 75 km, column max >= 30 dBZ
+            cm_ = vol["cmax"][::2, ::2]
+            rel = (
+                (w["uv_error"].astype(np.float32) <= 3.0)
+                & (w["crossing_deg"] >= 45.0)
+                & (w["nradars"] >= 3)
+                & ((np.abs(X) <= 75.0) & (np.abs(Y) <= 75.0) & (cm_ >= 30.0))[None]
+            )
+            u = np.where(rel, w["u"], np.nan)
+            v = np.where(rel, w["v"], np.nan)
+            ww = np.where(rel, w["w"], np.nan)
             lo = (z >= 1.0) & (z <= 8.0)
             if np.isfinite(ww[lo]).any():
                 k = np.nanargmax(np.where(np.isfinite(ww), ww, -np.inf)[lo])
@@ -583,8 +641,7 @@ def build_all(c) -> None:
                         "step": m["index"],
                     }
             # rear inflow candidate: along-motion wind component at 1-4 km behind the convective line
-            vol = np.load(out_dir / m["volume"])
-            cm_, conv = vol["cmax"][::2, ::2], vol["conv_strat"][::2, ::2]
+            conv = vol["conv_strat"][::2, ::2]
             core = (cm_ >= 45) & (conv == 2)
             if core.sum() > 50:
                 s_core = X[core] * ex + Y[core] * ey
@@ -612,7 +669,7 @@ def build_all(c) -> None:
                         best_rij = rec
             # low-level convergence and vorticity
             low = z <= 1.0
-            dv = w["divergence"].astype(np.float32)[low]
+            dv = np.where(rel, w["divergence"].astype(np.float32), np.nan)[low]
             if np.isfinite(dv).any():
                 val = float(np.nanmin(dv))
                 if best_conv is None or val < best_conv["divergence_s-1"]:
@@ -627,7 +684,7 @@ def build_all(c) -> None:
                         "t_s": tt,
                         "step": m["index"],
                     }
-            vo = w["vorticity"].astype(np.float32)[z <= 2.0]
+            vo = np.where(rel, w["vorticity"].astype(np.float32), np.nan)[z <= 2.0]
             if np.isfinite(vo).any():
                 val = float(np.nanmax(vo))
                 if best_vort is None or val > best_vort["vorticity_s-1"]:
@@ -642,7 +699,11 @@ def build_all(c) -> None:
                         "t_s": tt,
                         "step": m["index"],
                     }
-        cav = "RETRIEVED multi-Doppler winds on a 1 km grid; the variational solver did not fully converge; w is the least reliable component"
+        cav = (
+            "RETRIEVED multi-Doppler winds on a 1 km grid; the variational solver did not fully converge; w is the least "
+            "reliable component; only cells with u,v error <= 3 m/s, beam crossing >= 45 deg, >= 3 radars, inside |x|,|y| <= 75 km "
+            "and under echo >= 30 dBZ are searched"
+        )
         if best_w:
             add(
                 "updraft_maximum",
