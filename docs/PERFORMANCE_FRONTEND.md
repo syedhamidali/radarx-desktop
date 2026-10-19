@@ -84,7 +84,7 @@ measuring code itself keeping WebGL objects alive; the script now uses weak refe
    the engine link. Loaded on demand: the 3D viewer (and its renderer, quality governor, transfer
    function editor), the dual-pol dashboard, the diff viewer, cross-section dock and dialog,
    command palette, settings, shortcuts, about, onboarding tour, data table and metadata viewer.
-   The 12 right-hand panels (mosaic, wind, modules, ... each its own chunk) are fetched right
+   The 14 right-hand panels (layers, mosaic, wind, modules, sounding, ... each its own chunk) are fetched right
    after the first paint, expanded ones at once, the rest one per idle slot; they stay mounted
    afterwards exactly as before (their stores listen for engine and window events). The 2D viewer
    and the timeline are prefetched while idle so that opening a file does not wait for them; the 3D
