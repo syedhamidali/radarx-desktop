@@ -379,6 +379,23 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             }
         )
 
+    # radiosonde tracks inside the window: the echo at each point is sampled from the volume of the nearest step
+    snd_all = _load_json(bundle / man["soundings"]) if man.get("soundings") else None
+    balloon_pts: dict[str, list] = {}
+    for s in snd_all or []:
+        drift = s.get("drift") or []
+        if not drift:
+            continue
+        pts = []
+        for n, d in enumerate(drift):
+            t = float(d[0])
+            if times_s[0] - 60.0 <= t <= times_s[-1] + 60.0:
+                bx, by = geo.xy(d[1], d[2])
+                pts.append((n, t, float(bx), float(by), float(d[3]) / 1000.0))
+        if pts:
+            balloon_pts[s["id"]] = [len(drift), pts]
+    balloon_echo: dict[str, list] = {sid: [None] * v[0] for sid, v in balloon_pts.items()}
+
     colmax: list[np.ndarray] = []
     msteps = []
     hail_pts, tds_pts, layers_meta, zdrcol = [], [], [], []
@@ -421,6 +438,31 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         (out / f"mosaic_{k}.bin").write_bytes(np.ascontiguousarray(codes).tobytes())
         cm = np.nanmax(np.where(np.isfinite(dbz), dbz, -99.0), axis=0)
         colmax.append(np.where(cm > -90, cm, np.nan))
+        # the plan-view panel: the column maximum as 8-bit codes (same code book as the volume)
+        (out / f"colmax_{k}.bin").write_bytes(encode_dbz(colmax[-1]).tobytes())
+        for sid, (_n, pts) in balloon_pts.items():
+            for n, t, bx, by, bz in pts:
+                kn = int(np.argmin(np.abs(np.asarray(times_s) - t)))
+                if kn != k:
+                    continue
+                i = round((bx - xs[0]) / cell)
+                j = round((by - ys[0]) / cell)
+                if not (0 <= i < nx and 0 <= j < ny):
+                    continue
+                col = dbz[:, j, i]
+                ok = np.isfinite(col)
+                kz = int(np.argmin(np.abs(zs - bz)))
+                top = (
+                    float(zs[np.nonzero(ok & (col >= 18.0))[0].max()])
+                    if (ok & (col >= 18.0)).any()
+                    else None
+                )
+                balloon_echo[sid][n] = {
+                    "dbz": float(col[kz]) if ok[kz] else None,
+                    "colmax": float(np.nanmax(col)) if ok.any() else None,
+                    "top18_km": top,
+                    "step": k,
+                }
         # extras of this step (all optional)
         hid = z["hid"] if "hid" in z.files else None
         if hid is not None:
@@ -603,6 +645,9 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         "tds": tds_pts,
         "layers": layers_meta,
         "zdrColumns": zdrcol,
+        "colmax": [
+            {"bin": f"colmax_{k}.bin", "nx": len(xs), "ny": len(ys)} for k in range(len(steps))
+        ],
     }
     for r in rsites:
         p["radars"].append(
@@ -676,9 +721,7 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         drift = []
         for d in s.get("drift", []):
             dx, dy = geo.xy(d[1], d[2])
-            drift.append(
-                [float(d[0]) + rel(s["launch"]), float(dx), float(dy), float(d[3]) / 1000.0]
-            )
+            drift.append([float(d[0]), float(dx), float(dy), float(d[3]) / 1000.0])
         p["soundings"].append(
             {
                 "id": s["id"],
@@ -688,6 +731,7 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
                 "x": float(x),
                 "y": float(y),
                 "drift": drift,
+                "echo": balloon_echo.get(s["id"]),
                 "levels": levels,
                 "diagnostics": s.get("diagnostics", {}),
             }
@@ -706,6 +750,9 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         geo,
         rel,
     )
+    p["vortex"] = convert_vortex(
+        _load_json(bundle / man["vortex_kinematics"]) if man.get("vortex_kinematics") else None, rel
+    )
     # MRMS composites
     p["mrms"] = []
     p["surface"] = []
@@ -716,6 +763,59 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     (out / "perils.json").write_text(json.dumps(p))
     log(f"wrote {out} ({len(steps)} steps, {sum(1 for m in p['mrms'] if m)} MRMS frames)")
     return p
+
+
+def convert_vortex(vk: dict | None, rel) -> dict | None:
+    """The radar couplet at the surveyed tornado and the survey-scale spin estimate (context/vortex_kinematics.json).
+
+    Kept small: the survey estimate as it is, a summary (medians of the steps) and, per step, the best radar's couplet.
+    The couplet is the PARENT circulation; the data agent's verdict (tornado vortex unresolved) is carried along.
+    """
+    if not vk:
+        return None
+    steps = []
+    for st in vk.get("per_step", []):
+        b = (st.get("best") or {}).get("couplet")
+        if not b:
+            continue
+        res = st.get("resolution") or {}
+        steps.append(
+            {
+                "t": float(st["t_s"]),
+                "radar": st.get("best_radar"),
+                "vrot_ms": b.get("vrot_ms"),
+                "diameter_km": b.get("couplet_diameter_km"),
+                "omega": b.get("omega_s-1"),
+                "period_s": b.get("period_s"),
+                "sense": b.get("sense"),
+                "effective_resolution_m": res.get("effective_resolution_m"),
+                "tornado_resolved": bool(res.get("tornado_resolved")),
+                "verdict": res.get("verdict"),
+                "debris_voxels_flag2": (st.get("best") or {})
+                .get("debris_indicator", {})
+                .get("voxels_flag2_near_rotation"),
+            }
+        )
+    vr = [s["vrot_ms"] for s in steps if s["vrot_ms"] is not None]
+    dm = [s["diameter_km"] for s in steps if s["diameter_km"] is not None]
+    om = [s["omega"] for s in steps if s["omega"] is not None and s["sense"] == "cyclonic"]
+    summ = {
+        "n_steps": len(steps),
+        "vrot_ms_min_median_max": [min(vr), float(np.median(vr)), max(vr)] if vr else None,
+        "couplet_diameter_km_min_median_max": [min(dm), float(np.median(dm)), max(dm)]
+        if dm
+        else None,
+        "omega_s1_median_cyclonic": float(np.median(om)) if om else None,
+        "cyclonic_steps": sum(1 for s in steps if s["sense"] == "cyclonic"),
+        "tornado_resolved_any": any(s["tornado_resolved"] for s in steps),
+    }
+    return {
+        "class": vk.get("class"),
+        "survey_scale_estimate": vk.get("survey_scale_estimate"),
+        "summary": summ,
+        "steps": steps,
+        "note": "the couplet is the parent circulation (wider than the tornado); the tornado vortex itself is unresolved",
+    }
 
 
 def line_geometry(

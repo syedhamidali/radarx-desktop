@@ -179,7 +179,7 @@ def smooth_keys(t, keys, width: float = 2.5):
     lo, hi = min(t.min(), kt[0]) - width, max(t.max(), kt[-1]) + width
     g = np.arange(lo, hi + h, h)
     v = np.interp(g, kt, kv)
-    n = max(3, int(round(width / h)) | 1)
+    n = max(3, round(width / h) | 1)
     w = np.hanning(n + 2)[1:-1]
     w /= w.sum()
     pad = n // 2
@@ -346,16 +346,15 @@ def plan_shots(
     ]
     t_after = b1
     if tor_c is not None:
-
         t_a = tor_c - 12.0
         # the camera closes in on the vortex: 2.6 km, then 0.9 km, then 250-300 m for the real-time core
         # (tor_c +- 5 s), then backs off a little; low over the ground, looking up at the funnel
         keys_d = [
             (t_a, 2.6),
             (t_a + 4.5, 0.9),
-            (tor_c - 4.0, 0.34),
-            (tor_c, 0.26),
-            (tor_c + 4.0, 0.30),
+            (tor_c - 4.0, 0.40),
+            (tor_c, 0.34),
+            (tor_c + 4.0, 0.38),
             (tor_c + 12.0, 0.8),
         ]
         keys_h = [
@@ -448,11 +447,13 @@ def plan_shots(
 
 
 def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
-    """P (km, scene), eye altitude (km), look-at point and its height, vexag, shot index per frame.
+    """P (km, scene), eye altitude (km), look-at point and its height, vexag, shot index, heading and pitch per frame.
 
     Shots crossfade in sequence: shot j fades in over ``overlap`` seconds centred on its start
     (smoothstep weight), on top of the blend of the shots before it. Every shot is continuous with a
-    continuous first derivative, and so is each weight, so the result is too.
+    continuous first derivative, and so is each weight, so the result is too. The aim (heading, pitch) is
+    blended as an aim (the short way round), not recomputed from the blended look-at point: a point far
+    behind a nearly arrived camera would otherwise swing the view fast.
     """
     t = np.asarray(t, float)
     n = len(t)
@@ -463,6 +464,17 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
     tz = np.asarray(first[3], float).copy()
     vex = np.full(n, shots[0].vexag, float)
     idx = np.zeros(n, int)
+
+    def aim(p_, alt_, t_, tz_, vex_):
+        d_ = np.asarray(t_, float) - np.asarray(p_, float)
+        hz = np.hypot(d_[:, 0], d_[:, 1])
+        return bearing_deg(d_[:, 0], d_[:, 1]), np.degrees(
+            np.arctan2(
+                (np.asarray(tz_, float) - np.asarray(alt_, float)) * vex_, np.maximum(hz, 1e-6)
+            )
+        )
+
+    heading, pitch = aim(P, alt, T, tz, vex)
     for j, s in enumerate(shots[1:], start=1):
         w = smoothstep((t - (s.t0 - overlap / 2.0)) / overlap)
         ev = s.fn(np.clip(t, s.t0 - overlap, s.t1 + overlap))
@@ -472,7 +484,10 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
         tz = (1 - w) * tz + w * np.asarray(ev[3], float)
         vex = (1 - w) * vex + w * s.vexag
         idx = np.where(w >= 0.5, j, idx)
-    return P, alt, T, tz, vex, idx
+        hj, pj = aim(ev[0], ev[1], ev[2], ev[3], s.vexag)
+        heading = (heading + (((hj - heading) + 180.0) % 360.0 - 180.0) * w) % 360.0
+        pitch = (1 - w) * pitch + w * pj
+    return P, alt, T, tz, vex, idx, heading, pitch
 
 
 def immersion(shots: list[Shot], t: np.ndarray, overlap: float = 5.0) -> np.ndarray:
@@ -493,29 +508,27 @@ SHAKE = {"pos_m": 0.45, "heading_deg": 0.32, "pitch_deg": 0.26}  # amplitudes of
 def shake_signal(t: np.ndarray, seed: float) -> np.ndarray:
     """Bounded, smooth, deterministic hand-held shake in [-1.6, 1.6] (three slow sines, no randomness)."""
     return (
-        np.sin(2 * np.pi * 0.83 * t + seed)
-        + 0.5 * np.sin(2 * np.pi * 1.71 * t + 2.0 * seed + 1.0)
-        + 0.25 * np.sin(2 * np.pi * 3.07 * t + 3.0 * seed + 2.0)
-    ) / 1.75 * 1.6
+        (
+            np.sin(2 * np.pi * 0.83 * t + seed)
+            + 0.5 * np.sin(2 * np.pi * 1.71 * t + 2.0 * seed + 1.0)
+            + 0.25 * np.sin(2 * np.pi * 3.07 * t + 3.0 * seed + 2.0)
+        )
+        / 1.75
+        * 1.6
+    )
 
 
-def build_camera(
-    scene: Scene, tl: dict, shots: list[Shot], shake: bool = True
-) -> list[dict]:
+def build_camera(scene: Scene, tl: dict, shots: list[Shot], shake: bool = True) -> list[dict]:
     t = tl["t_clip_s"]
-    P, alt, T, tz, vex, idx = blend_shots(shots, t)
-    d = T - P
-    horiz = np.hypot(d[:, 0], d[:, 1])
-    heading = bearing_deg(d[:, 0], d[:, 1])
-    # the renderer stretches heights by the vertical exaggeration of the frame: so does the pitch
-    pitch = np.degrees(np.arctan2((tz - alt) * vex, np.maximum(horiz, 1e-6)))
+    P, alt, _T, _tz, vex, idx, heading, pitch = blend_shots(shots, t)
+    # the renderer stretches heights by the vertical exaggeration of the frame: so does the pitch (blend_shots)
     if shake:
         w = immersion(shots, t)
         if w.max() > 0:
             # hand-held look inside the tornado shot: a few cm to decimetres of position, a third of a degree of aim
-            P = P + w[:, None] * np.stack(
-                [shake_signal(t, 0.4), shake_signal(t, 1.7)], -1
-            ) * (SHAKE["pos_m"] / 1000.0)
+            P = P + w[:, None] * np.stack([shake_signal(t, 0.4), shake_signal(t, 1.7)], -1) * (
+                SHAKE["pos_m"] / 1000.0
+            )
             alt = alt + w * shake_signal(t, 2.9) * (SHAKE["pos_m"] / 2000.0)
             alt = np.maximum(alt, 0.0021)
             heading = (heading + w * shake_signal(t, 3.3) * SHAKE["heading_deg"]) % 360.0
@@ -615,30 +628,33 @@ def build_events(
         if sh is not None:
             tm = 0.5 * (sh.t0 + sh.t1)
             tdm = float(data_time_of_clip(tl, tm))
-            qm, _a = scene.tornado_at(tdm)
-            vp = vortex_params(tors[0], p.get("rotation") or [], tdm, float(qm[0]), float(qm[1]))
+            _q, _a = scene.tornado_at(tdm)
+            vp = vortex_params(tors[0], p.get("vortex"), tdm)
             if vp is not None:
                 sp = tl["speedup"]
-                i0 = int(round(sh.t0 * tl["fps"]))
-                i1 = int(round(sh.t1 * tl["fps"]))
+                i0 = round(sh.t0 * tl["fps"])
+                i1 = round(sh.t1 * tl["fps"])
                 real = [
-                    float(tl["t_clip_s"][i])
-                    for i in range(i0, min(i1, len(sp)))
-                    if sp[i] <= 1.3
+                    float(tl["t_clip_s"][i]) for i in range(i0, min(i1, len(sp))) if sp[i] <= 1.3
                 ]
                 ev["tornado"]["vortex"] = {
-                    **{k: (round(v, 5) if isinstance(v, float) else v) for k, v in vp.items()},
+                    **{
+                        k: (round(v, 5) if isinstance(v, float) else v)
+                        for k, v in vp.items()
+                        if k != "parent_circulation"
+                    },
+                    "parent_circulation": vp["parent_circulation"],
                     "at_clip_s": round(tm, 3),
                     "real_time_from_clip_s": round(min(real), 3) if real else None,
                     "real_time_to_clip_s": round(max(real), 3) if real else None,
                     "speedup_at_middle": round(float(np.interp(tm, tl["t_clip_s"], sp)), 3),
                     "rotation_deg_per_clip_s_at_middle": round(
-                        math.degrees(vp["omega_rad_s"])
-                        * float(np.interp(tm, tl["t_clip_s"], sp)),
+                        math.degrees(vp["omega_rad_s"]) * float(np.interp(tm, tl["t_clip_s"], sp)),
                         2,
                     ),
-                    "note": "stylised funnel: position from the survey, spin from the survey wind range and half the path width; "
-                    "the radar resolves only the mesocyclone-scale couplet (vrot_radar_ms, meso_*)",
+                    "note": "stylised funnel: position from the survey, spin ESTIMATED from the survey wind range and half the "
+                    "damage width; no radar resolves the tornado (366 m wide, 500 m grid): the radars measured the parent "
+                    "circulation (parent_circulation)",
                 }
     for s in p.get("stations", []):
         for h in s.get("events") or []:

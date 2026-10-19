@@ -173,8 +173,11 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
             sys.exit(f"renderer error: {st['fatal']}")
         log(f"renderer ready at {st['w']}x{st['h']}")
         t0 = time.time()
+        cams: dict = {}
         for n, i in enumerate(todo):
             await page.evaluate("(i) => window.__xrClip.renderFrame(i)", i)
+            if a.cam_dump:
+                cams[i] = await page.evaluate("() => window.__xrPerilsCam || null")
             ext = "jpg" if a.frame_format == "jpeg" else "png"
             shot = (
                 await page.screenshot(type="jpeg", quality=a.jpeg_quality)
@@ -188,6 +191,12 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
                 log(
                     f"frame {i} ({n + 1}/{len(todo)})  {el:.0f}s elapsed, {el / (n + 1):.2f}s per frame, ETA {(len(todo) - n - 1) * el / (n + 1):.0f}s"
                 )
+        if a.cam_dump:
+            # the camera of each drawn frame as the scene saw it (merged with earlier dumps), for measure_rotation.py
+            dump = Path(a.cam_dump)
+            old = json.loads(dump.read_text()) if dump.exists() else {}
+            old.update({str(k): v for k, v in cams.items()})
+            dump.write_text(json.dumps(old))
         rep = await page.evaluate("() => window.__xrClip.report()")
         (frames_dir.parent / "render_report.json").write_text(json.dumps(rep, indent=1))
         await browser.close()
@@ -342,6 +351,11 @@ def main(argv=None) -> None:
         help="frame files (JPEG q95 by default: 8.5 GB of PNG do not fit next to everything else; the video is 4:2:0 H.264 anyway)",
     )
     ap.add_argument("--jpeg-quality", type=int, default=95)
+    ap.add_argument(
+        "--cam-dump",
+        default=None,
+        help="write the camera of every drawn frame (JSON) for measure_rotation.py",
+    )
     ap.add_argument("--crf", type=int, default=17)
     ap.add_argument(
         "--style",

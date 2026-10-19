@@ -1,16 +1,15 @@
-"""The rotation of the tornado, from the data: what is observed, what is assumed, and the numbers the page animates.
+"""The rotation of the tornado, from the data: what is measured, what is estimated, and the numbers the page animates.
 
-The merged radar grid is 500 m and the MRMS rotation tracks are 1 km products: a tornado of a few hundred metres is
-NOT resolved by them, only the mesocyclone-scale couplet around it is. So:
+The merged radar grid is 500 m and the tornado is 366 m wide: NO radar resolves the tornado vortex (the data bundle
+says so for every step: ``tornado_resolved = false``). So:
 
-* OBSERVED / RETRIEVED: the rotation tracks near the tornado give the radar rotational velocity ``Vrot`` and the
-  azimuthal shear ``AS`` at the 1 km scale: for a solid-body mesocyclone the angular rate is ``AS`` and its radius
-  ``Vrot / AS`` (cyclonic when ``AS > 0``).
-* OBSERVED (survey): the path width (radius of the funnel and the debris ring = half the width) and the rating, whose
-  EF range of damage-based wind estimates (mph) is the only measure of the tornado-scale wind speed the data have.
-* ASSUMED, STYLISED: the tangential speed of the funnel at the radius is the middle of the rating's wind range (a
-  damage-based estimate, not a measurement); the angular rate is ``omega = Vt / r`` and the period ``2 pi r / Vt``; the sense is
-  cyclonic (counter-clockwise seen from above), the sign of the observed azimuthal shear.
+* RETRIEVED (radar, ``context/vortex_kinematics.json``): the couplet of the PARENT circulation around the surveyed
+  position: Vrot 8-15 m/s (median 11), about 1.8 km across, cyclonic in most steps, one turn per about 8 minutes.
+* OBSERVED (survey): the damage width (the funnel and the debris ring have half of it as radius) and the rating, whose
+  damage-based wind range (EF2: 111-135 mph = 50-60 m/s) is the only measure of the tornado-scale wind the data have.
+* ESTIMATE, STYLISED: the tangential speed of the funnel at its radius is the middle of that range; the angular rate
+  is ``omega = Vt / r`` and the period ``2 pi r / Vt`` (19-23 s over the range); counter-clockwise seen from above
+  (cyclonic, as the parent circulation is).
 
 The same formulas live in ``src/lib/perils/perilsVortex.ts`` (the page animates with them) and are tested to agree.
 """
@@ -37,74 +36,57 @@ def ef_range_ms(rating: str | None) -> tuple[float, float] | None:
     return None if r is None else (r[0] * MPH, r[1] * MPH)
 
 
-def rotation_near(
-    tracks: list[dict], td: float, x: float, y: float, near_km: float = 6.0, window_s: float = 90.0
-) -> dict | None:
-    """The strongest rotation track point within ``near_km`` of (x, y) and ``window_s`` of ``td`` (or None)."""
-    best = None
-    for tr in tracks or []:
-        pts = tr.get("points") or []
-        cand = [q for q in pts if abs(q["t"] - td) <= window_s]
-        if not cand:
-            continue
-        q = min(cand, key=lambda q: abs(q["t"] - td))
-        if math.hypot(q["x"] - x, q["y"] - y) > near_km:
-            continue
-        v = q.get("vrot_ms")
-        if v is None:
-            continue
-        if best is None or v > best["vrot_ms"]:
-            best = {
-                "vrot_ms": float(v),
-                "as": q.get("as"),
-                "x": q["x"],
-                "y": q["y"],
-                "radar": tr.get("radar"),
-                "resolution_m": tr.get("resolution_m"),
-            }
-    return best
-
-
-def vortex_params(tor: dict, tracks: list[dict], td: float, x: float, y: float) -> dict | None:
-    """Rotation numbers of the tornado ``tor`` (a bundle tornado record) at data time ``td`` and position (x, y) km."""
-    width = tor.get("width_m")
-    radius = min(800.0, max(30.0, 0.5 * float(width))) if width else 75.0
-    obs = rotation_near(tracks, td, x, y)
-    rng = ef_range_ms(tor.get("rating"))
-    if rng is not None:
-        vt = 0.5 * (rng[0] + rng[1])
-        basis = (
-            f"middle of the {tor.get('rating')} damage-based wind range "
-            f"({rng[0] / MPH:.0f}-{rng[1] / MPH:.0f} mph): an assumption, not a measurement"
-        )
-    elif obs is not None:
-        vt = obs["vrot_ms"]
-        basis = "radar Vrot of the nearest rotation track (1 km scale, a lower bound)"
-    else:
+def parent_circulation(vortex: dict | None, td: float) -> dict | None:
+    """The couplet of the best radar at the step nearest to ``td`` and the medians over the steps (or None)."""
+    if not vortex or not vortex.get("steps"):
         return None
-    omega = vt / (radius)
-    out = {
+    st = min(vortex["steps"], key=lambda s: abs(s["t"] - td))
+    sm = vortex.get("summary") or {}
+    vr = sm.get("vrot_ms_min_median_max")
+    dm = sm.get("couplet_diameter_km_min_median_max")
+    return {
+        "vrot_ms": st.get("vrot_ms"),
+        "diameter_km": st.get("diameter_km"),
+        "sense": st.get("sense"),
+        "radar": st.get("radar"),
+        "resolution_m": st.get("effective_resolution_m"),
+        "median_vrot_ms": vr[1] if vr else None,
+        "vrot_range_ms": [vr[0], vr[2]] if vr else None,
+        "median_diameter_km": dm[1] if dm else None,
+        "median_omega_s1": sm.get("omega_s1_median_cyclonic"),
+        "cyclonic_steps": sm.get("cyclonic_steps"),
+        "n_steps": sm.get("n_steps"),
+    }
+
+
+def vortex_params(tor: dict, vortex: dict | None, td: float) -> dict | None:
+    """Rotation numbers of the tornado ``tor`` (a bundle tornado record) at data time ``td``."""
+    est = (vortex or {}).get("survey_scale_estimate") or None
+    width = (est or {}).get("damage_width_m") or tor.get("width_m")
+    radius = min(800.0, max(30.0, 0.5 * float(width))) if width else 75.0
+    rng = (
+        tuple(est["wind_range_ms"])
+        if est and est.get("wind_range_ms")
+        else ef_range_ms(tor.get("rating"))
+    )
+    if rng is None:
+        return None
+    vt = 0.5 * (rng[0] + rng[1])
+    return {
         "radius_m": radius,
         "vt_ms": vt,
-        "omega_rad_s": omega,
+        "omega_rad_s": vt / radius,
         "period_s": 2.0 * math.pi * radius / vt,
         "sense": "cyclonic (counter-clockwise from above)",
-        "vt_basis": basis,
-        "radius_basis": "half the surveyed path width (an upper bound of the core radius)"
+        "vt_basis": f"middle of the {tor.get('rating') or 'survey'} damage-based wind range "
+        f"({rng[0]:.0f}-{rng[1]:.0f} m/s): an estimate, not a measurement",
+        "radius_basis": "half the surveyed damage width"
         if width
-        else "assumed 75 m (the survey gives no width)",
-        "vrot_radar_ms": None,
-        "azshear_s1": None,
-        "meso_radius_m": None,
-        "meso_omega_rad_s": None,
-        "meso_period_s": None,
+        else "assumed 75 m (no survey width)",
+        "wind_range_ms": list(rng),
+        "period_range_s": list(est["rotation_period_s_range"])
+        if est and est.get("rotation_period_s_range")
+        else None,
+        "tornado_resolved": False,
+        "parent_circulation": parent_circulation(vortex, td),
     }
-    if obs is not None:
-        out["vrot_radar_ms"] = obs["vrot_ms"]
-        a = obs.get("as")
-        if a and a > 0:
-            out["azshear_s1"] = float(a)
-            out["meso_radius_m"] = obs["vrot_ms"] / float(a)
-            out["meso_omega_rad_s"] = float(a)
-            out["meso_period_s"] = 2.0 * math.pi / float(a)
-    return out
