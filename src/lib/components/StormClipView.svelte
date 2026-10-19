@@ -4,7 +4,7 @@
    * canvas for the 3D scene, one for the overlay, and `window.__xrClip` to drive it frame by frame.
    * No engine connection is needed: the data comes from a bundle written by clipdata.py.
    */
-  import { onMount, onDestroy } from 'svelte';
+  import { mount, onMount, onDestroy } from 'svelte';
   import { StormClip } from '../utils/stormClip';
   import { runMorphSelfTest } from '../utils/morphSelfTest';
 
@@ -13,6 +13,13 @@
   let clip: StormClip | null = null;
 
   onMount(() => {
+    // `?tornado=1`: the tornado simulation preview (docs/TORNADO_SIM.md) is hosted here, lazily, so that the entry chunk
+    // (main.ts) does not grow for it
+    if (new URLSearchParams(location.search).has('tornado')) {
+      host!.remove();
+      import('./TornadoPreview.svelte').then((m) => mount(m.default, { target: document.getElementById('app')! }));
+      return;
+    }
     const el = host!;
     const ov = overlay!;
     const size = () => {

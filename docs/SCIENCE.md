@@ -46,7 +46,8 @@ information* from *nothing to say*.
   time, a `history` line per step, and for derived variables the module, parameters and radarx version
   (`python/engine/provenance.py`, {doc}`OUTPUT_STANDARDS`).
 - Stylised looks are labelled on screen and in clips, and never change the data underneath
-  ({doc}`REALISTIC_3D`, {doc}`STORM_CLIP`).
+  ({doc}`REALISTIC_3D`, {doc}`STORM_CLIP`). The tornado simulation is a SIMULATED picture seeded by observations and says
+  which numbers are observed and which modelled ({doc}`TORNADO_SIM`).
 - Imagery and terrain show their attribution while they are on screen.
 - **On screen:** every layer carries a provenance chip (OBS, MODEL, RETR, SIM, STYLE; the app shows
   *simulated* and *stylised* as two chips) and the Layers panel lists each layer with its source, valid

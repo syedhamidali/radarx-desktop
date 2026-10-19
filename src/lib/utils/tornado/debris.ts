@@ -33,12 +33,12 @@ export interface DebrisClass {
 }
 
 export const DEBRIS_CLASSES: DebrisClass[] = [
-  { name: 'dust and soil', k: 12, a: 0.06, b: 0.06, pick: 18, share: 0.34, spin: 2, tone: 0.34 },
-  { name: 'leaves and insulation', k: 1.2, a: 0.22, b: 0.16, pick: 24, share: 0.3, spin: 9, tone: 0.3 },
-  { name: 'shingles and boards', k: 0.07, a: 1.1, b: 0.12, pick: 34, share: 0.16, spin: 5, tone: 0.3 },
-  { name: 'sheet metal and panels', k: 0.035, a: 1.0, b: 0.8, pick: 38, share: 0.09, spin: 3.5, tone: 0.6 },
-  { name: 'branches and timber', k: 0.012, a: 2.0, b: 0.15, pick: 40, share: 0.09, spin: 2.2, tone: 0.22 },
-  { name: 'large objects', k: 0.003, a: 2.2, b: 1.1, pick: 48, share: 0.02, spin: 0.9, tone: 0.24 },
+  { name: 'dust and soil', k: 12, a: 0.07, b: 0.07, pick: 18, share: 0.34, spin: 2, tone: 0.22 },
+  { name: 'leaves and insulation', k: 1.2, a: 0.22, b: 0.16, pick: 24, share: 0.34, spin: 9, tone: 0.2 },
+  { name: 'shingles and boards', k: 0.07, a: 1.0, b: 0.11, pick: 34, share: 0.14, spin: 5, tone: 0.22 },
+  { name: 'sheet metal and panels', k: 0.035, a: 0.75, b: 0.55, pick: 38, share: 0.05, spin: 3.5, tone: 0.5 },
+  { name: 'branches and timber', k: 0.012, a: 2.0, b: 0.15, pick: 40, share: 0.1, spin: 2.2, tone: 0.16 },
+  { name: 'large objects', k: 0.003, a: 2.2, b: 1.1, pick: 48, share: 0.03, spin: 0.9, tone: 0.2 },
 ];
 
 function mulberry(seed: number): () => number {

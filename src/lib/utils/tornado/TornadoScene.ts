@@ -27,7 +27,7 @@ import { buildNoiseVolume } from './noise3d.ts';
 import { buildLandscape, forestFromImagery, placeFeatures, clearAround, type Landscape } from './landscape.ts';
 import { loadGroundTiles, type GroundTileResult } from './groundTiles.ts';
 import { treeState, type TreeState } from './treeDamage.ts';
-import { makeFlash, flashLevels, flashEnd, type Flash } from '../lightning.ts';
+import { makeFlashEnv, flashLight, flashEnd, type FlashEnv } from './flashes.ts';
 import { sunPosition } from '../sunPosition.ts';
 import {
   program, buffer, makeTex2D, basis, viewProj, type Program, type Vec3,
@@ -159,7 +159,7 @@ export class TornadoScene {
   private sim: DebrisSim | null = null;
   private simStart = 0;
   private debrisDynArr!: Float32Array;
-  private flashes: Flash[] = [];
+  private flashes: FlashEnv[] = [];
   private t = 0;
   private treeStates: TreeState = { tilt: 0, dir: [1, 0], fall: 0, peak: 0 };
   private treeBendArr = new Float32Array(0);
@@ -205,7 +205,7 @@ export class TornadoScene {
     const names = [
       'uT0', 'uT1', 'uT2', 'uInt', 'uG', 'uAxis', 'uTrans', 'uM0', 'uM1', 'uTime', 'uNoise', 'uFlash', 'uFlashGain',
       'uScene', 'uDepth', 'uEcho', 'uEchoGrid', 'uEchoOn', 'uCam', 'uRight', 'uUp', 'uFwd', 'uTan', 'uRes', 'uFrame',
-      'uCloud', 'uFunnel', 'uFunnel2', 'uMask', 'uOverlay', 'uAmb', 'uGlowDir', 'uFog', 'uFogK', 'uDust', 'uDebug',
+      'uCloud', 'uFunnel', 'uFunnel2', 'uMask', 'uOverlay', 'uAxisZ', 'uAmb', 'uGlowDir', 'uFog', 'uFogK', 'uDust', 'uDebug',
       'uViewProj', 'uGroundCentre', 'uMaxR', 'uTerrain', 'uTerrainGrid', 'uTerrainSize', 'uTerrainRef',
       'uLand', 'uLandL', 'uLandGrid', 'uImagery', 'uImageryGrid', 'uWet', 'uRainRate',
       'uCls', 'uShutter', 'uCamFwd', 'uBox', 'uCamVel',
@@ -437,15 +437,7 @@ export class TornadoScene {
   setSeedData(seed: SeedData & { epochUtc?: string }): ResolvedSeed {
     const r = resolveSeed(seed);
     this.seed = r;
-    this.flashes = r.flashes.map((f, i) => makeFlash({
-      id: i + 1,
-      t: f.t,
-      kind: 'IC',
-      source: 'observed',
-      origin: [f.x / 1000, f.y / 1000, f.altM / 1000],
-      end: [f.x / 1000 + (((i * 7) % 5) - 2) * 0.9, f.y / 1000 + (((i * 3) % 5) - 2) * 0.9, f.altM / 1000 - 0.8],
-      energy: 0.55 + 0.45 * (((i * 2654435761) >>> 0) % 100) / 100,
-    }));
+    this.flashes = r.flashes.map((f, i) => makeFlashEnv(i + 1, f.t, 0.55 + 0.45 * (((i * 2654435761) >>> 0) % 100) / 100));
     this.sim = new DebrisSim(r, { count: this.opts.debrisCount ?? 12000, seed: 20220330 });
     this.uploadDebrisStatic();
     // sun for the label and the glow direction
@@ -754,7 +746,7 @@ export class TornadoScene {
       // comfortable lightning: the light is the mean of the flash envelope over the last FLASH_SMOOTH_S seconds (a pure function of t),
       // so a cluster of flashes does not strobe (rise time ~0.12 s, no more than about 3 distinct bursts per second)
       let lv = 0;
-      for (let k = 0; k < 6; k++) lv += flashLevels(f, this.t - (k * FLASH_SMOOTH_S) / 5).light;
+      for (let k = 0; k < 6; k++) lv += flashLight(f, this.t - (k * FLASH_SMOOTH_S) / 5);
       lv = Math.min(1, lv / 6);
       if (lv < 0.01) continue;
       const fs = r.flashes[i];
@@ -960,6 +952,8 @@ export class TornadoScene {
       gl.uniform1f(p.u.uDebug, 0);
       gl.uniform1f(p.u.uMask, overlay ? (this.mask & 52) : this.mask);
       gl.uniform1f(p.u.uOverlay, overlay ? 1 : 0);
+      const axg = axisAt(r, this.t);
+      gl.uniform1f(p.u.uAxisZ, this.groundZ(axg.x, axg.y));
       gl.bindVertexArray(this.vaoEmpty);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }

@@ -208,6 +208,7 @@ uniform vec3 uFog;          // distance haze colour
 uniform vec4 uFogK;         // density at ground (1/m), height scale, rain extinction scale, fallback rain mm/h
 uniform vec4 uDust;         // damage onset speed, dust strength, debris dark strength, scale
 uniform float uDebug;       // 1 = top-down swirl-noise slice
+uniform float uAxisZ;        // terrain height under the vortex axis (m above the scene reference): the vortex stands on it
 uniform float uOverlay;     // 1: output the tornado alone with alpha (no ground, sky or far fog), to composite over another render
 uniform float uMask;        // bit mask of the components drawn (1 haze, 2 cloud, 4 funnel, 8 rain, 16 dust, 32 debris): diagnostics
 
@@ -270,6 +271,10 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     occl *= exp(-clamp(above, 0.0, 400.0) * 0.004);
   }
 
+  // the vortex stands on the terrain under its axis
+  z = max(p.z - uAxisZ, 0.0);
+  rel.z = p.z - uAxisZ;
+
   // ---- the condensation funnel: where the vortex's own pressure deficit saturates the surface air
   if (uInt > 0.0 && r < 5.0 * coreR(z) + 80.0 && z < 4000.0) {
     float dp = dpAt(r, z) * uInt;
@@ -331,9 +336,9 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
 
 // cheap density for the shadow taps toward the key light (funnel and dust, one noise tap each)
 float lightDens(vec3 p) {
-  vec3 rel = vec3(p.xy - uAxis, p.z);
+  vec3 rel = vec3(p.xy - uAxis, p.z - uAxisZ);
   float r = length(rel.xy);
-  float z = max(p.z, 0.0);
+  float z = max(p.z - uAxisZ, 0.0);
   float s = 0.0;
   if (uInt > 0.0 && r < 5.0 * coreR(z) + 80.0 && z < 1500.0) {
     float dp = dpAt(r, z) * uInt;
@@ -582,7 +587,7 @@ void main() {
     vec2 rdir = vec2(cos(ang), sin(ang));
     float rowc = dot(xy, vec2(-rdir.y, rdir.x)) / 0.9;
     float rows = 0.5 + 0.5 * sin(rowc * 6.2831);
-    if (cls > 1.5 && cls < 3.5) albedo *= mix(1.0, 0.62 + 0.55 * rows, fine * (cls < 2.5 ? 0.9 : 0.55));
+    if (cls > 1.5 && cls < 3.5) albedo *= mix(1.0, 0.78 + 0.34 * rows, fine * (cls < 2.5 ? 0.9 : 0.55));
     // woodland canopy seen from far: clumpy dark texture
     if (cls > 3.5 && cls < 4.5) albedo *= 0.6 + 0.9 * n3.b * n2.g;
     // roads: asphalt or gravel, with wear, plus the paler shoulder
@@ -702,7 +707,14 @@ void main() {
   if (a < 0.04 || a < hash12(gl_FragCoord.xy + fract(uFrame * 0.37) * 131.0)) discard;
   vec3 N = normalize(vN);
   float lam = 0.55 + 0.45 * abs(N.z);
-  vec3 L = vec3(vTone) * (uAmb.rgb * 0.6 * lam * 1.2 + flashLight(vWorld, 3500.0) * (0.5 + 0.5 * abs(N.y)));
+  // surface texture: wood grain along the length of boards, corrugation of sheet metal, veins of leaves
+  float tex = 1.0;
+  vec4 tn = noiseAt(vec3(vUv * vec2(0.9, 5.0), vWorld.x * 0.013));
+  if (vKind > 1.5) {
+    if (vCls < 2.5 || vCls > 3.5) tex = 0.62 + 0.8 * tn.r;                         // boards, timber
+    else tex = 0.78 + 0.35 * sin(vUv.y * 26.0) * (0.5 + 0.5 * tn.g) + 0.2 * (tn.b - 0.5);   // sheet metal
+  } else if (vKind > 0.5) tex = 0.7 + 0.6 * abs(sin(vUv.x * 9.0 + tn.g * 3.0));
+  vec3 L = vec3(vTone) * tex * (uAmb.rgb * 0.6 * lam * 1.2 + flashLight(vWorld, 3500.0) * (0.5 + 0.5 * abs(N.y)));
   // metal catches the lightning
   if (vCls > 2.5 && vCls < 3.5) L += flashLight(vWorld, 3500.0) * 0.8;
   outColor = vec4(L, a);
@@ -798,9 +810,9 @@ void main() {
     float dist = length(vWorld - uCam);
     float cut = mix(0.44, 0.52, smoothstep(40.0, 400.0, dist));
     if (leaf < cut) discard;
-    vec3 hw = mix(vec3(0.030, 0.052, 0.020), vec3(0.050, 0.075, 0.028), vVar);
-    vec3 pine = mix(vec3(0.016, 0.03, 0.018), vec3(0.025, 0.042, 0.022), vVar);
-    col = (vSpecies < 0.5 ? hw : pine) * (0.7 + 0.8 * n2.b);
+    vec3 hw = mix(vec3(0.045, 0.07, 0.026), vec3(0.075, 0.10, 0.034), vVar);
+    vec3 pine = mix(vec3(0.022, 0.040, 0.024), vec3(0.034, 0.055, 0.028), vVar);
+    col = (vSpecies < 0.5 ? hw : pine) * (0.55 + 1.0 * n2.b) * (0.7 + 0.5 * smoothstep(-0.2, 1.0, N.z));
   }
   col *= (1.0 - 0.35 * uWet);
   float up = 0.45 + 0.55 * N.z;
