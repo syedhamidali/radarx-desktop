@@ -12,7 +12,7 @@ import type { OverlayCam } from './clipExtras';
 import {
   type PerilsData, type RotationTrack, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
 } from './perilsData.ts';
-import { type RGB, drawText, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR } from './perilsStyle.ts';
+import { type RGB, drawText, measure, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR } from './perilsStyle.ts';
 import { recentHail } from './perilsInsets.ts';
 
 export interface SceneEnv {
@@ -248,9 +248,14 @@ export function drawTornadoTrack(e: SceneEnv, a: number): void {
     lab(tor.path[0], `${rating} starts ${clockUtc(e.data.time0, tor.path[0].t)}`);
     lab(tor.path[tor.path.length - 1], `ends ${clockUtc(e.data.time0, tor.path[tor.path.length - 1].t)}`);
     if (tor.path_interpolated) {
-      const mid = tor.path[Math.floor(tor.path.length / 2)];
-      const pm = pj(cam, mid.x, mid.y, 0.04, e.ve);
-      if (onScreen(pm, cam.w, cam.h)) drawText(ctx, 'surveyed begin and end, path between them interpolated', pm[0] + 10 * u, pm[1] + 32 * u, u, { size: 12, weight: 500, color: rgba([255, 205, 200], 0.95) });
+      const p0 = tor.path[0];
+      const p1 = tor.path[tor.path.length - 1];
+      const pm = pj(cam, (p0.x + p1.x) / 2, (p0.y + p1.y) / 2, 0.04, e.ve);
+      const note = 'surveyed begin and end, path between them interpolated';
+      if (onScreen(pm, cam.w, cam.h)) {
+        const nx = Math.max(12 * u, Math.min(pm[0] - 100 * u, cam.w - 24 * u - measure(ctx, note, u, { size: 12, weight: 500 })));
+        drawText(ctx, note, nx, pm[1] + 32 * u, u, { size: 12, weight: 500, color: rgba([255, 205, 200], 0.95) });
+      }
     }
     // the marker at the clip-time position
     const cur = tornadoAt(tor, e.td);

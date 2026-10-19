@@ -331,6 +331,14 @@ export class PerilsExtras implements ClipExtras {
       ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, sounding: this.pair?.pre ?? null, nearStep: this.nearStep(info.td),
     };
     const v = (id: LayerId) => this.vis.at(id, info.t);
+    // the right-hand inset column is the HUD's: scene labels do not run through it
+    const W = cam.w;
+    const colOn = Math.max(v('stripCharts'), v('timeHeight'), v('envPanel'), v('lmaPanel'), v('skewt')) > 0.05;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, W, cam.h);
+    if (colOn) ctx.rect(W - 400 * u, 0, 400 * u, v('skewt') > 0.05 ? cam.h : cam.h * 0.72);
+    ctx.clip('evenodd');
     drawIsotherms(env, v('isotherms'), centre, 55);
     drawTornadoTrack(env, v('tornadoTrack'));
     drawRadars(env, v('radars'));
@@ -349,6 +357,7 @@ export class PerilsExtras implements ClipExtras {
     drawRotation(env, v('rotation'));
     drawStations(env, v('stations'));
     drawFunnel(env, v('funnel'), this.opts.cloudBaseKm ?? 1.0);
+    ctx.restore();
     this.lmaDrawn = drawLma(ctx, cam, this.lmaNow, projRaw, info.vexag, this.opts.lmaColourBy ?? this.lma.colourBy, 1);
   }
 
@@ -460,7 +469,7 @@ export class PerilsExtras implements ClipExtras {
         ['freezing level', typeof e.freezing_level_asl_m === 'number' ? `${(e.freezing_level_asl_m / 1000).toFixed(1)} km` : null],
       ] as [string, string | null][]).filter((r): r is [string, string] => r[1] !== null);
       const dt = e.launch_t_s - td;
-      return { title: `pre-storm ${e.site} sonde ${clockUtc(this.data.time0, e.launch_t_s).slice(0, 5)} UTC`, prov: 'observed', rows, note: `launched ${fmtOffset(dt)} from this moment, ahead of the storm` };
+      return { title: `pre-storm ${e.site} ${clockUtc(this.data.time0, e.launch_t_s).slice(0, 5)}Z`, prov: 'observed', rows, note: `launched ${fmtOffset(Math.abs(dt)).slice(1)} ${dt < 0 ? 'before' : 'after'} this moment` };
     }
     const flat = ([
       ['CAPE', fmt(env.cape_jkg, 'J/kg')],
