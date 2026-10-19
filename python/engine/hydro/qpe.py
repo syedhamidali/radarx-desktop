@@ -295,6 +295,7 @@ class QpeConfig:
             raise QpeError("zr_a and zr_b must be positive")
         if self.r_light >= self.r_heavy:
             raise QpeError("r_light must be smaller than r_heavy")
+        self.zr()  # an unknown relation, or a rain relation for snow, is an error here
 
     def zr(self) -> ZRelation:
         if self.zr_a is not None:
@@ -393,6 +394,15 @@ class SweepQpe:
     blockage: np.ndarray | None  # (n_az, n_range) CBB 0..1 or None without a DEM
     ray_time: np.ndarray | None  # datetime64 per ray
     meta: dict[str, Any] = field(default_factory=dict)
+    order: np.ndarray | None = None  # ray order of the input: arrays here are sorted by azimuth
+
+    def to_input_order(self, arr: np.ndarray) -> np.ndarray:
+        """``arr`` (n_az, n_range) back in the ray order of the input sweep."""
+        if self.order is None:
+            return arr
+        out = np.empty_like(arr)
+        out[self.order] = arr
+        return out
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -832,6 +842,7 @@ def estimate_sweep(
         beam_height_agl_m=h_agl,
         blockage=cbb,
         ray_time=ray_time,
+        order=order,
         meta=meta,
     )
 

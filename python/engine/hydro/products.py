@@ -569,10 +569,13 @@ def figure(
         fontsize=9,
     )
     method = result.config.get("method_text") or result.config.get("method")
+    import textwrap
+
     ax.annotate(
-        f"method: {str(method)[:150]}",
-        (0.0, -0.13),
+        textwrap.fill(f"method: {method}", 92),
+        (0.0, -0.1),
         xycoords="axes fraction",
+        va="top",
         fontsize=6.5,
         color="#555",
     )
@@ -598,7 +601,9 @@ def basin_table_csv(result: QpeResult) -> str:
     buf = io.StringIO()
     buf.write(
         prov.csv_comment_block(
-            title="Basin rainfall statistics (RETRIEVED radar estimate)",
+            title="Basin rainfall statistics ("
+            + ("ADJUSTED to gauges" if bs.adjusted else "RETRIEVED radar estimate")
+            + ")",
             source_files=result.source_files,
             params={"period": f"{prov.iso_utc(result.start)}/{prov.iso_utc(result.end)}"},
             extra={"provenance_type": "ADJUSTED" if bs.adjusted else "RETRIEVED"},
@@ -637,3 +642,143 @@ def basin_series_csv(result: QpeResult, basin_index: int = 0) -> str:
             f"{r['coverage']:.3f},{'' if cum is None else format(cum, '.4f')}\n"
         )
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Saving by extension
+# ---------------------------------------------------------------------------
+
+
+def default_field(result: QpeResult) -> str:
+    """The field a picture shows by default: the adjusted accumulation when there is one."""
+    return "accumulation_adjusted" if result.accumulation_adjusted is not None else "accumulation"
+
+
+def save(result: QpeResult, out: Any, *, field: str | None = None) -> list[Path]:
+    """Write ``out`` (a path or a list of paths) by extension and return every file written.
+
+    ``.nc`` CF NetCDF; ``.png`` colour image of ``field`` plus ``.pgw`` / ``.prj`` for GIS;
+    ``.json`` the summary (provenance, statistics, basins, validation); ``.csv`` the basin table
+    (and ``<name>_<basin>_series.csv`` with the basin series); ``.pdf`` / ``.svg`` a figure.
+    """
+    from engine import mosaic
+
+    items = [out] if isinstance(out, (str, Path)) else list(out)
+    written: list[Path] = []
+    name = field or default_field(result)
+    for item in items:
+        path = Path(item).expanduser()
+        ext = path.suffix.lower()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if ext == ".nc":
+            written.append(write_netcdf(result, path))
+        elif ext == ".png":
+            rec = mosaic_record(result, name)
+            path.write_bytes(mosaic.png_bytes(rec))
+            path.with_suffix(".pgw").write_text(mosaic.world_file(rec), encoding="ascii")
+            path.with_suffix(".prj").write_text(mosaic.projection_wkt(), encoding="ascii")
+            written += [path, path.with_suffix(".pgw"), path.with_suffix(".prj")]
+        elif ext == ".json":
+            path.write_text(json.dumps(_jsonable(result.to_dict()), indent=2), encoding="utf-8")
+            written.append(path)
+        elif ext == ".csv":
+            path.write_text(basin_table_csv(result), encoding="utf-8")
+            written.append(path)
+            bs = result.basin_series
+            for k, bw in enumerate(bs.weights if bs is not None else []):
+                sp = path.with_name(f"{path.stem}_{_slug(bw.basin.id)}_series.csv")
+                sp.write_text(basin_series_csv(result, k), encoding="utf-8")
+                written.append(sp)
+        elif ext in (".pdf", ".svg"):
+            import matplotlib.pyplot as plt
+
+            fig = figure(result, name)
+            fig.savefig(path)
+            plt.close(fig)
+            written.append(path)
+        else:
+            raise hqpe.QpeError(
+                f"cannot write {path.name}: use .nc (NetCDF), .png (image + world file), "
+                ".json (summary), .csv (basin table) or .pdf/.svg (figure)"
+            )
+    return written
+
+
+def _slug(text: str) -> str:
+    import re
+
+    return re.sub(r"[^A-Za-z0-9]+", "_", str(text)).strip("_") or "basin"
+
+
+def _jsonable(obj: Any) -> Any:
+    """Plain Python for ``json.dump`` (numpy scalars, NaN -> null)."""
+    if isinstance(obj, dict):
+        return {str(k): _jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_jsonable(v) for v in obj]
+    if isinstance(obj, np.generic):
+        obj = obj.item()
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    if isinstance(obj, (np.ndarray,)):
+        return _jsonable(obj.tolist())
+    return obj
+
+
+def series_figure(result: QpeResult, bin_minutes: float = 60.0, max_basins: int = 6):
+    """Basin-mean rain rate (line), hyetograph bars and cumulative depth.
+
+    One panel per basin (at most ``max_basins``); the title carries the provenance label.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg", force=False)
+    import matplotlib.dates as mdates
+    import matplotlib.pyplot as plt
+
+    bs = result.basin_series
+    if bs is None:
+        raise hqpe.QpeError("no basins were given")
+    n = min(len(bs.weights), max_basins)
+    fig, axes = plt.subplots(n, 1, figsize=(7.4, 2.6 * n + 0.8), sharex=True, squeeze=False)
+    t = np.array(bs.times, dtype="datetime64[ns]").astype("datetime64[s]").astype(object)
+    label = "ADJUSTED" if bs.adjusted else "RETRIEVED"
+    for k in range(n):
+        ax = axes[k, 0]
+        ax2 = ax.twinx()
+        hy = bs.hyetograph(k, bin_minutes)
+        starts = [np.datetime64(s.rstrip("Z"), "s").astype(object) for s in hy["start"]]
+        ends = [np.datetime64(s.rstrip("Z"), "s").astype(object) for s in hy["end"]]
+        widths = [(e - s).total_seconds() / 86400.0 for s, e in zip(starts, ends, strict=True)]
+        ax.bar(
+            starts,
+            hy["intensity_mm_h"],
+            width=widths,
+            align="edge",
+            color="#9ecae1",
+            alpha=0.7,
+            label=f"{bin_minutes:g} min mean intensity",
+        )
+        ax.plot(t, bs.mean_rate[k], color="#08519c", lw=1.6, label="basin-mean rate")
+        cum = ax2.plot(t, bs.cum_mean[k], color="#d95f02", lw=1.6, label="cumulative depth (mean)")
+        ax.set_ylabel("rain rate [mm/h]")
+        ax2.set_ylabel("depth [mm]")
+        ax2.set_zorder(ax.get_zorder() + 1)
+        ax2.patch.set_visible(False)
+        s = bs.stats[k]
+        ax.set_title(
+            f"{s['id']}: {s['area_km2']:,.0f} km2, mean accumulation "
+            f"{(s.get('accumulation_mean_mm') or 0):.1f} mm, max cell rate "
+            f"{(s.get('max_cell_rate_mm_h') or 0):.0f} mm/h "
+            f"[{label}: an estimate, not an observation]",
+            fontsize=8.5,
+        )
+        if k == 0:
+            h1, l1 = ax.get_legend_handles_labels()
+            h2, l2 = ax2.get_legend_handles_labels()
+            ax.legend(h1 + h2, l1 + l2, fontsize=7, loc="upper left", frameon=False)
+        del cum
+    axes[-1, 0].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+    axes[-1, 0].set_xlabel("time (UTC)")
+    fig.tight_layout()
+    return fig

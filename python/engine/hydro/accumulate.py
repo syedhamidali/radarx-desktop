@@ -72,6 +72,23 @@ class ScanMeta:
         return (round(self.latitude, 3), round(self.longitude, 3))
 
 
+class TreeReader:
+    """A reader-like view of an in-memory ``xarray.DataTree`` (for modules and notebooks)."""
+
+    def __init__(self, tree: xr.DataTree, path: str | None = None) -> None:
+        from engine.reader import sorted_sweep_names
+
+        self.datatree = tree
+        self._path = path
+        self._names = sorted_sweep_names(tree)
+
+    def get_sweep_dataset(self, sweep: int, *, mask: bool = True, only: Any = None) -> xr.Dataset:
+        from engine.reader import mask_below_threshold
+
+        ds = self.datatree[self._names[sweep]].to_dataset()
+        return mask_below_threshold(ds, only) if mask else ds
+
+
 def _time_of(ds: Any) -> np.datetime64:
     if "time" in ds.variables:
         t = np.ravel(ds["time"].values)
@@ -349,6 +366,8 @@ class QpeResult:
     adjustment_factor: np.ndarray | None = None
     accumulation_adjusted: np.ndarray | None = None
     source_files: list[str] = field(default_factory=list)
+    exceedance: list[dict[str, Any]] | None = None  # basins.exceedance(...) when a table was given
+    validation: dict[str, Any] | None = None  # gauges.adjust(...) report when gauges were given
 
     # -- basic numbers ---------------------------------------------------------------------
     @property
@@ -434,7 +453,30 @@ class QpeResult:
             d["adjustment"] = self.adjusted
         if self.basin_series is not None:
             d["basins"] = self.basin_series.summary()
+        if self.exceedance is not None:
+            d["exceedance"] = self.exceedance
+        if self.validation is not None:
+            d["gauge_validation"] = {k: v for k, v in self.validation.items() if k != "adjustment"}
         return d
+
+    # -- convenience ---------------------------------------------------------------------------
+    def save(self, out: Any, *, field: str | None = None) -> list[Any]:
+        """Write each path of ``out`` by extension (see :func:`engine.hydro.products.save`)."""
+        from engine.hydro import products
+
+        return products.save(self, out, field=field)
+
+    def plot(self, field: str | None = None, **kwargs: Any) -> Any:
+        """A matplotlib figure of a field (default: the adjusted accumulation if there is one)."""
+        from engine.hydro import products
+
+        return products.figure(self, field or products.default_field(self), **kwargs)
+
+    def to_dataset(self) -> Any:
+        """The CF NetCDF content as an ``xarray.Dataset``."""
+        from engine.hydro import products
+
+        return products.to_dataset(self)
 
 
 # ---------------------------------------------------------------------------

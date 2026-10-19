@@ -14,6 +14,8 @@ Analyse
     :func:`modules`, :func:`module`, :func:`run` / ``Volume.run``, :func:`cells`, :func:`track`
 Combine
     :func:`mosaic` (several radars on one map), :func:`winds` (multi-Doppler)
+Hydrology
+    :func:`qpe` (rain rate and accumulation with uncertainty, gauge adjustment, basin rainfall)
 Save
     :func:`export` / ``Volume.export``; every result has ``.save(...)`` and ``.plot()``
 
@@ -32,6 +34,7 @@ Quick tour::
     vol.export("netcdf", "out.nc", include_derived=True)
 
     mos = api.mosaic([f1, f2, f3], out="mosaic.nc")     # multi-radar mosaic
+    rain = api.qpe([f1, f2, f3], out="rain.nc")         # rainfall accumulation (docs/HYDROLOGY.md)
     w = api.winds([f1, f2], out="winds.nc")             # multi-Doppler winds
     trk = api.track([t1, t2, t3])                       # storm-cell tracking
 
@@ -119,6 +122,7 @@ __all__ = [
     "pipeline",
     "pipeline_steps",
     "plot",
+    "qpe",
     "recipe",
     "recipe_script",
     "recipes",
@@ -163,9 +167,11 @@ def user_errors() -> tuple[type[BaseException], ...]:
     """Exception types whose message is written for the user (the CLI prints them plainly)."""
     from engine import mosaic as mosaic_engine
     from engine import multidoppler as mdop_engine
+    from engine.hydro.qpe import QpeError
 
     return (
         XrdError,
+        QpeError,
         plugins.ModuleError,
         derived.DerivedError,
         mosaic_engine.MosaicError,
@@ -1421,6 +1427,19 @@ class Volume:
             self.tree, name, self._check_sweep(sweep), params, var_overrides=self.mapping
         )
 
+    def qpe(self, **kwargs: Any) -> Any:
+        """Rain rate of this volume on a map grid (``xrd qpe -i FILE``); see :func:`qpe`.
+
+        One volume gives an instantaneous composite (``result.rate_last``, mm/h) with its
+        uncertainty and quality fields; for an accumulation use :func:`qpe` with several volumes.
+
+        Examples
+        --------
+        >>> res = vol.qpe(relation="tropical")            # doctest: +SKIP
+        >>> res.save("rate.nc")                            # doctest: +SKIP
+        """
+        return qpe([self], **kwargs)
+
     def statistics(
         self, variable: str, sweep: int = 0, stat_type: str = "histogram", **params: Any
     ) -> dict[str, Any]:
@@ -2090,6 +2109,140 @@ def mosaic(
     if plot is not None:
         save_figure(result.plot(), plot)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Hydrology: rainfall estimation, accumulation, gauges and basins
+# ---------------------------------------------------------------------------
+
+
+def qpe(
+    files: Sequence[Volume | str | os.PathLike[str]] | Volume | str,
+    *,
+    method: str = "auto",
+    relation: str | None = None,
+    band: str = "S",
+    precip: str = "rain",
+    start: Any = None,
+    end: Any = None,
+    resolution_m: float = 1000.0,
+    extent: Any = None,
+    max_range_km: float = 230.0,
+    gauges: Any = None,
+    adjust: str | None = None,
+    basins: Any = None,
+    thresholds: Sequence[float] | None = None,
+    frequency: Any = None,
+    dem: Any = None,
+    gauge_options: Mapping[str, Any] | None = None,
+    basin_options: Mapping[str, Any] | None = None,
+    adjust_options: Mapping[str, Any] | None = None,
+    out: str | os.PathLike[str] | Sequence[str | os.PathLike[str]] | None = None,
+    plot: str | os.PathLike[str] | None = None,
+    field: str | None = None,
+    progress: ProgressFn | None = None,
+    **options: Any,
+) -> Any:
+    """Radar rainfall: rate, accumulation, uncertainty, gauge adjustment and basin averages.
+
+    ``xrd qpe -i FILES -o qpe.nc`` is ``api.qpe(FILES, out="qpe.nc")``. Methods, equations and
+    limits are in ``docs/HYDROLOGY.md``; every output is labelled ``RETRIEVED`` (a radar estimate)
+    or ``ADJUSTED`` (after gauges), never as an observation.
+
+    Parameters
+    ----------
+    files : list of Volume or path
+        Volumes of one or several radars. Several scans in time give an accumulation over
+        ``start`` to ``end`` (default: first to last scan); one volume per radar gives the
+        instantaneous rate (``result.rate_last``).
+    method : {"auto", "hybrid", "z", "kdp", "z_zdr", "a"}
+        ``auto`` = hybrid when ZDR and PHIDP/KDP exist, else R(Z,ZDR), else R(Z).
+    relation : str, optional
+        Z-R relation of the ``z`` method and of the light-rain regime: ``wsr88d`` (default),
+        ``marshall_palmer``, ``tropical``, ``stratiform_east`` ..., snow ``snow_sekhon_srivastava``
+        with ``precip="snow"``. Custom: ``zr_a=200, zr_b=1.6`` (``Z = a R^b``).
+    gauges : path or GaugeSet, optional
+        Rain-gauge records (CSV/JSON/NOAA/METAR); the accumulation is adjusted with ``adjust``
+        (``mfb`` mean-field bias, ``brandes`` spatial ratio, ``ked`` kriging with external drift)
+        and the skill before/after (also leave-one-out) is in ``result.validation``.
+    basins : path or BasinSet, optional
+        GeoJSON / shapefile / GeoPackage polygons: area-weighted statistics and rainfall series in
+        ``result.basin_series``; ``frequency`` adds the return period of the basin-mean depth.
+    out, plot : path(s)
+        ``.nc`` / ``.png`` (+ ``.pgw``, ``.prj``) / ``.json`` / ``.csv`` and a figure.
+    **options
+        Any :class:`engine.hydro.qpe.QpeConfig` field (``freezing_level_m``, ``z_cap``,
+        ``attenuation``, ``zdr_offset_db`` ...) or accumulation option (``composite``,
+        ``advect``, ``step_s``, ``max_gap_s``, ``hold_edges_s``, ``n_sweeps`` ...).
+
+    Returns
+    -------
+    engine.hydro.accumulate.QpeResult
+
+    Examples
+    --------
+    >>> res = api.qpe(sorted(glob("mayfield/KHPX/*")), out="qpe.nc")   # doctest: +SKIP
+    >>> res = api.qpe(files, gauges="g.csv", basins="b.geojson", adjust="ked")  # doctest: +SKIP
+    >>> res.basin_series.summary()                                      # doctest: +SKIP
+    """
+    from engine.hydro import run as hydro_run
+    from engine.hydro.qpe import QpeConfig, QpeError
+
+    try:
+        cfg_opts, acc_opts = hydro_run.split_options(options)
+        config = {
+            "method": method,
+            "relation": relation,
+            "band": band,
+            "precip": precip,
+            **cfg_opts,
+        }
+        QpeConfig.from_dict(config)  # wrong values are usage errors, not processing failures
+    except QpeError as exc:
+        raise XrdArgumentError(str(exc)) from exc
+    if extent is not None:
+        acc_opts["extent"] = _extent4(extent)
+    vols, opened = _as_volumes(files)
+    try:
+        result = hydro_run.run_qpe(
+            [v._reader for v in vols],
+            config=config,
+            basins=basins,
+            basin_options=basin_options,
+            thresholds=thresholds,
+            frequency=frequency,
+            gauges=gauges,
+            gauge_options=gauge_options,
+            adjust=adjust or ("mfb" if gauges is not None else None),
+            adjust_options=adjust_options,
+            dem=dem,
+            progress=progress,
+            resolution_m=resolution_m,
+            max_range_km=max_range_km,
+            start=start,
+            end=end,
+            **acc_opts,
+        )
+    finally:
+        _close_all(opened)
+    if out is not None:
+        result.save(out, field=field)
+    if plot is not None:
+        save_figure(result.plot(field), plot)
+    return result
+
+
+def _extent4(extent: Any) -> tuple[float, float, float, float]:
+    """``(west, south, east, north)`` degrees from a 4-sequence or a mosaic-style dict."""
+    try:
+        if isinstance(extent, Mapping):
+            return tuple(float(extent[k]) for k in ("west", "south", "east", "north"))  # type: ignore[return-value]
+        west, south, east, north = (float(v) for v in extent)
+    except (TypeError, ValueError, KeyError) as exc:
+        raise XrdArgumentError(
+            "extent must be (west, south, east, north) in degrees or a dict with those keys"
+        ) from exc
+    return (west, south, east, north)
 
 
 # ---------------------------------------------------------------------------

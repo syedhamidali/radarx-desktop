@@ -16,7 +16,6 @@ from engine.hydro import accumulate as acc
 from engine.hydro import basins as hb
 from engine.hydro import gauges as gg
 from engine.hydro import products
-
 from tests.hydro_synth import make_reader
 
 LAT, LON = 35.0, -97.0
@@ -92,7 +91,8 @@ class TestReading:
             tmp_path,
             "hpd.csv",
             """
-            STATION,STATION_NAME,ELEVATION,LATITUDE,LONGITUDE,DATE,HPCP,Measurement Flag,Quality Flag
+            STATION,STATION_NAME,ELEVATION,LATITUDE,LONGITUDE,DATE,HPCP,Measurement Flag,Quality\
+ Flag
             COOP:340001,OKC AIRPORT,390,35.39,-97.60,2024-05-01 21:00,0.10,,
             COOP:340001,OKC AIRPORT,390,35.39,-97.60,2024-05-01 22:00,T,,
             COOP:340001,OKC AIRPORT,390,35.39,-97.60,2024-05-01 23:00,999.99,,

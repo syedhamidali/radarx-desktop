@@ -43,11 +43,12 @@ import numpy as np
 
 from engine import provenance as prov
 from engine.hydro.grid import QpeGrid
+from engine.hydro.qpe import QpeError
 
 SECONDS = np.timedelta64(1, "s")
 
 
-class BasinError(Exception):
+class BasinError(QpeError):
     """A user-facing problem with a basin file or a basin computation."""
 
 
@@ -798,17 +799,25 @@ class BasinSeries:
         return self.stats
 
     def hyetograph(self, k: int, bin_minutes: float = 60.0) -> dict[str, list]:
-        """Basin-mean rainfall per time bin (mm) from the cumulative series."""
+        """Basin-mean rainfall per time bin (mm) from the cumulative series; the last bin is
+        cut at the end of the period."""
         t = np.array(self.times, dtype="datetime64[ns]")
         sec = (t - t[0]).astype("int64") / 1e9
         width = bin_minutes * 60.0
-        edges = np.arange(0.0, sec[-1] + width, width)
-        edges[-1] = min(edges[-1], sec[-1]) if edges[-1] > sec[-1] else edges[-1]
+        total = float(sec[-1])
+        if total <= 0:
+            return {"start": [], "end": [], "depth_mm": [], "intensity_mm_h": []}
+        edges = np.append(np.arange(0.0, total, width), total)
         cum = np.interp(edges, sec, self.cum_mean[k])
         depth = np.diff(cum)
         hours = np.diff(edges) / 3600.0
+
+        def stamp(e: float) -> str:
+            return prov.iso_utc(t[0] + np.timedelta64(round(e * 1e9), "ns"))
+
         return {
-            "start": [prov.iso_utc(t[0] + np.timedelta64(int(e * 1e9), "ns")) for e in edges[:-1]],
+            "start": [stamp(e) for e in edges[:-1]],
+            "end": [stamp(e) for e in edges[1:]],
             "depth_mm": [float(d) for d in depth],
             "intensity_mm_h": [
                 float(d / h) if h > 0 else 0.0 for d, h in zip(depth, hours, strict=True)
@@ -906,12 +915,12 @@ class FrequencyTable:
             doc = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise BasinError(f"cannot read the frequency table {path}: {exc}") from exc
-        if "basins" in doc:
-            if basin_id is None or basin_id not in doc["basins"]:
-                raise BasinError(f"no frequency table for basin {basin_id!r} in {path}")
+        if "basins" in doc and basin_id is not None and basin_id in doc["basins"]:
             sub = {**doc, **doc["basins"][basin_id]}
-        else:
+        elif "depth_mm" in doc:
             sub = doc
+        else:
+            raise BasinError(f"no frequency table for basin {basin_id!r} in {path}")
         try:
             dur = float(sub["duration_hours"])
             items = sorted((float(k), float(v)) for k, v in sub["depth_mm"].items())
@@ -940,9 +949,7 @@ class FrequencyTable:
         return {"return_period_years": t, "flag": ""}
 
 
-def exceedance(
-    series: BasinSeries, table: FrequencyTable, adjusted: bool = False
-) -> list[dict[str, Any]]:
+def exceedance(series: BasinSeries, table: FrequencyTable | str | Path) -> list[dict[str, Any]]:
     """Return period of the maximum ``duration_h`` basin-mean depth of each basin.
 
     The depth is the largest basin-mean accumulation in any window of ``table.duration_h`` hours
@@ -954,19 +961,24 @@ def exceedance(
     sec = (t - t[0]).astype("int64") / 1e9
     out = []
     for k in range(len(series.weights)):
+        tab = (
+            table
+            if isinstance(table, FrequencyTable)
+            else FrequencyTable.from_json(table, series.weights[k].basin.id)
+        )
         cum = series.cum_mean[k]
         fine = np.arange(0.0, sec[-1] + 1.0, 60.0)
         cf = np.interp(fine, sec, cum)
-        w = round(table.duration_h * 60.0)
-        if sec[-1] < table.duration_h * 3600.0 - 1:
-            depth, note = float(cf[-1] - cf[0]), f"period shorter than {table.duration_h:g} h"
+        w = round(tab.duration_h * 60.0)
+        if sec[-1] < tab.duration_h * 3600.0 - 1:
+            depth, note = float(cf[-1] - cf[0]), f"period shorter than {tab.duration_h:g} h"
         else:
             depth, note = float(np.max(cf[w:] - cf[:-w])), ""
-        rp = table.return_period(depth)
+        rp = tab.return_period(depth)
         out.append(
             {
                 "id": series.weights[k].basin.id,
-                "duration_h": table.duration_h,
+                "duration_h": tab.duration_h,
                 "max_depth_mm": depth,
                 **rp,
                 "note": note,

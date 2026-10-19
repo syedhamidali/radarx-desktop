@@ -19,7 +19,6 @@ pytest.importorskip("radarx")
 from engine.hydro import accumulate as acc
 from engine.hydro import grid as hgrid
 from engine.hydro import qpe
-
 from tests.hydro_synth import make_reader, z_of_r
 
 LAT, LON = 35.0, -97.0

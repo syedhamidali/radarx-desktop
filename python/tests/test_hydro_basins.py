@@ -1,4 +1,4 @@
-"""Basins: exact area weights, readers (GeoJSON, shapefile, GeoPackage), zonal statistics, series."""
+"""Basins: exact area weights, readers (GeoJSON, shapefile, GeoPackage), zonal stats, series."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import struct
 import numpy as np
 import pyproj
 import pytest
+
 from engine.hydro import basins as hb
 from engine.hydro import grid as hgrid
 
