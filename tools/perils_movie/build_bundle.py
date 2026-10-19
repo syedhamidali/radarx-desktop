@@ -60,6 +60,7 @@ ALL_RADARS = [
 STAGES = [
     "soundings",
     "volumes",
+    "arc",
     "lma",
     "stations",
     "tornadoes",
@@ -358,6 +359,67 @@ def stage_volumes(c: Ctx) -> None:
 # ---------------------------------------------------------------------------
 
 
+def stage_arc(c: Ctx) -> None:
+    """ZDR arc and KDP-ZDR separation (radarx ``zdr_arc``, Wilson and Van Den Broeke 2021) per step, at 500 m.
+
+    A SUPERCELL algorithm applied to a QLCS: the forward-flank-downdraft direction is set opposite to the pattern
+    motion (pointing into the storm); the result is a list of candidates for the maintainer to judge, stored in
+    ``manifest.steps[i].diagnostics.zdr_arc``. Size sorting of the leading edge is only a candidate here.
+    """
+    import radarx.retrieve as rxr
+    import xarray as xr
+
+    motion = window_motion(c)
+    ffd = (motion["toward_deg"] + 180.0) % 360.0
+    x = volumes.X_KM * 1000.0
+    for p in sorted(c.work.glob("step_*.json")):
+        m = json.loads(p.read_text())
+        if "zdr_arc" in (m.get("diagnostics") or {}) and not c.a.force:
+            continue
+        v = np.load(c.out / m["volume"])
+        k = 2  # 500 m above sea level
+        ds = xr.Dataset(
+            {
+                "REF": (("y", "x"), v["dbz"][k]),
+                "ZDR": (("y", "x"), v["zdr"][k].astype(np.float32)),
+                "RHO": (("y", "x"), v["rho"][k].astype(np.float32)),
+                "KDP": (("y", "x"), v["kdp"][k].astype(np.float32)),
+            },
+            coords={"y": x, "x": x},
+        )
+        try:
+            out = rxr.zdr_arc(
+                ds, zdr="ZDR", dbz="REF", rhohv="RHO", kdp="KDP", ffd_direction=ffd, storm_motion=motion["toward_deg"]
+            )
+        except Exception as exc:
+            m.setdefault("diagnostics", {})["zdr_arc"] = {"error": str(exc)[:200]}
+            bundle.write_json(p, bundle.clean_nan(m), indent=1)
+            continue
+        storms = []
+        for i in range(out.sizes["storm"]):
+            storms.append(
+                {
+                    "x_km": float(out["storm_x"].values[i]) / 1000.0,
+                    "y_km": float(out["storm_y"].values[i]) / 1000.0,
+                    "storm_area_km2": float(out["storm_area"].values[i]),
+                    "arc_area_km2": float(out["arc_area"].values[i]),
+                    "arc_mean_zdr_db": float(out["arc_mean_zdr"].values[i]),
+                    "arc_top10_zdr_db": float(out["arc_top10_zdr"].values[i]),
+                    "kdp_foot_area_km2": float(out["foot_area"].values[i]),
+                    "separation_length_km": float(out["separation_length"].values[i]),
+                    "separation_angle_deg": float(out["separation_angle"].values[i]),
+                }
+            )
+        m.setdefault("diagnostics", {})["zdr_arc"] = {
+            "level_km_asl": 0.5,
+            "ffd_direction_deg": ffd,
+            "note": "radarx zdr_arc is a supercell algorithm (Wilson and Van Den Broeke 2021); candidates only in a QLCS; ZDR is bias-corrected by an estimate",
+            "storms": storms,
+        }
+        bundle.write_json(p, bundle.clean_nan(m), indent=1)
+    c.log("arc: ZDR arc candidates written to the step diagnostics")
+
+
 def stage_lma(c: Ctx) -> None:
     if c.done("lma/flashes.json"):
         return
@@ -604,6 +666,86 @@ def stage_context(c: Ctx) -> None:
         c.log("context: surface analysis written")
     for m in plans:
         bundle.write_json(c.work / f"step_{m['index']:04d}.json", bundle.clean_nan(m), indent=1)
+    # -- environment time series from the soundings and the surface network ------------------------------------
+    if (c.out / "soundings" / "index.json").exists():
+        sidx = json.loads((c.out / "soundings" / "index.json").read_text())
+        env_rows = []
+        for s in sidx:
+            d = s.get("diagnostics") or {}
+            par = d.get("parcels") or {}
+            sh = d.get("shear") or {}
+            srh = d.get("srh") or {}
+            iso = d.get("isotherms_asl_m") or {}
+            sfc = d.get("surface") or {}
+            env_rows.append(
+                {
+                    "id": s["id"],
+                    "site": s["site"],
+                    "launch": s["launch"],
+                    "launch_t_s": s["launch_t_s"],
+                    "lat": s["lat"],
+                    "lon": s["lon"],
+                    "x_km": s.get("x_km"),
+                    "relation_to_window": s["relation_to_window"],
+                    "surface_t_c": sfc.get("temperature_c"),
+                    "surface_td_c": sfc.get("dewpoint_c"),
+                    "surface_p_hpa": sfc.get("pressure_hpa"),
+                    "sbcape": (par.get("surface-based") or {}).get("cape"),
+                    "sbcin": (par.get("surface-based") or {}).get("cin"),
+                    "mlcape": (par.get("mixed-layer") or {}).get("cape"),
+                    "mucape": (par.get("most-unstable") or {}).get("cape"),
+                    "lcl_agl_m": (par.get("surface-based") or {}).get("lcl_agl_m"),
+                    "lfc_agl_m": (par.get("surface-based") or {}).get("lfc_agl_m"),
+                    "shear_0_1km_ms": (sh.get("0-1km") or {}).get("speed_ms") if sh else None,
+                    "shear_0_3km_ms": (sh.get("0-3km") or {}).get("speed_ms") if sh else None,
+                    "shear_0_6km_ms": (sh.get("0-6km") or {}).get("speed_ms") if sh else None,
+                    "srh_0_1km_right_m2s2": ((srh.get("0-1km") or {}).get("right_mover")) if srh else None,
+                    "srh_0_3km_right_m2s2": ((srh.get("0-3km") or {}).get("right_mover")) if srh else None,
+                    "freezing_level_asl_m": iso.get("freezing_asl_m"),
+                    "minus10_level_asl_m": iso.get("minus10_asl_m"),
+                    "minus20_level_asl_m": iso.get("minus20_asl_m"),
+                    "pw_mm": (d.get("moisture") or {}).get("precipitable_water_mm"),
+                    "top_height_asl_m": s.get("top_height_asl_m"),
+                }
+            )
+        sj = c.out / "stations" / "stations.json"
+        sfc_series = None
+        if sj.exists():
+            st = [s for s in json.loads(sj.read_text()) if not s.get("moving") and s["id"].startswith("StickNet")]
+            if st:
+                grid_t = np.arange(-600.0, c.duration + 601.0, 60.0)
+                sfc_series = {"t_s": grid_t.tolist(), "n_stations": len(st)}
+                for var in ("temperature_c", "dewpoint_c", "theta_e_k", "pressure_hpa", "wind_speed_ms"):
+                    cols = []
+                    for s in st:
+                        if var in s["series"]:
+                            tt = np.array(s["series"]["t_s"], float)
+                            vv = np.array([np.nan if v is None else v for v in s["series"][var]], float)
+                            cols.append([np.nanmean(vv[np.abs(tt - g) <= 30]) if (np.abs(tt - g) <= 30).any() else np.nan for g in grid_t])
+                    if cols:
+                        arr = np.array(cols, float)
+                        sfc_series[var + "_median"] = np.nanmedian(arr, axis=0).tolist()
+                        sfc_series[var + "_p10"] = np.nanpercentile(arr, 10, axis=0).tolist()
+                        sfc_series[var + "_p90"] = np.nanpercentile(arr, 90, axis=0).tolist()
+        bundle.write_json(
+            cdir / "environment.json",
+            bundle.clean_nan(
+                {
+                    "class": "observed (radiosondes, StickNet); no model or reanalysis (see docs/PERILS_BUNDLE.md for why)",
+                    "soundings": env_rows,
+                    "surface_stickNet_median": sfc_series,
+                    "note": "the soundings are at the launch sites (not all at the storm); several end below 6 km, then 0-6 km shear and the Bunkers motion are not computed; the surface series are the median and the 10th / 90th percentile of the 24 StickNet probes",
+                }
+            ),
+            indent=1,
+        )
+    # -- tobac cell track (the data owner's feature tracking of KGWX echo) ------------------------------------
+    tob = c.data / "TRAJECTORIES" / "tobac_Save_20220330" / "Track.nc"
+    if tob.exists():
+        tt = context.read_tobac_track(tob, c.start, c.end)
+        if tt:
+            bundle.write_json(cdir / "tobac_track.json", bundle.clean_nan(tt), indent=1)
+            c.log(f"context: tobac track rows {len(tt['rows'])}")
     # -- rotation tracks + survey comparison ---------------------------------------------------------------
     times_s = [
         (datetime.fromisoformat(m["time"].replace("Z", "+00:00")) - c.start).total_seconds()
@@ -918,6 +1060,7 @@ def main(argv: list[str] | None = None) -> int:
     fns = {
         "soundings": stage_soundings,
         "volumes": stage_volumes,
+        "arc": stage_arc,
         "lma": stage_lma,
         "stations": stage_stations,
         "tornadoes": stage_tornadoes,

@@ -149,6 +149,67 @@ def station_snapshot(
     return out
 
 
+def read_tobac_track(
+    path: str | Path, start: datetime, end: datetime, margin_s: float = 1200.0
+) -> dict[str, Any] | None:
+    """Rows of the tobac feature tracks (``Track.nc``) near the window.
+
+    The file (made by the data owner from KGWX 500 m grids on this same grid, threshold 15 dBZ) holds the tracked
+    cell centroids ``projection_x/y_coordinate`` (m east / north of the grid origin), ``areas`` (grid cells; at 500 m
+    one cell is 0.25 km2: an assumption, the file does not state the unit) and the maximum reflectivity per
+    time. Features without a track (``cell`` = -1) are dropped. OBSERVED radar echo, tracked by an algorithm.
+    """
+    import netCDF4
+
+    with netCDF4.Dataset(path) as ds:
+        units = ds["time"].units
+        base = datetime.strptime(units.split("since")[1].strip()[:19], "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=UTC
+        )
+        t = base.timestamp() + np.asarray(ds["time"][:], float)
+        cell = np.asarray(ds["cell"][:], int)
+        x = np.asarray(ds["projection_x_coordinate"][:], float) / 1000.0
+        y = np.asarray(ds["projection_y_coordinate"][:], float) / 1000.0
+        area = np.asarray(ds["areas"][:], float)
+        zmax = np.asarray(ds["max_reflectivity"][:], float)
+    sel = (cell >= 0) & (t >= start.timestamp() - margin_s) & (t <= end.timestamp() + margin_s)
+    if not sel.any():
+        return None
+    rows = [
+        {
+            "t_s": round(float(t[i] - start.timestamp()), 1),
+            "cell": int(cell[i]),
+            "x_km": round(float(x[i]), 3),
+            "y_km": round(float(y[i]), 3),
+            "area_cells": float(area[i]),
+            "area_km2_if_0p25_per_cell": float(area[i]) * 0.25,
+            "max_dbz": round(float(zmax[i]), 1),
+        }
+        for i in np.nonzero(sel)[0]
+    ]
+    out: dict[str, Any] = {
+        "class": "observed (radar echo tracked by tobac)",
+        "source": "tobac Track.nc made by the data owner from KGWX gridded reflectivity (threshold 15 dBZ)",
+        "frame": "x_km east, y_km north of the grid origin",
+        "rows": rows,
+    }
+    if len(rows) >= 2:
+        a, b = rows[0], rows[-1]
+        dt = b["t_s"] - a["t_s"]
+        if dt > 0 and a["cell"] == b["cell"]:
+            u = (b["x_km"] - a["x_km"]) * 1000.0 / dt
+            v = (b["y_km"] - a["y_km"]) * 1000.0 / dt
+            out["centroid_motion"] = {
+                "u_ms": round(u, 2),
+                "v_ms": round(v, 2),
+                "speed_ms": round(float(np.hypot(u, v)), 2),
+                "toward_deg": round(float((np.degrees(np.arctan2(u, v)) + 360.0) % 360.0), 1),
+                "from_t_s": a["t_s"],
+                "to_t_s": b["t_s"],
+            }
+    return out
+
+
 def wind_components(speed: float, direction_deg: float) -> tuple[float, float]:
     r = np.radians(direction_deg)
     return -speed * np.sin(r), -speed * np.cos(r)

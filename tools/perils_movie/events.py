@@ -177,26 +177,28 @@ def build_all(c) -> None:
     )
 
     # ---------------------------------------------------------------- line motion
+    tobac_p = out_dir / "context" / "tobac_track.json"
+    tobac = json.loads(tobac_p.read_text()) if tobac_p.exists() else None
     if motion:
-        add(
-            "line_motion",
-            0.0,
-            f"The echo pattern moves toward {motion['toward_deg']:.0f} deg (from {motion['from_deg']:.0f} deg) at {motion['speed_ms']:.1f} m/s.",
-            {
-                k: motion[k]
-                for k in (
-                    "u_ms",
-                    "v_ms",
-                    "speed_ms",
-                    "toward_deg",
-                    "correlation",
-                    "dt_s",
-                    "times",
-                    "method",
-                )
-            },
-            "retrieved",
-        )
+        evid = {
+            k: motion[k]
+            for k in (
+                "u_ms",
+                "v_ms",
+                "speed_ms",
+                "toward_deg",
+                "correlation",
+                "dt_s",
+                "times",
+                "method",
+            )
+        }
+        cap = f"The echo pattern moves toward {motion['toward_deg']:.0f} deg (from {motion['from_deg']:.0f} deg) at {motion['speed_ms']:.1f} m/s."
+        if tobac and tobac.get("centroid_motion"):
+            tm = tobac["centroid_motion"]
+            evid["tobac_centroid_motion"] = tm
+            cap += f" The tobac track of the whole echo area (data owner's tracking) gives {tm['speed_ms']:.1f} m/s toward {tm['toward_deg']:.0f} deg."
+        add("line_motion", 0.0, cap, evid, "retrieved")
 
     # ---------------------------------------------------------------- stations: gust fronts, rain DSD
     sj = out_dir / "stations" / "stations.json"
