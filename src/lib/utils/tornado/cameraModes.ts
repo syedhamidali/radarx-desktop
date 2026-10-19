@@ -103,12 +103,12 @@ export function modePose(mode: CameraMode, r: ResolvedSeed, tau: number, t: numb
   } else {
     // inside: carried with the vortex, in the clear core, looking up
     const drift = 9 * Math.sin(tau * 0.31);
-    const off = 0.28 * r.rm;
+    const off = 0.08 * r.rm;
     const cx = A.x + off * Math.cos(tau * 0.7) + drift * 0.2, cy = A.y + off * Math.sin(tau * 0.7);
-    const z = gz(cx, cy) + 3.0 + 82 * smooth((f - 0.04) / 0.9);
+    const z = gz(cx, cy) + 3.0 + 34 * smooth((f - 0.05) / 0.9);
     pos = [cx, cy, z];
     // pitch rises from the horizon to nearly straight up, then pans
-    const pitch = lerp(0.10, 0.62, smooth((f - 0.05) / 0.5)) + 0.5 * smooth((f - 0.7) / 0.3);
+    const pitch = lerp(0.12, 0.45, smooth((f - 0.05) / 0.3)) + 0.78 * smooth((f - 0.35) / 0.4);
     const yaw = 0.7 + 0.5 * f - 0.25 * Math.sin(tau * 0.5);
     const d: Vec3 = [Math.cos(pitch) * Math.cos(yaw), Math.cos(pitch) * Math.sin(yaw), Math.sin(pitch)];
     target = [pos[0] + d[0] * 100, pos[1] + d[1] * 100, pos[2] + d[2] * 100];

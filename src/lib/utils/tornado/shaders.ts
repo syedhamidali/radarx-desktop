@@ -282,19 +282,20 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     float body = smoothstep(0.0, 1.0, ex + 1.1 * (fn3.g - 0.5) + 0.7 * (fn2.g - 0.5));
     // two-cell core: a clear eye on the axis (modelled)
     float eye = smoothstep(uFunnel.z * 0.6, uFunnel.z * 1.1, r / coreR(z));
-    float streak = 0.45 + 1.1 * fn1.b * fn2.g + 0.5 * (fn3.r - 0.5);
+    float band = fn1.b * 0.6 + fn2.g * 0.5 + (fn3.r - 0.5) * 0.4;
+    float streak = 0.22 + 1.6 * smoothstep(0.32, 0.72, band);
     float top = 1.0 - smoothstep(zb - 20.0, zb + 80.0, p.z);
-    m.sFunnel = uFunnel.w * body * (0.12 + 0.88 * eye) * streak;
+    m.sFunnel = uFunnel.w * body * (0.03 + 0.97 * eye) * streak;
   }
 
   // ---- debris and dust skirt where the surface wind exceeds the damage onset
-  if (uInt > 0.0 && r < 6.0 * uT0.y + 60.0 && z < 700.0) {
+  if (uInt > 0.0 && r < 6.0 * uT0.y + 60.0 && z < 450.0) {
     float vs = uT0.x * swirlShape(r / uT0.y) * 0.8 * uInt;
     float amt = smoothstep(uDust.x * 0.7, uDust.x * 1.7, vs);
     // the updraft carries the dust up the axis even where the swirl is weak
     amt = max(amt, 0.75 * smoothstep(6.0, 28.0, wAt(r, 20.0) * uInt) * (1.0 - smoothstep(1.0 * uT0.y, 2.2 * uT0.y, r)));
     // skirt height grows toward the core and with the swirl, lofted by the updraft
-    float hs = 12.0 + 75.0 * smoothstep(0.0, 1.0, vs / uT0.x) + 0.9 * max(wAt(r, 30.0), 0.0);
+    float hs = 10.0 + 34.0 * smoothstep(0.0, 1.0, vs / uT0.x) + 0.5 * max(wAt(r, 30.0), 0.0);
     vec4 dn = flowNoise(rel, 1.0 / 150.0);
     vec4 dn2 = flowNoise(rel * vec3(1.0, 1.0, 0.7), 1.0 / 47.0);
     float prof = exp(-z / hs);
@@ -303,7 +304,7 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     m.sDust = uDust.y * dens * edgeR;
     // dark debris wrapped around the base: chunky, high contrast
     float ringR = smoothstep(0.35 * uT0.y, 1.0 * uT0.y, r) * (1.0 - smoothstep(1.6 * uT0.y, 3.4 * uT0.y, r));
-    float dh = 40.0 + 55.0 * smoothstep(0.0, 1.0, vs / uT0.x);
+    float dh = 30.0 + 40.0 * smoothstep(0.0, 1.0, vs / uT0.x);
     float dd = smoothstep(0.52, 0.78, dn.g * 0.6 + dn2.r * 0.5) * exp(-z / dh) * amt;
     m.sDebris = uDust.z * dd * ringR;
   }
@@ -340,7 +341,7 @@ float lightDens(vec3 p) {
     if (z < 400.) {
       float vs = uT0.x * swirlShape(r / uT0.y) * 0.8 * uInt;
       float amt = smoothstep(uDust.x * 0.7, uDust.x * 1.7, vs);
-      float hs = 14.0 + 90.0 * smoothstep(0.0, 1.0, vs / uT0.x);
+      float hs = 10.0 + 34.0 * smoothstep(0.0, 1.0, vs / uT0.x);
       s += uDust.y * amt * exp(-z / hs) * (0.35 + 1.1 * n.g);
     }
   }

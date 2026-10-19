@@ -68,6 +68,25 @@
         }
         return { stats: st, pose: { pos: pose.pos, target: pose.target, fov: pose.fovDeg, wind: pose.windAtCamera, shakeDeg: pose.shakeDeg, distance: pose.distance } };
       },
+      /** Render from a geographic camera pose (the movie's camera_path.json) at data time t. */
+      frameGeo: (a: { geo: any; t: number; labels?: boolean; tau?: number; duration?: number }) => {
+        const s = scene!;
+        s.setTime(a.t);
+        const cam = s.cameraFromGeo(a.geo);
+        const st = s.render(cam);
+        const ctx = ov!.getContext('2d')!;
+        if (a.labels === false) ctx.clearRect(0, 0, ov!.width, ov!.height);
+        else {
+          const inf = s.info(a.t);
+          modules!.labels.drawLabels(ctx, ov!.width, ov!.height, {
+            ef: inf.ef, width: inf.width, vt: inf.vt, coreRadius: inf.coreRadius, periodCore: inf.periodCore, periodFunnel: inf.periodFunnel,
+            lcl: inf.lcl, cloudBase: inf.cloudBase, speed: inf.speed, headingDeg: inf.headingDeg, ground: inf.ground, ambient: inf.ambient,
+            sunLabel: inf.sun.label, mesoVrot: seedInfo.meso ? seedInfo.meso.vt : undefined, attribution: s.groundInfo.attribution,
+          }, { mode: 'chaser', tau: a.tau ?? 0, duration: a.duration ?? 24 });
+        }
+        const ax = s.axis(a.t);
+        return { stats: st, pose: { pos: cam.pos, target: cam.target, fov: cam.fovDeg, wind: 0, shakeDeg: 0, distance: Math.hypot(cam.pos[0] - ax.x, cam.pos[1] - ax.y, cam.pos[2]) } };
+      },
       /** Render with an explicit camera (local metres). */
       camera: (cam: any, t: number) => {
         scene!.setTime(t);

@@ -72,10 +72,13 @@ export interface FrameStats {
 }
 
 const AMBIENT: Record<AmbientPreset, { amb: Vec3; glow: number; fog: Vec3; exposure: number; label: string }> = {
-  dusk: { amb: [0.085, 0.105, 0.145], glow: 0.7, fog: [0.040, 0.050, 0.068], exposure: 2.2, label: 'stylised dusk light' },
+  dusk: { amb: [0.092, 0.104, 0.128], glow: 0.7, fog: [0.046, 0.053, 0.064], exposure: 2.2, label: 'stylised dusk light' },
   night: { amb: [0.0016, 0.0020, 0.0030], glow: 0.0, fog: [0.0035, 0.0045, 0.0065], exposure: 2.6, label: 'night (physical light level)' },
   overcast: { amb: [0.14, 0.155, 0.18], glow: 0.2, fog: [0.16, 0.18, 0.21], exposure: 1.6, label: 'overcast day' },
 };
+
+/** Smoothing window of the flash light (s): the comfort limit on flicker. */
+export const FLASH_SMOOTH_S = 0.24;
 
 function mulberry(seed: number): () => number {
   let a = seed >>> 0;
@@ -681,6 +684,21 @@ export class TornadoScene {
     return axisAt(this.seed!, t);
   }
 
+  /**
+   * Camera from geographic pose (the movie's camera_path.json: lat, lon, altitude above sea level, heading degrees
+   * clockwise from north, pitch degrees up, vertical field of view). The movie's `alt_m` is height above ITS ground
+   * (a flat map in the clip), so by default it is used as height above the ground of this scene; pass `groundElevM`
+   * when the path is in metres above sea level (the scene ground is then `groundElevM`, or the terrain tile height).
+   */
+  cameraFromGeo(g: { lat: number; lon: number; altM: number; headingDeg: number; pitchDeg: number; fovDeg?: number; groundElevM?: number; rollDeg?: number }): TornadoCamera {
+    const [x, y] = this.toLocal(g.lat, g.lon);
+    const agl = Math.max(1.5, g.altM - (g.groundElevM ?? 0));
+    const z = agl + this.groundZ(x, y);
+    const h = (g.headingDeg * Math.PI) / 180, p = (g.pitchDeg * Math.PI) / 180;
+    const d: Vec3 = [Math.sin(h) * Math.cos(p), Math.cos(h) * Math.cos(p), Math.sin(p)];
+    return { pos: [x, y, z], target: [x + d[0] * 100, y + d[1] * 100, z + d[2] * 100], fovDeg: g.fovDeg ?? 50, roll: ((g.rollDeg ?? 0) * Math.PI) / 180 };
+  }
+
   /** Local metres of a latitude / longitude. */
   toLocal(lat: number, lon: number): [number, number] {
     const o = this.seed!.origin;
@@ -732,8 +750,12 @@ export class TornadoScene {
     const act: { x: number; y: number; z: number; I: number; score: number }[] = [];
     for (let i = 0; i < this.flashes.length; i++) {
       const f = this.flashes[i];
-      if (this.t < f.t || this.t > flashEnd(f)) continue;
-      const lv = flashLevels(f, this.t).light;
+      if (this.t < f.t || this.t > flashEnd(f) + FLASH_SMOOTH_S) continue;
+      // comfortable lightning: the light is the mean of the flash envelope over the last FLASH_SMOOTH_S seconds (a pure function of t),
+      // so a cluster of flashes does not strobe (rise time ~0.12 s, no more than about 3 distinct bursts per second)
+      let lv = 0;
+      for (let k = 0; k < 6; k++) lv += flashLevels(f, this.t - (k * FLASH_SMOOTH_S) / 5).light;
+      lv = Math.min(1, lv / 6);
       if (lv < 0.01) continue;
       const fs = r.flashes[i];
       const d = Math.hypot(fs.x - cam.pos[0], fs.y - cam.pos[1], fs.z - cam.pos[2]);
@@ -924,7 +946,7 @@ export class TornadoScene {
       gl.uniform1f(p.u.uFrame, this.frameNo);
       const wc = this.opts.wallCloud ?? { lowerM: 60, radiusM: 700 };
       gl.uniform4f(p.u.uCloud, r.cloudCondition.lcl, wc.lowerM, wc.radiusM, 100);
-      gl.uniform4f(p.u.uFunnel, r.condition.dpCrit, Math.max(60, 0.08 * r.condition.dpCrit), 0.34, 0.11);
+      gl.uniform4f(p.u.uFunnel, r.condition.dpCrit, Math.max(60, 0.08 * r.condition.dpCrit), 0.55, 0.11);
       gl.uniform4f(p.u.uFunnel2, heightDeficit(r.condition, 500) / 500, 0, 0, 0);
       gl.uniform3f(p.u.uFog, amb.fog[0], amb.fog[1], amb.fog[2]);
       gl.uniform4f(p.u.uFogK, 1 / 4500, 800, 0.00006, this.echoOn ? this.echoMean : 25);
