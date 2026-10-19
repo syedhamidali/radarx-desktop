@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from engine import hdf5_guard
 from engine.plugins import ModuleError, Result, module, param
 
 
@@ -87,7 +88,8 @@ def load_dem(path: str, variable: str = "", crs: str = "") -> xr.DataArray:
 
 
 def _from_netcdf(p: Path, variable: str) -> xr.DataArray:
-    ds = xr.open_dataset(p)
+    with hdf5_guard.native_section():
+        ds = xr.open_dataset(p)
     cands = [v for v in ds.data_vars if ds[v].squeeze().ndim == 2]
     if variable:
         if variable not in ds.data_vars:

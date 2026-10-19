@@ -42,6 +42,7 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
+from engine import hdf5_guard
 from engine.plugins import VAR_ALIASES
 
 logger = logging.getLogger(__name__)
@@ -2219,6 +2220,7 @@ def _wind_iso(t: np.datetime64) -> str:
     return str(np.datetime_as_string(t.astype("datetime64[s]"), unit="s")) + "Z"
 
 
+@hdf5_guard.guarded
 def write_netcdf(rec: WindRecord, path: str | Path) -> None:
     """Write the wind analysis as a CF-1.8 NetCDF4 file (see :func:`to_dataset`)."""
     ds = to_dataset(rec)

@@ -99,6 +99,104 @@ cd ../src-tauri && cargo test                                    # shell supervi
 cd .. && npm run test:unit                                       # UI logic (engine identity, reply matching)
 ```
 
+## Native crash in NetCDF files (SIGSEGV / "Bus error", engine gone, no traceback)
+
+**Symptom.** Opening a small synthetic RHI NetCDF in the app: "Couldn't load DBZH sweep 0:
+Connection lost", the engine process had vanished, nothing in the log. 4 of 6 runs of the repro
+(`open_file` -> the prefetch that follows it -> `get_sweep_data`) died with exit code 139. Once a
+"Bus error" on CI Ubuntu in `test_two_files_opening_at_once`.
+
+**What it is not: a thread race.** The first hypothesis was that netCDF-C/HDF5 were entered by two
+threads at once (the prefetch task vs a request thread). The `faulthandler` stack of the crash says
+otherwise: only one worker thread existed, the event loop was idle in `select`, and the same crash
+happens with everything on the main thread (`open_file` + `.values`, 5 of 12). It is a
+use-after-free inside the C libraries (`H5T__conv_vlen` -> `H5VL__native_blob_specific`), reached
+from `netCDF4.Dataset.__init__` while *re-opening* a file.
+
+**Minimal trigger (pure netCDF4, no engine, no xarray):** the file has a variable-length string
+variable (every `str` that xarray writes: `sweep_mode`, ...), and
+
+1. handle A on the file is open,
+2. handle B on the same file reads that string variable and is closed,
+3. handle C is opened on the file -> crash, 8 times in 20 (netCDF4 1.7.4 / netCDF-C 4.9.3 /
+   HDF5 1.14.6, the wheels in `python/.venv` on macOS arm64).
+
+Not needed: threads. Not triggering: handle A on a *different* file, strictly sequential
+open/read/close, reading only numeric variables. The netCDF4 1.7.5 wheels (HDF5 2.x) in the
+Python 3.12 environment do not show it (100/100 and 30/30 clean even with the guard off), so what
+you see depends on which wheels are installed.
+
+**How the engine produced steps 1-3 by itself.** `open_file` tries formats in order. The failed
+`cfradial1` attempt keeps its handle (A). `cfradial2` then opens the file (B), xradar builds its
+tree and closes the file again (`with open_datatree(...)`), and the first data read re-opens it
+(C), because the arrays are lazy. A second reader of the same file, or an export reading a file
+that is open, does the same.
+
+**Fix: `python/engine/hdf5_guard.py`** (installed when `engine.reader` is imported; the
+installed-in-process effect is on xarray's `CachingFileManager`):
+
+* *One handle per file.* Read-only managers of the same netCDF4 / h5netcdf file get the same cache
+  key (xarray gave every manager a random id), so they share the handle. Closing it (explicitly by
+  xradar, by garbage collection, or by cache eviction) makes each user re-open later, one after the
+  other, never two at once. Writers are not shared.
+* *One lock.* A re-entrant `LOCK` is installed as xarray's own netCDF-C and HDF5 locks (so every
+  array read takes it) and as the lock of the managers; open, close and eviction take it too.
+  Engine code that touches the libraries outside the managers uses `native_section()` or
+  `@guarded`: opening a tree in `RadarReader`, the CfRadial1/CfRadial2 writers, the mosaic and
+  multi-Doppler NetCDF writers, `Result.save` NetCDF, `plot_wind` and the beam-blockage DEM
+  reader. That also covers the thread-safety half of the hypothesis: the wheels' libraries are not
+  thread-safe, and reads, opens, closes and exports of NetCDF/HDF5 data now take turns.
+* Large volumes stay lazy (no eager load), so memory behaviour is unchanged.
+* `XRADAR_HDF5_GUARD=0` switches the patches off (for comparing; not for use).
+
+**Why not the other designs.** (b) alone, one lock for opens and attributes, is in the fix but would
+not have stopped the crash: the repro is single-threaded. (c) eager loading of small files would
+hide the overlap for small files only, and large CfRadial files (100 MB+) are exactly where the
+engine keeps handles for a long time.
+
+**Results** (`python/tests/test_stability_native.py`, children are separate processes so a
+segfault is a failed test):
+
+| | before | after |
+|---|---|---|
+| reported repro, Python 3.14 venv | 21/40 died (other batches: 5/12, 2/8, 8/25) | 160/160 clean |
+| same, Python 3.12 venv (guard on) | not reproducible there | 100/100 clean |
+| pure netCDF4/xarray overlap scenarios | 8/20 and 3/20 died | 30/30 clean |
+| 8 threads on 3-4 files, 3-6 s per run, 8 runs | 8/8 runs died (3 files) | 8/8 clean (4 files) |
+| the four new subprocess tests with the guard off | 4/4 fail | 4/4 pass |
+
+**Cost** (`python/benchmarks/bench_engine.py`, mean of 2 runs x 5 repeats, ms, `main` = before,
+Apple silicon, Python 3.14; `KTLX...V06.nc` is a lazily read CfRadial1 file, `KMOB...V06` is
+NEXRAD, which does not use the lock):
+
+| stage | NetCDF main | NetCDF fix | NEXRAD main | NEXRAD fix |
+|---|---|---|---|---|
+| open_file, warm | 73.4 | 76.8 | 1259.7 | 1248.3 |
+| open_file, first in process | 415.9 | 398.1 | 1463.4 | 1478.4 |
+| one sweep, wire format | 2.1 | 2.5 | 10.4 | 9.8 |
+| switch through all sweeps (data) | 22.6 | 24.7 | 72.9 | 67.9 |
+| PNG render, switch through all sweeps | 226.5 | 225.7 | 234.8 | 234.3 |
+| 3D volume, res=100 | 226.1 | 225.1 | 201.1 | 200.4 |
+| 3D volume, res=200 | 1446.6 | 1429.5 | 1005.7 | 1006.6 |
+
+All within run-to-run noise (the largest difference, NetCDF sweep switching, is 2 ms of 22).
+
+**If the engine still dies natively.** The engine now enables `faulthandler`
+(`server.enable_crash_log`): the Python stack of every thread goes to
+`~/.xradar-desktop/engine-crash.log` (web mode: stderr; the file is cut at 512 KB). The shell
+logs *how* the process ended in plain words ("crashed (segmentation fault, signal 11)") and puts
+it into the restart message; the UI's "engine restarted" notice (see #2 above) now says the engine
+crashed and where the log is. Files are not re-opened automatically.
+
+**Limits.** The guard serialises NetCDF/HDF5 work: a long NetCDF export blocks reads of
+NetCDF-backed sweeps until it ends (NEXRAD volumes are not affected, they do not use the lock).
+Do not wait for dask workers while holding the lock (the engine does not open files with dask
+chunks). The guard patches xarray internals (`CachingFileManager`, `FILE_CACHE`); on an xarray
+that changes them it logs a warning and does nothing. It cannot fix a library bug in code the
+engine does not control (for example a future h5py/HDF5 crash in another reader); the crash log
+is how that would show up. Newer netCDF4 wheels may fix the root bug, but the guard is cheap and
+stays.
+
 ## What remains (honest list)
 
 * **Cancel stops waiting, not working.** A cancelled open/export/module keeps running in the engine

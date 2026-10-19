@@ -21,14 +21,14 @@ import xarray as xr
 from xarray.backends import BackendArray
 from xarray.core import indexing
 
-from engine import rhi
+from engine import hdf5_guard, rhi
 
 logger = logging.getLogger(__name__)
 
-# The netCDF-C / HDF5 libraries behind most radar formats are not safe for several threads opening
-# files at the same moment (a native "Bus error" was seen with two overlapping open_file requests).
-# Opens therefore take turns; reads of already opened files are not affected.
-_OPEN_GUARD = threading.Lock()
+# The netCDF-C / HDF5 libraries behind most radar formats crash the process when a file is opened
+# twice at once and are not thread-safe; engine.hdf5_guard shares one handle per file and puts
+# every open/read/close behind one lock (docs/STABILITY.md).
+hdf5_guard.install()
 
 _SWEEP_PREFIX = "sweep_"
 
@@ -869,7 +869,7 @@ class RadarReader:
             try:
                 opener = _get_opener(fmt)
                 logger.info("Trying format '%s' for %s", fmt, open_path)
-                with _OPEN_GUARD:
+                with hdf5_guard.native_section():
                     dtree = opener(open_path)
                 schema = self._build_schema(dtree, fmt)
                 if not schema["sweeps"]:
@@ -915,7 +915,8 @@ class RadarReader:
             # Last resort: try generic NetCDF (IMD/IRIS-origin single-sweep files, etc.)
             try:
                 logger.info("Trying generic NetCDF fallback for %s", open_path)
-                dtree = _open_generic_netcdf(open_path)
+                with hdf5_guard.native_section():
+                    dtree = _open_generic_netcdf(open_path)
                 schema = self._build_schema(dtree, "generic_netcdf")
             except Exception as exc:
                 logger.debug("Generic NetCDF fallback failed: %s", exc)
