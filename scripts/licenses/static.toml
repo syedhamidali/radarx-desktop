@@ -1,0 +1,220 @@
+# Entries that package metadata cannot give: fonts, colour maps, map/terrain/imagery services, data and the
+# native libraries inside binary wheels. Read by generate_notices.py. Statements here come from the upstream
+# projects' published terms as understood by the maintainer; they are NOT legal advice and are to be reviewed
+# by a lawyer. An entry with `flag` is repeated in the "Needs attention" table of THIRD_PARTY_NOTICES.md.
+#
+# fields: kind (font|colormap|imagery|data|native), name, license, where, attribution, url, flag, note
+
+# ---------------------------------------------------------------- fonts
+[[entry]]
+kind = "font"
+name = "IBM Plex Sans (400, 500, 600, latin subset)"
+license = "OFL-1.1"
+where = "UI text; src/lib/styles/fonts/*.woff2 (bundled in the app, no font host is contacted)"
+attribution = "Copyright 2019 IBM Corp. Licence text next to the files: src/lib/styles/fonts/OFL-IBM-Plex-Sans.txt"
+url = "https://github.com/IBM/plex"
+
+[[entry]]
+kind = "font"
+name = "IBM Plex Mono (400, 500, latin subset)"
+license = "OFL-1.1"
+where = "numbers and data read-outs; src/lib/styles/fonts/*.woff2"
+attribution = "Copyright 2017 IBM Corp. Licence text next to the files: src/lib/styles/fonts/OFL-IBM-Plex-Mono.txt"
+url = "https://github.com/IBM/plex"
+
+[[entry]]
+kind = "font"
+name = "DejaVu Sans, STIX (inside matplotlib)"
+license = "Bitstream-Vera / DejaVu licence; STIX under OFL-1.1"
+where = "figure text of the exported PNG/SVG/PDF figures (engine/exporter.py)"
+attribution = "Shipped by matplotlib in mpl-data/fonts with their licence files"
+url = "https://matplotlib.org/stable/project/license.html"
+
+# ---------------------------------------------------------------- colour maps
+[[entry]]
+kind = "colormap"
+name = "viridis, plasma, inferno, magma, cividis, twilight"
+license = "CC0-1.0"
+where = "src/lib/utils/colormaps.ts (256-entry tables generated from matplotlib) and the engine via matplotlib"
+attribution = "Designed by Nathaniel J. Smith, Stefan van der Walt (viridis family) and Eric Firing (cividis, Nunez et al.); released to the public domain"
+url = "https://bids.github.io/colormap/"
+
+[[entry]]
+kind = "colormap"
+name = "turbo"
+license = "Apache-2.0"
+where = "src/lib/utils/colormaps.ts"
+attribution = "Copyright 2019 Google LLC (Anton Mikhailov)"
+url = "https://ai.googleblog.com/2019/08/turbo-improved-rainbow-colormap-for.html"
+
+[[entry]]
+kind = "colormap"
+name = "ColorBrewer maps (YlOrRd, YlGnBu, Blues, Greens, Greys, BuPu, RdBu, PiYG, Spectral)"
+license = "Apache-2.0"
+where = "src/lib/utils/colormaps.ts (via matplotlib)"
+attribution = "Copyright Cynthia Brewer, Mark Harrower and The Pennsylvania State University; Apache-2.0 notice required"
+url = "https://colorbrewer2.org/"
+
+[[entry]]
+kind = "colormap"
+name = "jet, hot, rainbow, gist_ncar, coolwarm, bwr, seismic"
+license = "PSF-2.0"
+where = "src/lib/utils/colormaps.ts (generated from matplotlib)"
+attribution = "matplotlib colour map definitions, under the matplotlib licence (PSF-based)"
+url = "https://matplotlib.org/stable/project/license.html"
+
+[[entry]]
+kind = "colormap"
+name = "NWSRef, NWSVel, NWSSpecWidth, StormRelVel, PrecipRate, RhoHV (NWS-style radar tables)"
+license = "origin not recorded"
+where = "src/lib/utils/colormaps.ts (default colours for reflectivity, velocity, spectrum width, rainfall rate, RhoHV)"
+attribution = "NWS-style colour conventions; the generating script is not in the repository"
+flag = "provenance to document"
+note = "The colour values follow the familiar National Weather Service radar scales, but the repository does not say which table they were derived from. The maintainer should record the source (or state that they were designed for this project) and, if derived from a third-party file, add its licence here."
+
+[[entry]]
+kind = "colormap"
+name = "cmweather, colorcet (engine side: mosaic PNGs and figures)"
+license = "MIT (cmweather); CC-BY-4.0 (colorcet)"
+where = "Python engine (engine/renderer.py, engine/mosaic.py, engine/api_results.py)"
+attribution = "colorcet: Peter Kovesi's perceptually uniform maps, CC BY 4.0, attribution required: Kovesi, P. (2015) Good Colour Maps: How to Design Them. arXiv:1509.03700"
+url = "https://colorcet.holoviz.org/"
+
+# ---------------------------------------------------------------- map, terrain and imagery services
+[[entry]]
+kind = "imagery"
+name = "Sentinel-2 cloudless 2021 (EOX)"
+license = "CC-BY-NC-SA-4.0"
+where = "Realistic ground in the 3D mosaic view and the offline storm clip; tiles from tiles.maps.eox.at, only when the user switches Realistic ground on (src/lib/utils/basemaps.ts)"
+attribution = "Imagery: Sentinel-2 cloudless (c) EOX IT Services GmbH (contains modified Copernicus Sentinel data 2021), CC BY-NC-SA 4.0. Shown on screen while in use."
+url = "https://cloudless.eox.at"
+flag = "NON-COMMERCIAL, share-alike"
+note = "Free for non-commercial use with attribution; commercial use needs a licence from EOX. Images and videos made with it carry the same ShareAlike terms. The project licence is non-commercial too, so the two do not conflict today, but a commercial licence for xradar-desktop would have to switch this layer off or obtain a licence from EOX. Not redistributed in the installers (fetched on request)."
+
+[[entry]]
+kind = "imagery"
+name = "Terrain Tiles (Terrarium PNG, AWS Open Data)"
+license = "various open data licences"
+where = "Realistic ground elevation; s3.amazonaws.com/elevation-tiles-prod (src/lib/utils/terrain.ts)"
+attribution = "Mapzen, Tilezen and the sources named at https://github.com/tilezen/joerd/blob/master/docs/attribution.md (USGS 3DEP/NED, SRTM, GMTED2010, and others); shown on screen"
+url = "https://registry.opendata.aws/terrain-tiles/"
+flag = "attribution list required"
+note = "The tiles blend several sources, each with its own terms (the attribution page lists them); all are open data that may be used with attribution. Fetched on request, cached by the user's browser."
+
+[[entry]]
+kind = "imagery"
+name = "OpenStreetMap standard tiles"
+license = "ODbL-1.0"
+where = "default 2D basemap (src/lib/utils/basemaps.ts); tile.openstreetmap.org"
+attribution = "(c) OpenStreetMap contributors, shown on the map. Tiles are served under the OSMF Tile Usage Policy."
+url = "https://www.openstreetmap.org/copyright"
+flag = "share-alike data, usage policy"
+note = "Map data is ODbL 1.0 (attribution, share-alike for derived databases). The tile servers are a community resource with a usage policy (https://operations.osmfoundation.org/policies/tiles/): no bulk download, identify the application, cache. A packaged release should check the policy still allows this use; choosing the 'None' basemap sends no request."
+
+[[entry]]
+kind = "imagery"
+name = "OpenTopoMap tiles"
+license = "CC-BY-SA (cartography), ODbL-1.0 + SRTM (data)"
+where = "optional 2D basemap; {a,b,c}.tile.opentopomap.org"
+attribution = "(c) OpenStreetMap contributors, SRTM | map style (c) OpenTopoMap (CC-BY-SA); shown on the map"
+url = "https://opentopomap.org/about"
+flag = "share-alike"
+note = "Optional basemap; fetched on request."
+
+# ---------------------------------------------------------------- data
+[[entry]]
+kind = "data"
+name = "NEXRAD Level II (NOAA), Unidata mirror on AWS S3"
+license = "US government data"
+where = "Cloud data panel: bucket unidata-nexrad-level2 (python/engine/cloud.py); fetched only when the user opens a scan"
+attribution = "Data: NOAA National Weather Service NEXRAD Level II, distributed by the Unidata AWS bucket. Credit the source in figures."
+url = "https://registry.opendata.aws/noaa-nexrad/"
+note = "NOAA data are made available to the public; NOAA asks for credit and gives no warranty (see https://www.noaa.gov/information-technology/open-data-dissemination). Check the terms of any other bucket opened through the app."
+
+[[entry]]
+kind = "data"
+name = "open-radar-data test files"
+license = "per file (see the package)"
+where = "continuous integration and local tests only (python/tests/radar_data.py); never shipped, never downloaded by the app"
+attribution = "Each file's own licence and citation, listed by the open-radar-data package"
+url = "https://github.com/openradar/open-radar-data"
+note = "Files are downloaded by the test suite when XRADAR_TEST_DOWNLOAD=1 and are not committed to this repository."
+
+# ---------------------------------------------------------------- native libraries inside wheels / the runtime
+# Seen in a local macOS (arm64) build of the engine and expected in wheels of h5py, netCDF4, pyproj, Pillow,
+# scipy and numpy. Not read from the release builds: re-scan with --scan-engine.
+[[entry]]
+kind = "native"
+name = "CPython runtime (Python.framework / libpython)"
+license = "PSF-2.0"
+where = "the frozen engine"
+url = "https://docs.python.org/3/license.html"
+
+[[entry]]
+kind = "native"
+name = "HDF5, netCDF-C, HDF4 (libdf, libmfhdf)"
+license = "BSD-style (HDF Group / UCAR)"
+where = "file I/O for NetCDF/CfRadial/ODIM"
+url = "https://github.com/HDFGroup/hdf5/blob/develop/COPYING"
+
+[[entry]]
+kind = "native"
+name = "PROJ"
+license = "MIT"
+where = "pyproj (map projections)"
+url = "https://proj.org/en/stable/about.html#license"
+
+[[entry]]
+kind = "native"
+name = "zlib, zstd, lz4, blosc, snappy, libaec (szip), liblzma, bzip2, brotli"
+license = "Zlib / BSD / 0BSD / public-domain style"
+where = "compression in NetCDF, Zarr and PNG"
+note = "zstd is offered under BSD-3-Clause OR GPL-2.0; the BSD terms are the ones relied on."
+
+[[entry]]
+kind = "native"
+name = "OpenSSL 3, libcurl, libssh2, nghttp2, MIT Kerberos (libkrb5 and friends)"
+license = "Apache-2.0 / curl / BSD-3-Clause / MIT"
+where = "network access (S3, HTTPS)"
+
+[[entry]]
+kind = "native"
+name = "libpng, libjpeg-turbo, libtiff, libwebp, libavif, OpenJPEG, Little CMS, FreeType, HarfBuzz"
+license = "libpng / IJG + BSD-3-Clause + Zlib / libtiff / BSD-3-Clause / BSD-2-Clause / MIT / FTL OR GPL-2.0 / MIT"
+where = "Pillow and matplotlib"
+note = "FreeType is dual licensed (FreeType Licence or GPL-2.0); the FreeType Licence is the one relied on and requires a credit line: portions of this software are copyright The FreeType Project (www.freetype.org)."
+
+[[entry]]
+kind = "native"
+name = "libxml2, ICU (libicuuc, libicudata), libxcb, libXau"
+license = "MIT / Unicode-3.0 / MIT"
+where = "pulled in by some wheels"
+
+[[entry]]
+kind = "native"
+name = "GCC runtime: libgcc_s, libgfortran"
+license = "GPL-3.0-or-later WITH GCC-exception-3.1"
+where = "scipy / numpy BLAS and LAPACK"
+note = "The GCC Runtime Library Exception allows combining with non-GPL programs; unmodified shared libraries."
+
+[[entry]]
+kind = "native"
+name = "libquadmath"
+license = "LGPL-2.1-or-later"
+where = "Fortran runtime of scipy"
+flag = "weak copyleft (LGPL)"
+note = "Dynamically linked, unmodified shared library that is a separate file in the engine folder, so a user can replace it. Source: GCC. Confirm in the release build."
+
+[[entry]]
+kind = "native"
+name = "GNU libiconv"
+license = "LGPL-2.1-or-later"
+where = "text conversion in a wheel (seen on macOS)"
+flag = "weak copyleft (LGPL)"
+note = "Dynamically linked, unmodified shared library that is a separate file in the engine folder. Confirm in the release build and per platform."
+
+[[entry]]
+kind = "native"
+name = "libc++, libc++abi (LLVM)"
+license = "Apache-2.0 WITH LLVM-exception"
+where = "C++ runtime of some wheels"

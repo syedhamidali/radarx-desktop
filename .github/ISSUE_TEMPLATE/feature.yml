@@ -1,0 +1,57 @@
+name: Feature request
+description: A new view, module, data layer, export or workflow
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features must follow the [science policy](https://github.com/syedhamidali/xradar-desktop/blob/main/docs/SCIENCE.md):
+        every layer says whether it is observed, model/analysis, retrieved or simulated/stylised, cites its method,
+        shows its limits and invents nothing.
+  - type: textarea
+    id: why
+    attributes:
+      label: What problem does this solve
+      description: Who needs it and what they do today instead.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What you would like
+    validations:
+      required: true
+  - type: dropdown
+    id: class
+    attributes:
+      label: Provenance class of what it would show or write
+      options:
+        - OBSERVED (a measurement)
+        - MODEL / ANALYSIS (model or analysis output)
+        - RETRIEVED (an algorithm applied to observations)
+        - SIMULATED / STYLISED (made to look like something)
+        - Not data (interface, export, performance, packaging)
+    validations:
+      required: true
+  - type: textarea
+    id: method
+    attributes:
+      label: Method and references
+      description: For anything scientific, the paper, report or standard it follows, and where it is known to fail.
+  - type: textarea
+    id: data
+    attributes:
+      label: Data it needs
+      description: Source, licence, size, and whether it must be downloaded (downloads happen only with the user's consent).
+  - type: textarea
+    id: test
+    attributes:
+      label: How would we know it is right
+      description: A known answer, a published example, or a case you can share.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I could help build or test this

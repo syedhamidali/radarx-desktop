@@ -1,0 +1,58 @@
+# Licence policy for the dependencies xradar-desktop ships (checked by generate_notices.py --check, run in
+# CI by .github/workflows/licenses.yml). This is an engineering allow-list, not legal advice; the final
+# wording is to be reviewed by a lawyer (see docs/LICENSES.md).
+#
+# A dependency passes when its SPDX expression has an alternative made only of "permissive" identifiers
+# ("MIT OR LGPL-2.1-or-later" passes through MIT; "MIT AND LGPL-2.1" does not). Everything else fails
+# unless the package is listed under [reviewed] with a reason that says how it is used.
+
+# dev dependencies whose runtime is compiled into the shipped frontend bundle
+npm_runtime_roots = ["svelte"]
+
+[categories]
+permissive = [
+  "MIT", "MIT-0", "MIT-CMU", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "BSD-1-Clause", "ISC", "0BSD",
+  "Zlib", "Unlicense", "CC0-1.0", "BSL-1.0", "PSF-2.0", "Python-2.0", "HPND", "Unicode-3.0",
+  "Unicode-DFS-2016", "OFL-1.1", "CC-BY-4.0", "NCSA", "BlueOak-1.0.0", "CDLA-Permissive-2.0",
+  "LicenseRef-PublicDomain", "curl", "libtiff", "X11", "MIT-open-group", "Artistic-2.0", "WTFPL",
+]
+weak_copyleft = [
+  "LGPL-2.0-only", "LGPL-2.0-or-later", "LGPL-2.1-only", "LGPL-2.1-or-later", "LGPL-3.0-only",
+  "LGPL-3.0-or-later", "MPL-2.0", "EPL-1.0", "EPL-2.0", "CDDL-1.0", "CDDL-1.1", "CC-BY-SA-4.0",
+  "ODbL-1.0",
+]
+strong_copyleft = [
+  "GPL-2.0-only", "GPL-2.0-or-later", "GPL-3.0-only", "GPL-3.0-or-later", "AGPL-3.0-only",
+  "AGPL-3.0-or-later", "SSPL-1.0", "EUPL-1.2",
+]
+non_commercial = [
+  "CC-BY-NC-4.0", "CC-BY-NC-SA-4.0", "CC-BY-NC-ND-4.0", "PolyForm-Noncommercial-1.0.0",
+  "LicenseRef-NonCommercial",
+]
+# licence exceptions that do not make a licence stricter
+exceptions = ["LLVM-exception", "Classpath-exception-2.0", "GCC-exception-3.1"]
+
+# spellings seen in package metadata -> identifier above
+[aliases]
+"Apache 2.0" = "Apache-2.0"
+"BSD" = "BSD-3-Clause"
+"GPL-2.0" = "GPL-2.0-only"
+"GPL-3.0" = "GPL-3.0-only"
+"LGPL-2.1" = "LGPL-2.1-only"
+"LGPL-3.0" = "LGPL-3.0-only"
+"AGPL-3.0" = "AGPL-3.0-only"
+
+# Packages that are not simply permissive but are accepted. Key: "<ecosystem>:<name>" (Python names are
+# lower-case with '-' for '_' and '.'). The note says how the component is linked and used.
+[reviewed]
+"python:certifi" = { note = "MPL-2.0. Data package (the CA certificate bundle) imported as a library by requests/boto3 in the engine; unmodified. MPL-2.0 is a file-level copyleft: it would apply to changes made to certifi's own files, which this project does not make." }
+"rust:cssparser" = { note = "MPL-2.0, unmodified Rust library statically linked through Tauri's HTML/CSS handling (kuchikiki, servo selectors). File-level copyleft: only modifications of these crates' files would have to be published, and the project makes none. Source is on crates.io." }
+"rust:cssparser-macros" = { note = "MPL-2.0, as cssparser (procedural macro of that crate)." }
+"rust:selectors" = { note = "MPL-2.0, as cssparser (servo selectors, via kuchikiki in tauri-utils)." }
+"rust:dtoa-short" = { note = "MPL-2.0, as cssparser (number formatting for CSS)." }
+"rust:option-ext" = { note = "MPL-2.0, tiny helper crate of `dirs-sys` (config folders) in Tauri's dependency tree; unmodified, statically linked." }
+
+# Missing or wrong metadata, fixed by hand after reading the project's own licence file. Key as above.
+[overrides]
+"python:colorcet" = { license = "CC-BY-4.0", reason = "metadata says only 'CC-BY License'; the LICENSE.txt in the distribution is Creative Commons Attribution 4.0" }
+"python:lat-lon-parser" = { license = "CC0-1.0", reason = "classifier 'CC0 1.0 Universal'; LICENSE file is the CC0 1.0 legal code" }
