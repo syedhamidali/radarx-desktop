@@ -72,7 +72,7 @@ def synthetic_raw(seed: int = 7, with_tornado: bool = True, with_hail: bool = Tr
         }
         if with_hail and j == 0:
             st["events"].append({"type": "hail_candidate", "t_s": 290.0, "t_end_s": 330.0, "dm_mm": 12.0,
-                                 "dbz": 61.0, "rain_rate_mmh": 90.0})
+                                 "dmax_mm": 14.0, "counts": 40, "dbz": 61.0, "rain_rate_mmh": 90.0})
         stations.append(st)
     tors = []
     if with_tornado:
@@ -94,6 +94,18 @@ def synthetic_raw(seed: int = 7, with_tornado: bool = True, with_hail: bool = Tr
     }
 
 
+def synthetic_dsd_arrays(t=None):
+    """Exponential drop spectra whose Dm follows the rain core (1.0 to 3.0 mm), 30 s steps."""
+    from .dsd import fall_speed_ms
+
+    t = np.arange(0, 601, 30.0) if t is None else t
+    d = np.linspace(0.25, 9.0, 36)
+    core = np.exp(-0.5 * ((t - 300.0) / 70.0) ** 2)
+    dm = 1.0 + 2.0 * core
+    n = np.exp(-np.outer(3.67 / dm, d)) * (8000.0 * (0.05 + core))[:, None]
+    return t, d, n, fall_speed_ms(d)
+
+
 def synthetic_scenario(**kw):
     raw = synthetic_raw(**kw)
     b = Bundle(
@@ -103,6 +115,10 @@ def synthetic_scenario(**kw):
         tornadoes=parse_tornadoes(raw["tornadoes"], WINDOW_START),
         manifest=raw["manifest"],
     )
+    from .dsd import Dsd
+
+    t, d, n, vt = synthetic_dsd_arrays()
+    b.stations[0].dsd = Dsd(t, d, np.full_like(d, d[1] - d[0]), n, vt, False, "synthetic")
     tl = Timeline.from_dict(raw["timeline"], WINDOW_START)
     return b, tl, CameraPath(raw["camera"])
 
@@ -114,6 +130,8 @@ def write_synthetic_bundle(out_dir) -> Path:
     (d / "lma").mkdir(parents=True, exist_ok=True)
     (d / "stations").mkdir(exist_ok=True)
     (d / "tornadoes").mkdir(exist_ok=True)
+    t, dd, n, _ = synthetic_dsd_arrays()
+    np.savez(d / "stations" / "S0_dsd.npz", t_s=t, diameter_mm=dd, nd=n)
     (d / "manifest.json").write_text(json.dumps(raw["manifest"]))
     (d / "lma" / "flashes.json").write_text(json.dumps(raw["flashes"]))
     (d / "stations" / "stations.json").write_text(json.dumps(raw["stations"]))

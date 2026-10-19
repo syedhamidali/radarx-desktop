@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.ndimage import uniform_filter1d
-from scipy.signal import butter, fftconvolve, sosfilt
+from scipy.signal import fftconvolve
 
 from .scene import CTL_RATE
 
@@ -25,11 +25,17 @@ def pan_gains(az_rel_deg):
     return np.cos(ang), np.sin(ang)
 
 
-def band(x: np.ndarray, sr: int, fc: float) -> np.ndarray:
-    """One-octave band of x around fc (2nd-order Butterworth band-pass), unit RMS."""
-    lo, hi = fc / np.sqrt(2), min(fc * np.sqrt(2), 0.45 * sr)
-    sos = butter(2, [lo, hi], btype="band", fs=sr, output="sos")
-    y = sosfilt(sos, x)
+def band_weights(f: np.ndarray, fc: float) -> np.ndarray:
+    """Amplitude weight of a one-octave-wide band centred on fc, on the frequency axis f: a cosine
+    taper over +-1 octave in log2 frequency. Adjacent octave bands are power complementary
+    (cos^2 + sin^2 = 1), so equal band gains give a flat (no ripple) spectrum."""
+    u = np.log2(np.maximum(f, 1e-3) / fc)
+    return np.where(np.abs(u) < 1.0, np.cos(0.5 * np.pi * u), 0.0)
+
+
+def band_from_spectrum(spec: np.ndarray, f: np.ndarray, n: int, fc: float) -> np.ndarray:
+    """One octave band (unit RMS) of the noise whose rfft is ``spec``."""
+    y = np.fft.irfft(spec * band_weights(f, fc), n)
     s = y.std()
     return y / s if s > 0 else y
 
@@ -54,16 +60,17 @@ def banded_stereo(
     renormalised so the level stays exactly the requested one. Stereo, interchannel correlation
     ``rho``. ``pan_ctl`` (azimuth relative to the heading, deg) tilts the balance (gentle)."""
     rng = np.random.default_rng(seed)
-    n1 = rng.standard_normal(n)
-    n2 = rng.standard_normal(n)
-    mags = np.array([lowpass_mag(f, cutoff_ctl) for f in centers])  # (B, nctl)
+    f = np.fft.rfftfreq(n, 1.0 / sr)
+    X1 = np.fft.rfft(rng.standard_normal(n))
+    X2 = np.fft.rfft(rng.standard_normal(n))
+    mags = np.array([lowpass_mag(fc, cutoff_ctl) for fc in centers])  # (B, nctl)
     norm = np.sqrt((mags**2).sum(axis=0))
     out = np.zeros((2, n))
     r2 = np.sqrt(1.0 - rho * rho)
-    for k, f in enumerate(centers):
+    for k, fc in enumerate(centers):
         g = ctl_to_audio(level_ctl * mags[k] / np.maximum(norm, 1e-12), n, sr)
-        b1 = band(n1, sr, f)
-        b2 = band(n2, sr, f)
+        b1 = band_from_spectrum(X1, f, n, fc)
+        b2 = band_from_spectrum(X2, f, n, fc)
         out[0] += g * b1
         out[1] += g * (rho * b1 + r2 * b2)
     # bands are independent, so the RMS of the sum is sqrt(sum of squares): that is what norm gave
@@ -77,11 +84,16 @@ def banded_stereo(
     return out
 
 
-def local_rms_normalise(x: np.ndarray, sr: int, window_s: float = 2.0, floor: float = 1e-4) -> np.ndarray:
-    """Divide by the running RMS (so the level is set elsewhere); silent stretches stay silent."""
+def local_rms_normalise(
+    x: np.ndarray, sr: int, window_s: float = 2.0, floor: float = 1e-4, rel_floor: float = 0.0
+) -> np.ndarray:
+    """Divide by the running RMS (so the level is set elsewhere); silent stretches stay silent.
+    ``rel_floor``: the RMS is never taken below this fraction of its maximum, so a lone impact in a
+    quiet stretch is not amplified to the level of a downpour."""
     w = max(3, int(window_s * sr))
     p = uniform_filter1d(x * x, w, mode="nearest")
-    return x / np.sqrt(np.maximum(p, floor * floor))
+    lo = max(floor * floor, (rel_floor**2) * float(p.max()))
+    return x / np.sqrt(np.maximum(p, lo))
 
 
 def impulse_train(rng, n: int, rate_per_sample: np.ndarray, amp_sigma: float = 0.5):

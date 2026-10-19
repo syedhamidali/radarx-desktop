@@ -28,9 +28,9 @@ from .scene import CTL_RATE, Scene
 # --------------------------------------------------------------------------- level curves
 
 def rain_level_db(rate_mmh):
-    """Perceptual (log) loudness of rain vs rain rate: -52 dB at 0 mm/h, +14 dB per decade of
-    (1 + R): 1 mm/h -> -48, 10 -> -38.5, 100 -> -24 dB (pre-master). Monotonic."""
-    return -52.0 + 14.0 * np.log10(1.0 + np.maximum(rate_mmh, 0.0))
+    """Perceptual (log) loudness of rain vs rain rate: -58 dB at 0 mm/h, +14 dB per decade of
+    (1 + R): 1 mm/h -> -54, 10 -> -44.5, 100 -> -30 dB (pre-master). Monotonic."""
+    return -58.0 + 14.0 * np.log10(1.0 + np.maximum(rate_mmh, 0.0))
 
 
 def rain_gain(rate_mmh):
