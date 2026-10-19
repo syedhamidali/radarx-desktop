@@ -4,13 +4,17 @@
    * Controls the line tool, probe mode, variable/colormap selectors, and results.
    */
   import { onMount, onDestroy, untrack } from 'svelte';
+  import { get } from 'svelte/store';
   import { connectionStatus, radarData, selectedVariable, processingProgress } from '../stores/radarData';
   import {
     crossSectionStore,
+    patchSectionStyle,
     resetCrossSection,
+    setCrossSectionLayout,
     type CrossSectionData,
     type VerticalProfileData,
   } from '../stores/crossSection';
+  import { haversineKm, sectionPointCount } from '../utils/crossSectionGeometry';
   import { wsManager } from '../utils/websocket';
   import { beginOp, type OpHandle } from '../utils/requestScheduler';
   import { addToast } from '../stores/toasts';
@@ -18,6 +22,11 @@
   import { COLORMAP_NAMES } from '../utils/colormaps';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import CrossSectionViewer from './CrossSectionViewer.svelte';
+  import CrossSectionSmoothing from './CrossSectionSmoothing.svelte';
+  import ValueMaskControl from './ValueMaskControl.svelte';
+  import { isMaskActive, maskOf, valueMasks } from '../stores/valueMask';
+  import { smoothingStore } from '../stores/crossSectionSmoothing';
+  import { isPlain } from '../utils/crossSectionRaster';
   import VerticalProfile from './VerticalProfile.svelte';
 
   // Derived from stores
@@ -32,11 +41,14 @@
   const vpProfiles = $derived($crossSectionStore.verticalProfiles);
   const isLoading = $derived($crossSectionStore.isLoading);
 
-  // Cross-section state
-  let csVariable = $state('');
-  let csCmap = $state('turbo');
-  let csVmin = $state(0);
-  let csVmax = $state(60);
+  // Cross-section style: shared with the large view (dock / dialog), so it lives in the store.
+  const style = $derived($crossSectionStore.style);
+  const csVariable = $derived(style.variable);
+  const csCmap = $derived(style.cmap);
+  const csVmin = $derived(style.vmin);
+  const csVmax = $derived(style.vmax);
+  const layout = $derived($crossSectionStore.layout);
+  const rhiToolActive = $derived($crossSectionStore.rhiToolActive);
   // An emptied number box reads as null; the viewer always gets a usable range.
   const rangeMin = $derived(Number.isFinite(csVmin) ? csVmin : 0);
   const rangeMax = $derived(Number.isFinite(csVmax) && csVmax !== rangeMin ? csVmax : rangeMin + 1);
@@ -53,10 +65,33 @@
   }
 
   function updateCsDefaults(v: string) {
-    csCmap = getDefaultCmap(v);
     const range = getDefaultRange(v);
-    if (range) { csVmin = range[0]; csVmax = range[1]; }
+    patchSectionStyle(
+      { variable: v, cmap: getDefaultCmap(v), ...(range ? { vmin: range[0], vmax: range[1] } : {}) },
+      { link: true },
+    );
   }
+
+  function onVariableChange(e: Event) {
+    updateCsDefaults((e.currentTarget as HTMLSelectElement).value);
+    if ($crossSectionStore.line) requestCrossSection();
+  }
+  function onRangeChange(which: 'vmin' | 'vmax', e: Event) {
+    const v = parseFloat((e.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(v)) patchSectionStyle({ [which]: v });
+  }
+
+  // While linked, the section's colormap and range follow the PPI's (same variable only).
+  $effect(() => {
+    const pp = $crossSectionStore.ppiStyle;
+    untrack(() => {
+      const st = get(crossSectionStore);
+      if (!pp || !st.styleLinked || pp.variable !== st.style.variable) return;
+      if (pp.cmap !== st.style.cmap || pp.vmin !== st.style.vmin || pp.vmax !== st.style.vmax) {
+        patchSectionStyle({ cmap: pp.cmap, vmin: pp.vmin, vmax: pp.vmax }, { link: true });
+      }
+    });
+  });
 
   // A different file: forget the line, results and selections that belonged to the old one.
   let lastFile: string | null | undefined = undefined;
@@ -67,7 +102,7 @@
         resetCrossSection();
         probeKey = '';
         vpPending = 0;
-        csVariable = '';
+        patchSectionStyle({ variable: '' }, { link: true });
         vpVariables = [];
       }
       lastFile = f;
@@ -80,9 +115,9 @@
     const sel = $selectedVariable;
     untrack(() => {
       if (vars.length === 0) return;
-      if (!csVariable || !vars.includes(csVariable)) {
-        csVariable = sel && vars.includes(sel) ? sel : vars[0];
-        updateCsDefaults(csVariable);
+      const cur = get(crossSectionStore).style.variable;
+      if (!cur || !vars.includes(cur)) {
+        updateCsDefaults(sel && vars.includes(sel) ? sel : vars[0]);
       }
       const kept = vpVariables.filter((v) => vars.includes(v));
       if (kept.length === 0) vpVariables = [sel && vars.includes(sel) ? sel : vars[0]];
@@ -141,6 +176,8 @@
   });
 
   // WebSocket message handlers
+  /** A new request came in while one was running; send it as soon as that one is done. */
+  let rerunPending = false;
   let unsubCS: (() => void) | null = null;
   let unsubVP: (() => void) | null = null;
   let unsubErr: (() => void) | null = null;
@@ -158,17 +195,35 @@
         variable: msg.variable ?? '',
         units: msg.units ?? '',
         n_sweeps: msg.n_sweeps ?? 0,
+        elevations_deg: msg.elevations_deg,
+        ground_range_km: msg.ground_range_km,
+        azimuth_deg: msg.azimuth_deg,
+        start: msg.start,
+        end: msg.end,
+        radar_lat: msg.radar_lat,
+        radar_lon: msg.radar_lon,
+        radar_altitude_m: msg.radar_altitude_m,
+        time: msg.time,
+        rhi_azimuth: typeof msg.rhi_azimuth === 'number' ? msg.rhi_azimuth : undefined,
       };
-      crossSectionStore.update((s) => ({
-        ...s,
-        crossSectionData: data.n_sweeps > 0 ? data : null,
-        isLoading: false,
-      }));
+      crossSectionStore.update((s) => {
+        // An RHI-style cut: draw the line exactly where the engine put it.
+        const line =
+          data.rhi_azimuth !== undefined && s.line && data.start && data.end
+            ? { ...s.line, startLat: data.start[0], startLon: data.start[1], endLat: data.end[0], endLon: data.end[1] }
+            : s.line;
+        return { ...s, line, crossSectionData: data.n_sweeps > 0 ? data : null, isLoading: false };
+      });
       clearProgress();
       if (data.n_sweeps > 0) {
-        addToast('success', `Cross-section: ${data.n_sweeps} sweeps, ${data.distance_km.length} points`);
+        if (!rerunPending) addToast('success', `Cross-section: ${data.n_sweeps} sweeps, ${data.distance_km.length} points`);
       } else {
         addToast('info', `${data.variable || 'This variable'} is not in any sweep of this file`);
+      }
+      // The line was moved while this one was being extracted: run it again for the latest line.
+      if (rerunPending) {
+        rerunPending = false;
+        requestCrossSection();
       }
     });
 
@@ -223,6 +278,7 @@
       const named = /\b((?:get|run|identify|track|list)_[a-z0-9_]+)/.exec(text)?.[1];
       if (named && named !== 'get_cross_section' && named !== 'get_vertical_profile') return;
       vpPending = 0;
+      rerunPending = false;
       const failure = text || 'Request failed';
       endLoadOp(failure);
       setLoading(false);
@@ -246,6 +302,16 @@
       ...s,
       lineToolActive: next,
       probeToolActive: false,
+      rhiToolActive: false,
+    }));
+  }
+
+  function toggleRhiTool() {
+    crossSectionStore.update((s) => ({
+      ...s,
+      rhiToolActive: !s.rhiToolActive,
+      lineToolActive: false,
+      probeToolActive: false,
     }));
   }
 
@@ -255,11 +321,13 @@
       ...s,
       probeToolActive: next,
       lineToolActive: false,
+      rhiToolActive: false,
     }));
   }
 
   function requestCrossSection() {
-    const line = $crossSectionStore.line;
+    const st = $crossSectionStore;
+    const line = st.line;
     if (!line) {
       addToast('info', 'Draw a line on the PPI first');
       return;
@@ -268,17 +336,34 @@
       addToast('info', 'Select a variable');
       return;
     }
-    if ($crossSectionStore.isLoading) return;
     if ($connectionStatus !== 'connected') return;
+    if (st.isLoading) {
+      rerunPending = true;
+      return;
+    }
 
     crossSectionStore.update((s) => ({ ...s, isLoading: true }));
-    wsManager.send({
-      type: 'get_cross_section',
-      start: [line.startLat, line.startLon],
-      end: [line.endLat, line.endLon],
-      variable: csVariable,
-      n_points: 200,
-    });
+    const lengthKm = st.rhi
+      ? st.rhi.maxRangeKm
+      : haversineKm(line.startLat, line.startLon, line.endLat, line.endLon);
+    const n_points = sectionPointCount(lengthKm);
+    if (st.rhi) {
+      wsManager.send({
+        type: 'get_cross_section',
+        azimuth: st.rhi.azimuth,
+        max_range_km: st.rhi.maxRangeKm,
+        variable: csVariable,
+        n_points,
+      });
+    } else {
+      wsManager.send({
+        type: 'get_cross_section',
+        start: [line.startLat, line.startLon],
+        end: [line.endLat, line.endLon],
+        variable: csVariable,
+        n_points,
+      });
+    }
   }
 
   function clearCrossSection() {
@@ -286,7 +371,9 @@
       ...s,
       crossSectionData: null,
       line: null,
+      rhi: null,
       lineToolActive: false,
+      rhiToolActive: false,
     }));
   }
 
@@ -337,7 +424,7 @@
         <div class="csp-controls">
           <div class="csp-row">
             <label class="csp-label" for="csp-var">Variable</label>
-            <select id="csp-var" class="csp-select" bind:value={csVariable} disabled={!hasData} on:change={() => updateCsDefaults(csVariable)}>
+            <select id="csp-var" class="csp-select" value={csVariable} disabled={!hasData} on:change={onVariableChange}>
               {#each variables as v}
                 <option value={v}>{v}</option>
               {/each}
@@ -346,7 +433,7 @@
 
           <div class="csp-row">
             <label class="csp-label" for="csp-cmap">Colormap</label>
-            <select id="csp-cmap" class="csp-select" bind:value={csCmap}>
+            <select id="csp-cmap" class="csp-select" value={csCmap} on:change={(e) => patchSectionStyle({ cmap: e.currentTarget.value })}>
               {#each COLORMAP_NAMES as c}
                 <option value={c}>{c}</option>
               {/each}
@@ -356,12 +443,22 @@
           <div class="csp-row">
             <label class="csp-label" for="csp-vmin">Range</label>
             <div class="csp-range-inputs">
-              <input id="csp-vmin" type="number" class="csp-input" bind:value={csVmin} step="1" aria-label="Colour range minimum" />
+              <input id="csp-vmin" type="number" class="csp-input" value={csVmin} on:change={(e) => onRangeChange('vmin', e)} step="1" aria-label="Colour range minimum" />
               <span class="csp-range-sep">-</span>
-              <input id="csp-vmax" type="number" class="csp-input" bind:value={csVmax} step="1" aria-label="Colour range maximum" />
+              <input id="csp-vmax" type="number" class="csp-input" value={csVmax} on:change={(e) => onRangeChange('vmax', e)} step="1" aria-label="Colour range maximum" />
             </div>
           </div>
         </div>
+
+        <details class="csp-smoothing" open={isMaskActive(maskOf($valueMasks, csData?.variable || csVariable))}>
+          <summary>Mask{isMaskActive(maskOf($valueMasks, csData?.variable || csVariable)) ? ': on' : ''}</summary>
+          <ValueMaskControl variable={csData?.variable || csVariable} units={csData?.units ?? ''} compact />
+        </details>
+
+        <details class="csp-smoothing" open={!isPlain($smoothingStore)}>
+          <summary>Smoothing{isPlain($smoothingStore) ? '' : ': on'}</summary>
+          <CrossSectionSmoothing compact />
+        </details>
 
         <div class="csp-actions">
           <button
@@ -372,6 +469,16 @@
             title="Draw a line on the PPI to define the cross-section"
           >
             {lineToolActive ? 'Drawing...' : 'Draw Line'}
+          </button>
+
+          <button
+            class="csp-btn"
+            class:active={rhiToolActive}
+            on:click={toggleRhiTool}
+            disabled={!hasData || !isConnected}
+            title="Click the PPI to cut a section out of the radar along that azimuth (RHI-style)"
+          >
+            {rhiToolActive ? 'Click PPI...' : 'RHI'}
           </button>
 
           <button
@@ -392,6 +499,16 @@
             {csData.variable}: {csData.n_sweeps} sweeps, {csData.distance_km[csData.distance_km.length - 1]?.toFixed(1) ?? '0'} km long
           </div>
         {/if}
+
+        <div class="csp-actions">
+          <button class="csp-btn primary" on:click={() => setCrossSectionLayout('modal')} disabled={!hasData}
+                  title="Open the cross-section in a large window" data-testid="cs-panel-expand">Expand</button>
+          <button class="csp-btn" class:active={layout === 'dock'}
+                  on:click={() => setCrossSectionLayout(layout === 'dock' ? 'panel' : 'dock')} disabled={!hasData}
+                  title="Show a large cross-section under the PPI, with a height you can drag" data-testid="cs-panel-dock">
+            {layout === 'dock' ? 'Undock' : 'Dock under PPI'}
+          </button>
+        </div>
 
         <!-- Viewer -->
         <div class="csp-viewer">
@@ -645,6 +762,16 @@
     font-size: 10px;
     font-family: var(--font-mono, monospace);
     color: var(--text-muted, rgba(255,255,255,0.4));
+  }
+
+  .csp-smoothing summary {
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--text-muted, rgba(255,255,255,0.4));
+    margin-bottom: 4px;
   }
 
   .csp-viewer {
