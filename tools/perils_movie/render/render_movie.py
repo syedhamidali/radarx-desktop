@@ -181,6 +181,29 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
         log("browser messages:\n  " + "\n  ".join(sorted(set(logs))[-12:]))
 
 
+def read_audio(path: Path, sr: int = 48000):
+    """Any audio file PyAV reads -> float32 (2, n) at ``sr``, stereo; padded with silence if the file is shorter than 130 s."""
+    import av
+    import numpy as np
+
+    src = av.open(str(path))
+    ain = src.streams.audio[0]
+    rs = av.AudioResampler(format="fltp", layout="stereo", rate=sr)
+    parts = []
+    for fr in src.decode(ain):
+        for r in rs.resample(fr):
+            parts.append(r.to_ndarray())
+    for r in rs.resample(None):
+        parts.append(r.to_ndarray())
+    src.close()
+    x = np.concatenate(parts, axis=1) if parts else np.zeros((2, 0), np.float32)
+    return (
+        np.concatenate([x, np.zeros((2, int(130 * sr) - x.shape[1]), np.float32)], axis=1)
+        if x.shape[1] < 130 * sr
+        else x
+    )
+
+
 def encode(
     frames: list[int],
     frames_dir: Path,
@@ -207,35 +230,27 @@ def encode(
     vs.options = {"crf": str(crf), "preset": "medium"}
     aud_packets: list = []
     if audio:
-        src = av.open(str(audio))
-        ain = src.streams.audio[0]
         sr = 48000
+        samples = read_audio(audio, sr)
+        per = sr / fps  # samples per frame (1600 at 48 kHz and 30 fps)
+        # the audio of exactly the frames that are encoded: a preview of a few segments gets the sound of the same
+        # segments, the full film its whole track
+        pieces = [samples[:, round(i * per) : round((i + 1) * per)] for i in frames]
+        planar = np.ascontiguousarray(np.concatenate(pieces, axis=1), dtype=np.float32)
         as_ = container.add_stream("aac", rate=sr)
         as_.layout = "stereo"
         as_.bit_rate = 192_000
-        rs = av.AudioResampler(format="fltp", layout="stereo", rate=sr)
-        pts = 0
-        limit = int(len(frames) / fps * sr)
-        for fr in src.decode(ain):
-            for r in rs.resample(fr):
-                n = r.samples
-                if pts >= limit:
-                    break
-                arr = r.to_ndarray()
-                if pts + n > limit:
-                    arr = arr[:, : limit - pts]
-                    n = arr.shape[1]
-                af = av.AudioFrame.from_ndarray(
-                    np.ascontiguousarray(arr), format="fltp", layout="stereo"
-                )
-                af.sample_rate = sr
-                af.pts = pts
-                af.time_base = Fraction(1, sr)
-                aud_packets.extend(as_.encode(af))
-                pts += n
+        for i0 in range(0, planar.shape[1], 1024):
+            chunk = planar[:, i0 : i0 + 1024]
+            af = av.AudioFrame.from_ndarray(
+                np.ascontiguousarray(chunk), format="fltp", layout="stereo"
+            )
+            af.sample_rate = sr
+            af.pts = i0
+            af.time_base = Fraction(1, sr)
+            aud_packets.extend(as_.encode(af))
         aud_packets.extend(as_.encode())
-        src.close()
-        log(f"audio: {pts / sr:.2f} s from {audio.name}")
+        log(f"audio: {planar.shape[1] / sr:.2f} s from {audio.name} ({len(frames)} frames)")
     for k, i in enumerate(frames):
         img = Image.open(frames_dir / f"frame_{i:05d}.png").convert("RGB")
         if img.size != (vs.width, vs.height):
