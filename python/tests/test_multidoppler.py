@@ -642,7 +642,7 @@ class TestErrors:
         o = mdop.Options.from_dict({})
         assert g.extent == "auto" and g.origin == "auto" and g.z_min_m is None
         assert o.method == "analytic" and o.min_crossing_angle == 30.0 and o.fall_speed_correction
-        assert o.background == {"mode": "none"} and o.boundary == "upward"
+        assert o.background == {"mode": "none"} and o.boundary == "auto"
         o2 = mdop.Options.from_dict(
             {
                 "freezing_level": 3500,

@@ -90,7 +90,7 @@
 
   // Re-render whenever view params change
   $: if (ctx && mctx && radarLat != null && radarLon != null) {
-    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer, wlayer);
+    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer, wlayer, basemap.theme);
     scheduleRender();
   }
 
@@ -229,7 +229,7 @@
       drawSites(mctx, lyr, project);
     }
     // Multi-Doppler wind analysis (speed raster, arrows, radar sites)
-    if (wlayer && wlayer.visible) drawWindLayer(mctx, wlayer, project, dpr, cw, ch);
+    if (wlayer && wlayer.visible) drawWindLayer(mctx, wlayer, project, dpr, cw, ch, basemap.theme);
   }
 
   function drawBasemap(
