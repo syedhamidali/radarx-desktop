@@ -80,6 +80,24 @@ def test_errors_are_plain(capsys, tmp_path: Path) -> None:
     assert code == 2
 
 
+def test_python_api_function_matches_the_command() -> None:
+    import xrd
+    from engine import api
+
+    d = api.sounding(FIX, wind_units="kt")
+    assert d["station"] == "BMX" and d["provenance"]["kind"] == "observed"
+    assert d["diagnostics"]["parcels"]["most-unstable"]["cape"] is not None
+    assert xrd.sounding is api.sounding and "sounding" in api.__all__
+    no_tv = api.sounding(FIX, wind_units="kt", virtual_temperature=False)
+    assert no_tv["diagnostics"]["virtual_temperature"] is False
+    assert (
+        no_tv["diagnostics"]["parcels"]["surface-based"]["cape"]
+        <= d["diagnostics"]["parcels"]["surface-based"]["cape"]
+    )
+    with pytest.raises(api.XrdInputError, match="no data rows|not found"):
+        api.sounding(FIX.parent / "missing.csv")
+
+
 def test_help_lists_the_command_with_the_shared_options() -> None:
     assert "sounding" in cli.COMMANDS and "sounding" in cli.overview()
     text = cli._subparsers(cli.build_parser())["sounding"].format_help()

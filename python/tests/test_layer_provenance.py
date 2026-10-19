@@ -23,6 +23,23 @@ def test_the_five_classes_each_have_a_definition_and_a_short_label() -> None:
     assert all(len(t) > 40 for t in lp.DEFINITIONS.values())
 
 
+def test_the_frontend_vocabulary_matches_the_engine() -> None:
+    """src/lib/utils/provenance.ts keeps its own copy of the five definitions: it must not drift."""
+    import re
+    from pathlib import Path
+
+    ts = (Path(__file__).resolve().parents[2] / "src/lib/utils/provenance.ts").read_text()
+    pattern = (
+        r"(\w+): \{\s*short: '(\w+)',\s*label: '([^']+)',\s*definition:\s*"
+        r"(?:\"([^\"]*)\"|'([^']*)')"
+    )
+    found = {m[0]: m for m in re.findall(pattern, ts)}
+    assert set(found) == set(lp.CLASSES)
+    for kind, (_, short, label, dq, sq) in found.items():
+        assert short == lp.SHORT[kind] and label.lower() == kind.capitalize().lower()
+        assert (dq or sq) == lp.DEFINITIONS[kind], kind
+
+
 def test_unknown_class_is_refused() -> None:
     with pytest.raises(ValueError, match="one of"):
         lp.LayerProvenance(kind="measured-ish", source="x")
