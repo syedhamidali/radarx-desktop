@@ -20,7 +20,13 @@ labelled method applied to it, or a labelled picture, and nothing is invented. S
 
 <sub>Reflectivity from KTLX (Oklahoma City), 20 May 2013, 0.5° sweep. NEXRAD Level II, exported from the app.</sub>
 
-![xradar-desktop showing the same scan on a map](docs/images/app-2d.png)
+<p align="center">
+  <img src="docs/images/app-2d.png" width="49%" alt="xradar-desktop, dark theme: the same scan in the 2D view">
+  <img src="docs/images/app-2d-light.png" width="49%" alt="xradar-desktop, light theme: the same scan in the 2D view">
+</p>
+
+<sub>The 2D view in the dark and light themes (screenshots taken offline, so the map basemap is switched off; the app
+draws OpenStreetMap or OpenTopoMap under the scan when it is on).</sub>
 
 ## Download
 
@@ -61,7 +67,10 @@ for files with no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`). O
 Pan and zoom a GPU-rendered PPI on a map, then switch to the 3D volume: every sweep is ray-marched on the GPU, with
 a transfer-function editor, a map ground plane and adjustable vertical exaggeration.
 
-![3D volume of the Oklahoma squall line over a map](docs/images/app-3d.png)
+<p align="center">
+  <img src="docs/images/app-3d.png" width="49%" alt="3D volume of the Oklahoma squall line, dark theme">
+  <img src="docs/images/app-3d-light.png" width="49%" alt="3D volume of the Oklahoma squall line, light theme">
+</p>
 
 ### Range-height scans (RHI)
 
@@ -107,7 +116,7 @@ field that you view in 2D, in 3D, or export. Included: hydrometeor classificatio
 rotation couplets, shear, ZDR arcs, ZDR columns, storm detection, cell size sorting, and more. Write your own in
 about ten lines, see [docs/MODULES.md](docs/MODULES.md).
 
-![Hydrometeor classification run on every sweep, shown on the map, with the Modules panel open](docs/images/modules-hid.png)
+![Hydrometeor classification run on every sweep, with the Modules panel open](docs/images/modules-hid.png)
 
 ### Clean the data
 

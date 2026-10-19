@@ -12,6 +12,16 @@ where nothing is drawn.
 :width: 100%
 ```
 
+The same view in the light theme (*Settings → Appearance → Clean room*):
+
+```{image} images/app-2d-light.png
+:alt: The 2D view, light theme
+:width: 100%
+```
+
+*The screenshots were taken offline, so the map basemap is switched off; the app draws OpenStreetMap or OpenTopoMap
+under the scan when it is on.*
+
 The colour map of a variable can be changed with *Edit* next to the colour bar (the same choice is used in the
 3D view). The timeline under the map steps through the sweeps (`Home`/`End`, the play button and 0.5×/1×/2×
 speed).
