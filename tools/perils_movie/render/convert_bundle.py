@@ -100,7 +100,9 @@ def phase_correlate(a: np.ndarray, b: np.ndarray, max_shift_px: float | None = N
 
     def sub(vm, v0, vp):
         d = vm - 2 * v0 + vp
-        return 0.0 if abs(d) < 1e-12 else 0.5 * (vm - vp) / d
+        if not (np.isfinite(vm) and np.isfinite(vp) and np.isfinite(v0)) or abs(d) < 1e-12:
+            return 0.0
+        return 0.5 * (vm - vp) / d
 
     ry = sub(r[(iy - 1) % ny, ix], r[iy, ix], r[(iy + 1) % ny, ix])
     rx = sub(r[iy, (ix - 1) % nx], r[iy, ix], r[iy, (ix + 1) % nx])

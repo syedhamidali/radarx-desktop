@@ -41,7 +41,7 @@ def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
     return frames
 
 
-def prepare_bundle(bundle: Path, work: Path, export_dir: Path | None, log=print) -> Path:
+def prepare_bundle(bundle: Path, work: Path, export_dir: Path | None, counties: Path | None = None, log=print) -> Path:
     """Convert the bundle (if needed) and write timeline / camera / events next to the converted files."""
     import choreography
     import convert_bundle
@@ -54,6 +54,20 @@ def prepare_bundle(bundle: Path, work: Path, export_dir: Path | None, log=print)
         convert_bundle.convert(bundle, clip, log=log)
     else:
         log(f"conversion up to date: {clip}")
+    if not (clip / "ground.png").exists():
+        try:
+            import make_ground
+
+            p = json.loads(stamp.read_text())
+            half = 260.0
+            for m in p.get("mrms", []):
+                if m:
+                    half = max(half, abs(m["x0"]) + 10)
+            meta = make_ground.draw(clip / "ground.png", convert_bundle.Geo(p["origin"]["lat"], p["origin"]["lon"]), half, 0.0, 0.0, Path.home() / ".local/share/cartopy/shapefiles/natural_earth", counties, log=log)
+            p["ground"] = meta
+            stamp.write_text(json.dumps(p))
+        except Exception as e:  # the movie still renders: a plain grid ground, said on screen
+            log(f"no ground map ({e}); the ground will be a plain grid")
     res = choreography.write(stamp, clip, 120.0, 30, log=log)
     if export_dir:
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +213,7 @@ def main(argv=None) -> None:
     ap.add_argument("--out", default=None, help="MP4 to write")
     ap.add_argument("--audio", default=None, help="an audio file to mux (any format PyAV reads)")
     ap.add_argument("--export-dir", default=None, help="also write timeline.json, camera_path.json, events.json here")
+    ap.add_argument("--counties", default=None, help="US Census county lines (.shp) for the ground map (optional)")
     ap.add_argument("--convert-only", action="store_true", help="convert + plan, then stop (run in the engine environment)")
     ap.add_argument("--preview", nargs="?", const=DEFAULT_SEGMENTS, default=None, help="render only these clip-time segments, e.g. 0-5,52-58 (default: 20 s of the film)")
     ap.add_argument("--frames", default=None, help="a:b frame range (tests)")
@@ -223,7 +238,7 @@ def main(argv=None) -> None:
     work = Path(a.work).expanduser().resolve()
     work.mkdir(parents=True, exist_ok=True)
     export = Path(a.export_dir).expanduser().resolve() if a.export_dir else None
-    clip = prepare_bundle(bundle, work, export)
+    clip = prepare_bundle(bundle, work, export, Path(a.counties).expanduser() if a.counties else None)
     if a.convert_only:
         return
     tl = json.loads((clip / "timeline.json").read_text())

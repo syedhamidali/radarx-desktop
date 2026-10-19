@@ -304,7 +304,8 @@ export class PerilsExtras implements ClipExtras {
     else if (nowFlash > 0) sees = `Lightning: ${nowFlash} flash${nowFlash > 1 ? 'es' : ''} mapped now`;
     else sees = '';
     const sources = d.sources ?? [];
-    const credits = sources.length ? `Data: ${sources.map((s) => s.name).join(' · ')}` : '';
+    const gc = (d.ground as { credit?: string } | undefined)?.credit;
+    const credits = [sources.length ? `Data: ${sources.map((s) => s.name).join(' · ')}` : '', gc ?? ''].filter(Boolean).join(' · ');
     return {
       data: d, title: d.title || 'PERiLS', subtitle: d.case || '', td, tc: info.t, duration: this.director.duration, speedup: this.director.speedup(info.t), shotLabel: this.director.shotAt(info.t).label,
       observed: obs, interval: { k: w.k, s: w.s }, motionNote,
