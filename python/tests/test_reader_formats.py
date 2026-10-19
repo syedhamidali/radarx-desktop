@@ -20,19 +20,14 @@ from engine.reader import (
     _get_opener,
     _guess_formats,
 )
+from tests import radar_data
 from tests.conftest import make_synthetic_datatree
 
 HAS_OPEN_DATATREE = hasattr(xd, "open_datatree")
 
-_SCRATCH = (
-    "/private/tmp/claude-502/-Users-syed44-Git-Stuff-Git-Projects-xradar-desktop/"
-    "4919c2aa-1324-499f-9e5a-79edf19be890/scratchpad"
-)
-NEXRAD_FILE = os.environ.get("XRADAR_TEST_NEXRAD", f"{_SCRATCH}/data/KATX20130717_195021_V06")
-CFRAD_FILE = os.environ.get(
-    "XRADAR_TEST_CFRADIAL1",
-    "/Users/syed44/Downloads/untitled_folder/"
-    "cfrad.20220330_212540.952_to_20220330_212711.375_COW1high_SUR.nc",
+NEXRAD_FILE = os.environ.get("XRADAR_TEST_NEXRAD") or str(radar_data.katx() or "")
+CFRAD_FILE = os.environ.get("XRADAR_TEST_CFRADIAL1") or str(
+    radar_data.get(radar_data.DOW8_PPI) or ""
 )
 
 
@@ -221,8 +216,12 @@ class TestSmartFallback:
 # Real files + timing (skipped when the sample data is not on this machine)
 # ---------------------------------------------------------------------------
 
-real_nexrad = pytest.mark.skipif(not Path(NEXRAD_FILE).exists(), reason="NEXRAD sample missing")
-real_cfrad = pytest.mark.skipif(not Path(CFRAD_FILE).exists(), reason="CfRadial1 sample missing")
+real_nexrad = pytest.mark.skipif(
+    not (NEXRAD_FILE and Path(NEXRAD_FILE).is_file()), reason="NEXRAD sample missing"
+)
+real_cfrad = pytest.mark.skipif(
+    not (CFRAD_FILE and Path(CFRAD_FILE).is_file()), reason="CfRadial1 sample missing"
+)
 
 
 def _timed_open(path: str) -> tuple[dict[str, Any], float]:

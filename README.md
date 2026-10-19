@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/syedhamidali/xradar-desktop/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/syedhamidali/xradar-desktop)](https://github.com/syedhamidali/xradar-desktop/releases/latest)
+[![codecov](https://codecov.io/gh/syedhamidali/xradar-desktop/graph/badge.svg)](https://codecov.io/gh/syedhamidali/xradar-desktop)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-orange.svg)](LICENSE)
 
 A desktop app for looking at weather radar data and working with it: open a file, see it in 2D and 3D, clean it,
