@@ -268,6 +268,14 @@ class _Formatter(argparse.RawDescriptionHelpFormatter):
     def __init__(self, prog: str) -> None:
         super().__init__(prog, max_help_position=34, width=100)
 
+    def _format_action_invocation(self, action: argparse.Action) -> str:
+        # Python < 3.13 repeats the metavar after every flag ("-i FILE, --input FILE"); always print
+        # the short form "-i, --input FILE" so the help reads the same on every supported Python.
+        if not action.option_strings or action.nargs == 0:
+            return super()._format_action_invocation(action)
+        metavar = self._format_args(action, self._get_default_metavar_for_optional(action))
+        return f"{', '.join(action.option_strings)} {metavar}"
+
 
 def _common_options() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(add_help=False)

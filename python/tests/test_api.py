@@ -186,7 +186,8 @@ def test_run_single_sweep_result_object(vol: api.Volume) -> None:
     assert res.module == "storm_detection" and res.sweep == 0
     assert res.params["threshold_dbz"] == 40.0
     assert res.scalars["Threshold"] == 40.0
-    assert len(res.table) == res.scalars["Cells"]
+    # the table is capped (MAX_FEATURES) for very noisy sweeps; the Cells scalar is the true count
+    assert len(res.table) == min(res.scalars["Cells"], 200)
     assert "Storm cells" in next(iter(res.tables))
     assert res.overlays and res.overlays[0]["kind"] == "polygon"
     assert "ModuleResult" in repr(res)
