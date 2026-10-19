@@ -23,6 +23,11 @@ def installed(name):
     return importlib.util.find_spec(name) is not None
 
 
+def _not_a_test(name):
+    """collect_submodules() filter: the packages' own test suites are never imported at run time."""
+    return not {"tests", "test"} & set(name.split("."))
+
+
 hiddenimports = []
 datas = [(os.path.join(ROOT, "modules"), "modules")]
 binaries = []
@@ -45,7 +50,7 @@ for pkg in (
 ):
     if not installed(pkg):
         continue
-    hiddenimports += collect_submodules(pkg)
+    hiddenimports += collect_submodules(pkg, filter=_not_a_test)
     datas += collect_data_files(pkg)
     binaries += collect_dynamic_libs(pkg)
     try:
@@ -53,7 +58,7 @@ for pkg in (
     except Exception:
         pass
 
-hiddenimports += ["scipy.spatial", "scipy.ndimage", "scipy.sparse.csgraph", "PIL.Image", "cairo"]
+hiddenimports += ["scipy.spatial", "scipy.ndimage", "scipy.sparse.csgraph", "PIL.Image"]
 
 excludes = [
     # Never imported by the engine, and large. (The renderer rasterises with numpy; keeping
@@ -73,6 +78,39 @@ excludes = [
     "PySide2",
     "PySide6",
     "sphinx",
+    # Packaging tools and stdlib doc data that matplotlib/pyinstaller hooks drag in.
+    "setuptools",
+    "pkg_resources",
+    "_distutils_hack",
+    "pydoc_data",
+    # GUI toolkits for matplotlib's interactive backends: the engine only ever uses Agg
+    # (exporter.py), which draws to memory and writes PNG/SVG/PDF.
+    "matplotlib.backends.backend_qt",
+    "matplotlib.backends.backend_qt5",
+    "matplotlib.backends.backend_qtagg",
+    "matplotlib.backends.backend_qt5agg",
+    "matplotlib.backends.backend_qtcairo",
+    "matplotlib.backends.backend_qt5cairo",
+    "matplotlib.backends.qt_compat",
+    "matplotlib.backends.qt_editor",
+    "matplotlib.backends.backend_tkagg",
+    "matplotlib.backends.backend_tkcairo",
+    "matplotlib.backends._backend_tk",
+    "matplotlib.backends.backend_gtk3",
+    "matplotlib.backends.backend_gtk3agg",
+    "matplotlib.backends.backend_gtk3cairo",
+    "matplotlib.backends.backend_gtk4",
+    "matplotlib.backends.backend_gtk4agg",
+    "matplotlib.backends.backend_gtk4cairo",
+    "matplotlib.backends.backend_wx",
+    "matplotlib.backends.backend_wxagg",
+    "matplotlib.backends.backend_wxcairo",
+    "matplotlib.backends.backend_webagg",
+    "matplotlib.backends.backend_webagg_core",
+    "matplotlib.backends.backend_nbagg",
+    # Cloud file systems of pyarrow: the engine reads S3 with boto3 / icechunk, never pyarrow.fs.
+    # (pyarrow.fs imports _s3fs inside try/except ImportError.)
+    "pyarrow._s3fs",
 ]
 
 a = Analysis(
@@ -108,6 +146,19 @@ _DROP_PATTERNS = [
     r"(^|/)matplotlib/backends/(web_backend|_backend_tk)",
     r"(^|/)(pandas|scipy|numpy)/.*/tests/",
     r"(^|/)llvmlite/.*\.(h|lib)$",
+    # Bytecode caches that the developer's python/modules/ folder may contain.
+    r"(^|/)__pycache__/",
+    r"\.py[co]$",
+    # pyarrow's S3 file system (the engine uses boto3) and its extension module.
+    r"(^|/)(pyarrow/)?libarrow_s3",
+    r"(^|/)pyarrow/_s3fs",
+    # Pillow plugins for formats the engine never reads or writes (it makes PNG / GIF; matplotlib
+    # writes PNG / SVG / PDF) and the libraries only they use. Pillow tolerates their absence.
+    r"(^|/)PIL/_(avif|webp|imagingcms|imagingtk)\.",
+    r"(^|/)(PIL/\.dylibs|pillow\.libs)/(lib)?(avif|webp|webpmux|webpdemux|lcms2)[.-]",
+    # Computer Modern fonts (only for mathtext.fontset = 'cm') and DejaVu Serif (font.family = serif);
+    # the default sans-serif DejaVu Sans, Mono and the STIX fonts stay.
+    r"(^|/)matplotlib/mpl-data/fonts/ttf/(cm[a-z]+10|DejaVuSerif[A-Za-z-]*)\.ttf$",
 ]
 _drop = [re.compile(p) for p in _DROP_PATTERNS]
 
@@ -122,8 +173,40 @@ def _keep(entry):
     return not (any(r.search(dest) for r in _drop) or _service_dropped(dest))
 
 
-a.binaries = [e for e in a.binaries if _keep(e)]
+def _link_duplicates(entries):
+    """Turn byte-identical shared libraries in the same folder into symlinks to the first one.
+
+    Some wheels ship ``libfoo.dylib``, ``libfoo.2600.dylib`` and ``libfoo.2600.0.0.dylib`` as three
+    full copies (pyarrow: libarrow_python, 3 x 1.9 MB). PyInstaller re-signs every copy separately on
+    macOS, so this has to happen on the TOC, before COLLECT, not afterwards. Not on Windows.
+    """
+    if os.name == "nt":
+        return entries
+    import hashlib
+
+    seen, out = {}, []
+    for dest, src, typecode in sorted(entries, key=lambda e: e[0]):
+        folder = os.path.dirname(dest)
+        if typecode in ("BINARY", "EXTENSION") and os.path.isfile(src) and os.path.getsize(src) >= 64 * 1024:
+            with open(src, "rb") as f:
+                key = (folder, hashlib.sha256(f.read()).hexdigest())
+            if key in seen:
+                out.append((dest, os.path.basename(seen[key]), "SYMLINK"))
+                continue
+            seen[key] = dest
+        out.append((dest, src, typecode))
+    return out
+
+
+def _is_test_module(name):
+    return bool({"tests", "test"} & set(name.split(".")))
+
+
+a.binaries = _link_duplicates([e for e in a.binaries if _keep(e)])
 a.datas = [e for e in a.datas if _keep(e)]
+# PyInstaller's own hooks collect whole packages including their test suites (xarray.tests alone
+# is 3 MB of source); nothing imports those at run time.
+a.pure = [e for e in a.pure if not _is_test_module(e[0])]
 
 pyz = PYZ(a.pure)
 
@@ -134,10 +217,12 @@ exe = EXE(
     exclude_binaries=True,
     name="xradar-engine",
     debug=False,
-    strip=False,
+    strip=False,  # (the executable is only the bootloader plus the archive: nothing to strip)
     upx=False,
     # A console program: the app reads READY:<port> from its stdout. The Tauri shell starts it
     # without a visible window on Windows.
     console=True,
 )
-coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="xradar-engine")
+# strip=True drops local symbols from the bundled shared libraries (-20..25 % on the large ones,
+# e.g. icechunk, libarrow); it is a no-op on Windows. PyInstaller re-signs the result on macOS.
+coll = COLLECT(exe, a.binaries, a.datas, strip=True, upx=False, name="xradar-engine")
