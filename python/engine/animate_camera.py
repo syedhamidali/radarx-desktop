@@ -390,12 +390,14 @@ def parse_camera_table(data: dict[str, Any], source: str = "a camera file") -> C
     if preset is not None:
         spec.preset = check_preset(str(preset))
     if raw_keys is not None:
-        if not isinstance(raw_keys, list) or len(raw_keys) < 2:
+        if not isinstance(raw_keys, list):
+            raise AnimateConfigError(f"{source}: the keyframes must be [[key]] tables")
+        keys = [parse_key(k, i) for i, k in enumerate(raw_keys)]
+        if len(keys) < 2:
             raise AnimateConfigError(
                 f"{source}: give at least two [[key]] tables (a camera that does not move needs "
                 "two identical keys)"
             )
-        keys = [parse_key(k, i) for i, k in enumerate(raw_keys)]
         for a, b in pairwise(keys):
             if b.t <= a.t:
                 raise AnimateConfigError(

@@ -248,6 +248,9 @@ def check_options(o: AnimateOptions) -> None:
         raise AnimateConfigError(
             "--target-lag must be between 0 (fixed) and 1 (locked on the storm)"
         )
+    from engine import animate_render as render
+
+    render.look_settings(render.LookArgs(o.look_preset, o.look_file, o.set_values))  # format only
     if o.ground not in (None, "map", "realistic"):
         raise AnimateConfigError("--ground must be map or realistic")
     if o.storm_style not in (None, "scientific", "realistic"):
