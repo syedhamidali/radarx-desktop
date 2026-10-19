@@ -171,6 +171,22 @@ class TestDegenerateSweeps:
         assert sum(result["counts"]) == 20 * 30 - 1  # the infinity is not a measurement
 
     @pytest.mark.asyncio
+    async def test_rays_without_an_angle_are_skipped_not_fatal(self) -> None:
+        tree = _empty_sweep_tree(40, 50, np.random.default_rng(1).uniform(0, 60, (40, 50)))
+        ds = tree["sweep_0"].to_dataset()
+        az = ds["azimuth"].values.copy()
+        az[3], az[4] = np.nan, np.inf
+        tree["sweep_0"] = xr.DataTree(ds.assign_coords(azimuth=("azimuth", az)))
+        server._register_reader(_reader_with_tree(tree))
+        handler, _ = _make_handler()
+        await _send(
+            handler,
+            {"type": "render", "variable": "DBZH", "sweep": 0, "width": 64, "height": 64},
+        )
+        assert not _errors(handler)
+        assert any(m["type"] == "render_result" for m in handler._sent)
+
+    @pytest.mark.asyncio
     async def test_absurd_bin_counts_are_clamped(self) -> None:
         server._register_reader(_reader_with_tree())
         handler, _ = _make_handler()

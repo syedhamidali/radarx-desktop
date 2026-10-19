@@ -486,6 +486,11 @@ def render_publication_figure(
     # no-echo area is transparent instead of painting the colormap minimum (-33 dBZ etc.).
     da = mask_variable(sweep_ds[variable])
     values = da.values
+    if values.size == 0:
+        raise ValueError(
+            f"Sweep {sweep} has no {variable} data (0 rays or 0 gates). The file may be "
+            "truncated or incomplete; try another sweep."
+        )
 
     # Polar coordinates
     if "azimuth" in da.coords:
@@ -497,6 +502,18 @@ def render_publication_figure(
         range_m = da.coords["range"].values.astype(np.float64)
     else:
         range_m = np.arange(values.shape[-1], dtype=np.float64)
+
+    # Rays/gates without a position (NaN/inf angle or range) cannot be drawn; drawing the rest
+    # beats failing the whole figure with a pcolormesh error.
+    ray_ok, gate_ok = np.isfinite(azimuth), np.isfinite(range_m)
+    if not (ray_ok.all() and gate_ok.all()):
+        if not (ray_ok.any() and gate_ok.any()):
+            raise ValueError(
+                f"Sweep {sweep} has no ray angles or gate ranges (all NaN); nothing to draw. "
+                "The file may be damaged."
+            )
+        azimuth, range_m = azimuth[ray_ok], range_m[gate_ok]
+        values = values[ray_ok][:, gate_ok]
 
     range_km = range_m / 1000.0
 

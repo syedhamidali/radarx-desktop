@@ -167,6 +167,34 @@ class TestExporterFailures:
         assert dest.stat().st_size > 100
 
 
+class TestDegenerateFigures:
+    def test_rays_without_an_angle_are_left_out(self, tmp_path: Path) -> None:
+        tree = make_synthetic_datatree(n_azimuth=24, n_range=30)
+        ds = tree["sweep_0"].to_dataset()
+        az = ds["azimuth"].values.copy()
+        az[2], az[3] = float("nan"), float("inf")
+        tree["sweep_0"] = xr.DataTree(ds.assign_coords(azimuth=("azimuth", az)))
+        out = RadarExporter().export(
+            tree, fmt="png", output_path=str(tmp_path / "x.png"), variable="DBZH", sweep=0, dpi=72
+        )
+        assert Path(out).stat().st_size > 1000
+
+    def test_sweep_without_any_data_is_a_clear_error(self, tmp_path: Path) -> None:
+        tree = make_synthetic_datatree(n_azimuth=24, n_range=30)
+        ds = tree["sweep_0"].to_dataset().isel(azimuth=slice(0, 0))
+        tree["sweep_0"] = xr.DataTree(ds)
+        with pytest.raises(ValueError, match="no DBZH data"):
+            RadarExporter().export(
+                tree,
+                fmt="png",
+                output_path=str(tmp_path / "x.png"),
+                variable="DBZH",
+                sweep=0,
+                dpi=72,
+            )
+        assert _listing(tmp_path) == []
+
+
 class TestExportMessages:
     @pytest.mark.asyncio
     async def test_unwritable_folder_says_permission_denied(

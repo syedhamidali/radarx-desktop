@@ -484,6 +484,12 @@ def _rasterize_ppi(
             f"values shape {values.shape} does not match azimuth/range "
             f"({azimuth.size}, {range_m.size})"
         )
+    # Rays or gates without a position (NaN/inf azimuth or range, e.g. a file with missing ray
+    # angles) cannot be placed on the image; draw the rest instead of failing the whole sweep.
+    ray_ok, gate_ok = np.isfinite(azimuth), np.isfinite(range_m)
+    if not (ray_ok.all() and gate_ok.all()):
+        azimuth, range_m = azimuth[ray_ok], range_m[gate_ok]
+        values = values[ray_ok][:, gate_ok]
     n_az, nr = values.shape
     if n_az == 0 or nr == 0:
         return np.full((height, width), np.nan, dtype=np.float32)

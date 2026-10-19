@@ -482,7 +482,6 @@ _DAMAGED_DATA_MARKERS = (
     "compressed file ended",
     "incorrect header check",
     "invalid block type",
-    "truncated",
 )
 
 _MAX_ERROR_TEXT = 400
