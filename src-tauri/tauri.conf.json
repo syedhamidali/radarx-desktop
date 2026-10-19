@@ -21,6 +21,14 @@
       "csp": "default-src 'self'; connect-src 'self' ws://localhost:* ws://127.0.0.1:* http://localhost:* http://127.0.0.1:* https://tile.openstreetmap.org https://*.tile.opentopomap.org https://tiles.maps.eox.at https://s3.amazonaws.com; img-src 'self' asset: https://api.mapbox.com https://*.tiles.mapbox.com https://tile.openstreetmap.org https://*.tile.opentopomap.org https://tiles.maps.eox.at https://s3.amazonaws.com data: blob:; style-src 'self' 'unsafe-inline' https://api.mapbox.com; script-src 'self' 'unsafe-inline' blob:; worker-src 'self' blob:"
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "UPDATER_PUBLIC_KEY_NOT_CONFIGURED",
+      "endpoints": [
+        "https://github.com/syedhamidali/xradar-desktop/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
     "targets": "all",

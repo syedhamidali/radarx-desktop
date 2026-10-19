@@ -40,6 +40,17 @@ export interface ExportSettings {
   outputDirectory: string;
 }
 
+export interface UpdateSettings {
+  /** Look for a new version when the app starts (at most once per 24 h). */
+  checkOnLaunch: boolean;
+  /** Download a found update right away (default: ask first). */
+  downloadInBackground: boolean;
+  /** When the last successful check finished (epoch ms, 0 = never). */
+  lastCheckedAt: number;
+  /** A version the user chose to skip ('' = none); only that exact version is hidden. */
+  skippedVersion: string;
+}
+
 export interface ShortcutBinding {
   key: string; // e.g. "ctrl+o", "meta+k", "space"
 }
@@ -50,6 +61,7 @@ export interface AppSettings {
   theme: ThemeSettings;
   data: DataSettings;
   export_: ExportSettings;
+  updates: UpdateSettings;
   shortcuts: Record<string, ShortcutBinding>;
   mapStyle: string;
   colormap: string;
@@ -91,6 +103,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     defaultFormat: 'png',
     dpi: 150,
     outputDirectory: '',
+  },
+  updates: {
+    checkOnLaunch: true,
+    downloadInBackground: false,
+    lastCheckedAt: 0,
+    skippedVersion: '',
   },
   shortcuts: {
     'open-file': { key: 'mod+o' },

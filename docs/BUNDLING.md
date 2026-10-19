@@ -29,7 +29,8 @@ npm run tauri build -- --config src-tauri/tauri.bundle.conf.json --bundles nsis 
 PyInstaller cannot cross-compile, so each OS is built on its own runner; the **Release** workflow
 (`.github/workflows/release.yml`) does all of them: macOS (Apple silicon and Intel), Linux and Windows.
 Push a tag such as `v0.2.0` to get a draft GitHub release with the installers attached, or run the
-workflow by hand to download them as artifacts.
+workflow by hand to download them as artifacts. When the signing key secret exists, the macOS and Windows jobs also
+produce the signed update files and `latest.json` (see [UPDATES.md](UPDATES.md)); the macOS job builds `app,dmg` for that.
 
 `CI=true` on macOS makes the dmg step skip the Finder-based window styling (which needs a GUI session).
 The bundle configs are separate files because the engine only exists after `build_engine.py`; putting it in
