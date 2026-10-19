@@ -132,6 +132,23 @@ export function baseHeight(c: FunnelCondition, dpAxis: number | ((z: number) => 
   return 0.5 * (lo + hi);
 }
 
+/**
+ * Radius (m) at height z where the VORTEX deficit alone cools the surface air to its dew point
+ * (dp(r, z) = dpCrit of the nearest-station air; no ambient height term): the visible condensation funnel
+ * that the renderer draws. Below the ambient cloud base this is the funnel, above it the cloud takes over.
+ */
+export function vortexOnlyRadius(c: FunnelCondition, v: Vortex, z: number): number {
+  if (pressureDeficit(v, 0, z) < c.dpCrit) return 0;
+  let lo = 0;
+  let hi = 60 * v.rm;
+  for (let i = 0; i < 60; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (pressureDeficit(v, mid, z) >= c.dpCrit) lo = mid;
+    else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
 /** Funnel base on the axis of vortex v (m above the surface). */
 export function funnelBase(c: FunnelCondition, v: Vortex): number {
   return baseHeight(c, (z) => pressureDeficit(v, 0, z));
