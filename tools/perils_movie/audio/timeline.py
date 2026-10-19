@@ -126,6 +126,13 @@ class CameraPath:
         self.heading = np.degrees(np.unwrap(np.radians([float(k.get("heading_deg", 0.0)) for k in keys])))
         self.pitch = np.array([float(k.get("pitch_deg", 0.0)) for k in keys])
 
+    def capped(self, max_alt_m: float) -> CameraPath:
+        """A copy whose altitude never exceeds ``max_alt_m`` (the listener: see render_mix)."""
+        c = object.__new__(CameraPath)
+        c.__dict__.update(self.__dict__)
+        c.alt = np.minimum(self.alt, max_alt_m)
+        return c
+
     def at(self, t):
         t = np.asarray(t, float)
         return {

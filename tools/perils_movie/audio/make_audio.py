@@ -41,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--bits", type=int, default=24, choices=(16, 24))
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--target-lufs", type=float, default=-23.0)
+    ap.add_argument("--max-listener-height", type=float, default=500.0,
+                    help="the listener is the camera's ground track, at most this high above the ground (m; 0 = the camera's own altitude)")
     ap.add_argument("--stems", help="also write one WAV per layer into this folder")
     ap.add_argument("--synthetic", metavar="DIR", help="write and use a SYNTHETIC demo bundle in DIR")
     ap.add_argument("--video-in", help="silent video to mux the audio into")
@@ -65,6 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         rep = render_audio(
             a.bundle, a.timeline, a.camera, a.out, report_path=a.report, events=a.events, bits=a.bits,
             seed=a.seed, target_lufs=a.target_lufs, stems_dir=a.stems,
+            max_listener_height_m=a.max_listener_height or None,
         )
         m = rep["master"]
         print(f"wrote {a.out}: {rep['output']['duration_s']:.1f} s, {m['lufs_integrated']:.1f} LUFS, "

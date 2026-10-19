@@ -441,6 +441,22 @@ class Scene:
             w = np.where(valid, np.exp(-(dist - dmin) / self.station_decay_m), 0.0)
         return np.where(np.isfinite(dmin), w, 0.0)
 
+    def runs(self, mask: np.ndarray, label: str, min_s: float = 0.25) -> list[dict]:
+        """Spans (clip and data seconds) where a mask holds, for the provenance of non-station data."""
+        out, i = [], 0
+        while i < self.n:
+            if not mask[i]:
+                i += 1
+                continue
+            j = i
+            while j + 1 < self.n and mask[j + 1]:
+                j += 1
+            if (j - i + 1) / CTL_RATE >= min_s:
+                out.append({"source": label, "clip_s": [float(self.tc[i]), float(self.tc[j])],
+                            "data_s": [float(self.tw[i]), float(self.tw[j])]})
+            i = j + 1
+        return out
+
     # -- provenance ---------------------------------------------------------------------------
     def dominant_segments(self, w: np.ndarray, stations, variables, min_s: float = 0.25):
         """Runs of control steps during which one station has the largest weight: what drove a layer

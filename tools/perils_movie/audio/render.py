@@ -56,6 +56,7 @@ def render_mix(
     target_lufs: float = -23.0,
     thunder: ThunderParams | None = None,
     layers: set[str] | None = None,
+    max_listener_height_m: float | None = 500.0,
 ):
     """Render in memory. Returns (stereo (2, N) float array, report dict, stems dict)."""
     sr = int(sample_rate)
@@ -63,6 +64,12 @@ def render_mix(
     b = bundle if isinstance(bundle, Bundle) else load_bundle(bundle)
     tl = load_timeline(timeline, b.window_start)
     cam = load_camera(camera_path)
+    cam_alt_max = float(cam.alt.max())
+    ground = float(np.median([s.alt_m for s in b.stations])) if b.stations else 0.0
+    if max_listener_height_m:
+        # sound does not reach a camera 58 km up: the listener is heard from the ground below the camera,
+        # never higher than this above the ground (the horizontal position and the heading are the camera's)
+        cam = cam.capped(ground + float(max_listener_height_m))
     prm = thunder or ThunderParams()
     dur = float(tl.clip_duration_s)
     n = round(dur * sr)
@@ -145,6 +152,9 @@ def render_mix(
             "speed_of_sound_ms": SPEED_OF_SOUND_MS,
             "thunder": asdict(prm),
             "clip_duration_s": dur,
+            "listener": {"max_height_above_ground_m": max_listener_height_m, "ground_alt_m": ground,
+                         "camera_altitude_max_m": cam_alt_max,
+                         "note": "the listener is the camera's ground track, at most this high above the ground"},
             "speedup": tl.speedup if tl.speedup is not None else "keyframes",
             "data_offset_s": tl.data_offset_s,
         },
@@ -194,6 +204,14 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
     for u in used.values():
         u["layers"] = sorted(u["layers"])
         u["clip_seconds"] = round(u["clip_seconds"], 2)
+    rad = info["rain"].get("radar_drivers", [])
+    if rad:
+        used["radar_volumes"] = {
+            "station_id": "radar_volumes", "name": "merged radar volumes (gridded radars, reflectivity)", "type": "radar",
+            "network": None, "credit": next((s.get("credit") for s in (b.manifest.get("sources") or [])
+                                              if str(s.get("name", "")).lower().startswith("radar")), None),
+            "layers": ["rain"], "clip_seconds": round(sum(s["clip_s"][1] - s["clip_s"][0] for s in rad), 2),
+        }
     n_src = int(sum(r["n_sources"] for r in rows if r["status"] == "rendered"))
     return {
         "label": LABEL,
@@ -201,6 +219,7 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
                     "flashes_rendered": sum(r["status"] == "rendered" for r in rows),
                     "sources_in_rendered_flashes": n_src},
         "rain": drivers["rain"],
+        "rain_from_radar": rad,
         "wind": drivers["wind"],
         "wind_events": {"gust_fronts": info["wind"].get("gust_fronts", []),
                         "pressure_jumps": info["wind"].get("pressure_jumps", [])},
@@ -210,7 +229,7 @@ def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
                                 "data_s": [float(t.t[0]), float(t.t[-1])],
                                 "source": t.meta.get("source") or t.meta.get("survey"),
                                 "path_kind": t.meta.get("path_kind"), "credit": t.meta.get("credit")}
-                               for t in b.tornadoes],
+                               for t in b.tornadoes if f"track:{t.id}" in info["tornado"].get("evidence", [])],
                     "stylised": True},
         "convective": {"source": info["convective"].get("source")},
         "stations_used": sorted(used.values(), key=lambda u: -u["clip_seconds"]),
@@ -242,6 +261,7 @@ def render_audio(
     target_lufs: float = -23.0,
     thunder: ThunderParams | None = None,
     stems_dir=None,
+    max_listener_height_m: float | None = 500.0,
 ) -> dict:
     """Render the soundtrack to a 48 kHz stereo WAV (16 or 24 bit) aligned to the clip, and write
     ``audio_report.json`` next to it (or at ``report_path``). Returns the report.
@@ -251,7 +271,7 @@ def render_audio(
     """
     y, report, stems = render_mix(
         bundle_dir, timeline, camera_path, events=events, sample_rate=sample_rate, seed=seed,
-        target_lufs=target_lufs, thunder=thunder,
+        target_lufs=target_lufs, thunder=thunder, max_listener_height_m=max_listener_height_m,
     )
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)
