@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -469,6 +471,52 @@ def test_check_never_raises_on_odd_input():
 
 KTLX = radar_data.example("KTLX20130520_201643_V06.gz")
 needs_ktlx = pytest.mark.skipif(KTLX is None, reason="KTLX example file not available")
+_SEVERE = os.environ.get("XRADAR_SEVERE_CASES_DIR", "~/Downloads/SEVERE_CASES_TEST")
+KVWX = Path(_SEVERE).expanduser() / "mayfield" / "KVWX" / "KVWX20211211_020000_V06"
+needs_kvwx = pytest.mark.skipif(not KVWX.is_file(), reason="KVWX case file not available")
+
+
+def test_katx_open_radar_data_smoke():
+    """The open-radar-data NEXRAD volume (downloaded on CI): the check runs, is JSON, and finds
+    the split-cut layout; no timing assertion here (CI machines vary)."""
+    path = radar_data.katx()
+    if path is None:
+        pytest.skip("KATX not available")
+    from engine import api
+
+    with api.open(str(path)) as vol:
+        rep = quality.check_volume(vol)
+    json.dumps(rep)
+    assert rep["errors"] == [] and rep["n_sweeps"] >= 10
+    ids = {f["id"] for f in rep["findings"]}
+    assert {"scan_type", "split_cut"} <= ids
+    for r in rep["recommendation"]["recipes"]:
+        pipeline.parse_recipe(r["recipe"])
+
+
+@needs_kvwx
+def test_kvwx_known_facts():
+    """A second real NEXRAD volume (read-only): same split-cut layout, Nyquist estimated."""
+    from engine import api
+
+    with api.open(str(KVWX)) as vol:
+        rep = quality.check_volume(vol)
+    assert rep["errors"] == [] and rep["elapsed_ms"] < 1500, rep["elapsed_ms"]
+    f = {x["id"]: x for x in rep["findings"]}
+    assert f["scan_type"]["summary"].startswith("15 PPI")
+    assert f["split_cut"]["severity"] == "info"
+    al = f["velocity_aliasing"]
+    nyq = next(e for e in al["evidence"] if e["label"] == "Nyquist velocity")
+    assert nyq["kind"] == "ESTIMATE" and 25 <= nyq["value"] <= 32
+    assert all(s % 2 == 1 for s in al["sweeps"] if s < 5)  # velocity lives on the odd sweeps
+    rf = f["range_folding"]  # the Doppler cut of this volume has a lot of folded gates
+    assert rf["severity"] == "warning" and 1 in rf["sweeps"]
+    assert "time_order" not in f and "partial_coverage" not in f
+    # too few light-rain gates: the ZDR offset is refused, not guessed
+    zdr = f.get("zdr_offset")
+    assert zdr is None or zdr["severity"] == "info" or zdr["confidence"] > 0
+    for r in rep["recommendation"]["recipes"]:
+        pipeline.parse_recipe(r["recipe"])
 
 
 @needs_ktlx

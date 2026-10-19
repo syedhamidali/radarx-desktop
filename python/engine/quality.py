@@ -538,16 +538,10 @@ def _field_stats(sw: _Sweep, acc: _Acc) -> None:
             acc.empty.append({"sweep": sw.index, "role": role, "variable": sw.names[role]})
             continue
         acc.roles.setdefault(role, []).append(sw.index)
-        lo, p1, p99, hi = (
-            np.percentile(fin, [0, 0.1, 99.9, 100])
-            if fin.size > 50
-            else (
-                float(fin.min()),
-                float(fin.min()),
-                float(fin.max()),
-                float(fin.max()),
-            )
-        )
+        lo, hi = float(fin.min()), float(fin.max())
+        # the 0.1 / 99.9 percentiles of an evenly thinned copy (at most ~100k values) are enough
+        thin = fin[:: max(1, fin.size // 100_000)]
+        p1, p99 = np.percentile(thin, [0.1, 99.9]) if thin.size > 50 else (lo, hi)
         acc.units.setdefault(role, []).append(
             {
                 "sweep": sw.index,
@@ -603,7 +597,8 @@ def _velocity(sw: _Sweep, acc: _Acc) -> None:
         av = np.abs(v)
         max_abs = float(np.nanmax(av))
         edge = float((av >= 0.9 * nyq).sum() / n_valid)
-    den = max(0, 2 * n_valid - v.shape[0] - v.shape[1])  # upper bound of valid pairs
+    ok = np.isfinite(v)
+    den = int((ok[1:] & ok[:-1]).sum() + (ok[:, 1:] & ok[:, :-1]).sum())  # valid neighbour pairs
     rec: dict[str, Any] = {
         "sweep": sw.index,
         "elevation": sw.elev,
