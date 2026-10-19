@@ -7,7 +7,7 @@
 Per run (fresh browser context, cold HTTP cache, no engine unless --engine-port is given):
   fcp              first-contentful-paint (ms)
   ui               app shell (status bar + main area) inserted AND two frames painted (ms): usable UI
-  js_kb_critical   JS (gzip, as served) requested before `ui`: what first paint has to wait for
+  js_kb_critical   JS (gzip, as served) the HTML pulls in before the app starts: what first paint waits for
   tbt_to_ui        blocking time (long tasks beyond 50 ms) that started before `ui`
   js_kb_total      all JS fetched by the time the page has settled (includes idle prefetch of panels)
   tbt_total        blocking time over the whole load incl. the idle prefetch / panel mounting
@@ -74,7 +74,10 @@ def one_run(b, url, cpu, engine_port):
     )
     lt = m["lt"]
     ui = m["ui"] or m["fcp"]
-    crit = [r for r in m["res"] if r["start"] < ui]
+    # critical = what the HTML itself pulls in (entry + its static imports): everything requested before the
+    # entry chunk has arrived. Chunks fetched later come from dynamic import() (idle prefetch / on demand).
+    entry_end = max(m["res"], key=lambda r: r["kb"])["end"]
+    crit = [r for r in m["res"] if r["start"] < entry_end]
     blocking = lambda tasks: sum(max(0, d - 50) for s_, d in tasks)
     settled = max([m["lastRes"]] + [s_ + d for s_, d in lt])
     ctx.close()
