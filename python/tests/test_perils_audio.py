@@ -202,7 +202,8 @@ def test_dense_bursts_are_thinned_and_counted():
     counts = select_flashes(rows, prm)
     assert counts["rendered"] <= prm.window_cap * 2
     assert sum(counts.values()) == 12
-    assert counts.get("skipped_density", 0) + counts.get("skipped_masked", 0) == 12 - counts["rendered"]
+    assert sum(v for k, v in counts.items() if k.startswith("skipped")) == 12 - counts["rendered"]
+    assert counts.get("skipped_density", 0) > 0
 
 
 def test_air_absorption_is_iso_9613_like():
@@ -876,3 +877,19 @@ def test_renderers_events_json_dict_is_parsed_and_gates_the_tornado_without_a_tr
     assert dist[int(4.0 * 100)] == pytest.approx(1500.0, rel=0.1)  # ~0.015 deg of longitude
     out, _ = wx.render_hail(sc, SR, 8 * SR, 1)
     assert np.all(out == 0.0)  # the repeated station hail event is counted only through the station
+
+
+def test_thunder_coverage_and_voice_limits_keep_the_mix_readable():
+    prm = ThunderParams(max_voices=2, max_coverage=0.3)
+    tl = Timeline.constant(60.0, 5.0)
+    rows = [plan_flash(flash_at(0.0, 4000.0 + 3000.0 * i, alt=0.0, t=50.0 + 10.0 * i, fid=f"f{i}"), tl,
+                       cam(0.0, 60.0), 60.0, prm) for i in range(30)]
+    counts = select_flashes(rows, prm, 60.0)
+    assert counts["rendered"] >= 1
+    assert counts.get("skipped_coverage", 0) + counts.get("skipped_voices", 0) > 0
+    assert sum(counts.values()) == 30
+    occupied = np.zeros(601, bool)
+    for r in rows:
+        if r["status"] == "rendered":
+            occupied[int(r["first_arrival_clip_s"] * 10): int(r["last_arrival_clip_s"] * 10) + 1] = True
+    assert occupied.mean() <= 0.3 + 1e-9

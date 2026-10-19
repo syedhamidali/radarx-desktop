@@ -43,10 +43,13 @@ Priority (a layer is ducked by the louder layers above it, up to 10 / 6 / 4 / 3 
 tornado > hail > rain > wind**, then the convective rumble and the ambient bed. Each layer has its own level in
 `audio_report.json` (`layers.<name>.rms_dbfs`, `lufs`, `peak_dbfs`, 1 s level trace, maximum ducking).
 
-* **Thunder**, one per real LMA flash. Dense bursts are thinned (at most 3 flashes whose first
-  arrival is within 1.5 s; a flash more than 30 dB below a louder one within 3 s is masked) and every skipped
-  flash is counted with its reason (`skipped_density`, `skipped_masked`, `skipped_out_of_range`,
-  `outside_clip`). The flash table (distance nearest / farthest / centroid, azimuth, delay, first and last
+* **Thunder**, one per real LMA flash. Dense bursts are thinned, loudest first, so the mix stays
+  readable: at most 3 flashes whose first arrival is within 1.5 s, a flash more than 30 dB below a louder one
+  within 3 s is masked, at most 4 thunders at once and thunder sounding for at most 60 % of the clip.
+  Every skipped flash is counted with its reason (`skipped_density`, `skipped_masked`,
+  `skipped_voices`, `skipped_coverage`, `skipped_out_of_range`, `outside_clip`). A real QLCS
+  has far more flashes than a 2 minute clip can show (about a thousand in 16 minutes), so most are skipped: the
+  thunder you hear is the loudest (nearest, most energetic) of them. The flash table (distance nearest / farthest / centroid, azimuth, delay, first and last
   arrival, level, status) is in the report.
 * **Rain**. A Poisson stream of drop impacts per size class. With a drop spectrum the rate of each
   class is proportional to its number flux (`N(D) v(D) dD`), the amplitude to the mass^(2/3) of the

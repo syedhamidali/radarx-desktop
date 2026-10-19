@@ -75,7 +75,7 @@ def render_mix(
 
     # thunder
     rows = [plan_flash(f, tl, cam, dur, prm) for f in b.flashes]
-    counts = select_flashes(rows, prm)
+    counts = select_flashes(rows, prm, dur)
     th = np.zeros((2, n))
     if "thunder" in on:
         for row in rows:

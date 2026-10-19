@@ -43,6 +43,10 @@ class ThunderParams:
     window_cap: int = 3
     mask_db: float = 30.0
     mask_s: float = 3.0
+    # readability: at most ``max_voices`` thunders sounding at once, and thunder sounding for at most
+    # ``max_coverage`` of the clip (greedy by loudness; the rest is counted, not hidden)
+    max_voices: int = 4
+    max_coverage: float = 0.6
 
 
 def flash_seed(seed: int, fid: str) -> int:
@@ -109,11 +113,17 @@ def plan_flash(flash, timeline: Timeline, camera: CameraPath, duration: float, p
     return row
 
 
-def select_flashes(rows: list[dict], prm: ThunderParams) -> dict[str, int]:
-    """Thin out dense bursts: greedy by loudness. Sets row["status"] to "rendered" or
-    "skipped_density" / "skipped_masked" and returns the count per status."""
+def select_flashes(rows: list[dict], prm: ThunderParams, duration: float | None = None) -> dict[str, int]:
+    """Thin out dense bursts, greedy by loudness. Sets row["status"] to "rendered" or one of
+    "skipped_density" (too many flashes within a window), "skipped_masked" (far quieter than a louder
+    one at the same time), "skipped_voices" (more than ``max_voices`` at once), "skipped_coverage"
+    (thunder would sound for more than ``max_coverage`` of the clip); returns the count per status."""
     cand = [r for r in rows if r["status"] == "pending"]
     cand.sort(key=lambda r: -r["peak_amp"])
+    if duration is None:
+        duration = max([r["last_arrival_clip_s"] for r in cand] + [1.0])
+    dt = 0.1
+    occ = np.zeros(int(np.ceil(duration / dt)) + 1, int)
     kept: list[dict] = []
     for r in cand:
         a = r["first_arrival_clip_s"]
@@ -129,6 +139,20 @@ def select_flashes(rows: list[dict], prm: ThunderParams) -> dict[str, int]:
         if louder:
             r["status"] = "skipped_masked"
             continue
+        tail = float(np.clip(prm.tail_min_s + prm.tail_s_per_km * r["dist_nearest_m"] / 1000.0, prm.tail_min_s, prm.tail_max_s))
+        i0 = max(0, int(np.floor(a / dt)))
+        i1 = min(len(occ), int(np.ceil((r["last_arrival_clip_s"] + 2.0 * tail) / dt)) + 1)
+        if i1 <= i0:
+            i1 = i0 + 1
+        if occ[i0:i1].max(initial=0) >= prm.max_voices:
+            r["status"] = "skipped_voices"
+            continue
+        new = occ.copy()
+        new[i0:i1] += 1
+        if (new > 0).mean() > prm.max_coverage:
+            r["status"] = "skipped_coverage"
+            continue
+        occ = new
         r["status"] = "rendered"
         kept.append(r)
     counts: dict[str, int] = {}
