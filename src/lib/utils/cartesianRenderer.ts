@@ -28,6 +28,8 @@ import {
   type QualityParams,
 } from './qualityGovernor';
 import { GLSL_HASH, GLSL_THRESHOLD, glslGroundColor } from './volumeShaderParts';
+import { GLSL_REALISTIC, GLSL_REALISTIC_UNIFORMS, REALISTIC_UNIFORM_NAMES } from './realisticShader';
+import { lightVector, lookFor, type RealisticLook } from './realisticStyle';
 import { buildArrowMesh } from './windGlyphs';
 import { FlowLayer, type FlowParams } from './flowRenderer';
 import { activeParticles, type FlowField } from './windFlow.ts';
@@ -99,7 +101,7 @@ function volumeFrag(): string {
     uniform vec3  u_wDims;
     uniform vec2  u_wOffset;       // wind frame -> scene frame
     uniform float u_vexag;
-
+${GLSL_REALISTIC_UNIFORMS}
     out vec4 fragColor;
 
     // Field at a scene position: val 0..1 over [vmin, vmax], cov = fraction of the neighbourhood
@@ -163,7 +165,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
     rimDist: 'min(min(gp.x - bmin.x, bmax.x - gp.x), min(gp.y - bmin.y, bmax.y - gp.y))',
     rings: false,
     themed: true,
-  })}
+  })}${GLSL_REALISTIC}
     void main() {
       vec2 uv = (gl_FragCoord.xy / u_resolution - 0.5) * 2.0;
       vec3 rayDir = normalize(
@@ -177,6 +179,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
       vec3 bgDark  = mix(vec3(0.115, 0.135, 0.20), vec3(0.03, 0.037, 0.07), smoothstep(0.0, 1.0, by));
       vec3 bgLight = mix(vec3(0.97, 0.975, 0.985), vec3(0.80, 0.83, 0.89), smoothstep(0.0, 1.0, by));
       vec3 bg = mix(bgDark, bgLight, u_themeLight);
+      if (u_style == 1) bg = skyColor(rayDir);
 
       // Ray against the volume box (above the ground)
       float t0 = 0.0;
@@ -201,7 +204,15 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
       bool  groundHit = false;
       float tG = 0.0;
       vec3  gp = vec3(0.0);
-      if (u_groundMode != 0 && o.z > 0.0 && rayDir.z < -1e-5) {
+      bool  terrHit = false;
+      if (u_terrOn != 0) {
+        // terrain height field (the cloud stops at it: nothing shows under hills)
+        if (traceTerrain(o, rayDir, tG)) {
+          gp = o + rayDir * tG;
+          groundHit = true;
+          terrHit = true;
+        }
+      } else if (u_groundMode != 0 && o.z > 0.0 && rayDir.z < -1e-5) {
         tG = -o.z / rayDir.z;
         gp = o + rayDir * tG;
         groundHit = gp.x >= u_groundMin.x && gp.x <= u_groundMax.x && gp.y >= u_groundMin.y && gp.y <= u_groundMax.y;
@@ -214,7 +225,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
       if (hit && tEnd > tOrig) {
         float stepEff = max(u_stepSize, (tEnd - tOrig) / float(u_maxSteps));
         float comp = stepEff / u_stepUser;
-        float jitter = hash12(gl_FragCoord.xy);
+        float jitter = (u_style == 1 ? whiteNoise(gl_FragCoord.xy) : hash12(gl_FragCoord.xy));
         float tStart = tOrig + jitter * stepEff;
 
         for (int i = 0; i < 4096; i++) {
@@ -229,10 +240,17 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
           vec4 tf = texture(u_transferFn, vec2((val * 255.0 + 0.5) / 256.0, 0.5));
           float a0 = tf.a * u_opacityScale * smoothstep(0.0, 1.0, cov) * thresholdFactor(val);
           if (a0 < 0.0004) continue;
-          if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
+          if (u_style == 1) {
+            // realistic look: opacity per TRUE km along the ray (the scene is stretched vertically)
+            a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp * length(vec3(rayDir.xy, rayDir.z / max(u_vexag, 1e-3))));
+            // soften the cut where the volume leaves the shown box
+            a0 *= smoothstep(0.0, 18.0, min(min(pos.x - bmin.x, bmax.x - pos.x), min(pos.y - bmin.y, bmax.y - pos.y)));
+          } else if (comp > 1.001) a0 = 1.0 - pow(max(1.0 - a0, 0.0), comp);
 
           vec3 rgb = tf.rgb;
-          if (u_light != 0 && a0 > 0.02) {
+          if (u_style == 1) {
+            rgb = cloudLight(pos, rayDir, tf.rgb, whiteNoise(gl_FragCoord.xy + float(i) * 3.7));
+          } else if (u_light != 0 && a0 > 0.02) {
             float e = max(0.6, stepEff * 0.8);
             float gv[6];
             for (int k = 0; k < 6; k++) {
@@ -261,7 +279,7 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
       }
 
       vec3 behind = bg;
-      if (groundHit) behind = groundColor(gp, tG, rayDir);
+      if (groundHit) behind = terrHit ? terrainColor(gp, tG, rayDir, whiteNoise(gl_FragCoord.xy)) : groundColor(gp, tG, rayDir);
       fragColor = vec4(color.rgb + (1.0 - color.a) * behind, 1.0);
     }
   `;
@@ -447,6 +465,9 @@ export interface CartesianRendererOptions {
 
 const FOV = Math.PI / 4;
 
+/** Light of the terrain when the storm keeps the scientific colour scale: a daytime sun, high and from the south-west. */
+const DAY_LOOK: RealisticLook = lookFor({ azimuthDeg: 215, elevationDeg: 38, stylised: false, realElevationDeg: 38, realAzimuthDeg: 215, label: '' }, 0);
+
 // ─── Renderer ───────────────────────────────────────────────────────────────
 
 export class CartesianRenderer {
@@ -485,6 +506,12 @@ export class CartesianRenderer {
   private tfTex: WebGLTexture | null = null;
   private lutTex: WebGLTexture | null = null;
   private groundTex: WebGLTexture | null = null;
+  private demTex: WebGLTexture | null = null;
+  private frameSeed = 0;
+  /** Terrain height field (km ASL) over the ground image's square, or null (flat ground). */
+  private terrain: { size: number; heightsKm: Float32Array; minKm: number; maxKm: number; half: number; center: [number, number] } | null = null;
+  /** Realistic storm look (light, sky, haze); null = the scientific colour scale. */
+  private look: RealisticLook | null = null;
   private tfData = new Uint8Array(256 * 4);
   private lutData: Uint8Array | null = null;
   private groundImg: { size: number; data: Uint8ClampedArray; half: number } | null = null;
@@ -699,6 +726,7 @@ export class CartesianRenderer {
       'u_groundMode', 'u_groundSize', 'u_groundHalf', 'u_ringStep', 'u_light', 'u_themeLight',
       'u_volumeB', 'u_morphOn', 'u_morphW', 'u_shiftA', 'u_shiftB', 'u_cropMin', 'u_cropMax', 'u_groundCenter', 'u_mapGain',
       'u_animOn', 'u_animAmp', 'u_animT', 'u_animPhase', 'u_windTex', 'u_wOrigin', 'u_wCell', 'u_wDims', 'u_wOffset', 'u_vexag',
+      ...REALISTIC_UNIFORM_NAMES,
     ]) this.vu[n] = gl.getUniformLocation(this.volProg, n);
     this.au = {};
     for (const n of [
@@ -763,6 +791,13 @@ export class CartesianRenderer {
     this.tfTex = tex2d(this.tfData, 256, 1);
     this.lutTex = tex2d(this.lutData ?? new Uint8Array(256 * 4), 256, 1);
     this.groundTex = tex2d(new Uint8Array([20, 24, 34, 255]), 1, 1);
+    this.demTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.demTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, 1, 1, 0, gl.RED, gl.FLOAT, new Float32Array([0]));
     this.volTex = null;
     this.cacheTex = null;
     this.cacheValid = false;
@@ -1150,6 +1185,7 @@ export class CartesianRenderer {
     if (this.glyphData) this.setGlyphs(this.glyphData, this.instCount);
     if (this.flow && this.flowField) this.flow.setField(this.flowField, this.flowCells, this.flowUser.requested, this.flowUser.lifeSec);
     if (this.groundImg) this.setGround(this.groundImg.size, this.groundImg.data, this.groundImg.half, this.groundCenter);
+    if (this.terrain) this.setTerrain(this.terrain);
     this.markDirty();
   }
 
@@ -1221,6 +1257,9 @@ export class CartesianRenderer {
     gl.generateMipmap(gl.TEXTURE_2D);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    // mirrored beyond the image: the terrain ground continues past it without stretched streaks
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.MIRRORED_REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.MIRRORED_REPEAT);
     const an = gl.getExtension('EXT_texture_filter_anisotropic');
     if (an) gl.texParameterf(gl.TEXTURE_2D, an.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(8, gl.getParameter(an.MAX_TEXTURE_MAX_ANISOTROPY_EXT) as number));
     gl.activeTexture(gl.TEXTURE0);
@@ -1229,6 +1268,38 @@ export class CartesianRenderer {
 
   get hasGroundMap(): boolean {
     return this.groundImg !== null;
+  }
+
+  /**
+   * Terrain: heights (km above sea level, row 0 = north) over the square [-half, half] around `center`
+   * (the same square as the ground image, which is draped on it). The volume stops at the terrain.
+   * Heights are drawn stretched by the scene's vertical exaggeration, like the volume. null = flat ground.
+   */
+  setTerrain(t: { size: number; heightsKm: Float32Array; minKm: number; maxKm: number; half: number; center: [number, number] } | null): void {
+    this.terrain = t;
+    if (t) this.groundCenter = t.center;
+    if (this.lost) return;
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.demTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    if (t) gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, t.size, t.size, 0, gl.RED, gl.FLOAT, t.heightsKm);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, 1, 1, 0, gl.RED, gl.FLOAT, new Float32Array([0]));
+    gl.activeTexture(gl.TEXTURE0);
+    this.markDirty();
+  }
+
+  get hasTerrain(): boolean {
+    return this.terrain !== null;
+  }
+
+  /**
+   * The "Realistic (stylised)" storm look: light, sky and haze; null = the scientific colour scale.
+   * The caller also sets the matching transfer function (realisticStyle.ts buildRealisticTf).
+   */
+  setRealistic(look: RealisticLook | null): void {
+    this.look = look;
+    this.markDirty();
   }
 
   // ── Camera ──────────────────────────────────────────────────────────────
@@ -1348,8 +1419,33 @@ export class CartesianRenderer {
     const mapOn = p.groundMode === 'map' && this.groundImg !== null;
     gl.uniform1i(u.u_groundMode, p.groundMode === 'off' ? 0 : mapOn ? 2 : 1);
     gl.uniform1f(u.u_groundSize, this.groundImg?.size ?? 1);
-    gl.uniform1f(u.u_groundHalf, this.groundImg?.half ?? 1);
+    gl.uniform1f(u.u_groundHalf, this.groundImg?.half ?? this.terrain?.half ?? 1);
     gl.uniform1f(u.u_ringStep, p.gridStepKm * 2);
+    // terrain and the realistic look
+    const terr = this.terrain;
+    const terrOn = !!terr && p.groundMode !== 'off';
+    gl.uniform1i(u.u_terrOn, terrOn ? 1 : 0);
+    if (terr) {
+      gl.uniform2f(u.u_terrZ, terr.minKm * ve, terr.maxKm * ve);
+      gl.uniform1f(u.u_demTexel, (2 * terr.half) / terr.size);
+    }
+    const lk = this.look ?? DAY_LOOK;
+    const sv = lightVector(lk, ve);
+    gl.uniform1i(u.u_style, this.look ? 1 : 0);
+    gl.uniform3f(u.u_sunDir, sv[0], sv[1], sv[2]);
+    gl.uniform3f(u.u_sunCol, lk.sunCol[0], lk.sunCol[1], lk.sunCol[2]);
+    gl.uniform3f(u.u_skyCol, lk.skyCol[0], lk.skyCol[1], lk.skyCol[2]);
+    gl.uniform3f(u.u_horizonCol, lk.horizonCol[0], lk.horizonCol[1], lk.horizonCol[2]);
+    gl.uniform3f(u.u_zenithCol, lk.zenithCol[0], lk.zenithCol[1], lk.zenithCol[2]);
+    // soft shadows cost extra samples: fewer while the camera moves in the interactive viewer
+    gl.uniform1i(u.u_sunSteps, params.interacting ? Math.min(2, lk.sunSteps) : lk.sunSteps);
+    // haze is tuned for a scene about 235 km wide (the storm clip); bigger scenes get proportionally less per km
+    gl.uniform1f(u.u_fog, lk.fog * Math.min(1, 117.5 / Math.max(1, terr?.half ?? 117.5)));
+    gl.uniform1f(u.u_exposure, lk.exposure);
+    gl.uniform1f(u.u_groundGain, this.mapGain);
+    this.frameSeed = (this.frameSeed + 17.31) % 211;
+    gl.uniform1f(u.u_seed, this.frameSeed);
+    gl.uniform1f(u.u_vexag, ve);
     gl.uniform1i(u.u_light, p.light ? 1 : 0);
     gl.uniform1f(u.u_themeLight, p.lightScene ? 1 : 0);
 
@@ -1471,6 +1567,9 @@ export class CartesianRenderer {
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, this.groundTex);
     gl.uniform1i(this.vu.u_ground, 4);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.demTex);
+    gl.uniform1i(this.vu.u_dem, 5);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_3D, this.windTex);
     gl.uniform1i(this.vu.u_windTex, 2);
@@ -1575,7 +1674,7 @@ export class CartesianRenderer {
     this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
     if (!this.lost) {
       const gl = this.gl;
-      for (const t of [this.volTex, this.volTexB, this.tfTex, this.lutTex, this.groundTex]) if (t) gl.deleteTexture(t);
+      for (const t of [this.volTex, this.volTexB, this.tfTex, this.lutTex, this.groundTex, this.demTex]) if (t) gl.deleteTexture(t);
       for (const b of this.arrowMeshBuf) gl.deleteBuffer(b);
       if (this.arrowVAO) gl.deleteVertexArray(this.arrowVAO);
       gl.deleteVertexArray(this.quadVAO);

@@ -57,6 +57,8 @@ at the refresh rate of the display (45 fps in that test).
 
 ![The same mosaic seen from a low angle](images/mosaic3d-low-angle.png)
 
+Two options of the scene bar change the look without changing the data: **Realistic ground** (terrain with satellite imagery; the storm hides below hills) and **Storm: Realistic (stylised)** (precipitation drawn as light and dark shafts with sun light). See {doc}`REALISTIC_3D` for the sources, terms and attribution.
+
 How the volume is made and sent:
 - Cells where no radar measured an echo are empty on **every** level (radarx gives covered cells
   without echo a low fill value for the blend; the 2D path already masks it and the volume applies

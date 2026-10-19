@@ -24,8 +24,11 @@ import { drawCartesianOverlay, drawOffBoxSites } from './cartesianOverlay';
 import { project } from './scene3d';
 import { COLORMAP_DATA } from './colormaps';
 import { buildTf, thresholdSpec, thresholdToShader, adaptiveShiftDb } from './volumeTf';
-import { resolveBasemap } from './basemaps';
+import { resolveBasemap, IMAGERY_EOX_S2 } from './basemaps';
 import { buildGroundMap } from './groundMap';
+import { buildTerrain, TERRAIN_ATTRIBUTION, TERRARIUM_URL } from './terrain';
+import { buildRealisticTf, lookFor, realisticSample } from './realisticStyle';
+import { sunLight, type SunLight } from './sunPosition';
 import {
   cameraAt, stormAt, dataTimeAt, locate, morphShifts, intervalMotion, utcLabel, stormChoreography, trackFrame, lagTarget,
   type CamKey,
@@ -61,6 +64,15 @@ export interface ClipSettings {
    * track, 1 = locked on the storm). A partial follow lets the storm visibly travel across the map.
    */
   targetLag?: number;
+  /** 'map': the flat map (default). 'realistic': terrain with satellite imagery. */
+  ground?: 'map' | 'realistic';
+  /** 'scientific': the colour scale (default). 'realistic': the stylised precipitation look with sun light. */
+  stormStyle?: 'scientific' | 'realistic';
+  /**
+   * Where tiles come from: '' = the tile servers directly, or a base URL of a caching proxy that
+   * serves /eox/{z}/{x}/{y} and /terrarium/{z}/{x}/{y} (render_clip.py does this, with a disk cache).
+   */
+  tileBase?: string;
 }
 
 const DEFAULTS: ClipSettings = { fps: 30, duration: 36, vexag: 4, targetLag: 0.3 };
@@ -80,6 +92,11 @@ export class StormClip {
   private cropHalf = 60;
   private lastCam: { eye: [number, number, number]; fwd: [number, number, number]; right: [number, number, number]; up: [number, number, number]; tanX: number; tanY: number; w: number; h: number } | null = null;
   private fullBox!: SceneBox;
+  private sun: SunLight | null = null;
+  private sunKey = '';
+  private lookSteps = 7;
+  terrainInfo = '';
+  private terr: { size: number; h: Float32Array; half: number; cx: number; cy: number } | null = null;
   private tf: Uint8Array = new Uint8Array(1024);
   private tfShift = 0;
   settings: ClipSettings = { ...DEFAULTS };
@@ -156,12 +173,17 @@ export class StormClip {
       if (acc >= 0.995 * sum) { p995 = g0.vmin + ((i - 1) / 254) * (g0.vmax - g0.vmin); break; }
     }
     this.tfShift = adaptiveShiftDb(p995);
-    this.tf = buildTf('reflectivity', COLORMAP_DATA['NWSRef'], g0.vmin, g0.vmax, 'default', this.tfShift);
+    const realisticStorm = this.settings.stormStyle === 'realistic';
+    this.tf = realisticStorm
+      ? buildRealisticTf(g0.vmin, g0.vmax, 0.35)
+      : buildTf('reflectivity', COLORMAP_DATA['NWSRef'], g0.vmin, g0.vmax, 'default', this.tfShift);
     r.setTransfer(this.tf);
     const spec = thresholdSpec('reflectivity', g0.vmin, g0.vmax, 'dBZ')!;
     const ts = thresholdToShader(spec, Math.max(spec.min, 5, 15 - this.tfShift), g0.vmin, g0.vmax);
     r.setParams({
-      vexag: this.settings.vexag, stepKm: 0.35, opacity: 0.9, thr: ts.thr, thrSoft: ts.soft, thrMode: ts.mode,
+      vexag: this.settings.vexag, stepKm: 0.35, opacity: realisticStorm ? 1.0 : 0.9,
+      // the realistic look fades faint echo in its own opacity curve: no extra hide-below threshold
+      thr: realisticStorm ? 0 : ts.thr, thrSoft: ts.soft, thrMode: ts.mode,
       groundMode: 'map', light: true, lightScene: false, showVolume: true, gridStepKm: 20,
     });
     r.setSceneBox(this.fullBox);
@@ -174,6 +196,10 @@ export class StormClip {
     const half = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2 + m.crop_half_km + 14;
     // lat / lon of that centre (inverse of the spherical AEQD offset, by bisection on the forward map)
     const [lat, lon] = this.latLonOf(cx, cy);
+    if (this.settings.ground === 'realistic') {
+      await this.prepareRealisticGround(lat, lon, half + 35, [cx, cy]);
+      return;
+    }
     const bm = resolveBasemap(mapProvider, 'dark');
     const mt = this.settings.mapTheme ?? 'dark';
     r.setMapGain(mt === 'light' ? 0.82 : 1.7);
@@ -188,6 +214,33 @@ export class StormClip {
       this.mapOk = true;
     } else {
       r.setParams({ groundMode: 'grid' });
+    }
+  }
+
+  /** Satellite imagery draped on terrain (both cached); anything that fails is reported, never faked. */
+  private async prepareRealisticGround(lat: number, lon: number, half: number, center: [number, number]): Promise<void> {
+    const r = this.renderer!;
+    const tb = this.settings.tileBase ?? '';
+    const imagery = { ...IMAGERY_EOX_S2, url: tb ? `${tb}/eox/{z}/{x}/{y}` : IMAGERY_EOX_S2.url };
+    const demUrl = tb ? `${tb}/terrarium/{z}/{x}/{y}` : TERRARIUM_URL;
+    r.setMapGain(2.1);
+    const [img, dem] = await Promise.all([
+      buildGroundMap({ lat, lon, radiusKm: half, size: 4096, provider: imagery, theme: 'light', maxZoom: 12, maxTiles: 330 }, () => false).catch((e) => { console.warn('[clip] imagery failed:', e); return null; }),
+      buildTerrain({ lat, lon, halfKm: half, size: 1024, url: demUrl }).catch((e) => { console.warn('[clip] terrain failed:', e); return null; }),
+    ]);
+    if (img) {
+      r.setGround(img.size, img.data, half, center);
+      this.mapOk = true;
+      if (img.missing) console.warn(`[clip] imagery: ${img.missing} tiles missing`);
+    } else {
+      r.setParams({ groundMode: 'grid' });
+    }
+    if (dem) {
+      r.setTerrain({ size: dem.size, heightsKm: dem.heightsKm, minKm: dem.minKm, maxKm: dem.maxKm, half, center });
+      this.terr = { size: dem.size, h: dem.heightsKm, half, cx: center[0], cy: center[1] };
+      this.terrainInfo = `terrain ${Math.round(dem.minKm * 1000)} to ${Math.round(dem.maxKm * 1000)} m ASL (zoom ${dem.zoom}, ${dem.missing} tiles missing)`;
+    } else {
+      console.warn('[clip] no terrain: the ground stays flat');
     }
   }
 
@@ -213,6 +266,47 @@ export class StormClip {
     const lag = this.settings.targetLag ?? 0.3;
     const [tx, ty] = lagTarget(this.anchor, [cx, cy], lag);
     return { t, td, k, s, cx, cy, tx, ty, cam: cameraAt(this.keys, t) };
+  }
+
+  /** Light of the realistic look at data time `td` (s): the real sun, or the documented dusk light after sunset. */
+  private updateLight(td: number): void {
+    const o = this.manifest.origin;
+    const when = new Date(new Date(this.manifest.steps[0].time_utc).getTime() + td * 1000);
+    const key = `${Math.round(when.getTime() / 60000)}`;
+    if (key === this.sunKey && this.sun) return;
+    this.sunKey = key;
+    this.sun = sunLight(when, o.lat, o.lon);
+    this.renderer!.setRealistic(lookFor(this.sun, this.lookSteps));
+  }
+
+  /** What the light is, for the info line (null in the scientific style). */
+  get lightInfo(): SunLight | null {
+    return this.sun;
+  }
+
+  /** Test hook: draw the terrain `k` times higher (checks that the volume hides below the terrain). */
+  debugScaleTerrain(k: number): void {
+    const t = this.terr;
+    if (!t || !this.renderer) return;
+    const h = new Float32Array(t.h.length);
+    let mn = Infinity, mx = -Infinity;
+    for (let i = 0; i < h.length; i++) {
+      h[i] = t.h[i] * k;
+      mn = Math.min(mn, h[i]);
+      mx = Math.max(mx, h[i]);
+    }
+    this.renderer.setTerrain({ size: t.size, heightsKm: h, minKm: mn, maxKm: mx, half: t.half, center: [t.cx, t.cy] });
+  }
+
+  /** Terrain height (km ASL) at a scene position; 0 without terrain. */
+  terrainKmAt(x: number, y: number): number {
+    const t = this.terr;
+    if (!t) return 0;
+    const fx = Math.min(t.size - 1.001, Math.max(0, ((x - t.cx) / (2 * t.half) + 0.5) * t.size - 0.5));
+    const fy = Math.min(t.size - 1.001, Math.max(0, (0.5 - (y - t.cy) / (2 * t.half)) * t.size - 0.5));
+    const x0 = fx | 0, y0 = fy | 0, ax = fx - x0, ay = fy - y0;
+    const g = (i: number, j: number) => t.h[j * t.size + i];
+    return (g(x0, y0) * (1 - ax) + g(x0 + 1, y0) * ax) * (1 - ay) + (g(x0, y0 + 1) * (1 - ax) + g(x0 + 1, y0 + 1) * ax) * ay;
   }
 
   /** Radar sites as [name, x km, y km] (scene frame). */
@@ -254,6 +348,7 @@ export class StormClip {
     const [ax, ay] = this.anchor;
     this.crop = { xMin: ax - half, xMax: ax + half, yMin: ay - half, yMax: ay + half, zMin: this.fullBox.zMin, zMax: this.fullBox.zMax };
     r.setCropBox(this.crop);
+    if (this.settings.stormStyle === 'realistic') this.updateLight(st.td);
     this.cur = { t: st.t, td: st.td, k: st.k, s: st.s };
     const ve = this.settings.vexag;
     r.exportRender({
@@ -272,7 +367,7 @@ export class StormClip {
     if (!crop) return;
     const cam = { eye: f.eye, fwd: f.fwd, right: f.right, up: f.up, tanX: f.tanX, tanY: f.tanY, w: c.width, h: c.height };
     drawCartesianOverlay(this.ctx, cam, {
-      box: crop, vexag: this.settings.vexag, sites: this.vols[0].sites, lightScene: false, showFrame: true,
+      box: crop, vexag: this.settings.vexag, sites: this.vols[0].sites, lightScene: false, showFrame: this.settings.ground !== 'realistic',
       showHeightAxis: false, showExaggeration: false,
     });
     drawOffBoxSites(this.ctx, cam, crop, this.vols[0].sites, false);
@@ -285,8 +380,8 @@ export class StormClip {
     const ctx = this.ctx;
     const u = this.overlay.height / 1080;
     const t0 = this.ts[0], t1 = this.ts[this.ts.length - 1];
-    const z = 0.25 * this.settings.vexag; // just above the ground
-    const proj = (x: number, y: number) => project(cam, [x, y, z]);
+    const lift = 0.25 * this.settings.vexag; // just above the ground (and the terrain)
+    const proj = (x: number, y: number) => project(cam, [x, y, this.terrainKmAt(x, y) * this.settings.vexag + lift]);
     const N = 90;
     const pts: { p: [number, number, number] | null; t: number }[] = [];
     for (let i = 0; i <= N; i++) {
@@ -389,7 +484,8 @@ export class StormClip {
     text(`storm centre moved ${moved.toFixed(1)} km since ${utcLabel(t0, 0, false)}`, pad, pad + 184 * u, 19, 'rgba(255,235,150,0.98)', 600);
 
     // progress bar with the observation times
-    const bw = W * 0.56, bx = (W - bw) / 2, by = H - 92 * u;
+    const lift = this.settings.ground === 'realistic' || this.settings.stormStyle === 'realistic' ? 34 : 0;
+    const bw = W * 0.56, bx = (W - bw) / 2, by = H - (92 + lift) * u;
     const px = (t: number) => bx + ((t - first) / (last - first)) * bw;
     ctx.fillStyle = 'rgba(8,12,22,0.55)';
     ctx.fillRect(bx - 16 * u, by - 44 * u, bw + 32 * u, 112 * u);
@@ -419,12 +515,23 @@ export class StormClip {
     );
     void k; void s;
 
-    // colour bar
+    // colour bar (the scientific scale) or, in the realistic look, what a dBZ looks like as a shaft
     const cbx = W - pad - 22 * u, cby = H * 0.28, cbh = H * 0.36;
     const lut = COLORMAP_DATA['NWSRef'];
+    const stylised = this.settings.stormStyle === 'realistic';
+    if (stylised) {
+      ctx.fillStyle = 'rgba(70,82,110,0.9)';
+      ctx.fillRect(cbx, cby, 22 * u, cbh);
+    }
     for (let y = 0; y < cbh; y++) {
       const i = Math.min(255, Math.round((1 - y / cbh) * 255));
-      ctx.fillStyle = `rgb(${lut[i * 3]},${lut[i * 3 + 1]},${lut[i * 3 + 2]})`;
+      if (stylised) {
+        const dbz = this.vols[0].vmin + (i / 255) * (this.vols[0].vmax - this.vols[0].vmin);
+        const smp = realisticSample(dbz);
+        ctx.fillStyle = `rgba(${Math.round(smp.rgb[0] * 255)},${Math.round(smp.rgb[1] * 255)},${Math.round(smp.rgb[2] * 255)},${(1 - Math.exp(-smp.sigma * 5)).toFixed(3)})`;
+      } else {
+        ctx.fillStyle = `rgb(${lut[i * 3]},${lut[i * 3 + 1]},${lut[i * 3 + 2]})`;
+      }
       ctx.fillRect(cbx, cby + y, 22 * u, 1.5);
     }
     ctx.strokeStyle = 'rgba(255,255,255,0.5)';
@@ -436,7 +543,26 @@ export class StormClip {
       text(String(dbz), cbx - 8 * u, cby + cbh * (1 - f) + 6 * u, 16, 'rgba(235,240,255,0.97)', 600, 'right');
     }
     text('dBZ', cbx + 11 * u, cby - 12 * u, 17, 'rgba(235,240,255,0.97)', 700, 'center');
-    text(`Height shown up to ${this.fullBox.zMax.toFixed(0)} km · vertical scale ×${this.settings.vexag}`, W - pad, H - 20 * u, 15, 'rgba(200,215,240,0.9)', 500, 'right');
+
+    // realistic look: what is stylised, and the attributions that must stay on screen
+    if (this.settings.ground === 'realistic' || stylised) {
+      const l2: string[] = [];
+      if (stylised) {
+        l2.push(this.sun?.stylised
+          ? `Stylised lighting, not a photograph: dusk light at the sunset azimuth (the real sun was ${Math.round(Math.abs(this.sun.realElevationDeg))}° ${this.sun.realElevationDeg < 0 ? 'below' : 'above'} the horizon)`
+          : `Stylised rendering, not a photograph (${this.sun?.label ?? 'sun light'})`);
+      }
+      if (this.settings.ground === 'realistic') l2.push(`vertical scale ×${this.settings.vexag} for terrain and storm (relief exaggerated)`);
+      text(l2.join(' · '), W / 2, H - 38 * u, 15, 'rgba(235,240,255,0.97)', 600, 'center');
+      const l1 = [
+        this.settings.ground === 'realistic' ? IMAGERY_EOX_S2.attribution : '',
+        this.settings.ground === 'realistic' ? TERRAIN_ATTRIBUTION : '',
+        'Radar: NEXRAD Level II (NOAA)',
+      ].filter(Boolean).join(' · ');
+      text(l1, W / 2, H - 14 * u, 12, 'rgba(215,225,245,0.9)', 500, 'center');
+    } else {
+      text(`Height shown up to ${this.fullBox.zMax.toFixed(0)} km · vertical scale ×${this.settings.vexag}`, W - pad, H - 20 * u, 15, 'rgba(200,215,240,0.9)', 500, 'right');
+    }
   }
 
   dispose(): void {

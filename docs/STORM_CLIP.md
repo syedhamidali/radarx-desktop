@@ -13,6 +13,24 @@ ground and overlay as the 3D tab) in headless Chrome, so the look matches the ap
 The clip shows only the reflectivity cloud over the map, with the storm's track drawn on the ground
 and the UTC clock. There is no wind retrieval, no flow and no arrows in it.
 
+## Realistic version
+The same clip on terrain with satellite imagery and the stylised storm look
+(`docs/REALISTIC_3D.md` has the sources, terms and the look):
+```
+/tmp/clipenv/bin/python tools/storm_clip/render_clip.py --bundle /tmp/storm_bundle --realistic \
+    --out ~/Downloads/xradar-exports/storm3d_realistic_mayfield.mp4 \
+    --stills ~/Downloads/xradar-exports/storm3d_realistic_stills
+```
+`--ground map|realistic` and `--storm-style scientific|realistic` choose each part on its own
+(`--realistic` sets both); `--tile-cache DIR` and `--offline` control the tile cache. The camera,
+the storm track, the motion-compensated interpolation, the UTC clock and the timing are the same as
+in the scientific clip. On screen: the imagery and elevation attributions, "Stylised lighting, not a
+photograph", and the vertical scale of terrain and storm. The page prints the hosts that could not be
+reached; imagery is never invented (without it the ground is a grid). A frame takes about 0.5 to
+0.8 s at 1080p (terrain ray-march and the soft-shadow march), so the 36 s clip takes 10 to 15 minutes
+on an Apple M1 Pro; the first run also downloads the tiles (about 280 tiles, 5 MB), later runs use
+the cache. The sun is computed per frame from the data time and the place.
+
 ## Make a clip
 ```
 # 1. the data bundle (sidecar Python: needs the engine and radarx); the case folder is only read
@@ -121,6 +139,10 @@ needs only a container, an overlay canvas and the volumes). The offline page is
 - Needs Chrome (GPU) and a built app; software GL works but is slow. Resolution is bounded by the
   GPU's 3D-texture and canvas limits.
 - No audio and no wind: this clip is about the reflectivity cloud.
+- Realistic version: the light is dusk light, not the real (night) sky; the imagery is the 2021
+  Sentinel-2 mosaic (a summer-biased composite), not the scene of that evening; radar sites and the
+  scale bar are drawn at sea level, not on the terrain. The cloud is drawn from 500 m radar data
+  stretched x4 vertically: it looks smooth and soft, not like a photograph of a cloud.
 
 ## Checked: the storm moves across the map
 A fixed top-down render of the clip at three clip times (vertical scale 1, far camera so the height
@@ -131,6 +153,11 @@ tracked centre and converted to km with the projected ground points: the tracked
 across the map past the river bends, Kennett and Caruthersville (compare the stills at 0, 18 and 33 s).
 
 ## Tests
+`python/tests/test_storm_clip_tools.py` also covers the tile proxy (URL and path mapping, one fetch
+per tile then the cache, offline mode, failed hosts). `src/lib/utils/terrain.test.mjs` (Terrarium
+decoding, tile maths, resampling orientation, sea and missing tiles), `sunPosition.test.mjs`
+(solstice, equinox, the night over Mayfield, sunset azimuth, real sun versus dusk light) and
+`realisticStyle.test.mjs` (opacity and brightness ramp, warm tint only for the strongest cores).
 `python/tests/test_storm_clip_tools.py`: steps and the nearest volume per radar, repeated volumes
 dropped, cell finding and ranking, tracking the moving storm rather than a stronger stationary one,
 a lost storm carried along, storm motion, the choice of the reference radar. `src/lib/utils/clipCamera.test.mjs` (`npm run test:unit`):

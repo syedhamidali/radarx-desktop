@@ -14,6 +14,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "tools" / "storm_clip"
 sys.path.insert(0, str(TOOLS))
 
 import clipdata
+import tilecache
 
 UTC = timezone.utc
 
@@ -159,3 +160,70 @@ def test_out_folder_must_not_be_inside_the_case(tmp_path, capsys):
     case.mkdir()
     with pytest.raises(SystemExit):
         clipdata.main(["--case", str(case), "--out", str(case / "bundle")])
+
+
+class TestTileCache:
+    """The disk-cached, polite tile proxy of the realistic clip (tools/storm_clip/tilecache.py)."""
+
+    def test_url_and_path_mapping(self, tmp_path):
+        tc = tilecache.TileCache(tmp_path)
+        # the EOX WMTS order is {z}/{row}/{col} = {z}/{y}/{x}; Terrarium is {z}/{x}/{y}
+        assert tc.url_for("eox", 11, 519, 798).endswith(
+            "/s2cloudless-2021_3857/default/g/11/798/519.jpg"
+        )
+        assert tc.url_for("terrarium", 9, 130, 200) == (
+            "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/9/130/200.png"
+        )
+        assert tc.path_for("eox", 11, 519, 798) == tmp_path / "eox" / "11" / "519" / "798.jpg"
+
+    def test_parse_and_validation(self, tmp_path):
+        tc = tilecache.TileCache(tmp_path)
+        assert tc.parse("/tiles/eox/11/519/798") == ("eox", 11, 519, 798)
+        assert tc.parse("/tiles/eox/11/519/798?x=1") == ("eox", 11, 519, 798)
+        assert tc.parse("/bundle/manifest.json") is None
+        assert tc.parse("/tiles/eox/11/519/abc") is None
+        assert tc.valid("eox", 11, 519, 798)
+        assert not tc.valid("evil", 1, 0, 0)  # unknown source: never forwarded
+        assert not tc.valid("eox", 11, -1, 0)  # no path tricks through negative numbers
+        assert not tc.valid("eox", 2, 4, 0)  # x outside the 2**z grid
+        assert not tc.valid("eox", 20, 0, 0)  # above the highest zoom served
+        assert tc.get("eox", 20, 0, 0) is None
+
+    def test_a_tile_is_fetched_once_and_then_served_from_the_cache(self, tmp_path):
+        calls: list[str] = []
+
+        def fake(url: str) -> bytes:
+            calls.append(url)
+            return b"\x89PNG-fake"
+
+        tc = tilecache.TileCache(tmp_path, fetch=fake)
+        a = tc.get("terrarium", 9, 130, 200)
+        b = tc.get("terrarium", 9, 130, 200)
+        assert a == b == (b"\x89PNG-fake", "image/png")
+        assert len(calls) == 1
+        assert (tmp_path / "terrarium" / "9" / "130" / "200.png").is_file()
+        assert tc.downloads == 1 and tc.hits == 1
+        # a second cache object (a later render) finds it on disk without any request
+        tc2 = tilecache.TileCache(tmp_path, fetch=lambda u: pytest.fail("network used"))
+        assert tc2.get("terrarium", 9, 130, 200)[0] == b"\x89PNG-fake"
+
+    def test_offline_mode_never_uses_the_network(self, tmp_path):
+        tc = tilecache.TileCache(
+            tmp_path, fetch=lambda u: pytest.fail("network used"), offline=True
+        )
+        assert tc.get("eox", 11, 519, 798) is None
+
+    def test_failures_are_reported_by_host(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(tilecache.time, "sleep", lambda s: None)
+
+        def boom(url: str) -> bytes:
+            raise OSError("blocked")
+
+        tc = tilecache.TileCache(tmp_path, fetch=boom)
+        assert tc.get("eox", 11, 519, 798) is None
+        assert tc.failures == {"tiles.maps.eox.at": 1}
+        assert "FAILED hosts: tiles.maps.eox.at" in tc.summary()
+
+    def test_requests_say_who_asks(self):
+        assert "xradar-desktop" in tilecache.USER_AGENT
+        assert tilecache.MIN_INTERVAL_S > 0

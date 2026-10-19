@@ -29,14 +29,33 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tilecache import TileCache
 
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
-    """Serves the built app at / and the data bundle at /bundle/."""
+    """Serves the built app at /, the data bundle at /bundle/ and cached map tiles at /tiles/."""
 
-    def __init__(self, *args, dist: Path, bundle: Path, **kw):
-        self._dist, self._bundle = dist, bundle
+    def __init__(self, *args, dist: Path, bundle: Path, tiles: TileCache, **kw):
+        self._dist, self._bundle, self._tiles = dist, bundle, tiles
         super().__init__(*args, **kw)
+
+    def do_GET(self) -> None:
+        if self.path.startswith("/tiles/"):
+            req = self._tiles.parse(self.path)
+            got = self._tiles.get(*req) if req else None
+            if got is None:
+                self.send_error(404, "tile not available")
+                return
+            data, ctype = got
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "max-age=86400")
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        super().do_GET()
 
     def translate_path(self, path: str) -> str:
         path = path.split("?", 1)[0].split("#", 1)[0]
@@ -48,8 +67,10 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
-def serve(dist: Path, bundle: Path) -> tuple[socketserver.TCPServer, int]:
-    handler = functools.partial(_Handler, dist=dist, bundle=bundle)
+def serve(
+    dist: Path, bundle: Path, tiles: TileCache | None = None
+) -> tuple[socketserver.TCPServer, int]:
+    handler = functools.partial(_Handler, dist=dist, bundle=bundle, tiles=tiles or TileCache())
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -69,9 +90,15 @@ async def render(a: argparse.Namespace) -> None:
         sys.exit(f"{bundle}/manifest.json not found: run tools/storm_clip/clipdata.py first")
     out = Path(a.out).expanduser().resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
-    srv, port = serve(dist, bundle)
+    tiles = TileCache(a.tile_cache, offline=a.offline)
+    srv, port = serve(dist, bundle, tiles)
     W, H, fps = a.width, a.height, a.fps
     settings = {"fps": fps, "duration": a.duration, "vexag": a.vexag}
+    ground = "realistic" if a.realistic else a.ground
+    storm_style = "realistic" if a.realistic else a.storm_style
+    settings["ground"] = ground
+    settings["stormStyle"] = storm_style
+    settings["tileBase"] = "/tiles"
     for key in ("title", "subtitle"):
         if getattr(a, key):
             settings[key] = getattr(a, key)
@@ -113,6 +140,11 @@ async def render(a: argparse.Namespace) -> None:
         print(
             f"renderer ready at {st['w']}x{st['h']}, map {'ok' if st['mapOk'] else 'MISSING (grid ground)'}"
         )
+        if ground == "realistic":
+            print(f"realistic ground: {st.get('terrain') or 'NO TERRAIN (flat ground)'}")
+            if not st["mapOk"]:
+                print("WARNING: no satellite imagery could be loaded: the ground is a plain grid")
+        print(tiles.summary())
         n = await page.evaluate("() => window.__xrClip.frameCount()")
         if a.max_frames:
             n = min(n, a.max_frames)
@@ -147,6 +179,7 @@ async def render(a: argparse.Namespace) -> None:
     srv.shutdown()
     if logs:
         print("browser messages:\n  " + "\n  ".join(logs[-10:]))
+    print(tiles.summary())
     size = out.stat().st_size / 1e6
     print(f"wrote {out}  ({n} frames, {n / fps:.1f} s at {fps} fps, {W}x{H}, {size:.1f} MB)")
     (out.with_suffix(".json")).write_text(
@@ -176,6 +209,27 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--basemap", default="osm", help="basemap provider id (see src/lib/utils/basemaps.ts)"
     )
+    ap.add_argument(
+        "--ground",
+        default="map",
+        choices=["map", "realistic"],
+        help="flat map (default) or terrain with Sentinel-2 satellite imagery",
+    )
+    ap.add_argument(
+        "--storm-style",
+        default="scientific",
+        choices=["scientific", "realistic"],
+        help="colour scale (default) or the stylised precipitation look with sun light",
+    )
+    ap.add_argument(
+        "--realistic", action="store_true", help="--ground realistic --storm-style realistic"
+    )
+    ap.add_argument(
+        "--tile-cache",
+        default=None,
+        help="folder of cached tiles (default ~/.cache/xradar-desktop/tiles)",
+    )
+    ap.add_argument("--offline", action="store_true", help="use cached tiles only, no network")
     ap.add_argument("--crf", type=int, default=18, help="x264 quality (lower = better)")
     ap.add_argument("--preset", default="medium")
     ap.add_argument("--stills", default=None, help="folder for PNG stills")

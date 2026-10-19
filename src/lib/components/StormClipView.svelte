@@ -28,8 +28,9 @@
       renderAt: (t: number, cam?: any) => clip!.renderAt(t, cam),
       project: (x: number, y: number, z?: number) => clip!.project(x, y, z),
       sites: () => clip!.siteXY(),
+      debugScaleTerrain: (k: number) => clip!.debugScaleTerrain(k),
       stateAt: (t: number) => clip!.stateAt(t),
-      info: () => ({ fatal: clip!.fatal, mapOk: clip!.mapOk, w: ov.width, h: ov.height }),
+      info: () => ({ fatal: clip!.fatal, mapOk: clip!.mapOk, terrain: clip!.terrainInfo, light: clip!.lightInfo, w: ov.width, h: ov.height }),
       resize: size,
     };
   });

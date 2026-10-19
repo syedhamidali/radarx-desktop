@@ -15,8 +15,11 @@
   import { cmapOverrides, effectiveCmap, chooseCmap, isCategoricalVariable } from '../stores/cmapChoice';
   import { COLORMAP_DATA } from '../utils/colormaps';
   import { getDefaultRange } from '../utils/ppiRenderer';
-  import { resolveBasemap } from '../utils/basemaps';
+  import { resolveBasemap, IMAGERY_EOX_S2 } from '../utils/basemaps';
   import { buildGroundMap } from '../utils/groundMap';
+  import { buildTerrain, TERRAIN_ATTRIBUTION } from '../utils/terrain';
+  import { buildRealisticTf, lookFor } from '../utils/realisticStyle';
+  import { sunLight, type SunLight } from '../utils/sunPosition';
   import { scaleLut } from '../utils/wind';
   import {
     variableKind, buildTf, recolorTf, thresholdSpec, thresholdToShader, adaptiveShiftDb,
@@ -197,6 +200,15 @@
   type GroundMode = 'map' | 'grid' | 'off';
   let groundMode = $state<GroundMode>(loadPref<string>('ground', 'map', (x) => x === 'map' || x === 'grid' || x === 'off') as GroundMode);
   let showLight = $state<boolean>(loadPref<boolean>('light', false));
+
+  // Realistic ground (terrain + satellite imagery) and the Realistic (stylised) storm look. Both are
+  // options next to the flat map and the scientific colour scale, which stay the defaults.
+  type StormStyle = 'scientific' | 'realistic';
+  let realGround = $state<boolean>(loadPref<boolean>('realGround', false));
+  let stormStyle = $state<StormStyle>(loadPref<string>('stormStyle', 'scientific', (x) => x === 'scientific' || x === 'realistic') as StormStyle);
+  /** Status of the realistic ground: loading, or what could not be fetched. */
+  let realNote = $state('');
+  let sunInfo = $state<SunLight | null>(null);
 
   // wind controls
   let wLevelLo = $state(0);
@@ -395,11 +407,28 @@
     });
   });
 
-  // transfer function
+  // transfer function (the realistic storm look has its own: opacity and brightness follow dBZ)
+  const realisticStorm = $derived(stormStyle === 'realistic' && kind === 'reflectivity' && !!volume);
   $effect(() => {
     const t = tfData;
+    const real = realisticStorm;
+    const lo = vmin, hi = vmax, st = stepKm;
     if (!ready) return;
-    untrack(() => renderer?.setTransfer(t));
+    untrack(() => renderer?.setTransfer(real ? buildRealisticTf(lo, hi, st) : t));
+  });
+  // light of the realistic look: the real sun at the scan time and place, or the documented dusk light
+  $effect(() => {
+    const real = realisticStorm;
+    const fr = frame;
+    const when = volume?.analysisTime ?? null;
+    if (!ready) return;
+    untrack(() => {
+      if (!renderer) return;
+      if (!real || !fr) { sunInfo = null; renderer.setRealistic(null); return; }
+      const d = when ? new Date(when) : new Date();
+      sunInfo = sunLight(Number.isNaN(d.getTime()) ? new Date() : d, fr.lat, fr.lon);
+      renderer.setRealistic(lookFor(sunInfo, 4));
+    });
   });
 
   // scalar scene parameters
@@ -598,7 +627,13 @@
     const b = sceneBox;
     const fr = frame;
     const bm = resolveBasemap($settings.mapStyle, $settings.theme.mode);
-    if (!renderer || groundMode !== 'map' || !b || !fr || !bm.provider.url) return;
+    if (renderer && groundMode !== 'map' && renderer.hasTerrain) renderer.setTerrain(null);
+    if (!renderer || groundMode !== 'map' || !b || !fr) return;
+    if (realGround) { await refreshRealGround(gen, b, fr); return; }
+    if (!bm.provider.url) return;
+    if (renderer.hasTerrain) renderer.setTerrain(null);
+    renderer.setMapGain(1.5);
+    realNote = '';
     const half = Math.ceil(halfExtent(b) * 1.02);
     const th = lightScene ? 'light' : 'dark';
     const key = `${fr.lat.toFixed(3)},${fr.lon.toFixed(3)}|${half}|${bm.provider.id}|${th}`;
@@ -613,14 +648,39 @@
     renderer.setGround(res.size, res.data, half);
     groundKey = key;
   }
+  /** Satellite imagery (EOX Sentinel-2 cloudless, CC BY-NC-SA) draped on Terrarium elevation tiles. */
+  async function refreshRealGround(gen: number, b: SceneBox, fr: { lat: number; lon: number }) {
+    const half = Math.ceil(halfExtent(b) * 1.02) + 30;
+    const key = `real|${fr.lat.toFixed(3)},${fr.lon.toFixed(3)}|${half}`;
+    if (key === groundKey && renderer?.hasTerrain) return;
+    realNote = 'Loading terrain and satellite imagery…';
+    const stale = () => gen !== groundGen || !renderer;
+    const [img, dem] = await Promise.all([
+      buildGroundMap({ lat: fr.lat, lon: fr.lon, radiusKm: half, size: 2048, provider: IMAGERY_EOX_S2, theme: 'light', maxZoom: 11, maxTiles: 150 }, stale).catch(() => null),
+      buildTerrain({ lat: fr.lat, lon: fr.lon, halfKm: half, size: 1024 }, stale).catch(() => null),
+    ]);
+    if (stale() || !renderer) return;
+    renderer.setMapGain(2.1);
+    if (img) renderer.setGround(img.size, img.data, half);
+    if (dem) renderer.setTerrain({ size: dem.size, heightsKm: dem.heightsKm, minKm: dem.minKm, maxKm: dem.maxKm, half, center: [0, 0] });
+    const failed = [!img ? 'satellite imagery (tiles.maps.eox.at)' : '', !dem ? 'elevation (s3.amazonaws.com)' : ''].filter(Boolean);
+    realNote = failed.length ? `Could not load: ${failed.join(', ')}. ${img || dem ? 'Showing what is available.' : 'Showing the flat map.'}` : '';
+    if (!img && !dem) { realGround = false; groundKey = ''; scheduleGround(0); return; }
+    groundKey = key;
+  }
   $effect(() => {
-    void groundMode; void lightScene; void $settings.mapStyle;
+    void groundMode; void lightScene; void $settings.mapStyle; void realGround;
     if (!ready) return;
     untrack(() => { groundKey = ''; scheduleGround(0); });
   });
 
   // ── Misc UI ───────────────────────────────────────────────────────────────
   function setGroundMode(m: GroundMode) { groundMode = m; savePref('ground', m); }
+  function onRealGround() { savePref('realGround', realGround); }
+  function onStormStyle(e: Event) {
+    stormStyle = (e.target as HTMLSelectElement).value as StormStyle;
+    savePref('stormStyle', stormStyle);
+  }
   function onBgChange(e: Event) {
     bgMode = (e.target as HTMLSelectElement).value as BgMode;
     savePref('cartBg', bgMode);
@@ -723,6 +783,20 @@
         <option value="off">Off</option>
       </select>
     </div>
+    {#if groundMode === 'map'}
+      <label class="chk" title="Terrain from elevation tiles with Sentinel-2 satellite imagery draped on it (needs a network connection; tiles are cached). Heights use the Vertical stretch.">
+        <input type="checkbox" bind:checked={realGround} onchange={onRealGround} /> Realistic ground
+      </label>
+    {/if}
+    {#if volume && kind === 'reflectivity'}
+      <div class="ctrl-group" title="Scientific: the colour scale. Realistic: precipitation drawn as light and dark shafts with sun light and soft shadows (stylised, not a photograph).">
+        <label for="style-ctrl">Storm</label>
+        <select id="style-ctrl" class="quality-sel" value={stormStyle} onchange={onStormStyle}>
+          <option value="scientific">Scientific colours</option>
+          <option value="realistic">Realistic (stylised)</option>
+        </select>
+      </div>
+    {/if}
     <div class="ctrl-group" title="Background of the scene. Auto follows the app theme.">
       <label for="bg-ctrl">Background</label>
       <select id="bg-ctrl" class="quality-sel" value={bgMode} onchange={onBgChange}>
@@ -896,7 +970,20 @@
        onkeydown={(e) => { if (e.key === 'r' || e.key === 'R') resetCamera(); else if ((e.key === 'f' || e.key === 'F') && wv) toggleFlow(); }}>
     <canvas class="scene-overlay" bind:this={overlayCanvas} aria-hidden="true"></canvas>
 
-    {#if volume}
+    {#if (realGround && groundMode === 'map') || realisticStorm}
+      <div class="real-note" aria-label="Realistic look notes">
+        {#if realisticStorm}
+          <span>{sunInfo?.stylised ? `Stylised lighting, not a photograph: dusk light (the real sun was ${Math.round(Math.abs(sunInfo.realElevationDeg))}° ${sunInfo.realElevationDeg < 0 ? 'below' : 'above'} the horizon)` : 'Stylised rendering, not a photograph'}</span>
+        {/if}
+        {#if realGround && groundMode === 'map'}
+          <span>Terrain and storm are stretched ×{vexag} vertically</span>
+          <span>{IMAGERY_EOX_S2.attribution}</span>
+          <span>{TERRAIN_ATTRIBUTION}</span>
+          {#if realNote}<span class="rn-warn">{realNote}</span>{/if}
+        {/if}
+      </div>
+    {/if}
+    {#if volume && !realisticStorm}
       <div class="colorbar-wrap">
         <span class="cb-label">{vmax.toFixed(1)}</span>
         <div class="cb-bar" style="background: {cmapGradient}"></div>
@@ -1019,6 +1106,12 @@
   .fn-main { color: var(--text-secondary); }
   .fn-phys { font-family: var(--font-mono); }
   .fn-warn { color: var(--accent-warning, #d9a441); }
+  .real-note {
+    position: absolute; left: 10px; top: 8px; max-width: min(62%, 620px); z-index: 3; pointer-events: none;
+    display: flex; flex-direction: column; gap: 1px; font-size: 10px; line-height: 1.25;
+    color: rgba(255, 255, 255, 0.92); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.8);
+  }
+  .rn-warn { color: #ffd479; }
   .compass-wrap { position: absolute; bottom: 10px; left: 10px; pointer-events: none; z-index: 3; }
   .hint-3d {
     padding: 3px var(--spacing-md); font-size: 10px; color: var(--text-muted); text-align: center;
