@@ -47,7 +47,7 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, mosaic, pipeline, plugins, rhi, varmap, web
+from engine import derived, mosaic, pipeline, plugins, quality, rhi, varmap, web
 from engine import multidoppler as mdop
 from engine.cloud import (
     get_latest_nexrad_l2,
@@ -995,6 +995,7 @@ class ConnectionHandler:
             "get_metadata_tree": self._handle_get_metadata_tree,
             "get_variable_mapping": self._handle_get_variable_mapping,
             "set_variable_mapping": self._handle_set_variable_mapping,
+            "data_check": self._handle_data_check,
             "ping": self._handle_ping,
             "list_nexrad_stations": self._handle_list_nexrad_stations,
             "list_nexrad_l2_files": self._handle_list_nexrad_l2_files,
@@ -2974,6 +2975,28 @@ class ConnectionHandler:
                 "overrides": overrides,
                 **report,
             }
+        )
+
+    async def _handle_data_check(self, msg: dict[str, Any]) -> None:
+        """Data-quality report of an open file (see ``engine/quality.py``, docs/DATA_CHECK.md).
+
+        Request ``{type: "data_check", file_id?}``; reply ``{type: "data_check", file_id, report}``.
+        Read-only: it looks at the data already in memory (a lazily-loaded ARCO sweep is never
+        fetched for it) and applies nothing. One check runs at a time per connection.
+        """
+        resolved_id, reader = _resolve_reader(msg.get("file_id"))
+        tree = reader.datatree
+        if tree is None:
+            await self.send_error("data_check: no file is open")
+            return
+        overrides = _overrides_store().get(resolved_id, reader._path)
+        cs = _cs()
+        lock = (_locks if cs is None else cs.locks).get("data_check")
+        report = await _run_holding(lock, lambda: quality.check_reader(reader, overrides=overrides))
+        if resolved_id is not None and _readers().get(resolved_id) is not reader:
+            return  # closed or replaced while it ran: nobody wants this report
+        await self.send(
+            {"type": "data_check", "file_id": resolved_id or msg.get("file_id"), "report": report}
         )
 
     async def _handle_get_metadata_tree(self, msg: dict[str, Any]) -> None:

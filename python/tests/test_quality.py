@@ -586,3 +586,57 @@ def test_cli_check_real_file(capsys):
     assert cli.main(["check", "-i", str(KTLX), "--json"]) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["n_sweeps"] == 17
+
+
+# ---------------------------------------------------------------------------
+# WebSocket: the app asks for the check and applies the recipe with one click
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def served():
+    import server
+    from engine.reader import RadarReader
+
+    saved = (dict(server._file_readers), server._last_file_id)
+    server._file_readers.clear()
+    server._last_file_id = None
+    reader = RadarReader()
+    reader._dtree = volume(alias=True, zdr_offset=0.5)
+    reader._format = "synthetic"
+    yield server._register_reader(reader), reader
+    server._file_readers.clear()
+    server._file_readers.update(saved[0])
+    server._last_file_id = saved[1]
+
+
+@pytest.mark.asyncio
+async def test_websocket_data_check_then_apply_recipe(served, tmp_path, monkeypatch):
+    from engine import derived
+    from tests.test_pipeline_server import _make_handler, _send
+
+    monkeypatch.setenv("XRADAR_RECIPES_DIR", str(tmp_path / "recipes"))
+    file_id, reader = served
+    h = _make_handler()
+    await _send(h, type="data_check", file_id=file_id)
+    msg = next(m for m in h._sent if m["type"] == "data_check")
+    assert msg["file_id"] == file_id
+    rep = msg["report"]
+    assert {f["id"] for f in rep["findings"]} >= {"velocity_aliasing", "zdr_offset"}
+    assert len(derived.store_for(reader, create=False) or []) == 0  # looking applies nothing
+    # one click = run_pipeline with exactly the recipe from the report
+    recipe = next(r for r in rep["recommendation"]["recipes"] if r["role"] == "velocity")["recipe"]
+    h2 = _make_handler()
+    await _send(h2, type="run_pipeline", file_id=file_id, recipe=recipe, all_sweeps=True)
+    res = next(m for m in h2._sent if m["type"] == "pipeline_result")
+    assert res["name"].startswith("pipeline:") and res["derived"]
+    assert not any(m["type"] == "error" for m in h2._sent)
+
+
+@pytest.mark.asyncio
+async def test_websocket_data_check_unknown_file_is_an_error(served):
+    from tests.test_pipeline_server import _make_handler, _send
+
+    h = _make_handler()
+    await _send(h, type="data_check", file_id="nope")
+    assert any(m["type"] == "error" for m in h._sent)
