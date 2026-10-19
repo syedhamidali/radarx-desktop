@@ -108,7 +108,7 @@
     background: var(--c-panel-solid); /* opaque: it floats over the side panels */
     border: 1px solid var(--c-border-strong);
     border-radius: var(--radius-lg, 6px);
-    box-shadow: var(--shadow-3, 0 8px 32px rgba(0, 0, 0, 0.5));
+    box-shadow: var(--shadow-3);
     text-transform: none;
     letter-spacing: 0;
     font-weight: 400;

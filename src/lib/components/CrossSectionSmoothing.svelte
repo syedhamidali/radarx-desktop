@@ -87,7 +87,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
   .compact .sm-label {
     flex-basis: 70px;
@@ -113,21 +113,21 @@
     margin-left: -1px;
   }
   .sm-seg button.on {
-    background: rgba(91, 108, 247, 0.28);
-    border-color: rgba(91, 108, 247, 0.55);
-    color: #fff;
+    background: rgba(var(--c-accent-rgb), 0.28);
+    border-color: rgba(var(--c-accent-rgb), 0.55);
+    color: var(--c-text);
     position: relative;
   }
   input[type='range'] {
     flex: 1;
     min-width: 80px;
-    accent-color: var(--accent-primary, #5b6cf7);
+    accent-color: var(--accent-primary);
   }
   .sm-val {
     flex: 0 0 56px;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
   .sm-reset {
     height: 24px;

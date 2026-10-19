@@ -2031,14 +2031,14 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
         <!-- Compass -->
         <div class="compass-wrap">
           <svg viewBox="-20 -20 40 40" width="44" height="44">
-            <circle r="18" fill="rgba(0,0,0,0.45)" stroke="rgba(255,255,255,0.12)" stroke-width="0.5"/>
+            <circle r="18" fill="var(--c-scene-bg)" stroke="var(--c-scene-line)" stroke-width="0.5"/>
             <g transform="rotate({compassAngle})">
-              <polygon points="0,-15 -3,0 0,-6 3,0" fill="#e05252"/>
-              <polygon points="0,15 -3,0 0,6 3,0" fill="#555"/>
+              <polygon points="0,-15 -3,0 0,-6 3,0" fill="var(--c-alarm)"/>
+              <polygon points="0,15 -3,0 0,6 3,0" fill="var(--c-scene-text-dim)"/>
             </g>
             <text transform="rotate({compassAngle}) translate(0,-22)"
                   text-anchor="middle" dominant-baseline="middle"
-                  font-size="6.5" font-weight="bold" fill="#e05252"
+                  font-size="6.5" font-weight="bold" fill="var(--c-alarm)"
                   font-family="system-ui,sans-serif">N</text>
           </svg>
         </div>
@@ -2129,10 +2129,10 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--accent-primary);
-    background: rgba(91,108,247,0.1);
+    background: rgba(var(--c-accent-rgb), 0.1);
     padding: 2px 8px;
     border-radius: var(--radius-sm);
-    border: 1px solid rgba(91,108,247,0.2);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.2);
   }
 
   .ctrl-group {
@@ -2165,16 +2165,16 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     color: var(--text-secondary);
     cursor: pointer;
   }
-  .reset-btn:hover { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
-  .reset-btn.active { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .reset-btn:hover { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
+  .reset-btn.active { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
 
   .clip-badge {
     font-family: var(--font-mono);
     font-size: 10px;
     font-weight: 600;
-    color: rgb(0, 220, 255);
-    background: rgba(0, 220, 255, 0.1);
-    border: 1px solid rgba(0, 220, 255, 0.35);
+    color: var(--c-accent);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border: 1px solid rgba(var(--c-accent-rgb), 0.35);
     border-radius: var(--radius-sm);
     padding: 2px 7px;
     white-space: nowrap;
@@ -2234,15 +2234,15 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     align-items: flex-start;
     gap: 3px;
     padding: 6px 8px;
-    background: rgba(15, 15, 26, 0.78);
-    border: 1px solid rgba(255,255,255,0.12);
+    background: var(--c-scene-bg);
+    border: 1px solid var(--c-scene-line);
     border-radius: 4px;
     max-width: 190px;
   }
   .cat-title {
     font-size: 10px;
     font-weight: 600;
-    color: rgba(255,255,255,0.9);
+    color: var(--c-scene-text);
     margin-bottom: 2px;
   }
   .cat-item {
@@ -2250,7 +2250,7 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     align-items: center;
     gap: 5px;
     font-size: 10px;
-    color: rgba(255,255,255,0.85);
+    color: var(--c-scene-text);
     white-space: nowrap;
   }
   .cat-swatch {
@@ -2258,26 +2258,26 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     width: 11px;
     height: 11px;
     border-radius: 2px;
-    border: 1px solid rgba(255,255,255,0.25);
+    border: 1px solid var(--c-scene-line);
   }
   .cb-bar {
     width: 13px;
     height: 150px;
     border-radius: 2px;
-    border: 1px solid rgba(255,255,255,0.12);
+    border: 1px solid var(--c-scene-line);
   }
   .cb-label {
     font-family: var(--font-mono);
     font-size: 10px;
-    color: rgba(255,255,255,0.85);
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    color: var(--c-scene-text);
+    text-shadow: 0 1px 3px var(--c-scene-shadow);
     line-height: 1;
   }
   .cb-var {
     font-family: var(--font-mono);
     font-size: 9px;
-    color: rgba(255,255,255,0.5);
-    text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    color: var(--c-scene-text-dim);
+    text-shadow: 0 1px 3px var(--c-scene-shadow);
     margin-top: 2px;
     writing-mode: vertical-rl;
     transform: rotate(180deg);
@@ -2341,8 +2341,8 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     border-radius: var(--radius-sm);
     white-space: nowrap;
   }
-  .q-chip.weak { color: var(--accent-warning, #d9a441); border-color: rgba(217,164,65,0.4); }
-  .sweep-count.partial { color: var(--accent-warning, #d9a441); }
+  .q-chip.weak { color: var(--accent-warning); border-color: rgba(var(--c-caution-rgb), 0.4); }
+  .sweep-count.partial { color: var(--accent-warning); }
 
   .banner {
     position: absolute;
@@ -2354,8 +2354,8 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     max-width: calc(100% - 24px);
     padding: 5px 10px;
     font-size: 11px;
-    color: var(--text-primary, #fff);
-    background: rgba(20, 22, 38, 0.92);
+    color: var(--text-primary);
+    background: rgba(var(--c-surface-1-rgb), 0.92);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     z-index: 6;
@@ -2366,7 +2366,7 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     display: flex; align-items: center; gap: 6px;
     padding: 3px 8px; font-size: 10px;
     color: var(--text-secondary);
-    background: rgba(20, 22, 38, 0.85);
+    background: rgba(var(--c-surface-1-rgb), 0.85);
     border: 1px solid var(--border-color);
     border-radius: var(--radius-sm);
     pointer-events: none;
@@ -2384,11 +2384,11 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     cursor: pointer;
     white-space: nowrap;
   }
-  .banner-btn:hover { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .banner-btn:hover { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
   .banner-x {
     border: none; background: none; color: var(--text-muted);
     font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px;
   }
-  .overlay.fatal { pointer-events: auto; background: rgba(10, 10, 20, 0.7); text-align: center; }
+  .overlay.fatal { pointer-events: auto; background: rgba(var(--c-surface-1-rgb), 0.7); text-align: center; }
   .overlay .sub { font-size: 11px; color: var(--text-muted); margin: 0; }
 </style>

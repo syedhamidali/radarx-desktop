@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { ink, surface, themeRevision } from '../utils/themeColors';
   /**
    * CrossSectionViewer -- Canvas-based 2D viewer showing height (Y) vs distance (X)
    * for an RHI-like cross-section through radar data.
@@ -94,7 +95,7 @@
   // Redraw when any display setting changes. Each one is read explicitly: a short-circuiting
   // `a || b || c` only subscribes to the first truthy operand, so editing the range did nothing.
   $effect(() => {
-    const deps = [cmapName, vmin, vmax, scale, panX, panY, width, height, $smoothingStore, $valueMasks];
+    const deps = [cmapName, vmin, vmax, scale, panX, panY, width, height, $smoothingStore, $valueMasks, $themeRevision];
     if (canvasEl && deps.length) {
       requestAnimationFrame(() => draw());
     }
@@ -132,7 +133,7 @@
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
     // Clear
-    ctx.fillStyle = 'rgb(15, 15, 26)';
+    ctx.fillStyle = surface(0);
     ctx.fillRect(0, 0, width, height);
 
     const plotW = width - margin.left - margin.right;
@@ -238,7 +239,7 @@
     }
 
     // Draw axes
-    ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+    ctx.strokeStyle = ink(0.25);
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(margin.left, margin.top);
@@ -247,7 +248,7 @@
     ctx.stroke();
 
     // Tick marks and labels
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillStyle = ink(0.6);
     ctx.font = '11px var(--font-mono, monospace)';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
@@ -262,12 +263,12 @@
         ctx.beginPath();
         ctx.moveTo(x, margin.top + plotH);
         ctx.lineTo(x, margin.top + plotH + 5);
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.strokeStyle = ink(0.3);
         ctx.stroke();
         ctx.fillText(d.toFixed(xTickSpacing < 1 ? 1 : 0), x, margin.top + plotH + 8);
 
         // Grid line
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.strokeStyle = ink(0.05);
         ctx.beginPath();
         ctx.moveTo(x, margin.top);
         ctx.lineTo(x, margin.top + plotH);
@@ -276,7 +277,7 @@
     }
 
     // X-axis label
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillStyle = ink(0.5);
     ctx.font = '12px var(--font-sans, sans-serif)';
     ctx.fillText('Distance (km)', margin.left + plotW / 2, height - 8);
 
@@ -284,7 +285,7 @@
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
     ctx.font = '11px var(--font-mono, monospace)';
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillStyle = ink(0.6);
 
     const yRange = viewHMax - viewHMin;
     const yTickSpacing = niceTickSpacing(yRange, plotH / 40);
@@ -295,12 +296,12 @@
         ctx.beginPath();
         ctx.moveTo(margin.left - 5, y);
         ctx.lineTo(margin.left, y);
-        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.strokeStyle = ink(0.3);
         ctx.stroke();
         ctx.fillText(h.toFixed(yTickSpacing < 1 ? 1 : 0), margin.left - 8, y);
 
         // Grid line
-        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.strokeStyle = ink(0.05);
         ctx.beginPath();
         ctx.moveTo(margin.left, y);
         ctx.lineTo(margin.left + plotW, y);
@@ -314,7 +315,7 @@
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.fillStyle = ink(0.5);
     ctx.font = '12px var(--font-sans, sans-serif)';
     ctx.fillText('Height (km)', 0, 0);
     ctx.restore();
@@ -359,10 +360,10 @@
       ctx.fillRect(barX, barY + i, barW, 1);
     }
 
-    ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+    ctx.strokeStyle = ink(0.2);
     ctx.strokeRect(barX, barY, barW, barH);
 
-    ctx.fillStyle = 'rgba(255,255,255,0.6)';
+    ctx.fillStyle = ink(0.6);
     ctx.font = '10px var(--font-mono, monospace)';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
@@ -370,7 +371,7 @@
     ctx.fillText(vmin.toFixed(1), barX + barW + 4, barY + barH);
 
     if (data?.units) {
-      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.fillStyle = ink(0.4);
       ctx.font = '9px var(--font-sans, sans-serif)';
       ctx.fillText(data.units, barX + barW + 4, barY + barH + 12);
     }
@@ -549,7 +550,7 @@
     cursor: crosshair;
     user-select: none;
     overflow: hidden;
-    background: rgb(15, 15, 26);
+    background: var(--c-surface-0);
     border-radius: var(--radius-sm, 4px);
   }
 
@@ -566,7 +567,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-muted, rgba(255,255,255,0.35));
+    color: var(--text-muted);
     font-size: 13px;
     z-index: 2;
   }
@@ -574,19 +575,19 @@
   .cs-tooltip {
     position: absolute;
     padding: 3px 8px;
-    background: rgba(15, 15, 26, 0.92);
-    border: 1px solid var(--accent-primary, #5b6cf7);
+    background: rgba(var(--c-surface-1-rgb), 0.92);
+    border: 1px solid var(--accent-primary);
     border-radius: 3px;
     font-family: var(--font-mono, monospace);
     font-size: 11px;
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
     pointer-events: none;
     z-index: 50;
     white-space: nowrap;
     backdrop-filter: blur(4px);
   }
 
-  .tt-label { color: var(--text-muted, rgba(255,255,255,0.5)); font-weight: 600; }
-  .tt-sep { color: var(--border-color, rgba(255,255,255,0.15)); margin: 0 3px; }
-  .tt-val { color: var(--accent-hover, #7b8aff); }
+  .tt-label { color: var(--text-muted); font-weight: 600; }
+  .tt-sep { color: var(--border-color); margin: 0 3px; }
+  .tt-val { color: var(--accent-hover); }
 </style>

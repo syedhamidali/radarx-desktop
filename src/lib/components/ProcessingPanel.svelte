@@ -575,7 +575,7 @@
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(var(--c-ink-rgb), 0.3);
     border-top-color: var(--c-on-accent);
     border-radius: 50%;
     animation: spin 600ms linear infinite;
@@ -612,7 +612,7 @@
   }
 
   .hint.ok {
-    color: var(--accent-success, #4caf50);
+    color: var(--accent-success);
   }
 
   .link-btn {
@@ -620,7 +620,7 @@
     padding: 0 4px;
     height: auto;
     font-size: inherit;
-    color: var(--accent-primary, var(--c-accent));
+    color: var(--accent-primary);
     background: transparent;
     border: none;
     text-decoration: underline;
@@ -656,21 +656,21 @@
   }
 
   .var-tag.available {
-    background: rgba(76, 175, 80, 0.2);
-    color: var(--accent-success, #4caf50);
+    background: rgba(var(--c-nominal-rgb), 0.2);
+    color: var(--accent-success);
   }
 
   .var-tag.missing {
-    background: rgba(244, 67, 54, 0.2);
-    color: var(--accent-danger, #f44336);
+    background: rgba(var(--c-alarm-rgb), 0.2);
+    color: var(--accent-danger);
   }
 
   .result-card {
     margin-top: var(--spacing-sm);
     padding: var(--spacing-sm) var(--spacing-md);
-    background: var(--bg-surface, rgba(var(--c-line-rgb), 0.05));
+    background: var(--bg-surface);
     border-radius: 6px;
-    border: 1px solid var(--border-subtle, rgba(var(--c-line-rgb), 0.08));
+    border: 1px solid var(--border-subtle);
   }
 
   .result-title {

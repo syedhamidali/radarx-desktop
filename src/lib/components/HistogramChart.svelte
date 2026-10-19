@@ -263,30 +263,30 @@
     </defs>
 
     <!-- Background -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="var(--bg-primary, #0f0f1a)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="var(--bg-primary)" />
 
     <!-- Grid lines -->
     {#each xTicks as t}
       <line x1={xToSvg(t, xMin, xMax, pw)} y1={MARGIN.top} x2={xToSvg(t, xMin, xMax, pw)} y2={MARGIN.top + ph}
-            stroke="var(--border-color, #2a2a3e)" stroke-width="0.5" />
+            stroke="var(--border-color)" stroke-width="0.5" />
       <text x={xToSvg(t, xMin, xMax, pw)} y={svgH - MARGIN.bottom + 16}
-            fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="middle"
+            fill="var(--text-muted)" font-size="9" text-anchor="middle"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
     {#each yTicks as t}
       <line x1={MARGIN.left} y1={cToSvg(t, maxCount, ph)} x2={MARGIN.left + pw} y2={cToSvg(t, maxCount, ph)}
-            stroke="var(--border-color, #2a2a3e)" stroke-width="0.5" />
+            stroke="var(--border-color)" stroke-width="0.5" />
       <text x={MARGIN.left - 6} y={cToSvg(t, maxCount, ph) + 3}
-            fill="var(--text-muted, #6a6a80)" font-size="9" text-anchor="end"
+            fill="var(--text-muted)" font-size="9" text-anchor="end"
             font-family="var(--font-mono, monospace)">{fmtTick(t)}</text>
     {/each}
 
     <!-- Axis labels -->
     <text x={MARGIN.left + pw / 2} y={svgH - 3}
-          fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
+          fill="var(--text-secondary)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)">{variable} {units ? `(${units})` : ''}</text>
     <text x={12} y={MARGIN.top + ph / 2}
-          fill="var(--text-secondary, #a0a0b0)" font-size="10" text-anchor="middle"
+          fill="var(--text-secondary)" font-size="10" text-anchor="middle"
           font-family="var(--font-mono, monospace)"
           transform="rotate(-90, 12, {MARGIN.top + ph / 2})">Count</text>
 
@@ -298,43 +298,43 @@
           y={cToSvg(c, maxCount, ph)}
           width={Math.max(barWidth - 1, 1)}
           height={MARGIN.top + ph - cToSvg(c, maxCount, ph)}
-          fill={hoveredBin === i ? 'var(--accent-primary, #5b6cf7)' : 'rgba(91, 108, 247, 0.6)'}
+          fill={hoveredBin === i ? 'var(--accent-primary)' : 'rgba(var(--c-accent-rgb), 0.6)'}
         />
       {/each}
 
       <!-- Gaussian overlay -->
       {#if gaussianPath}
-        <path d={gaussianPath} fill="none" stroke="#ff6b35" stroke-width="1.5" opacity="0.8" />
+        <path d={gaussianPath} fill="none" stroke="var(--c-caution)" stroke-width="1.5" opacity="0.8" />
       {/if}
 
       <!-- Mean line -->
       {#if stats.mean !== undefined}
         <line x1={xToSvg(stats.mean, xMin, xMax, pw)} y1={MARGIN.top} x2={xToSvg(stats.mean, xMin, xMax, pw)} y2={MARGIN.top + ph}
-              stroke="#22d3ee" stroke-width="1" stroke-dasharray="4,3" />
+              stroke="var(--c-accent)" stroke-width="1" stroke-dasharray="4,3" />
       {/if}
       <!-- Median line -->
       {#if stats.median !== undefined}
         <line x1={xToSvg(stats.median, xMin, xMax, pw)} y1={MARGIN.top} x2={xToSvg(stats.median, xMin, xMax, pw)} y2={MARGIN.top + ph}
-              stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,3" />
+              stroke="var(--c-derived)" stroke-width="1" stroke-dasharray="4,3" />
       {/if}
 
       <!-- Selection highlight -->
       {#if rangeStart !== null && rangeEnd !== null}
         <rect x={selRectX} y={MARGIN.top} width={selRectW} height={ph}
-              fill="rgba(255,107,53,0.15)" stroke="#ff6b35" stroke-width="1" />
+              fill="rgba(var(--c-caution-rgb), 0.15)" stroke="var(--c-caution)" stroke-width="1" />
       {/if}
     </g>
 
     <!-- Border -->
-    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="none" stroke="var(--border-color, #2a2a3e)" />
+    <rect x={MARGIN.left} y={MARGIN.top} width={pw} height={ph} fill="none" stroke="var(--border-color)" />
 
     <!-- Hover tooltip -->
     {#if hoveredBin !== null && binEdges.length > hoveredBin + 1}
       <g pointer-events="none">
         <rect x={hoverX + 8} y={hoverY - 34} width="160" height="28" rx="3"
-              fill="rgba(15,15,26,0.92)" stroke="var(--accent-primary, #5b6cf7)" />
+              fill="rgba(var(--c-surface-1-rgb), 0.92)" stroke="var(--accent-primary)" />
         <text x={hoverX + 14} y={hoverY - 16}
-              fill="var(--text-primary, #e0e0f0)" font-size="10"
+              fill="var(--text-primary)" font-size="10"
               font-family="var(--font-mono, monospace)">
           [{binEdges[hoveredBin].toFixed(1)}, {binEdges[hoveredBin + 1].toFixed(1)}) = {counts[hoveredBin]}
         </text>
@@ -371,8 +371,8 @@
 <style>
   .histogram-container {
     position: relative;
-    background: var(--bg-secondary, #1a1a2e);
-    border: 1px solid var(--border-color, #2a2a3e);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-md, 6px);
     overflow: hidden;
   }
@@ -387,14 +387,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(15, 15, 26, 0.7);
-    color: var(--text-muted, #6a6a80);
+    background: rgba(var(--c-surface-1-rgb), 0.7);
+    color: var(--text-muted);
     font-size: 12px;
     z-index: 5;
   }
   .hist-error {
-    background: var(--bg-secondary, #1a1a2e);
-    color: var(--accent-danger, #f87171);
+    background: var(--bg-secondary);
+    color: var(--accent-danger);
     padding: 0 16px;
     text-align: center;
   }
@@ -403,8 +403,8 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    background: var(--bg-primary, #0f0f1a);
-    border-top: 1px solid var(--border-color, #2a2a3e);
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-color);
   }
   .stat-row {
     display: flex;
@@ -415,24 +415,24 @@
     font-family: var(--font-mono, monospace);
   }
   .stat-label {
-    color: var(--text-muted, #6a6a80);
+    color: var(--text-muted);
     min-width: 32px;
   }
   .stat-value {
-    color: var(--text-primary, #e0e0f0);
+    color: var(--text-primary);
     min-width: 48px;
   }
-  .mean-color { color: #22d3ee; }
-  .median-color { color: #a78bfa; }
+  .mean-color { color: var(--c-accent); }
+  .median-color { color: var(--c-derived); }
   .hist-info {
     display: flex;
     justify-content: space-between;
     padding: 2px 8px;
     font-size: 9px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, #6a6a80);
-    background: var(--bg-primary, #0f0f1a);
-    border-top: 1px solid var(--border-color, #2a2a3e);
+    color: var(--text-muted);
+    background: var(--bg-primary);
+    border-top: 1px solid var(--border-color);
   }
   .hist-info span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
   .hist-info span:first-child { flex-shrink: 0; }

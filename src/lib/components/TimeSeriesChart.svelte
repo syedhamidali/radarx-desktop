@@ -48,14 +48,14 @@
 
   // Colors for multi-line
   const LINE_COLORS = [
-    'var(--accent-primary, #5B6CF7)',
-    'var(--accent-success, #22C55E)',
-    'var(--accent-warning, #F59E0B)',
-    'var(--accent-danger, #EF4444)',
-    '#06B6D4',
-    '#A855F7',
-    '#EC4899',
-    '#14B8A6',
+    'var(--c-series-1)',
+    'var(--c-series-2)',
+    'var(--c-series-3)',
+    'var(--c-series-4)',
+    'var(--c-series-5)',
+    'var(--c-series-6)',
+    'var(--c-series-7)',
+    'var(--c-series-8)',
   ];
 
   // ── Request time series when probe changes ─────────────────────────────
@@ -561,7 +561,7 @@
   }
 
   .ts-svg :global(.ts-axis) {
-    stroke: var(--border-light, var(--glass-border));
+    stroke: var(--border-light);
     stroke-width: 1;
   }
 
@@ -587,7 +587,7 @@
   }
 
   .ts-tooltip {
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.9));
+    background: var(--glass-bg-heavy);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     padding: 6px 8px;

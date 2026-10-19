@@ -76,7 +76,7 @@
   }
   label {
     font-size: 11px;
-    color: var(--text-secondary, #9da2c2);
+    color: var(--text-secondary);
   }
   .check {
     display: inline-flex;
@@ -91,14 +91,14 @@
     box-sizing: border-box;
     font-size: 12px;
     padding: 3px 6px;
-    color: var(--text-primary, #e4e6f4);
-    background: var(--bg-primary, var(--c-surface-0));
-    border: 1px solid var(--border-color, #2a2e4a);
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
   }
   .help {
     margin: 0;
     font-size: 10px;
-    color: var(--text-muted, #5c6088);
+    color: var(--text-muted);
   }
 </style>

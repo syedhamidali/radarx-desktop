@@ -125,12 +125,12 @@
 <style>
   .look-panel { padding: 6px 10px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); max-height: 46vh; overflow: auto; font-size: 11px; }
   .lp-top { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 4px; }
-  .lp-top select, .lp-name { font-size: 11px; background: var(--bg-tertiary, #222); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px; padding: 2px 4px; }
+  .lp-top select, .lp-name { font-size: 11px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 3px; padding: 2px 4px; }
   .lp-name { width: 120px; }
-  .lp-btn { font-size: 11px; padding: 2px 7px; border: 1px solid var(--border-color); background: var(--bg-tertiary, #222); color: var(--text-primary); border-radius: 3px; cursor: pointer; }
+  .lp-btn { font-size: 11px; padding: 2px 7px; border: 1px solid var(--border-color); background: var(--bg-tertiary); color: var(--text-primary); border-radius: 3px; cursor: pointer; }
   .lp-btn:disabled { opacity: 0.45; cursor: default; }
   .lp-file input { display: none; }
-  .lp-msg { color: var(--accent-warning, #d9a441); margin: 2px 0; }
+  .lp-msg { color: var(--accent-warning); margin: 2px 0; }
   .lp-note { color: var(--text-muted); margin-bottom: 4px; }
   summary { cursor: pointer; font-weight: 700; color: var(--accent-primary); padding: 2px 0; }
   .lp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 2px 14px; padding: 2px 0 6px; }

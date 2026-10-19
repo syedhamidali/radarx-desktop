@@ -108,7 +108,7 @@
 
   .error {
     margin: 0 0 var(--spacing-xs, 4px);
-    color: var(--color-error, #f87171);
+    color: var(--color-error);
     font-size: 11px;
   }
 
@@ -129,12 +129,12 @@
     letter-spacing: 0.06em;
     color: var(--text-muted);
     padding: var(--spacing-xs, 4px);
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--glass-border);
   }
 
   .map-table td {
     padding: var(--spacing-xs, 4px);
-    border-bottom: 1px solid var(--glass-border, var(--border-color));
+    border-bottom: 1px solid var(--glass-border);
     vertical-align: top;
     color: var(--text-secondary);
   }
@@ -170,7 +170,7 @@
     font-size: 11px;
     color: var(--text-secondary);
     background: rgba(var(--c-surface-2-rgb), 0.5);
-    border: 1px solid var(--glass-border, var(--border-color));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
     padding: 2px 4px;
   }

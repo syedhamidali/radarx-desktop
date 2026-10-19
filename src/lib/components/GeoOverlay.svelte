@@ -241,14 +241,6 @@
   .geo-overlay {
     --halo: rgba(var(--c-surface-0-rgb), 0.8);
   }
-  :global(.theme-light) .geo-overlay {
-    --halo: rgba(255, 255, 255, 0.88);
-  }
-  @media (prefers-color-scheme: light) {
-    :global(.theme-auto) .geo-overlay {
-      --halo: rgba(255, 255, 255, 0.88);
-    }
-  }
 
   .geo-svg {
     position: absolute;
@@ -259,20 +251,20 @@
 
   /* Radar site */
   .radar-crosshair {
-    stroke: var(--accent-primary, var(--c-accent));
+    stroke: var(--accent-primary);
     stroke-width: 2;
     stroke-opacity: 0.9;
   }
 
   .radar-dot {
-    fill: var(--accent-primary, var(--c-accent));
+    fill: var(--accent-primary);
     fill-opacity: 0.9;
-    stroke: var(--text-primary, #e4e6f4);
+    stroke: var(--text-primary);
     stroke-width: 1;
   }
 
   .radar-label {
-    fill: var(--accent-primary, var(--c-accent));
+    fill: var(--accent-primary);
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     font-weight: 700;
@@ -283,7 +275,7 @@
 
   /* Cardinals */
   .cardinal-label {
-    fill: var(--text-muted, #5c6088);
+    fill: var(--text-muted);
     font-family: var(--font-sans, sans-serif);
     font-size: 14px;
     font-weight: 700;
@@ -295,7 +287,7 @@
 
   /* Range ring labels */
   .ring-label {
-    fill: var(--text-muted, #5c6088);
+    fill: var(--text-muted);
     font-family: var(--font-mono, monospace);
     font-size: 9px;
     font-weight: 500;
@@ -307,14 +299,14 @@
 
   /* City markers */
   .city-dot {
-    fill: var(--text-secondary, #9da2c2);
+    fill: var(--text-secondary);
     fill-opacity: 0.8;
     stroke: rgba(var(--c-surface-0-rgb), 0.6);
     stroke-width: 1;
   }
 
   .city-label {
-    fill: var(--text-secondary, #9da2c2);
+    fill: var(--text-secondary);
     font-family: var(--font-sans, sans-serif);
     font-size: 10px;
     font-weight: 500;

@@ -184,7 +184,7 @@
                    bind:value={editText}
                    on:blur={commitEdit}
                    on:keydown|stopPropagation={onEditKeydown}
-                   style="width:100%;height:22px;font-size:11px;background:var(--bg-secondary,#0d1020);color:var(--text-primary);border:1px solid var(--accent-primary);border-radius:3px;padding:0 4px;outline:none;font-family:var(--font-mono);"
+                   style="width:100%;height:22px;font-size:11px;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--accent-primary);border-radius:3px;padding:0 4px;outline:none;font-family:var(--font-mono);"
             />
           </foreignObject>
         {:else}
@@ -197,7 +197,7 @@
       {@const e = dataToScreen(ann.end)}
       <defs>
         <marker id="arrow-{ann.id}" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent-success, #34d399)" />
+          <path d="M0,0 L8,3 L0,6 Z" fill="var(--accent-success)" />
         </marker>
       </defs>
       <line x1={s.x} y1={s.y} x2={e.x} y2={e.y}
@@ -324,42 +324,34 @@
   .annotation-overlay {
     --halo: rgba(var(--c-surface-0-rgb), 0.8);
   }
-  :global(.theme-light) .annotation-overlay {
-    --halo: rgba(255, 255, 255, 0.88);
-  }
-  @media (prefers-color-scheme: light) {
-    :global(.theme-auto) .annotation-overlay {
-      --halo: rgba(255, 255, 255, 0.88);
-    }
-  }
 
   .annotation-text-bg {
-    fill: var(--glass-bg-heavy, rgba(var(--c-surface-0-rgb), 0.85));
-    stroke: var(--accent-primary, var(--c-accent));
+    fill: var(--glass-bg-heavy);
+    stroke: var(--accent-primary);
     stroke-width: 1;
   }
 
   .annotation-text-label {
-    fill: var(--text-primary, #e4e6f4);
+    fill: var(--text-primary);
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     dominant-baseline: middle;
   }
 
   .annotation-arrow {
-    stroke: var(--accent-success, #34d399);
+    stroke: var(--accent-success);
     stroke-width: 2;
   }
 
   .annotation-region {
     fill: rgba(var(--c-accent-rgb), 0.08);
-    stroke: var(--accent-warning, #fbbf24);
+    stroke: var(--accent-warning);
     stroke-width: 1.5;
     stroke-dasharray: 5 3;
   }
 
   .annotation-region-label {
-    fill: var(--accent-warning, #fbbf24);
+    fill: var(--accent-warning);
     font-family: var(--font-mono, monospace);
     font-size: 10px;
     text-anchor: middle;
@@ -370,15 +362,15 @@
   }
 
   .annotation-pending-dot {
-    fill: var(--accent-success, #34d399);
+    fill: var(--accent-success);
     fill-opacity: 0.7;
-    stroke: var(--bg-primary, var(--c-surface-0));
+    stroke: var(--bg-primary);
     stroke-width: 2;
   }
 
   .annotation-pending-line {
     fill: none;
-    stroke: var(--accent-success, #34d399);
+    stroke: var(--accent-success);
     stroke-width: 1.5;
     stroke-dasharray: 4 3;
     stroke-opacity: 0.6;
@@ -394,7 +386,7 @@
     align-items: center;
     gap: 4px;
     padding: 6px 8px;
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
+    background: var(--glass-bg-heavy);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
@@ -430,7 +422,7 @@
     z-index: 25;
     width: 280px;
     max-height: 360px;
-    background: var(--glass-bg-heavy, rgba(var(--c-surface-1-rgb), 0.9));
+    background: var(--glass-bg-heavy);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-md);
     backdrop-filter: blur(20px);

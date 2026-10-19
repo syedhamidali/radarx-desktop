@@ -64,7 +64,7 @@
     background: var(--bg-secondary); color: var(--text-secondary); cursor: pointer;
   }
   .seg:hover:not(:disabled) { border-color: var(--accent-primary); }
-  .seg.active { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .seg.active { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
   .seg:disabled { opacity: 0.45; cursor: not-allowed; }
   .busy { font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); margin-left: 6px; }
 </style>

@@ -59,7 +59,7 @@
 
   function presetGradient(name: string): string {
     const rgb = COLORMAP_DATA[name];
-    if (!rgb) return '#333';
+    if (!rgb) return 'var(--c-surface-3)';
     const parts: string[] = [];
     for (let i = 0; i < 10; i++) {
       const idx = Math.round((i / 9) * 255);
@@ -432,7 +432,7 @@
 <style>
   .export-note {
     font-size: 11px;
-    color: var(--accent-success, #34d399);
+    color: var(--accent-success);
   }
 
   .cmap-editor-overlay {
@@ -442,15 +442,15 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(var(--c-shadow-rgb), 0.6);
     backdrop-filter: blur(4px);
   }
 
   .cmap-editor {
-    background: var(--bg-secondary, #1a1a2e);
-    border: 1px solid var(--border-color, #333);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-md, 8px);
-    box-shadow: var(--shadow-lg, 0 8px 32px rgba(0,0,0,0.5));
+    box-shadow: var(--shadow-lg);
     width: 420px;
     max-height: 80vh;
     display: flex;
@@ -463,33 +463,33 @@
     align-items: center;
     justify-content: space-between;
     padding: 12px 16px;
-    border-bottom: 1px solid var(--border-color, #333);
+    border-bottom: 1px solid var(--border-color);
   }
 
   .editor-header h3 {
     margin: 0;
     font-size: 14px;
     font-weight: 600;
-    color: var(--text-primary, #eee);
+    color: var(--text-primary);
   }
 
   .close-btn {
     background: none;
     border: none;
-    color: var(--text-muted, #888);
+    color: var(--text-muted);
     font-size: 20px;
     cursor: pointer;
     padding: 0 4px;
     line-height: 1;
   }
   .close-btn:hover {
-    color: var(--text-primary, #eee);
+    color: var(--text-primary);
   }
 
   /* Tabs */
   .tabs {
     display: flex;
-    border-bottom: 1px solid var(--border-color, #333);
+    border-bottom: 1px solid var(--border-color);
   }
 
   .tab {
@@ -499,7 +499,7 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--text-muted, #888);
+    color: var(--text-muted);
     background: transparent;
     border: none;
     border-bottom: 2px solid transparent;
@@ -507,11 +507,11 @@
     transition: color 0.15s, border-color 0.15s;
   }
   .tab:hover {
-    color: var(--text-secondary, #bbb);
+    color: var(--text-secondary);
   }
   .tab.active {
-    color: var(--accent-primary, #6cf);
-    border-bottom-color: var(--accent-primary, #6cf);
+    color: var(--accent-primary);
+    border-bottom-color: var(--accent-primary);
   }
 
   /* Editor body */
@@ -532,7 +532,7 @@
   .field-label {
     font-size: 11px;
     font-weight: 600;
-    color: var(--text-muted, #888);
+    color: var(--text-muted);
     min-width: 50px;
   }
 
@@ -540,15 +540,15 @@
     flex: 1;
     font-family: var(--font-mono, monospace);
     font-size: 12px;
-    color: var(--text-primary, #eee);
-    background: var(--bg-surface, #111);
-    border: 1px solid var(--border-color, #333);
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
     border-radius: 3px;
     padding: 4px 8px;
     outline: none;
   }
   .field-input:focus {
-    border-color: var(--accent-primary, #6cf);
+    border-color: var(--accent-primary);
   }
   .field-input.narrow {
     width: 70px;
@@ -590,7 +590,7 @@
     height: 28px;
     transform: translateX(-50%);
     border-radius: 3px;
-    border: 2px solid rgba(255, 255, 255, 0.6);
+    border: 2px solid rgba(var(--c-ink-rgb), 0.6);
     cursor: grab;
     z-index: 2;
     transition: border-color 0.1s;
@@ -599,8 +599,8 @@
     cursor: grabbing;
   }
   .stop-handle.selected {
-    border-color: var(--accent-primary, #6cf);
-    box-shadow: 0 0 6px rgba(100, 200, 255, 0.4);
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 6px rgba(var(--c-accent-rgb), 0.4);
   }
 
   /* Stop details */
@@ -614,7 +614,7 @@
   .color-picker {
     width: 32px;
     height: 24px;
-    border: 1px solid var(--border-color, #333);
+    border: 1px solid var(--border-color);
     border-radius: 3px;
     cursor: pointer;
     background: none;
@@ -634,7 +634,7 @@
     align-items: center;
     gap: 4px;
     font-size: 11px;
-    color: var(--text-secondary, #bbb);
+    color: var(--text-secondary);
     cursor: pointer;
   }
 
@@ -644,20 +644,20 @@
     font-weight: 600;
     padding: 6px 14px;
     border-radius: 4px;
-    border: 1px solid var(--border-color, #333);
-    background: var(--bg-surface, #111);
-    color: var(--text-secondary, #bbb);
+    border: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
   .btn:hover {
-    background: var(--bg-hover, #222);
-    color: var(--text-primary, #eee);
+    background: var(--bg-hover);
+    color: var(--text-primary);
   }
   .btn.primary {
-    background: var(--accent-primary, #6cf);
-    color: #000;
-    border-color: var(--accent-primary, #6cf);
+    background: var(--accent-primary);
+    color: var(--c-on-accent);
+    border-color: var(--accent-primary);
   }
   .btn.primary:hover {
     filter: brightness(1.1);
@@ -667,21 +667,21 @@
     font-size: 10px;
     padding: 3px 8px;
     border-radius: 3px;
-    border: 1px solid var(--border-color, #333);
-    background: var(--bg-surface, #111);
-    color: var(--text-secondary, #bbb);
+    border: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: background 0.15s;
   }
   .btn-sm:hover {
-    background: var(--bg-hover, #222);
+    background: var(--bg-hover);
   }
   .btn-sm.danger {
-    color: #f66;
-    border-color: #622;
+    color: var(--c-alarm);
+    border-color: rgba(var(--c-alarm-rgb), 0.45);
   }
   .btn-sm.danger:hover {
-    background: #311;
+    background: rgba(var(--c-alarm-rgb), 0.14);
   }
   .btn-sm:disabled {
     opacity: 0.4;
@@ -704,9 +704,9 @@
   .import-textarea {
     font-family: var(--font-mono, monospace);
     font-size: 11px;
-    color: var(--text-primary, #eee);
-    background: var(--bg-surface, #111);
-    border: 1px solid var(--border-color, #333);
+    color: var(--text-primary);
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
     border-radius: 3px;
     padding: 6px;
     min-height: 60px;
@@ -715,7 +715,7 @@
 
   .import-error {
     font-size: 10px;
-    color: #f66;
+    color: var(--c-alarm);
   }
 
   /* Presets body */
@@ -729,7 +729,7 @@
   .preset-category {
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-muted, #888);
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     padding: 8px 8px 2px;
@@ -748,7 +748,7 @@
     transition: background 0.15s;
   }
   .preset-row:hover {
-    background: var(--bg-hover, #222);
+    background: var(--bg-hover);
   }
 
   .preset-gradient {
@@ -762,7 +762,7 @@
   .preset-name {
     font-family: var(--font-mono, monospace);
     font-size: 11px;
-    color: var(--text-secondary, #bbb);
+    color: var(--text-secondary);
   }
 
   .custom-row {
@@ -781,6 +781,6 @@
     padding: 20px;
     text-align: center;
     font-size: 12px;
-    color: var(--text-muted, #888);
+    color: var(--text-muted);
   }
 </style>

@@ -51,8 +51,8 @@
 </div>
 
 <style>
-  :global(html), :global(body) { margin: 0; background: #05070d; overflow: hidden; }
-  .clip-host { position: fixed; inset: 0; background: #05070d; }
+  :global(html), :global(body) { margin: 0; background: var(--c-surface-0); overflow: hidden; }
+  .clip-host { position: fixed; inset: 0; background: var(--c-surface-0); }
   .clip-host :global(canvas) { display: block; }
   .clip-overlay { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
 </style>

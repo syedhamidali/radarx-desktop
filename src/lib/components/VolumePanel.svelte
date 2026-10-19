@@ -299,9 +299,9 @@
     font-size: 11px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-    background: var(--bg-surface, rgba(15, 15, 26, 0.6));
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    border: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 150ms ease;
     white-space: nowrap;
@@ -311,28 +311,28 @@
   }
 
   .vp-btn:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.1);
-    border-color: rgba(91, 108, 247, 0.2);
-    color: var(--text-primary, #fff);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border-color: rgba(var(--c-accent-rgb), 0.2);
+    color: var(--text-primary);
   }
 
   .vp-btn.active {
-    background: rgba(91, 108, 247, 0.2);
-    border-color: rgba(91, 108, 247, 0.4);
-    color: var(--accent-hover, #7b8aff);
+    background: rgba(var(--c-accent-rgb), 0.2);
+    border-color: rgba(var(--c-accent-rgb), 0.4);
+    color: var(--accent-hover);
   }
 
   .vp-btn.primary {
-    background: rgba(91, 108, 247, 0.15);
-    border-color: rgba(91, 108, 247, 0.3);
-    color: var(--accent-hover, #7b8aff);
+    background: rgba(var(--c-accent-rgb), 0.15);
+    border-color: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--accent-hover);
     width: 100%;
     justify-content: center;
   }
 
   .vp-btn.primary:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.3);
-    color: white;
+    background: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--c-text);
   }
 
   .vp-btn:disabled {
@@ -343,7 +343,7 @@
   .vp-box-label {
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
   }
 
   /* Settings */
@@ -362,7 +362,7 @@
   .vp-label {
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     white-space: nowrap;
@@ -373,15 +373,15 @@
     padding: 3px 6px;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .vp-input.invalid {
-    border-color: var(--accent-danger, #f44336);
-    box-shadow: 0 0 0 1px var(--accent-danger, #f44336);
+    border-color: var(--accent-danger);
+    box-shadow: 0 0 0 1px var(--accent-danger);
   }
 
   .vp-input {
@@ -389,17 +389,17 @@
     padding: 3px 6px;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .vp-spinner {
     width: 12px;
     height: 12px;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-top-color: #fff;
+    border: 2px solid rgba(var(--c-ink-rgb), 0.3);
+    border-top-color: var(--c-text);
     border-radius: 50%;
     animation: vp-spin 600ms linear infinite;
     display: inline-block;
@@ -420,7 +420,7 @@
   .vp-section-title {
     font-size: 10px;
     font-weight: 600;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }

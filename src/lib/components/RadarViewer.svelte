@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { cssRgb01 } from '../utils/themeColors';
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { get } from 'svelte/store';
   import { radarData, selectedVariable, selectedSweep, connectionStatus } from '../stores/radarData';
@@ -462,14 +463,8 @@
 
   /** Theme colours (canvas, range rings) for the plain background shown while the map is hidden. */
   function plainSurface() {
-    const cs = getComputedStyle(document.documentElement);
-    const hex = (name: string, fallback: string): [number, number, number] => {
-      const m = /^#([0-9a-f]{6})$/i.exec(cs.getPropertyValue(name).trim() || fallback);
-      const n = parseInt((m ?? /^#([0-9a-f]{6})$/i.exec(fallback)!)[1], 16);
-      return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
-    };
-    const [r, g, b] = hex('--c-text', '#e0ebf7');
-    return { bg: hex('--c-surface-0', '#03060c'), ring: [r, g, b, 0.28] as [number, number, number, number] };
+    const [r, g, b] = cssRgb01('--c-text', [0.88, 0.92, 0.97]);
+    return { bg: cssRgb01('--c-surface-0', [0.01, 0.02, 0.05]), ring: [r, g, b, 0.28] as [number, number, number, number] };
   }
 
   function renderFrame() {
@@ -956,8 +951,8 @@
             <rect
               x={Math.min(x1, x2)} y={Math.min(y1, y2)}
               width={Math.abs(x2 - x1)} height={Math.abs(y2 - y1)}
-              fill="rgba(0,220,255,0.05)"
-              stroke="rgba(0,220,255,0.6)"
+              fill="rgba(var(--c-accent-rgb), 0.05)"
+              stroke="rgba(var(--c-accent-rgb), 0.6)"
               stroke-width="1.5"
               stroke-dasharray="5 3"
             />
@@ -1280,7 +1275,7 @@
 
   .coord-label { color: var(--text-muted); font-weight: 600; }
   .coord-value { color: var(--text-primary); min-width: 52px; text-align: right; }
-  .coord-sep { color: var(--border-light, var(--border-color)); margin: 0 2px; }
+  .coord-sep { color: var(--border-light); margin: 0 2px; }
 
   .colorbar-wrapper {
     position: absolute;
@@ -1368,7 +1363,7 @@
     font-size: 11px;
     font-weight: 600;
     color: var(--text-primary);
-    text-shadow: 0 0 4px rgba(0, 0, 0, 0.8);
+    text-shadow: 0 0 4px rgba(var(--c-shadow-rgb), 0.8);
   }
 
   .cat-item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
@@ -1377,7 +1372,7 @@
     width: 12px;
     height: 12px;
     border-radius: 2px;
-    border: 1px solid rgba(255, 255, 255, 0.25);
+    border: 1px solid rgba(var(--c-ink-rgb), 0.25);
   }
 
   .probe-tooltip {
@@ -1439,7 +1434,7 @@
     background: var(--glass-bg-heavy);
     border: 1px solid var(--accent-danger);
     border-radius: 6px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+    box-shadow: 0 2px 10px rgba(var(--c-shadow-rgb), 0.35);
   }
   .load-error span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .load-error-btn {

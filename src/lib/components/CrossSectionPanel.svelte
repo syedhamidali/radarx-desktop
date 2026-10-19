@@ -581,7 +581,7 @@
 
   .csp-tabs {
     display: flex;
-    border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
   }
@@ -593,7 +593,7 @@
     font-weight: 600;
     text-align: center;
     background: transparent;
-    color: var(--text-secondary, rgba(255,255,255,0.6));
+    color: var(--text-secondary);
     border: none;
     border-radius: 0;
     cursor: pointer;
@@ -604,17 +604,17 @@
   }
 
   .csp-tab:not(:last-child) {
-    border-right: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+    border-right: 1px solid var(--glass-border);
   }
 
   .csp-tab:hover {
-    background: rgba(91, 108, 247, 0.06);
-    color: var(--text-primary, #fff);
+    background: rgba(var(--c-accent-rgb), 0.06);
+    color: var(--text-primary);
   }
 
   .csp-tab.active {
-    background: rgba(91, 108, 247, 0.15);
-    color: var(--accent-hover, #7b8aff);
+    background: rgba(var(--c-accent-rgb), 0.15);
+    color: var(--accent-hover);
   }
 
   .csp-section {
@@ -637,7 +637,7 @@
 
   .csp-label {
     font-size: 11px;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.03em;
     font-weight: 600;
@@ -662,14 +662,14 @@
     padding: 3px 6px;
     font-size: 11px;
     font-family: var(--font-mono, monospace);
-    background: var(--bg-primary, #0f0f1a);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
     border-radius: var(--radius-sm, 4px);
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .csp-range-sep {
-    color: var(--text-muted, rgba(255,255,255,0.3));
+    color: var(--text-muted);
     font-size: 11px;
   }
 
@@ -684,39 +684,39 @@
     font-size: 11px;
     font-weight: 600;
     border-radius: var(--radius-sm, 4px);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
-    background: var(--bg-surface, rgba(15, 15, 26, 0.6));
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    border: 1px solid var(--border-color);
+    background: var(--bg-surface);
+    color: var(--text-secondary);
     cursor: pointer;
     transition: all 150ms ease;
     white-space: nowrap;
   }
 
   .csp-btn:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.1);
-    border-color: rgba(91, 108, 247, 0.2);
-    color: var(--text-primary, #fff);
+    background: rgba(var(--c-accent-rgb), 0.1);
+    border-color: rgba(var(--c-accent-rgb), 0.2);
+    color: var(--text-primary);
   }
 
   .csp-btn.active {
-    background: rgba(91, 108, 247, 0.2);
-    border-color: rgba(91, 108, 247, 0.4);
-    color: var(--accent-hover, #7b8aff);
+    background: rgba(var(--c-accent-rgb), 0.2);
+    border-color: rgba(var(--c-accent-rgb), 0.4);
+    color: var(--accent-hover);
   }
 
   .csp-btn.primary {
-    background: rgba(91, 108, 247, 0.15);
-    border-color: rgba(91, 108, 247, 0.3);
-    color: var(--accent-hover, #7b8aff);
+    background: rgba(var(--c-accent-rgb), 0.15);
+    border-color: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--accent-hover);
   }
 
   .csp-btn.primary:hover:not(:disabled) {
-    background: rgba(91, 108, 247, 0.3);
-    color: white;
+    background: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--c-text);
   }
 
   .csp-btn.muted {
-    color: var(--text-muted, rgba(255,255,255,0.35));
+    color: var(--text-muted);
   }
 
   .csp-btn:disabled {
@@ -736,10 +736,10 @@
     font-size: 10px;
     font-family: var(--font-mono, monospace);
     font-weight: 600;
-    border: 1px solid var(--border-color, rgba(255,255,255,0.1));
+    border: 1px solid var(--border-color);
     border-radius: 10px;
     background: transparent;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     cursor: pointer;
     transition: all 150ms ease;
     height: auto;
@@ -748,20 +748,20 @@
   }
 
   .csp-chip:hover {
-    border-color: rgba(91, 108, 247, 0.3);
-    color: var(--text-secondary, rgba(255,255,255,0.7));
+    border-color: rgba(var(--c-accent-rgb), 0.3);
+    color: var(--text-secondary);
   }
 
   .csp-chip.selected {
-    background: rgba(91, 108, 247, 0.15);
-    border-color: rgba(91, 108, 247, 0.4);
-    color: var(--accent-hover, #7b8aff);
+    background: rgba(var(--c-accent-rgb), 0.15);
+    border-color: rgba(var(--c-accent-rgb), 0.4);
+    color: var(--accent-hover);
   }
 
   .csp-caption {
     font-size: 10px;
     font-family: var(--font-mono, monospace);
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
   }
 
   .csp-smoothing summary {
@@ -770,13 +770,13 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.03em;
-    color: var(--text-muted, rgba(255,255,255,0.4));
+    color: var(--text-muted);
     margin-bottom: 4px;
   }
 
   .csp-viewer {
     height: 250px;
-    border: 1px solid var(--glass-border, rgba(255,255,255,0.08));
+    border: 1px solid var(--glass-border);
     border-radius: var(--radius-sm, 4px);
     overflow: hidden;
   }

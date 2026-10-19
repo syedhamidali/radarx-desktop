@@ -1059,13 +1059,13 @@
 
     <div class="compass-wrap">
       <svg viewBox="-20 -20 40 40" width="44" height="44">
-        <circle r="18" fill="rgba(0,0,0,0.45)" stroke="rgba(255,255,255,0.12)" stroke-width="0.5"/>
+        <circle r="18" fill="var(--c-scene-bg)" stroke="var(--c-scene-line)" stroke-width="0.5"/>
         <g transform="rotate({compassAngle})">
-          <polygon points="0,-15 -3,0 0,-6 3,0" fill="#e05252"/>
-          <polygon points="0,15 -3,0 0,6 3,0" fill="#555"/>
+          <polygon points="0,-15 -3,0 0,-6 3,0" fill="var(--c-alarm)"/>
+          <polygon points="0,15 -3,0 0,6 3,0" fill="var(--c-scene-text-dim)"/>
         </g>
         <text transform="rotate({compassAngle}) translate(0,-22)" text-anchor="middle" dominant-baseline="middle"
-              font-size="6.5" font-weight="bold" fill="#e05252" font-family="system-ui,sans-serif">N</text>
+              font-size="6.5" font-weight="bold" fill="var(--c-alarm)" font-family="system-ui,sans-serif">N</text>
       </svg>
     </div>
 
@@ -1097,8 +1097,8 @@
   .controls-3d.row2 { padding-top: 3px; padding-bottom: 3px; }
   .label-3d { font-size: 12px; font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
   .var-badge {
-    font-family: var(--font-mono); font-size: 11px; color: var(--accent-primary); background: rgba(91,108,247,0.1);
-    padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid rgba(91,108,247,0.2);
+    font-family: var(--font-mono); font-size: 11px; color: var(--accent-primary); background: rgba(var(--c-accent-rgb), 0.1);
+    padding: 2px 8px; border-radius: var(--radius-sm); border: 1px solid rgba(var(--c-accent-rgb), 0.2);
   }
   .ctrl-group { display: flex; align-items: center; gap: 4px; }
   .ctrl-group label, .ctrl-group :global(label) {
@@ -1112,7 +1112,7 @@
     font-size: 10px; padding: 2px 8px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);
     background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer;
   }
-  .reset-btn:hover, .reset-btn.active { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .reset-btn:hover, .reset-btn.active { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
   .ctrl-group.views { gap: 3px; }
   .quality-sel {
     font-size: 10px; padding: 1px 4px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);
@@ -1122,7 +1122,7 @@
     font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); padding: 1px 6px;
     border: 1px solid var(--border-color); border-radius: var(--radius-sm); white-space: nowrap;
   }
-  .q-chip.weak { color: var(--accent-warning, #d9a441); border-color: rgba(217,164,65,0.4); }
+  .q-chip.weak { color: var(--accent-warning); border-color: rgba(var(--c-caution-rgb), 0.4); }
   .chk {
     display: inline-flex; align-items: center; gap: 4px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
     color: var(--text-muted); text-transform: uppercase; cursor: pointer;
@@ -1139,19 +1139,20 @@
     position: absolute; right: 10px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column;
     align-items: center; gap: 3px; pointer-events: none; z-index: 3;
   }
-  .cb-bar { width: 13px; height: 150px; border-radius: 2px; border: 1px solid rgba(128,128,128,0.4); }
-  .cb-label { font-family: var(--font-mono); font-size: 10px; color: rgba(255,255,255,0.9); text-shadow: 0 1px 3px rgba(0,0,0,0.9); line-height: 1; }
+  .cb-bar { width: 13px; height: 150px; border-radius: 2px; border: 1px solid var(--c-scene-line); }
+  .cb-label { font-family: var(--font-mono); font-size: 10px; color: var(--c-scene-text); text-shadow: 0 1px 3px var(--c-scene-shadow); line-height: 1; }
   .cb-var {
-    font-family: var(--font-mono); font-size: 9px; color: rgba(255,255,255,0.7); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+    font-family: var(--font-mono); font-size: 9px; color: var(--c-scene-text-dim); text-shadow: 0 1px 3px var(--c-scene-shadow);
     margin-top: 2px; writing-mode: vertical-rl; transform: rotate(180deg);
   }
-  .light .cb-label, .light .cb-var { color: rgba(20,28,48,0.92); text-shadow: 0 1px 3px rgba(255,255,255,0.9); }
+  .light .cb-label, .light .cb-var { color: var(--c-scene-light-text); text-shadow: 0 1px 3px var(--c-scene-light-shadow); }
+  .light .cb-bar { border-color: var(--c-border-strong); }
   .arrow-legend {
     position: absolute; left: 62px; bottom: 12px; display: flex; align-items: center; gap: 6px; z-index: 3;
     padding: 3px 8px; font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary);
-    background: rgba(20,22,38,0.8); border: 1px solid var(--border-color); border-radius: var(--radius-sm); pointer-events: none;
+    background: rgba(var(--c-surface-1-rgb), 0.8); border: 1px solid var(--border-color); border-radius: var(--radius-sm); pointer-events: none;
   }
-  .al-bar { width: 90px; height: 8px; border-radius: 2px; border: 1px solid rgba(128,128,128,0.4); }
+  .al-bar { width: 90px; height: 8px; border-radius: 2px; border: 1px solid var(--c-border-strong); }
   .toggles { gap: 4px; }
   .tog { font-weight: 700; }
   .tog:disabled { opacity: 0.5; cursor: not-allowed; }
@@ -1164,13 +1165,13 @@
   }
   .fn-main { color: var(--text-secondary); }
   .fn-phys { font-family: var(--font-mono); }
-  .fn-warn { color: var(--accent-warning, #d9a441); }
+  .fn-warn { color: var(--accent-warning); }
   .real-note {
     position: absolute; left: 10px; top: 8px; max-width: min(62%, 620px); z-index: 3; pointer-events: none;
     display: flex; flex-direction: column; gap: 1px; font-size: 10px; line-height: 1.25;
-    color: rgba(255, 255, 255, 0.92); text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 0.8);
+    color: var(--c-scene-text); text-shadow: 0 1px 3px var(--c-scene-shadow), 0 0 2px var(--c-scene-shadow);
   }
-  .rn-warn { color: #ffd479; }
+  .rn-warn { color: var(--c-scene-warn); }
   .compass-wrap { position: absolute; bottom: 10px; left: 10px; pointer-events: none; z-index: 3; }
   .hint-3d {
     padding: 3px var(--spacing-md); font-size: 10px; color: var(--text-muted); text-align: center;
@@ -1182,7 +1183,7 @@
   }
   .overlay.error { color: var(--accent-danger); }
   .overlay.empty .banner-btn, .overlay.fatal { pointer-events: auto; }
-  .overlay.fatal { background: rgba(10,10,20,0.7); }
+  .overlay.fatal { background: rgba(var(--c-surface-1-rgb), 0.7); }
   .overlay .sub { font-size: 11px; color: var(--text-muted); margin: 0; }
   .spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent-primary); border-radius: 50%; animation: spin 800ms linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -1190,5 +1191,5 @@
     font-size: 11px; padding: 3px 10px; border: 1px solid var(--border-color); border-radius: var(--radius-sm);
     background: var(--bg-tertiary); color: var(--text-secondary); cursor: pointer; white-space: nowrap;
   }
-  .banner-btn:hover { background: var(--accent-primary); color: white; border-color: var(--accent-primary); }
+  .banner-btn:hover { background: var(--accent-primary); color: var(--c-on-accent); border-color: var(--accent-primary); }
 </style>
