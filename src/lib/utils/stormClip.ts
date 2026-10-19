@@ -428,7 +428,7 @@ export class StormClip {
     const [lat, lon] = this.latLonOf(cx, cy);
     if (this.settings.ground === 'custom') {
       // the film sets the ground itself (its extras.prepare); no tiles are asked for
-      r.setMapGain(1.0);
+      r.setMapGain(1.5);
     } else if (this.settings.ground === 'realistic') {
       await this.prepareRealisticGround(lat, lon, half + 35, [cx, cy]);
     } else {
