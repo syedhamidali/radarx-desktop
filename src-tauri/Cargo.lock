@@ -5718,7 +5718,7 @@ dependencies = [
 
 [[package]]
 name = "xradar-desktop"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.3.4",
  "portpicker",
