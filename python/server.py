@@ -1750,7 +1750,7 @@ class ConnectionHandler:
             await self.send_error("get_sweep_data: 'sweep' must be a non-negative integer")
             return
 
-        reader = _get_reader(file_id)
+        resolved_id, reader = _resolve_reader(file_id)
         logger.info("get_sweep_data: variable=%s sweep=%d file_id=%s", variable, sweep, file_id)
 
         loop = asyncio.get_running_loop()
@@ -1762,8 +1762,17 @@ class ConnectionHandler:
             return _pack_field(reader.get_sweep_data(sweep, variable), variable)
 
         fields, arrays = await loop.run_in_executor(None, _load_and_pack)
+        # file_id: replies arrive in any order, and two open files can both be asked for the
+        # same variable and sweep -- the UI needs to know whose data this is.
         await self._send_binary_chunks(
-            arrays, {"type": "sweep_data", "variable": variable, "sweep": sweep, **fields}
+            arrays,
+            {
+                "type": "sweep_data",
+                "variable": variable,
+                "sweep": sweep,
+                "file_id": resolved_id,
+                **fields,
+            },
         )
 
     async def _handle_process(self, msg: dict[str, Any]) -> None:

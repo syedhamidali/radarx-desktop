@@ -382,6 +382,20 @@ class TestAbandonedWorkKeepsItsLock:
         assert any(m["type"] == "export_complete" for m in handler._sent)
 
 
+class TestSweepReplyNamesItsFile:
+    @pytest.mark.asyncio
+    async def test_header_carries_the_file_id_even_without_one_in_the_request(self) -> None:
+        first = server._register_reader(_reader_with_tree())
+        second = server._register_reader(_reader_with_tree())
+        handler, _ = _make_handler()
+        base = {"type": "get_sweep_data", "variable": "DBZH", "sweep": 0}
+        await _send(handler, {**base, "file_id": first})
+        await _send(handler, {**base, "file_id": second})
+        await _send(handler, base)  # no id: "the most recently opened file"
+        headers = [m for m in handler._sent if m["type"] == "sweep_data"]
+        assert [h["file_id"] for h in headers] == [first, second, second]
+
+
 class TestEngineIdentity:
     @pytest.mark.asyncio
     async def test_pong_carries_a_stable_engine_id(self) -> None:
