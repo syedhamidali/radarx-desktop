@@ -230,6 +230,27 @@ def test_csv_with_units_in_the_header_and_a_drift_track(tmp_path: Path) -> None:
     assert any("AGL" in n for n in snd.notes)
 
 
+def test_csv_whose_column_names_are_a_comment_line() -> None:
+    """ULM / PERiLS style: the header row itself starts with '#'."""
+    lines = [
+        "# ULM PERiLS Radiosonde Data",
+        "# 20220330, 215800 UTC, Sturgis_MS, 95 m",
+        "# latitude (deg), longitude (deg), UTC (HH:MM:SS), height (m AGL), pressure(mb), "
+        "temp (deg C), RH (%), dewpoint (deg C), wind speed (m/s), wind direction (deg), "
+        "ascent rate (m/s)",
+    ]
+    for i in range(8):
+        lines.append(
+            f"33.34,-89.05,21:58:{i * 5:02d},{i * 37.4:.1f},{986.4 - i * 4.2:.1f},"
+            f"{25.1 - i * 0.25:.2f},57.0,{16.0 - i * 0.5:.1f},{10.3 + i * 0.1:.1f},{160 - i},6.6"
+        )
+    snd = S.parse_csv("\n".join(lines), "ulm.txt")
+    assert snd.station == "Sturgis_MS" and snd.launch_time == "2022-03-30T21:58:00Z"
+    assert snd.profile.sizes["height"] == 8 and snd.surface_height_m == pytest.approx(95.0)
+    assert float(snd.profile.wind_speed[0]) == pytest.approx(10.3)  # m/s from the header
+    assert not any("no unit" in n for n in snd.notes)
+
+
 def test_csv_relative_humidity_instead_of_dew_point() -> None:
     lines = ["pres,hght,tmpc,relh,drct,sknt"]
     for p, z, t in (
@@ -262,6 +283,13 @@ def test_csv_relative_humidity_instead_of_dew_point() -> None:
 def test_not_a_sounding_gives_a_clear_error(text: str) -> None:
     with pytest.raises(S.SoundingError):
         S.read_sounding_text(text)
+
+
+def test_a_spreadsheet_is_refused_plainly(tmp_path: Path) -> None:
+    f = tmp_path / "sonde.xlsx"
+    f.write_bytes(b"PK\x03\x04" + b"\x00" * 200)
+    with pytest.raises(S.SoundingError, match="binary file"):
+        S.read_sounding_file(f)
 
 
 def test_missing_file_and_oversized_file(tmp_path: Path) -> None:

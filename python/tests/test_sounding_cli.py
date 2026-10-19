@@ -94,7 +94,7 @@ def test_python_api_function_matches_the_command() -> None:
         no_tv["diagnostics"]["parcels"]["surface-based"]["cape"]
         <= d["diagnostics"]["parcels"]["surface-based"]["cape"]
     )
-    with pytest.raises(api.XrdInputError, match="no data rows|not found"):
+    with pytest.raises(api.XrdInputError, match=r"no data rows|not found"):
         api.sounding(FIX.parent / "missing.csv")
 
 

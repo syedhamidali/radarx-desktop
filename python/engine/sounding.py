@@ -591,6 +591,12 @@ def _wind_factor(unit: str, base: str, override: str | None, notes: list[str]) -
     return _WIND_UNITS[u]
 
 
+def _is_header(fields: list[str]) -> bool:
+    """A row of column names: at least two of them are names this reader knows."""
+    known = {a for aliases in _HEADER_KEYS.values() for a in aliases}
+    return sum(1 for f in fields if _split_header(f)[0] in known) >= 2
+
+
 def parse_csv(text: str, file: str = "", wind_units: str | None = None) -> Sounding:
     """CSV with a header naming the columns; units are read from the header when present.
 
@@ -606,6 +612,14 @@ def parse_csv(text: str, file: str = "", wind_units: str | None = None) -> Sound
         raise SoundingError("the CSV has no data rows")
     reader = csv.reader(body)
     header_raw = next(reader)
+    if not _is_header(header_raw):
+        # some files comment out the column names ("# latitude (deg), longitude (deg), ...")
+        for ln in reversed(comments):
+            cand = next(csv.reader([ln.lstrip("#").strip()]))
+            if _is_header(cand):
+                header_raw = cand
+                reader = csv.reader(body)
+                break
     rows = [r for r in reader if r]
     heads = [_split_header(h) for h in header_raw]
 
@@ -708,10 +722,10 @@ def parse_csv(text: str, file: str = "", wind_units: str | None = None) -> Sound
         elif re.match(r"^\d{4}-\d{2}-\d{2}$", first):
             notes.append(f"The file gives only the date ({first}); the launch hour is not in it.")
     for c in comments:
-        m = re.search(r"(\d{8})\s*,?\s*(\d{4})\s*UTC\s*,\s*([^,]+)", c)
+        m = re.search(r"(\d{8})\s*,?\s*(\d{6}|\d{4})\s*UTC\s*,\s*([^,]+)", c)
         if m:
-            d, hm = m.group(1), m.group(2)
-            meta_launch = f"{d[:4]}-{d[4:6]}-{d[6:]}T{hm[:2]}:{hm[2:]}:00Z"
+            d, hm = m.group(1), m.group(2).ljust(6, "0")  # HHMM or HHMMSS
+            meta_launch = f"{d[:4]}-{d[4:6]}-{d[6:]}T{hm[:2]}:{hm[2:4]}:{hm[4:]}Z"
             meta_station = m.group(3).strip()
     height_asl = z_m
     if z_agl and z_m is not None:
@@ -854,9 +868,15 @@ def read_sounding_file(
         raise SoundingError(f"{p.name or p}: file not found")
     if p.stat().st_size > MAX_FILE_BYTES:
         raise SoundingError(
-            f"{p.name}: larger than {MAX_FILE_BYTES // (1024 * 1024)} MB, not a sounding"
+            f"{p.name}: larger than {MAX_FILE_BYTES // (1024 * 1024)} MB, too big for one sounding "
+            "(an IGRA2 station file holds the whole record: cut out one sounding first)"
         )
     text = p.read_text(errors="replace")
+    if "\x00" in text[:4096] or text.startswith("PK"):
+        raise SoundingError(
+            f"{p.name} is a binary file (a spreadsheet or archive?), not a text sounding; "
+            "export it as CSV first"
+        )
     fmt = detect_format(text) if fmt == "auto" else fmt
     name = p.name
     if fmt == "wyoming_text":

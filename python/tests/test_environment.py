@@ -204,6 +204,21 @@ def test_cache_checksum_mismatch_discards_the_file(tmp_path: Path) -> None:
     assert digest == hashlib.sha256(b"hello").hexdigest()
 
 
+def test_clearing_a_shared_folder_removes_only_what_the_cache_made(tmp_path: Path) -> None:
+    """The user may point the cache at a folder with other things in it (even one named tmp)."""
+    root = tmp_path / "work"
+    (root / "tmp").mkdir(parents=True)
+    (root / "tmp" / "keep.txt").write_text("mine")
+    (root / "notes.md").write_text("mine")
+    cache = Cache(root, 10_000)
+    _put(cache, "a", 100)
+    stale = cache.tmp_path("half")
+    stale.write_bytes(b"partial")
+    assert cache.clear() == 100
+    assert (root / "tmp" / "keep.txt").read_text() == "mine" and (root / "notes.md").exists()
+    assert not stale.exists() and cache.usage()["files"] == 0
+
+
 def test_cache_names_cannot_escape_the_folder(tmp_path: Path) -> None:
     cache = Cache(tmp_path / "c", 10_000)
     p = cache.put_bytes("p/../..", "k", b"data", name="../../evil.sh")
@@ -490,7 +505,7 @@ def test_checksum_mismatch_is_detected_and_nothing_is_kept(tmp_path: Path) -> No
         env.fetch(REQ, env.estimate(REQ).approve())
     assert server.count("fake_t2m_202203300001.json") == 2  # one retry, then it stops
     assert not env.cache.contains("fake", "t2m/202203300001")
-    assert not list((tmp_path / "cache" / "tmp").glob("*.part"))  # no partial files left
+    assert not list((tmp_path / "cache" / ".partial").glob("*.part"))  # no partial files left
 
 
 def test_transient_corruption_is_fixed_by_the_single_retry(tmp_path: Path) -> None:
@@ -528,7 +543,7 @@ def test_permanent_failure_reports_clearly_and_keeps_finished_files(tmp_path: Pa
     env, _, _, _ = make_env(tmp_path, server, retries=1)
     with pytest.raises(FetchFailed, match="Could not download"):
         env.fetch(REQ, env.estimate(REQ).approve())
-    assert not list((tmp_path / "cache" / "tmp").glob("*.part"))
+    assert not list((tmp_path / "cache" / ".partial").glob("*.part"))
 
 
 def test_server_sending_more_than_approved_is_stopped(tmp_path: Path) -> None:
@@ -574,7 +589,7 @@ def test_cancel_stops_everything_and_leaves_no_partial_files(tmp_path: Path) -> 
 
     with pytest.raises(FetchCancelled):
         env.fetch(REQ, approval, progress=on_progress, cancel=cancel)
-    assert not list((tmp_path / "cache" / "tmp").glob("*.part"))
+    assert not list((tmp_path / "cache" / ".partial").glob("*.part"))
 
 
 def test_unknown_sizes_are_flagged_and_capped(tmp_path: Path) -> None:
@@ -736,6 +751,15 @@ def test_damaged_settings_file_falls_back_to_defaults(tmp_path: Path, monkeypatc
     assert env_settings.load_settings(path) == EnvSettings()
     path.write_text(json.dumps({"cache_max_mb": "x", "offline": True}))
     assert env_settings.load_settings(path) == EnvSettings()
+
+
+def test_the_connection_limit_follows_the_settings(tmp_path: Path) -> None:
+    env = Environment(EnvSettings(cache_dir=str(tmp_path / "c")))
+    assert env.http.max_concurrent == 2
+    env.apply_settings({"max_concurrent": 4})
+    assert env.http.max_concurrent == 4 and env.http._sem._value == 4
+    env.apply_settings({"max_concurrent": 99})  # clamped to something polite
+    assert env.http.max_concurrent == 4
 
 
 def test_apply_settings_shrinks_the_cache(tmp_path: Path) -> None:

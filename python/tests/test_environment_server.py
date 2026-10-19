@@ -148,8 +148,8 @@ async def test_cancel_stops_a_running_fetch(tmp_path: Path) -> None:
     await h.handle_message(json.dumps({"type": "env_fetch", "request_id": "r1", "approve": True}))
     assert sent[-1]["type"] in ("env_cancelled", "env_fetch_result")
     assert (
-        not list((tmp_path / "cache" / "tmp").glob("*.part"))
-        if (tmp_path / "cache" / "tmp").exists()
+        not list((tmp_path / "cache" / ".partial").glob("*.part"))
+        if (tmp_path / "cache" / ".partial").exists()
         else True
     )
 

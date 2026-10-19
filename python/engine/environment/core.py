@@ -142,7 +142,7 @@ class Environment:
         new = self.settings.updated(changes)
         self.settings = new
         if not self._http_given:
-            self.http.max_concurrent = new.max_concurrent
+            self.http.set_max_concurrent(new.max_concurrent)
         if self._persist:
             target = self._persist if isinstance(self._persist, Path) else settings_path()
             save_settings(new, target)

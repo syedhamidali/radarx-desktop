@@ -4,7 +4,7 @@ Layout under the cache root::
 
     index.json                       # key -> size, sha256, times, source (atomic rewrite)
     data/<provider>/<hh>/<hash>-<name>
-    tmp/                             # partial downloads (never listed in the index)
+    .partial/                        # partial downloads (never listed in the index)
 
 A file only enters the index through :meth:`Cache.commit`, i.e. once it is complete (and, when the
 source published a checksum, verified). When the total size exceeds the limit the least recently
@@ -18,7 +18,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import threading
 import time
 from collections.abc import Callable, Iterable
@@ -70,7 +69,7 @@ class Cache:
 
     @property
     def tmp_dir(self) -> Path:
-        return self.root / "tmp"
+        return self.root / ".partial"
 
     def tmp_path(self, hint: str = "dl") -> Path:
         """A fresh path for a partial download (inside the cache, so the final move is atomic)."""
@@ -276,8 +275,11 @@ class Cache:
             freed = 0
             for eid in [i for i, e in index.items() if provider in (None, e.get("provider"))]:
                 freed += self._drop(eid)
-            if provider is None:
-                shutil.rmtree(self.tmp_dir, ignore_errors=True)
+            if provider is None and self.tmp_dir.is_dir():
+                # only our own partial files: the folder may be one the user chose and shares
+                for part in self.tmp_dir.glob("*.part"):
+                    with contextlib.suppress(OSError):
+                        part.unlink()
             self._save()
             return freed
 

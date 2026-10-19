@@ -109,6 +109,11 @@ class HttpClient:
 
     # -- helpers --------------------------------------------------------------------------
 
+    def set_max_concurrent(self, n: int) -> None:
+        """Change the connection limit (applies to requests started from now on)."""
+        self.max_concurrent = max(1, int(n))
+        self._sem = threading.BoundedSemaphore(self.max_concurrent)
+
     def _wait(self, seconds: float, cancel: threading.Event | None) -> None:
         if seconds <= 0:
             return
