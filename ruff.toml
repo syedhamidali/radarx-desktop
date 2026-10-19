@@ -22,4 +22,5 @@ ignore = [
 
 [lint.per-file-ignores]
 "python/tests/**" = ["E501"]
+"tools/**" = ["E501", "N806"]
 "python/server.py" = ["E402"]

@@ -54,6 +54,7 @@ function volumeFrag(): string {
     uniform float u_tanHalfFovY;
     uniform vec2  u_resolution;
 
+    uniform highp sampler3D u_volumeB;   // second volume (time interpolation), same grid
     uniform highp sampler3D u_volume;    // RG8: R = code / 255 (0 = no data), G = 1 where there is data
     uniform sampler2D       u_transferFn;// value -> RGBA RGBA8
     uniform sampler2D       u_ground;    // map image over [-half, half]^2, row 0 = north
@@ -76,6 +77,14 @@ function volumeFrag(): string {
     uniform float u_ringStep;
     uniform int   u_light;
     uniform float u_themeLight;    // 0 dark scene, 1 light scene
+    uniform vec2  u_groundCenter;  // km: centre of the map image on the ground
+    uniform float u_mapGain;       // brightness of the map image
+    uniform vec2  u_cropMin;       // only this part of the volume / ground is shown (km)
+    uniform vec2  u_cropMax;
+    uniform int   u_morphOn;       // time interpolation between volume A and B
+    uniform float u_morphW;        // weight of B
+    uniform vec3  u_shiftA;        // km: A is sampled at pos - shiftA, B at pos - shiftB
+    uniform vec3  u_shiftB;
 
     // Optional drift of the echo along the retrieved wind (display only): the volume is sampled
     // where each cell came from, u_animT * phase seconds ago, in two half-period shifted phases
@@ -95,17 +104,18 @@ function volumeFrag(): string {
 
     // Field at a scene position: val 0..1 over [vmin, vmax], cov = fraction of the neighbourhood
     // with data (fades at the edges of the echo instead of cutting off).
-    bool sampleField(vec3 pos, out float val, out float cov) {
+    bool sampleTex(highp sampler3D tex, vec3 pos, out float val, out float cov) {
       vec3 uvw = (pos - u_boxMin) / (u_boxMax - u_boxMin);
       val = 0.0; cov = 0.0;
       if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) return false;
-      vec2 rg = texture(u_volume, uvw).rg;
+      vec2 rg = texture(tex, uvw).rg;
       if (rg.g < 0.02) return false;
       float b = rg.r / rg.g;
       val = clamp((b * 255.0 - 1.0) / 254.0, 0.0, 1.0);
       cov = rg.g;
       return true;
     }
+    bool sampleField(vec3 pos, out float val, out float cov) { return sampleTex(u_volume, pos, val, cov); }
     vec4 windAt(vec3 pos) {
       vec3 pp = vec3(pos.xy - u_wOffset, pos.z / u_vexag);
       vec3 f = (pp - u_wOrigin) / u_wCell;
@@ -114,6 +124,21 @@ function volumeFrag(): string {
     }
 
     bool sampleAdvected(vec3 pos, out float val, out float cov) {
+      if (u_morphOn != 0) {
+        // time interpolation: the earlier volume carried forward and the later one carried back
+        // (by the storm motion), cross-faded
+        float va, ca, vb, cb;
+        bool ka = sampleTex(u_volume, pos - u_shiftA, va, ca);
+        bool kb = sampleTex(u_volumeB, pos - u_shiftB, vb, cb);
+        float aa = ka ? (1.0 - u_morphW) * ca : 0.0;
+        float ab = kb ? u_morphW * cb : 0.0;
+        float ss = aa + ab;
+        val = 0.0; cov = 0.0;
+        if (ss <= 0.002) return false;
+        val = (aa * va + ab * vb) / ss;
+        cov = ss;
+        return true;
+      }
       if (u_animOn == 0) return sampleField(pos, val, cov);
       vec4 wv = windAt(pos);
       vec3 dir = vec3(wv.xy, wv.z * u_vexag) * (0.001 * u_animT * u_animAmp);
@@ -159,6 +184,8 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
       bool  hit = u_hasVol != 0;
       vec3 bmin = vec3(u_boxMin.xy, max(u_boxMin.z, 0.0));
       vec3 bmax = u_boxMax;
+      bmin.xy = max(bmin.xy, u_cropMin);
+      bmax.xy = min(bmax.xy, u_cropMax);
       if (hit) {
         vec3 inv = 1.0 / mix(rayDir, vec3(1e-6), lessThan(abs(rayDir), vec3(1e-6)));
         vec3 ta = (bmin - o) * inv;
@@ -447,6 +474,14 @@ export class CartesianRenderer {
 
   // textures / CPU copies
   private volTex: WebGLTexture | null = null;
+  private volTexB: WebGLTexture | null = null;
+  private morphW = 0;
+  private shiftA: [number, number, number] = [0, 0, 0];
+  private shiftB: [number, number, number] = [0, 0, 0];
+  private cropBox: { xMin: number; xMax: number; yMin: number; yMax: number } | null = null;
+  private groundCenter: [number, number] = [0, 0];
+  private exporting = false;
+  private mapGain = 1.5;
   private tfTex: WebGLTexture | null = null;
   private lutTex: WebGLTexture | null = null;
   private groundTex: WebGLTexture | null = null;
@@ -662,6 +697,7 @@ export class CartesianRenderer {
       'u_volume', 'u_transferFn', 'u_ground', 'u_hasVol', 'u_boxMin', 'u_boxMax', 'u_groundMin', 'u_groundMax',
       'u_stepSize', 'u_stepUser', 'u_maxSteps', 'u_opacityScale', 'u_thr', 'u_thrSoft', 'u_thrMode',
       'u_groundMode', 'u_groundSize', 'u_groundHalf', 'u_ringStep', 'u_light', 'u_themeLight',
+      'u_volumeB', 'u_morphOn', 'u_morphW', 'u_shiftA', 'u_shiftB', 'u_cropMin', 'u_cropMax', 'u_groundCenter', 'u_mapGain',
       'u_animOn', 'u_animAmp', 'u_animT', 'u_animPhase', 'u_windTex', 'u_wOrigin', 'u_wCell', 'u_wDims', 'u_wOffset', 'u_vexag',
     ]) this.vu[n] = gl.getUniformLocation(this.volProg, n);
     this.au = {};
@@ -920,6 +956,81 @@ export class CartesianRenderer {
   private useCache = false;
   private capture = false;
 
+  /**
+   * Two volumes of the same grid for time interpolation (`b` null = a single volume): see `setMorph`.
+   * Used by the clip export; `a` also provides the geometry.
+   */
+  async setVolumePair(a: CartVolume, b: CartVolume | null, offset: [number, number] = [0, 0]): Promise<void> {
+    const gen = ++this.volGen;
+    this.volume = a;
+    this.volOffset = offset;
+    const ta = await this.buildTexture(a, gen);
+    if (!ta) return;
+    const tb = b ? await this.buildTexture(b, gen) : null;
+    if (b && !tb) { this.gl.deleteTexture(ta); return; }
+    if (this.volTex) this.gl.deleteTexture(this.volTex);
+    if (this.volTexB) this.gl.deleteTexture(this.volTexB);
+    this.volTex = ta;
+    this.volTexB = tb;
+    const dz = a.nz > 1 ? (a.z[a.nz - 1] - a.z[0]) / (a.nz - 1) : 0.5;
+    this.volBox = {
+      xMin: a.x0 - a.dx / 2 + offset[0], xMax: a.x0 + (a.nx - 0.5) * a.dx + offset[0],
+      yMin: a.y0 - a.dy / 2 + offset[1], yMax: a.y0 + (a.ny - 0.5) * a.dy + offset[1],
+      zMin: a.z[0] - dz / 2, zMax: a.z[a.nz - 1] + dz / 2,
+    };
+    this.markDirty();
+  }
+
+  /** Weight of volume B and the km shifts (A is read at pos - shiftA, B at pos - shiftB). */
+  setMorph(w: number, shiftA: [number, number, number], shiftB: [number, number, number]): void {
+    this.morphW = w;
+    this.shiftA = shiftA;
+    this.shiftB = shiftB;
+    this.markDirty();
+  }
+
+  /** Brightness of the ground map on a dark scene (1.5 suits the dark-restyled tiles). */
+  setMapGain(g: number): void {
+    this.mapGain = g;
+    this.markDirty();
+  }
+
+  /** Show only this part (km, scene frame) of the volume and of the ground; null = all. */
+  setCropBox(b: { xMin: number; xMax: number; yMin: number; yMax: number } | null): void {
+    this.cropBox = b;
+    this.markDirty();
+  }
+
+  /**
+   * Offline rendering: stop the interactive pipeline; frames are then drawn by `exportRender`, one
+   * complete full-quality frame per call, straight into the canvas (deterministic, no bands).
+   */
+  enterExport(): void {
+    this.exporting = true;
+    this.pr.setLost(true);
+  }
+
+  /** Draw one complete frame with the camera `pose` (degrees / km; z already exaggerated). */
+  exportRender(pose: { theta: number; phi: number; dist: number; target: Vec3 }): void {
+    const gl = this.gl;
+    this.setPose(pose, true);
+    const w = this.canvas.width;
+    const h = this.canvas.height;
+    const q: QualityParams = {
+      level: 'ultra', index: 4, interacting: false, renderScale: 1, stepMul: 1, maxSteps: 2400,
+      interp: 2, texBudgetMB: 64, weight: 1, relCost: 1,
+    };
+    this.lastAnimT = 0;
+    if (!this.beginFrame(q, w, h)) return;
+    this.useCache = false;
+    this.capture = false;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.SCISSOR_TEST);
+    this.drawBand(0, h, w, h);
+    gl.finish();
+  }
+
   /** Request a redraw (coalesced); the static layer is redrawn. */
   markDirty(): void {
     this.staticDirty = true;
@@ -963,9 +1074,10 @@ export class CartesianRenderer {
     await this.uploadVolume(vol, gen);
   }
 
-  private async uploadVolume(vol: CartVolume, gen: number): Promise<void> {
+  /** Pack `vol` into an RG8 3D texture (time-sliced); null when superseded or lost. */
+  private async buildTexture(vol: CartVolume, gen: number): Promise<WebGLTexture | null> {
     const gl = this.gl;
-    if (this.lost) return;
+    if (this.lost) return null;
     const maxTex = (gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number) || 256;
     const maxVoxels = Math.floor((this.governor.textureBudgetMB() * 1048576) / 2);
     const f = chooseDownsample([vol.nx, vol.ny, vol.nz], maxVoxels, maxTex);
@@ -992,7 +1104,7 @@ export class CartesianRenderer {
         await yieldToMain();
         if (gen !== this.volGen || this.disposed || this.lost) {
           if (!this.lost) gl.deleteTexture(tex);
-          return;
+          return null;
         }
         t0 = performance.now();
       }
@@ -1001,8 +1113,15 @@ export class CartesianRenderer {
     gl.bindTexture(gl.TEXTURE_3D, null);
     if (gen !== this.volGen || this.disposed) {
       gl.deleteTexture(tex);
-      return;
+      return null;
     }
+    return tex;
+  }
+
+  private async uploadVolume(vol: CartVolume, gen: number): Promise<void> {
+    const gl = this.gl;
+    const tex = await this.buildTexture(vol, gen);
+    if (!tex) return;
     if (this.volTex) gl.deleteTexture(this.volTex);
     this.volTex = tex;
     const b = {
@@ -1018,7 +1137,7 @@ export class CartesianRenderer {
       xMin: b.xMin + this.volOffset[0], xMax: b.xMax + this.volOffset[0],
       yMin: b.yMin + this.volOffset[1], yMax: b.yMax + this.volOffset[1],
     };
-    this.governor.setVolumeMB((onx * ony * onz * 2) / 1048576);
+    this.governor.setVolumeMB((vol.nx * vol.ny * vol.nz * 2) / 1048576);
     this.markDirty();
   }
 
@@ -1030,7 +1149,7 @@ export class CartesianRenderer {
     if (this.lutData) this.setGlyphLut(this.lutData);
     if (this.glyphData) this.setGlyphs(this.glyphData, this.instCount);
     if (this.flow && this.flowField) this.flow.setField(this.flowField, this.flowCells, this.flowUser.requested, this.flowUser.lifeSec);
-    if (this.groundImg) this.setGround(this.groundImg.size, this.groundImg.data, this.groundImg.half);
+    if (this.groundImg) this.setGround(this.groundImg.size, this.groundImg.data, this.groundImg.half, this.groundCenter);
     this.markDirty();
   }
 
@@ -1080,7 +1199,8 @@ export class CartesianRenderer {
   }
 
   /** Map image over [-half, half]^2 km around the scene origin (RGBA, row 0 = north); null = none. */
-  setGround(size: number, data: Uint8ClampedArray | null, half: number): void {
+  setGround(size: number, data: Uint8ClampedArray | null, half: number, center: [number, number] = [0, 0]): void {
+    this.groundCenter = center;
     if (!data) {
       this.groundImg = null;
       if (!this.lost) {
@@ -1207,8 +1327,17 @@ export class CartesianRenderer {
       gl.uniform3f(u.u_boxMin, vb.xMin, vb.yMin, vb.zMin * ve);
       gl.uniform3f(u.u_boxMax, vb.xMax, vb.yMax, vb.zMax * ve);
     }
-    gl.uniform2f(u.u_groundMin, sb.xMin, sb.yMin);
-    gl.uniform2f(u.u_groundMax, sb.xMax, sb.yMax);
+    const cb = this.cropBox;
+    gl.uniform2f(u.u_groundMin, cb ? cb.xMin : sb.xMin, cb ? cb.yMin : sb.yMin);
+    gl.uniform2f(u.u_groundMax, cb ? cb.xMax : sb.xMax, cb ? cb.yMax : sb.yMax);
+    gl.uniform2f(u.u_cropMin, cb ? cb.xMin : -1e6, cb ? cb.yMin : -1e6);
+    gl.uniform2f(u.u_cropMax, cb ? cb.xMax : 1e6, cb ? cb.yMax : 1e6);
+    gl.uniform2f(u.u_groundCenter, this.groundCenter[0], this.groundCenter[1]);
+    gl.uniform1f(u.u_mapGain, p.lightScene ? 1.0 : this.mapGain);
+    gl.uniform1i(u.u_morphOn, this.volTexB ? 1 : 0);
+    gl.uniform1f(u.u_morphW, this.morphW);
+    gl.uniform3f(u.u_shiftA, this.shiftA[0], this.shiftA[1], this.shiftA[2]);
+    gl.uniform3f(u.u_shiftB, this.shiftB[0], this.shiftB[1], this.shiftB[2]);
     gl.uniform1f(u.u_stepSize, p.stepKm * params.stepMul);
     gl.uniform1f(u.u_stepUser, p.stepKm);
     gl.uniform1i(u.u_maxSteps, params.maxSteps);
@@ -1345,6 +1474,9 @@ export class CartesianRenderer {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_3D, this.windTex);
     gl.uniform1i(this.vu.u_windTex, 2);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_3D, this.volTexB);
+    gl.uniform1i(this.vu.u_volumeB, 1);
     gl.activeTexture(gl.TEXTURE0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     gl.bindVertexArray(null);
@@ -1443,7 +1575,7 @@ export class CartesianRenderer {
     this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
     if (!this.lost) {
       const gl = this.gl;
-      for (const t of [this.volTex, this.tfTex, this.lutTex, this.groundTex]) if (t) gl.deleteTexture(t);
+      for (const t of [this.volTex, this.volTexB, this.tfTex, this.lutTex, this.groundTex]) if (t) gl.deleteTexture(t);
       for (const b of this.arrowMeshBuf) gl.deleteBuffer(b);
       if (this.arrowVAO) gl.deleteVertexArray(this.arrowVAO);
       gl.deleteVertexArray(this.quadVAO);

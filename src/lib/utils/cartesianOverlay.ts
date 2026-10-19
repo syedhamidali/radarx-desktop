@@ -16,6 +16,10 @@ export interface CartOverlayOptions {
   showFrame: boolean;
   /** Extra line at the bottom right (e.g. the arrow scale). */
   note?: string;
+  /** Draw the height axis (default true). */
+  showHeightAxis?: boolean;
+  /** Draw the exaggeration note at the bottom right (default true). */
+  showExaggeration?: boolean;
 }
 
 const FONT = '600 11px system-ui, -apple-system, "Segoe UI", sans-serif';
@@ -186,7 +190,7 @@ export function drawCartesianOverlay(ctx: CanvasRenderingContext2D, c: Cam, o: C
   }
 
   // height axis (ASL) on the leftmost bottom corner
-  if (groundness < 0.93) {
+  if (groundness < 0.93 && o.showHeightAxis !== false) {
     let best: [number, number] | null = null;
     let bestX = Infinity;
     for (const [x, y] of corners) {
@@ -224,6 +228,47 @@ export function drawCartesianOverlay(ctx: CanvasRenderingContext2D, c: Cam, o: C
   }
 
   ctx.font = FONT;
-  halo(ctx, k, `Vertical exaggeration ${ve % 1 === 0 ? ve : ve.toFixed(1)}×`, c.w - 12, c.h - 14, k.text, 'right');
+  if (o.showExaggeration !== false) halo(ctx, k, `Vertical exaggeration ${ve % 1 === 0 ? ve : ve.toFixed(1)}×`, c.w - 12, c.h - 14, k.text, 'right');
   if (o.note) halo(ctx, k, o.note, c.w - 12, c.h - 30, k.text, 'right');
+}
+
+const COMPASS8 = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+
+/** "94 km S" of site (sx, sy) seen from (cx, cy), all km. */
+export function siteDirection(cx: number, cy: number, sx: number, sy: number): string {
+  const dx = sx - cx;
+  const dy = sy - cy;
+  const brg = ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+  return `${Math.round(Math.hypot(dx, dy))} km ${COMPASS8[Math.round(brg / 45) % 8]}`;
+}
+
+/**
+ * Radar sites outside the shown box: a marker at the box edge in their direction, with their name
+ * and distance, so the viewer knows where the data comes from.
+ */
+export function drawOffBoxSites(ctx: CanvasRenderingContext2D, c: Cam, box: SceneBox, sites: SceneSite[], lightScene: boolean): void {
+  const k = ink(lightScene);
+  const cx = (box.xMin + box.xMax) / 2;
+  const cy = (box.yMin + box.yMax) / 2;
+  const hx = (box.xMax - box.xMin) / 2;
+  const hy = (box.yMax - box.yMin) / 2;
+  ctx.font = FONT;
+  for (const s of sites) {
+    if (s.x >= box.xMin && s.x <= box.xMax && s.y >= box.yMin && s.y <= box.yMax) continue;
+    const dx = s.x - cx;
+    const dy = s.y - cy;
+    const f = Math.min(hx / Math.max(1e-9, Math.abs(dx)), hy / Math.max(1e-9, Math.abs(dy)));
+    const e = project(c, [cx + dx * f * 1.04, cy + dy * f * 1.04, 0]);
+    if (!e) continue;
+    const t = project(c, [cx + dx * f * 1.04, cy + dy * f * 1.04, 1.5]);
+    ctx.fillStyle = k.site;
+    ctx.strokeStyle = lightScene ? 'rgba(20,28,48,0.95)' : 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = 1.5;
+    if (t) { ctx.beginPath(); ctx.moveTo(e[0], e[1]); ctx.lineTo(t[0], t[1] - 6); ctx.stroke(); }
+    ctx.beginPath();
+    ctx.arc(e[0], e[1], 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    halo(ctx, k, `${s.name} · ${siteDirection(cx, cy, s.x, s.y)}`, e[0] + 9, e[1] + 12, k.siteText, 'left');
+  }
 }

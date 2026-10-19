@@ -39,12 +39,20 @@ export interface GroundOptions {
  * `vec3 groundColor(vec3 gp, float t, vec3 d)`: shading of the ground at scene position `gp`
  * (z = 0) seen along `d` from distance `t` (map image, or a grid, plus rings / rim).
  * Reads: u_groundMode, u_groundHalf, u_groundSize, u_ground, u_ringStep, u_tanHalfFovY, u_resolution
- * (+ u_themeLight when themed).
+ * (+ u_themeLight, u_mapGain, u_groundCenter when themed).
  */
 export function glslGroundColor(o: GroundOptions): string {
+  // The map of a Cartesian scene may be centred anywhere (uniform u_groundCenter); the polar scene's
+  // is always centred on the radar (and its shader text is kept exactly as it was).
+  const mapTest = o.themed
+    ? 'vec2 gq = gp.xy - u_groundCenter;\n      if (u_groundMode == 2 && abs(gq.x) < u_groundHalf && abs(gq.y) < u_groundHalf) {'
+    : 'if (u_groundMode == 2 && abs(gp.x) < u_groundHalf && abs(gp.y) < u_groundHalf) {';
+  const mapUv = o.themed
+    ? 'vec2 tuv = vec2(gq.x / (2.0 * u_groundHalf) + 0.5, 0.5 - gq.y / (2.0 * u_groundHalf));'
+    : 'vec2 tuv = vec2(gp.x / (2.0 * u_groundHalf) + 0.5, 0.5 - gp.y / (2.0 * u_groundHalf));';
   const baseCol = o.themed ? 'mix(vec3(0.07, 0.085, 0.12), vec3(0.84, 0.86, 0.91), u_themeLight)' : 'vec3(0.07, 0.085, 0.12)';
   const gridAdd = o.themed ? 'mix(vec3(0.05, 0.06, 0.09), vec3(-0.07, -0.07, -0.05), u_themeLight)' : 'vec3(0.05, 0.06, 0.09)';
-  const mapBoost = o.themed ? 'mix(1.5, 1.0, u_themeLight)' : '1.5';
+  const mapBoost = o.themed ? 'u_mapGain' : '1.5';
   const lineCol = o.themed ? 'mix(vec3(0.72, 0.8, 0.95), vec3(0.18, 0.24, 0.36), u_themeLight)' : 'vec3(0.72, 0.8, 0.95)';
   const rimCol = o.themed ? 'mix(vec3(0.85, 0.9, 1.0), vec3(0.12, 0.17, 0.28), u_themeLight)' : 'vec3(0.85, 0.9, 1.0)';
   const rings = o.rings
@@ -66,8 +74,8 @@ export function glslGroundColor(o: GroundOptions): string {
       float g = length(gp.xy);
 
       vec3 col;
-      if (u_groundMode == 2 && abs(gp.x) < u_groundHalf && abs(gp.y) < u_groundHalf) {
-        vec2 tuv = vec2(gp.x / (2.0 * u_groundHalf) + 0.5, 0.5 - gp.y / (2.0 * u_groundHalf));
+      ${mapTest}
+        ${mapUv}
         float lod = log2(max(1.0, foot / (2.0 * u_groundHalf / u_groundSize)));
         col = min(textureLod(u_ground, tuv, lod).rgb * ${mapBoost}, vec3(1.0));
       } else {
