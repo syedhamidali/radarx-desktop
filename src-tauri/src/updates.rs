@@ -101,6 +101,13 @@ pub struct UpdaterStatus {
     pub install: InstallMode,
     /// Where to read about / download releases by hand (derived from the endpoint).
     pub releases_url: Option<String>,
+    /// Operating system ("macos", "windows", "linux").
+    pub os: &'static str,
+    /// Platform key to look up in `latest.json` instead of the default one. Set for a Linux
+    /// .deb/.rpm install: releases carry no entry for it (the updater cannot build or install those),
+    /// so the version check reads the Windows entry, which every release has. Nothing is downloaded
+    /// from it: such an install is "manual".
+    pub check_target: Option<&'static str>,
 }
 
 pub fn status(
@@ -117,12 +124,16 @@ pub fn status(
         .and_then(|c| c.get("endpoints"))
         .and_then(Value::as_array)
         .and_then(|e| e.iter().filter_map(Value::as_str).find_map(releases_page));
+    let install = install_mode(exe, appimage);
+    let check_target = (cfg!(target_os = "linux") && !appimage).then_some("windows-x86_64");
     UpdaterStatus {
         configured,
         reason,
         current_version: current_version.to_string(),
-        install: install_mode(exe, appimage),
+        install,
         releases_url,
+        os: std::env::consts::OS,
+        check_target,
     }
 }
 

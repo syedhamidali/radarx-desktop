@@ -26,8 +26,7 @@
       "pubkey": "UPDATER_PUBLIC_KEY_NOT_CONFIGURED",
       "endpoints": [
         "https://github.com/syedhamidali/xradar-desktop/releases/latest/download/latest.json"
-      ],
-      "requireSignedVersion": true
+      ]
     }
   },
   "bundle": {
