@@ -543,7 +543,7 @@ def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
 
 def _blank_to_none(value: Any) -> Any:
     """An empty path means "choose for me" -- not the engine's working directory."""
-    return None if isinstance(value, str) and not value.strip() else value
+    return None if value == "" else value
 
 
 def _cache_token(file_id: str | None) -> tuple[str, int] | None:

@@ -279,7 +279,7 @@ class TestExportMessages:
                             "format": "csv",
                             "variable": "DBZH",
                             "sweep": 0,
-                            path_key: "  ",
+                            path_key: "",
                             **extra,
                         }
                     )
