@@ -1,32 +1,16 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack, tick } from 'svelte';
-  import RadarViewer from './lib/components/RadarViewer.svelte';
-  import RadarViewer3D from './lib/components/RadarViewer3D.svelte';
-  import DualPolDashboard from './lib/components/DualPolDashboard.svelte';
   import DataInspector from './lib/components/DataInspector.svelte';
-  import ProcessingPanel from './lib/components/ProcessingPanel.svelte';
-  import ExportPanel from './lib/components/ExportPanel.svelte';
-  import QCPanel from './lib/components/QCPanel.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
-  import CommandPalette from './lib/components/CommandPalette.svelte';
   import WorkspaceSwitcher from './lib/components/WorkspaceSwitcher.svelte';
   import PanelManager from './lib/components/PanelManager.svelte';
   import WelcomeScreen from './lib/components/WelcomeScreen.svelte';
-  import OnboardingTour from './lib/components/OnboardingTour.svelte';
-  import ShortcutsSheet from './lib/components/ShortcutsSheet.svelte';
-  import AboutDialog from './lib/components/AboutDialog.svelte';
-  import SettingsDialog from './lib/components/SettingsDialog.svelte';
+  import { lazy, whenIdle } from './lib/utils/lazy.svelte';
   import LogoMark from './lib/components/LogoMark.svelte';
   import EngineBoot from './lib/components/EngineBoot.svelte';
   import FileTabs from './lib/components/FileTabs.svelte';
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
-  import TimeSeriesChart from './lib/components/TimeSeriesChart.svelte';
-  import Timeline from './lib/components/Timeline.svelte';
-  import DiffViewer from './lib/components/DiffViewer.svelte';
-  import CrossSectionPanel from './lib/components/CrossSectionPanel.svelte';
-  import CrossSectionDock from './lib/components/CrossSectionDock.svelte';
-  import CrossSectionDialog from './lib/components/CrossSectionDialog.svelte';
   import { crossSectionStore } from './lib/stores/crossSection';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
@@ -46,6 +30,23 @@
   import { applyThemeMode } from './lib/utils/theme';
   import { sidecarError } from './lib/stores/boot';
   import { uiHealth } from './lib/utils/uiHealth';
+
+  // Code that is not needed for the first paint is fetched on demand (each becomes its own chunk).
+  // The main view and the timeline are prefetched while the browser is idle, so opening a file
+  // does not wait for them; the 3D / dual-pol / diff views, dialogs and the command palette load
+  // when first asked for.
+  const radarViewer = lazy(() => import('./lib/components/RadarViewer.svelte'));
+  const viewer3d = lazy(() => import('./lib/components/RadarViewer3D.svelte'));
+  const dualPol = lazy(() => import('./lib/components/DualPolDashboard.svelte'));
+  const diffViewer = lazy(() => import('./lib/components/DiffViewer.svelte'));
+  const timeline = lazy(() => import('./lib/components/Timeline.svelte'));
+  const crossDock = lazy(() => import('./lib/components/CrossSectionDock.svelte'));
+  const crossDialog = lazy(() => import('./lib/components/CrossSectionDialog.svelte'));
+  const palette = lazy(() => import('./lib/components/CommandPalette.svelte'));
+  const tour = lazy(() => import('./lib/components/OnboardingTour.svelte'));
+  const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
+  const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
+  const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -115,6 +116,18 @@
   const modalOpen = $derived(
     commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible,
   );
+  // Fetch the chunks the current state needs (idempotent; see the `lazy(...)` declarations above).
+  $effect(() => { if (filePath) { radarViewer.load(); timeline.load(); } });
+  $effect(() => { if (filePath && $diffMode === 'diff') diffViewer.load(); });
+  $effect(() => { if (filePath && $diffMode !== 'diff' && viewMode === '3d') viewer3d.load(); });
+  $effect(() => { if (filePath && $diffMode !== 'diff' && viewMode === 'dualpol') dualPol.load(); });
+  $effect(() => { if (crossSectionDocked) crossDock.load(); });
+  $effect(() => { if ($crossSectionStore.layout === 'modal') crossDialog.load(); });
+  $effect(() => { if (commandPaletteVisible) palette.load(); });
+  $effect(() => { if (onboardingVisible) tour.load(); });
+  $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
+  $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
+  $effect(() => { if (settingsOpen) settingsDialog.load(); });
   let isDragOver = $state(false);
   let isPlaying = $state(false);
   let animSpeed = $state(1000);
@@ -201,6 +214,8 @@
         autoLoadLast();
       }
     });
+    // The main view is needed the moment a file opens: fetch it as soon as the first paint is done.
+    whenIdle(() => { void radarViewer.load(); void timeline.load(); void crossDock.load(); });
     startUiHealth();
     tickClock();
     clockTimer = setInterval(tickClock, 1000);
@@ -868,8 +883,8 @@
 
       <div class="view-toggle">
         <button class="view-btn" class:active={viewMode === '2d'} on:click={() => { viewMode = '2d'; syncWorkspace(); }} title="2D PPI View">2D</button>
-        <button class="view-btn" class:active={viewMode === '3d'} on:click={() => { viewMode = '3d'; syncWorkspace(); }} title="3D Volume View">3D</button>
-        <button class="view-btn" class:active={viewMode === 'dualpol'} on:click={() => { viewMode = 'dualpol'; syncWorkspace(); }} title="Dual-Pol Analysis Dashboard">DualPol</button>
+        <button class="view-btn" class:active={viewMode === '3d'} on:pointerenter={() => viewer3d.load()} on:focus={() => viewer3d.load()} on:click={() => { viewMode = '3d'; syncWorkspace(); }} title="3D Volume View">3D</button>
+        <button class="view-btn" class:active={viewMode === 'dualpol'} on:pointerenter={() => dualPol.load()} on:focus={() => dualPol.load()} on:click={() => { viewMode = 'dualpol'; syncWorkspace(); }} title="Dual-Pol Analysis Dashboard">DualPol</button>
       </div>
 
       <button class="toolbar-btn icon-btn" class:active={$diffMode === 'diff'} on:click={toggleDiffMode} title="Toggle Diff View">
@@ -958,16 +973,16 @@
       <section class="viewer-area" class:with-dock={crossSectionDocked}>
         {#if filePath}
           {#if $diffMode === 'diff'}
-            <DiffViewer />
+            {#if diffViewer.component}<diffViewer.component />{/if}
           {:else if viewMode === '2d'}
-            <RadarViewer />
-            {#if crossSectionDocked}
-              <CrossSectionDock />
+            {#if radarViewer.component}<radarViewer.component />{/if}
+            {#if crossSectionDocked && crossDock.component}
+              <crossDock.component />
             {/if}
           {:else if viewMode === '3d'}
-            <RadarViewer3D />
+            {#if viewer3d.component}<viewer3d.component />{/if}
           {:else}
-            <DualPolDashboard />
+            {#if dualPol.component}<dualPol.component />{/if}
           {/if}
         {:else if $connectionStatus !== 'connected'}
           <EngineBoot {everConnected} />
@@ -983,8 +998,8 @@
           />
         {/if}
       </section>
-      {#if filePath}
-        <Timeline />
+      {#if filePath && timeline.component}
+        <timeline.component />
       {/if}
     </div>
     {#if rightSidebarOpen}
@@ -1046,7 +1061,8 @@
   </footer>
 
   <ToastContainer />
-  <CommandPalette bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
+  {#if palette.component}
+  <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
     if (type === 'open-file') openFile();
     else if (type === 'toggle-left-sidebar') toggleLeftSidebar();
@@ -1059,12 +1075,13 @@
     else if (type === 'about') aboutDialogVisible = true;
     else if (type === 'export') showPanel('export');
   }} />
-  <OnboardingTour bind:visible={onboardingVisible} />
-  <ShortcutsSheet bind:visible={shortcutsSheetVisible} />
-  <AboutDialog bind:visible={aboutDialogVisible} />
-  <CrossSectionDialog />
-  {#if settingsOpen}
-    <SettingsDialog open={true} on:close={() => (settingsOpen = false)} />
+  {/if}
+  {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}
+  {#if shortcutsSheet.component}<shortcutsSheet.component bind:visible={shortcutsSheetVisible} />{/if}
+  {#if aboutDialog.component}<aboutDialog.component bind:visible={aboutDialogVisible} />{/if}
+  {#if crossDialog.component}<crossDialog.component />{/if}
+  {#if settingsOpen && settingsDialog.component}
+    <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}
 </div>
 

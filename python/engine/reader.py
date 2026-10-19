@@ -9,14 +9,23 @@ import os
 import shutil
 import tempfile
 import threading
+import weakref
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import xarray as xr
+from xarray.backends import BackendArray
+from xarray.core import indexing
 
 logger = logging.getLogger(__name__)
+
+# The netCDF-C / HDF5 libraries behind most radar formats are not safe for several threads opening
+# files at the same moment (a native "Bus error" was seen with two overlapping open_file requests).
+# Opens therefore take turns; reads of already opened files are not affected.
+_OPEN_GUARD = threading.Lock()
 
 _SWEEP_PREFIX = "sweep_"
 
@@ -68,6 +77,30 @@ def _unlink_quietly(path: str) -> None:
         _LEFTOVER_TMP_FILES.add(path)
 
 
+def _unlink_all(paths: list[str]) -> None:
+    """Remove every file in *paths* (and empty the list). Used by the reader's finalizer."""
+    for path in list(paths):
+        _unlink_quietly(path)
+    paths.clear()
+
+
+def _reads_lazily(dtree: xr.DataTree) -> bool:
+    """True if some variable of *dtree* is still read from its file on demand.
+
+    A temporary decompressed copy must then stay on disk for as long as the tree is used:
+    NetCDF/HDF5 backends re-open the file by name (on another thread, after the handle was
+    evicted ...), so a copy that was already deleted makes every later read fail.
+    """
+    try:
+        for node in dtree.subtree:
+            for var in node.to_dataset().variables.values():
+                if not var._in_memory:
+                    return True
+        return False
+    except Exception:  # cannot tell: keeping the file is the safe answer
+        return True
+
+
 # ----------------------------------------------------------------------
 # Sweep ordering helpers (public: other engine modules should use these)
 # ----------------------------------------------------------------------
@@ -92,27 +125,90 @@ def mask_variable(v: xr.DataArray) -> xr.DataArray:
     those are; arrays without such an encoding (synthetic data, already-masked data) are returned
     unchanged.
     """
-    enc = v.encoding
-    scale, offset, dtype = enc.get("scale_factor"), enc.get("add_offset"), enc.get("dtype")
-    if scale is None or offset is None or dtype is None or v.dtype.kind != "f":
+    params = _no_echo_params(v)
+    if params is None:
         return v
-    try:
-        if np.dtype(dtype).kind != "u":
-            return v
-    except TypeError:
-        return v
-    scale, offset = float(scale), float(offset)
-    if scale == 0.0 or not np.isfinite(scale) or not np.isfinite(offset):
-        return v
+    offset, scale = params
     tol = 0.25 * abs(scale)
     vals = v.variable
     bad = (abs(vals - offset) <= tol) | (abs(vals - (offset + scale)) <= tol)
     return v.where(~bad, other=np.nan).assign_attrs(v.attrs)
 
 
-def mask_below_threshold(ds: xr.Dataset) -> xr.Dataset:
-    """:func:`mask_variable` applied to every 2-D data variable of *ds*."""
-    masked = {name: mask_variable(v) for name, v in ds.data_vars.items() if v.ndim >= 2}
+def _no_echo_params(v: xr.DataArray) -> tuple[float, float] | None:
+    """``(offset, scale)`` when *v* is an integer-encoded moment with no-echo codes, else None."""
+    enc = v.encoding
+    scale, offset, dtype = enc.get("scale_factor"), enc.get("add_offset"), enc.get("dtype")
+    if scale is None or offset is None or dtype is None or v.dtype.kind != "f":
+        return None
+    try:
+        if np.dtype(dtype).kind != "u":
+            return None
+    except TypeError:
+        return None
+    scale, offset = float(scale), float(offset)
+    if scale == 0.0 or not np.isfinite(scale) or not np.isfinite(offset):
+        return None
+    return offset, scale
+
+
+class _LazyMasked(BackendArray):
+    """:func:`mask_variable` applied on read: the same values, but only for what is touched."""
+
+    def __init__(self, var: xr.Variable, offset: float, scale: float) -> None:
+        self._var = var
+        self._offset = offset
+        self._scale = scale
+        self.shape = var.shape
+        self.dtype = var.dtype
+
+    def __getitem__(self, key: Any) -> np.ndarray:
+        return indexing.explicit_indexing_adapter(
+            key, self.shape, indexing.IndexingSupport.OUTER, self._load
+        )
+
+    def _load(self, key: tuple) -> np.ndarray:
+        vals = np.asarray(self._var[key].values)
+        tol = 0.25 * abs(self._scale)
+        bad = (abs(vals - self._offset) <= tol) | (abs(vals - (self._offset + self._scale)) <= tol)
+        out = vals.copy()
+        out[bad] = np.nan
+        return out
+
+
+def mask_variable_lazy(v: xr.DataArray) -> xr.DataArray:
+    """:func:`mask_variable` that decodes and masks when the values are first read.
+
+    Identical values, attributes and coordinates to the eager version; nothing is read until
+    needed, and the result is cached after the first full read.
+    """
+    params = _no_echo_params(v)
+    if params is None:
+        return v
+    data = indexing.MemoryCachedArray(indexing.LazilyIndexedArray(_LazyMasked(v.variable, *params)))
+    return xr.DataArray(xr.Variable(v.dims, data, v.attrs), coords=v.coords, name=v.name)
+
+
+def lazy_mask_below_threshold(ds: xr.Dataset) -> xr.Dataset:
+    """:func:`mask_below_threshold` where each moment is masked only when it is first read."""
+    masked = {name: mask_variable_lazy(v) for name, v in ds.data_vars.items() if v.ndim >= 2}
+    changed = {k: m for k, m in masked.items() if m is not ds[k]}
+    return ds.assign(changed) if changed else ds
+
+
+def mask_below_threshold(ds: xr.Dataset, only: Iterable[str] | None = None) -> xr.Dataset:
+    """:func:`mask_variable` applied to every 2-D data variable of *ds*.
+
+    With ``only`` just those variables are masked (and, for a lazily-read file, decoded): the
+    others are returned untouched. Masking decodes and copies a whole array, so a caller that
+    reads one moment out of five should say which.
+    """
+    names = None if only is None else set(only)
+    masked = {
+        name: mask_variable(v)
+        for name, v in ds.data_vars.items()
+        if v.ndim >= 2 and (names is None or name in names)
+    }
     changed = {k: m for k, m in masked.items() if m is not ds[k]}
     return ds.assign(changed) if changed else ds
 
@@ -483,6 +579,34 @@ def _diagnose_unreadable(open_path: str, original_path: str) -> str:
     )
 
 
+# Exception types that mean "xradar choked on bytes it did not expect" rather than "the file says
+# what is wrong": their text ("unsupported operand type(s) for +: 'NoneType' ...") helps nobody.
+_INTERNAL_ERRORS = (
+    TypeError,
+    AttributeError,
+    KeyError,
+    IndexError,
+    UnboundLocalError,
+    AssertionError,
+)
+
+
+def _backend_detail(errors: list[tuple[str, Exception]], *paths: str) -> str:
+    """`` (<format>: <what the backend said>, N formats tried)`` for the first meaningful error.
+
+    The file's own path is cut out of the text (the message already names the file).
+    """
+    for fmt, exc in errors:
+        if isinstance(exc, _INTERNAL_ERRORS):
+            continue
+        text = " ".join(str(exc).split())
+        for path in paths:
+            text = text.replace(f"'{path}'", "the file").replace(path, "the file")
+        if text:
+            return f" ({fmt}: {text[:200]}; {len(errors)} formats tried)"
+    return f" ({len(errors)} formats tried)" if errors else ""
+
+
 def _guess_formats_by_extension(path: str) -> list[str]:
     """Return a priority-ordered list of format names to try (each at most once)."""
     return _guess_formats(path)[0]
@@ -636,6 +760,10 @@ class RadarReader:
         # and a gzip file may not inflate beyond ``max_decompressed_bytes``.
         self.tmp_dir: str | None = None
         self.max_decompressed_bytes: int | None = None
+        # Decompressed copies the open tree still reads from (see ``_reads_lazily``): removed when
+        # the file is replaced or closed, when the reader is garbage collected, or at exit.
+        self._temp_files: list[str] = []
+        weakref.finalize(self, _unlink_all, self._temp_files)
 
     # ------------------------------------------------------------------
     # Memory accounting
@@ -704,7 +832,10 @@ class RadarReader:
         if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
         if p.is_dir():
-            raise ValueError(f"Path is a directory, not a radar file: {path}")
+            raise ValueError(
+                f"Could not open {p.name or p}: it is a folder, not a radar file. "
+                "Open a file inside it."
+            )
         if not os.access(path, os.R_OK):
             raise PermissionError(
                 f"Permission denied reading {p.name}. Check the file's permissions (on macOS, "
@@ -725,6 +856,7 @@ class RadarReader:
 
         errors: list[tuple[str, Exception]] = []
         tried: set[str] = set()
+        committed: list[xr.DataTree] = []
 
         def attempt(fmt: str) -> dict[str, Any] | None:
             """Open *path* as *fmt*; commit and return the schema, or None on failure."""
@@ -732,7 +864,8 @@ class RadarReader:
             try:
                 opener = _get_opener(fmt)
                 logger.info("Trying format '%s' for %s", fmt, open_path)
-                dtree = opener(open_path)
+                with _OPEN_GUARD:
+                    dtree = opener(open_path)
                 schema = self._build_schema(dtree, fmt)
                 if not schema["sweeps"]:
                     # Lenient backends (e.g. cfradial2) "open" any netCDF as an empty tree.
@@ -745,6 +878,7 @@ class RadarReader:
                 errors.append((fmt, exc))
                 return None
             self._commit(dtree, path, fmt)
+            committed.append(dtree)
             logger.info("Opened %s as %s", path, fmt)
             return schema
 
@@ -783,18 +917,26 @@ class RadarReader:
                 errors.append(("generic_netcdf", exc))
             else:
                 self._commit(dtree, path, "generic_netcdf")
+                committed.append(dtree)
                 logger.info("Opened %s as generic NetCDF", path)
                 return schema
 
-            # Report the most informative failures (the sniffed/preferred formats come first).
-            detail = "; ".join(f"{fmt}: {exc}" for fmt, exc in errors[:3])
+            # Everything that was tried goes to the log; the message carries the diagnosis plus
+            # the backend's own words for the most likely format (the sniffed one comes first).
+            for fmt, exc in errors:
+                logger.info("open %s as %s failed: %s: %s", p.name, fmt, type(exc).__name__, exc)
             raise ValueError(
-                f"Could not open {p.name}: {_diagnose_unreadable(open_path, path)} "
-                f"({len(errors)} formats tried; first errors: {detail})"
+                f"Could not open {p.name}: {_diagnose_unreadable(open_path, path)}"
+                f"{_backend_detail(errors, path, open_path)}"
             ) from (errors[0][1] if errors else None)
         finally:
             if is_tmp:
-                _unlink_quietly(open_path)
+                # NEXRAD volumes keep their own open handle (and are the big ones: ~330 MB); the
+                # NetCDF/HDF5 based formats re-open the file by name.
+                if committed and self._format != "nexrad_level2" and _reads_lazily(committed[0]):
+                    self._temp_files.append(open_path)  # the open tree still reads from it
+                else:
+                    _unlink_quietly(open_path)
 
     def open_s3_file(self, s3_path: str) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).
@@ -980,6 +1122,7 @@ class RadarReader:
             self._path = None
             self._format = None
             self._reset_caches()
+        _unlink_all(self._temp_files)
 
     def get_schema(self) -> dict[str, Any]:
         """Extract metadata from the currently-open datatree.
@@ -995,12 +1138,15 @@ class RadarReader:
         assert self._dtree is not None
         return self._build_schema(self._dtree, self._format)
 
-    def get_sweep_dataset(self, sweep: int, *, mask: bool = True) -> xr.Dataset:
+    def get_sweep_dataset(
+        self, sweep: int, *, mask: bool = True, only: Iterable[str] | None = None
+    ) -> xr.Dataset:
         """Return the full ``xr.Dataset`` of one sweep (all variables and coords).
 
         With ``mask=True`` (default) the reserved "no echo" / "range folded" codes of
         integer-encoded moments are NaN (see :func:`mask_variable`). This builds new arrays, so
-        ask for ``mask=False`` when only metadata or one variable is needed.
+        ask for ``mask=False`` when only metadata or one variable is needed, or pass
+        ``only=[names]`` to mask (and decode) just those moments.
 
         Placeholder sweeps of an ARCO scan are loaded on demand (once, thread-safe)
         and the real dataset is returned.  Non-ARCO sweeps return the node's dataset
@@ -1020,7 +1166,7 @@ class RadarReader:
         ds = nodes[sweep].to_dataset()
         if _is_placeholder(ds) and self._format == "nexrad_arco":
             ds = self._load_arco_sweep(int(sweep))
-        return mask_below_threshold(ds) if mask else ds
+        return mask_below_threshold(ds, only) if mask else ds
 
     def get_sweep_data(self, sweep: int, variable: str) -> xr.DataArray:
         """Return the DataArray for a specific sweep index and variable.
@@ -1041,6 +1187,11 @@ class RadarReader:
             available = sorted(str(v) for v in ds.data_vars)
             raise KeyError(f"Variable '{variable}' not in sweep {sweep}. Available: {available}")
         da = ds[variable]
+        if da.size == 0:
+            raise ValueError(
+                f"Sweep {sweep} has no {variable} data (0 rays or 0 gates). The file may be "
+                "truncated or incomplete; try another sweep."
+            )
         if self._arco_active(sweep):
             # Remote (zarr/S3) arrays: read once under a per-sweep lock so concurrent
             # renders of the same sweep don't download it several times.
@@ -1077,6 +1228,7 @@ class RadarReader:
             self._dtree = dtree
             self._path = path
             self._format = fmt
+        _unlink_all(self._temp_files)  # the previous file's decompressed copy is not needed now
 
     def _sweep_lock(self, sweep: int) -> threading.Lock:
         with self._lock:

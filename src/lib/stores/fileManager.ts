@@ -9,7 +9,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { radarData, selectedVariable, selectedSweep, type SweepInfo } from './radarData';
-import { clearSweepCache } from '../utils/ppiRenderer';
+import { clearSweepCache } from '../utils/sweepCache';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -92,6 +92,16 @@ export function removeFile(id: string): string | null {
   }
 
   return id;
+}
+
+/**
+ * Forget every open file (the engine that held them is gone: restarted or a new web session).
+ * Their ids would only fail on every later request.
+ */
+export function clearAllFiles(): void {
+  openFiles.set([]);
+  activeFileId.set(null);
+  _syncToLegacyStores(null);
 }
 
 /**

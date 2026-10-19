@@ -12,10 +12,12 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
-from scipy import ndimage
 
 from engine import varmap
+from engine._lazy import LazyModule
 from engine.reader import mask_below_threshold, sorted_sweep_names
+
+ndimage = LazyModule("scipy.ndimage")  # imported on first use (~150 ms)
 
 logger = logging.getLogger(__name__)
 

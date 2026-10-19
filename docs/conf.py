@@ -87,7 +87,7 @@ API_MODULES = [
 autoclass_content = "both"
 autodoc_member_order = "bysource"
 autodoc_default_options = {"members": True, "show-inheritance": True}
-autodoc_mock_imports = ["radarx", "icechunk", "cairo", "boto3", "s3fs"]
+autodoc_mock_imports = ["radarx", "icechunk", "boto3"]
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
 

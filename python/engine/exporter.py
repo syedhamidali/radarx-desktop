@@ -8,6 +8,8 @@ import logging
 import os
 import re
 import shutil
+import threading
+import uuid
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from pathlib import Path
@@ -286,6 +288,82 @@ def _netcdf_safe_tree(datatree: xr.DataTree) -> xr.DataTree:
     return safe
 
 
+# xradar's CfRadial1 writer merges the sweeps with ``compat="no_conflicts"``. The per-sweep scalars
+# below (strings among them) are broadcast along ``time`` first and then thrown away, and carrying
+# them through that merge is what makes a NEXRAD volume take a minute and 12 GB. Dropping them
+# before the merge gives the identical result (tests/test_perf_equivalence.py checks it).
+_CF1_SWEEP_SCALARS = ["sweep_fixed_angle", "sweep_number", "sweep_mode", "prt_mode", "follow_mode"]
+_CF1_LOCK = threading.Lock()
+
+
+def _cfradial1_variables(cf1: Any, dtree: xr.DataTree, dim0: str | None = None) -> xr.Dataset:
+    """``xradar.io.export.cfradial1._variable_mapper`` minus the wasted merge work."""
+    sweep_info = cf1._sweep_info_mapper(dtree)
+    vol_info = cf1._main_info_mapper(dtree)
+    if "fixed_angle" in vol_info:
+        vol_info = vol_info.drop_vars("fixed_angle")
+    sweep_datasets = []
+    for grp in dtree.groups:
+        if "sweep" not in grp:
+            continue
+        data = dtree[grp].to_dataset(inherit="all_coords")
+        if dim0 is None:
+            dim0 = "elevation" if data.sweep_mode.load().astype(str) == "rhi" else "azimuth"
+            if dim0 not in data.dims:
+                dim0 = "time"
+                assert dim0 in data.dims
+        if dim0 != "time" and dim0 in data.dims:
+            data = data.swap_dims({dim0: "time"})
+        data = data.sortby("time").drop_vars(["x", "y", "z", *_CF1_SWEEP_SCALARS], errors="ignore")
+        data.attrs = {}
+        sweep_datasets.append(data)
+    result = xr.combine_by_coords(
+        sweep_datasets,
+        data_vars="all",
+        compat="no_conflicts",
+        join="outer",
+        coords="minimal",
+        combine_attrs="no_conflicts",
+    )
+    result = result.drop_vars(
+        ["latitude", "longitude", "altitude", "spatial_ref", "crs_wkt"], errors="ignore"
+    )
+    result.update(sweep_info)
+    result.update(cf1.calculate_sweep_indices(dtree, result))
+    result = result.reset_coords(["elevation", "azimuth"])
+    result.update(vol_info)
+    return result
+
+
+def _to_cfradial1(dtree: xr.DataTree, filename: str) -> None:
+    """``xradar.io.export.to_cfradial1`` using :func:`_cfradial1_variables` for the heavy step.
+
+    Falls back to xradar's own mapper when its private helpers are missing or anything in the
+    faster path fails, so the file written is always the one xradar would write.
+    """
+    from xradar.io.export import cfradial1 as cf1
+
+    stock = getattr(cf1, "_variable_mapper", None)
+    helpers = ("_sweep_info_mapper", "_main_info_mapper", "calculate_sweep_indices")
+    if stock is None or not all(hasattr(cf1, h) for h in helpers):
+        cf1.to_cfradial1(dtree=dtree, filename=filename)
+        return
+
+    def mapper(tree: xr.DataTree, dim0: str | None = None) -> xr.Dataset:
+        try:
+            return _cfradial1_variables(cf1, tree, dim0)
+        except Exception as exc:
+            logger.debug("fast CfRadial1 merge failed (%s); using xradar's", exc)
+            return stock(tree, dim0)
+
+    with _CF1_LOCK:  # the swap is process-wide
+        cf1._variable_mapper = mapper
+        try:
+            cf1.to_cfradial1(dtree=dtree, filename=filename)
+        finally:
+            cf1._variable_mapper = stock
+
+
 def _safe_stem(name: str) -> str:
     """Make *name* safe to use as (part of) a file name: no separators or '..'."""
     stem = re.sub(r"[^\w.\-]+", "_", str(name)).strip("._")
@@ -321,6 +399,26 @@ def _unique_in(directory: Path, prefix: str, suffix: str) -> Path:
     return candidate
 
 
+class _Target(str):
+    """The path an exporter should write to; ``final`` is where the result ends up on success."""
+
+    final: str
+
+    def __new__(cls, write_to: str, final: str) -> _Target:
+        obj = super().__new__(cls, write_to)
+        obj.final = final
+        return obj
+
+
+def _discard(path: str) -> None:
+    """Remove a (partial) file or folder; never raises."""
+    if os.path.isdir(path) and not os.path.islink(path):
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+
+
 @contextlib.contextmanager
 def _output_target(
     output_path: str | None,
@@ -328,15 +426,16 @@ def _output_target(
     suffix: str,
     prefix: str,
     directory: bool = False,
-) -> Iterator[str]:
-    """Yield the path to write to; clean up a temp target if the body fails.
+) -> Iterator[_Target]:
+    """Yield the path to write to; a failed export leaves nothing behind.
 
-    A user-supplied *output_path* gets its parent directories created.  When
-    *output_path* is ``None`` a uniquely named file (or directory) is created in
-    :func:`default_export_dir` and removed again if the export raises, so failures do
-    not leave half-written files behind.
+    With a user-supplied *output_path* the data is written to a hidden sibling file and moved
+    over the destination only when the export finished, so a full disk, a crash or a cancelled
+    export never leaves a truncated file there (nor destroys an earlier good one). The parent
+    folders are created. Without *output_path* a uniquely named file (or folder) is created in
+    :func:`default_export_dir` and removed again if the export raises. The yielded path is a
+    ``str`` whose ``.final`` attribute is the finished file's location.
     """
-    created_temp = output_path is None
     if output_path is None:
         target = _unique_in(default_export_dir(), prefix, suffix)
         if directory:
@@ -344,18 +443,34 @@ def _output_target(
         else:
             target.touch()
         path = str(target)
-    else:
-        path = str(Path(output_path).expanduser())
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        try:
+            yield _Target(path, path)
+        except BaseException:
+            _discard(path)
+            raise
+        return
+
+    final = str(Path(output_path).expanduser())
+    parent = Path(final).parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # Same folder (so the final move is atomic) and same file name tail (so a name-based format
+    # or compression guess, e.g. ``.csv.gz``, still works).
+    tmp = str(parent / f".xradar-{uuid.uuid4().hex[:8]}-{Path(final).name}")
     try:
-        yield path
+        yield _Target(tmp, final)
+        if directory and os.path.isdir(final):
+            backup = f"{tmp}.old"
+            os.replace(final, backup)
+            try:
+                os.replace(tmp, final)
+            except BaseException:
+                os.replace(backup, final)
+                raise
+            _discard(backup)
+        else:
+            os.replace(tmp, final)
     except BaseException:
-        if created_temp:
-            if os.path.isdir(path):
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                with contextlib.suppress(OSError):
-                    os.remove(path)
+        _discard(tmp)
         raise
 
 
@@ -448,6 +563,11 @@ def render_publication_figure(
     # no-echo area is transparent instead of painting the colormap minimum (-33 dBZ etc.).
     da = mask_variable(sweep_ds[variable])
     values = da.values
+    if values.size == 0:
+        raise ValueError(
+            f"Sweep {sweep} has no {variable} data (0 rays or 0 gates). The file may be "
+            "truncated or incomplete; try another sweep."
+        )
 
     # Polar coordinates
     if "azimuth" in da.coords:
@@ -459,6 +579,18 @@ def render_publication_figure(
         range_m = da.coords["range"].values.astype(np.float64)
     else:
         range_m = np.arange(values.shape[-1], dtype=np.float64)
+
+    # Rays/gates without a position (NaN/inf angle or range) cannot be drawn; drawing the rest
+    # beats failing the whole figure with a pcolormesh error.
+    ray_ok, gate_ok = np.isfinite(azimuth), np.isfinite(range_m)
+    if not (ray_ok.all() and gate_ok.all()):
+        if not (ray_ok.any() and gate_ok.any()):
+            raise ValueError(
+                f"Sweep {sweep} has no ray angles or gate ranges (all NaN); nothing to draw. "
+                "The file may be damaged."
+            )
+        azimuth, range_m = azimuth[ray_ok], range_m[gate_ok]
+        values = values[ray_ok][:, gate_ok]
 
     range_km = range_m / 1000.0
 
@@ -753,7 +885,7 @@ class RadarExporter:
         finally:
             _pyplot().close(fig)
 
-        output_path = str(Path(target).resolve())
+        output_path = str(Path(target.final).resolve())
         progress(100, f"Export complete: {output_path}")
         logger.info("Exported %s to %s", fmt, output_path)
         return output_path
@@ -959,7 +1091,7 @@ class RadarExporter:
             for frame in frames:
                 frame.close()
 
-        output_path = str(Path(target).resolve())
+        output_path = str(Path(target.final).resolve())
         progress(100, f"Animation export complete: {output_path}")
         logger.info("Exported GIF animation to %s (%d frames)", output_path, n_frames)
         return output_path
@@ -980,14 +1112,12 @@ class RadarExporter:
         progress: ProgressCallback,
         options: dict[str, Any],
     ) -> str:
-        from xradar.io.export.cfradial1 import to_cfradial1
-
         progress(10, "Preparing CfRadial1 NetCDF export")
         with _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target:
-            to_cfradial1(dtree=_netcdf_safe_tree(datatree), filename=target)
+            _to_cfradial1(_netcdf_safe_tree(datatree), target)
 
-        progress(100, f"CfRadial1 export complete: {target}")
-        return str(Path(target).resolve())
+        progress(100, f"CfRadial1 export complete: {target.final}")
+        return str(Path(target.final).resolve())
 
     def _export_cfradial2(
         self,
@@ -1007,8 +1137,8 @@ class RadarExporter:
         with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
             to_cfradial2(_netcdf_safe_tree(datatree), target)
 
-        progress(100, f"CfRadial2 export complete: {target}")
-        return str(Path(target).resolve())
+        progress(100, f"CfRadial2 export complete: {target.final}")
+        return str(Path(target.final).resolve())
 
     def _export_csv(
         self,
@@ -1064,7 +1194,7 @@ class RadarExporter:
         with _output_target(output_path, suffix=".csv", prefix="xradar_export_") as target:
             df.to_csv(target, index=False, float_format="%.4f")
 
-        output_path = str(Path(target).resolve())
+        output_path = str(Path(target.final).resolve())
         progress(100, f"CSV export complete: {output_path}")
         logger.info("Exported CSV to %s (%d rows)", output_path, len(df))
         return output_path
@@ -1094,5 +1224,5 @@ class RadarExporter:
         ) as target:
             datatree.to_zarr(target, mode="w")
 
-        progress(100, f"Zarr export complete: {target}")
-        return str(Path(target).resolve())
+        progress(100, f"Zarr export complete: {target.final}")
+        return str(Path(target.final).resolve())

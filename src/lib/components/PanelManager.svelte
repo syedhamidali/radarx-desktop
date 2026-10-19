@@ -1,34 +1,26 @@
 <script lang="ts">
   import { onMount, onDestroy, setContext } from 'svelte';
   import { workspaceStore, currentWorkspace } from '../stores/workspace';
-  import ProcessingPanel from './ProcessingPanel.svelte';
-  import ExportPanel from './ExportPanel.svelte';
-  import StormPanel from './StormPanel.svelte';
-  import QCPanel from './QCPanel.svelte';
-  import TimeSeriesChart from './TimeSeriesChart.svelte';
-  import CrossSectionPanel from './CrossSectionPanel.svelte';
-  import VolumePanel from './VolumePanel.svelte';
-  import CloudDataPanel from './CloudDataPanel.svelte';
-  import ModulesPanel from './ModulesPanel.svelte';
-  import MosaicPanel from './MosaicPanel.svelte';
-  import PipelinePanel from './PipelinePanel.svelte';
-  import WindPanel from './WindPanel.svelte';
+  import { lazy, whenIdle } from '../utils/lazy.svelte';
 
   setContext('embedded-panel', true); // panels below draw only their body; this component owns the header
 
-  const PANEL_MAP: Record<string, { component: any; label: string; icon: string }> = {
-    cloud: { component: CloudDataPanel, label: 'Cloud Data', icon: '☁' },
-    mosaic: { component: MosaicPanel, label: 'Mosaic', icon: '\u{1F5FA}' },
-    wind: { component: WindPanel, label: 'Wind (Multi-Doppler)', icon: '\u{1F32C}' },
-    volume: { component: VolumePanel, label: '3D Volume', icon: '\u{1F4E6}' },
-    timeseries: { component: TimeSeriesChart, label: 'Time Series', icon: '\u{1F4C8}' },
-    crosssection: { component: CrossSectionPanel, label: 'Cross-Section', icon: '///' },
-    qc: { component: QCPanel, label: 'Quality Control', icon: '\u2714' },
-    storm: { component: StormPanel, label: 'Storm Cells', icon: '\u26C8' },
-    modules: { component: ModulesPanel, label: 'Modules', icon: '\u{1F9E9}' },
-    pipeline: { component: PipelinePanel, label: 'Pipelines', icon: '\u26D3' },
-    processing: { component: ProcessingPanel, label: 'Processing', icon: '\u2699' },
-    export: { component: ExportPanel, label: 'Export', icon: '\u21E9' },
+  // Each panel is its own chunk: the sidebar shell paints first, the panels' code arrives right after
+  // (expanded ones at once, the rest while the browser is idle). All panels stay mounted once loaded,
+  // collapsed or not, exactly as before: their stores listen for window / engine events.
+  const PANEL_MAP: Record<string, { lazy: ReturnType<typeof lazy>; label: string; icon: string }> = {
+    cloud: { lazy: lazy(() => import('./CloudDataPanel.svelte')), label: 'Cloud Data', icon: '☁' },
+    mosaic: { lazy: lazy(() => import('./MosaicPanel.svelte')), label: 'Mosaic', icon: '\u{1F5FA}' },
+    wind: { lazy: lazy(() => import('./WindPanel.svelte')), label: 'Wind (Multi-Doppler)', icon: '\u{1F32C}' },
+    volume: { lazy: lazy(() => import('./VolumePanel.svelte')), label: '3D Volume', icon: '\u{1F4E6}' },
+    timeseries: { lazy: lazy(() => import('./TimeSeriesChart.svelte')), label: 'Time Series', icon: '\u{1F4C8}' },
+    crosssection: { lazy: lazy(() => import('./CrossSectionPanel.svelte')), label: 'Cross-Section', icon: '///' },
+    qc: { lazy: lazy(() => import('./QCPanel.svelte')), label: 'Quality Control', icon: '\u2714' },
+    storm: { lazy: lazy(() => import('./StormPanel.svelte')), label: 'Storm Cells', icon: '\u26C8' },
+    modules: { lazy: lazy(() => import('./ModulesPanel.svelte')), label: 'Modules', icon: '\u{1F9E9}' },
+    pipeline: { lazy: lazy(() => import('./PipelinePanel.svelte')), label: 'Pipelines', icon: '\u26D3' },
+    processing: { lazy: lazy(() => import('./ProcessingPanel.svelte')), label: 'Processing', icon: '\u2699' },
+    export: { lazy: lazy(() => import('./ExportPanel.svelte')), label: 'Export', icon: '\u21E9' },
   };
 
   // Line icons for the panel headers (24x24, stroke). A panel without an entry here falls back to the
@@ -57,6 +49,7 @@
 
   /** A mosaic request (e.g. from the Cloud Data panel) opens the Mosaic panel. */
   function expandMosaic() {
+    void PANEL_MAP.mosaic.lazy.load();
     if (!panelCollapsed.mosaic) return;
     panelCollapsed = { ...panelCollapsed, mosaic: false };
     workspaceStore.updateCurrentConfig({ rightPanelCollapsed: panelCollapsed });
@@ -66,6 +59,7 @@
   function showPanel(e: Event) {
     const id = (e as CustomEvent<{ id?: string }>).detail?.id;
     if (!id || !PANEL_MAP[id]) return;
+    void PANEL_MAP[id].lazy.load();
     if (panelCollapsed[id]) {
       panelCollapsed = { ...panelCollapsed, [id]: false };
       workspaceStore.updateCurrentConfig({ rightPanelCollapsed: panelCollapsed });
@@ -84,6 +78,14 @@
       const missing = known.filter((id) => !saved.includes(id));
       panelOrder = saved.length ? [...saved, ...missing] : known;
       panelCollapsed = ws.rightPanelCollapsed ?? {};
+      for (const id of panelOrder) if (!panelCollapsed[id]) void PANEL_MAP[id].lazy.load();
+    });
+    // The collapsed panels (they are mounted too) follow one by one while the browser is idle.
+    whenIdle(async () => {
+      for (const id of panelOrder) {
+        await PANEL_MAP[id]?.lazy.load();
+        await new Promise((r) => setTimeout(r, 0)); // let the browser paint / handle input in between
+      }
     });
   });
 
@@ -94,6 +96,7 @@
   });
 
   function toggleCollapse(id: string) {
+    void PANEL_MAP[id]?.lazy.load();
     panelCollapsed = { ...panelCollapsed, [id]: !panelCollapsed[id] };
     workspaceStore.updateCurrentConfig({ rightPanelCollapsed: panelCollapsed });
   }
@@ -188,7 +191,7 @@
           </button>
         </div>
         <div class="managed-panel-content" class:visible={!panelCollapsed[id]}>
-          <svelte:component this={panel.component} />
+          {#if panel.lazy.component}<panel.lazy.component />{/if}
         </div>
       </div>
     {/if}

@@ -4,7 +4,7 @@
 
 FROM python:3.12-slim AS build
 RUN apt-get update \
- && apt-get install -y --no-install-recommends build-essential pkg-config libcairo2-dev \
+ && apt-get install -y --no-install-recommends build-essential \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY pyproject.toml ./
@@ -14,10 +14,7 @@ RUN python -m venv /opt/venv \
  && /opt/venv/bin/pip install --no-cache-dir ".[radarx]"
 
 FROM python:3.12-slim
-RUN apt-get update \
- && apt-get install -y --no-install-recommends libcairo2 \
- && rm -rf /var/lib/apt/lists/* \
- && useradd --create-home --uid 10001 xradar
+RUN useradd --create-home --uid 10001 xradar
 COPY --from=build /opt/venv /opt/venv
 WORKDIR /app
 COPY server.py ./

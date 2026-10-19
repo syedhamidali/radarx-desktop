@@ -389,6 +389,8 @@ class SessionContext:
         self.owned: dict[str, set[str]] = {"mosaics": set(), "winds": set()}
         self.recipe_count_limit = 50
         self._lock = threading.Lock()
+        #: worker-thread jobs started for this session that have not finished yet
+        self._jobs: set[Any] = set()
 
     # -- directories -------------------------------------------------------
 
@@ -641,8 +643,26 @@ class SessionContext:
 
     # -- lifecycle ---------------------------------------------------------
 
+    def track_job(self, future: Any) -> None:
+        """Remember a worker-thread job of this session (see :meth:`close`)."""
+        with self._lock:
+            self._jobs.add(future)
+        future.add_done_callback(self._job_done)
+
+    def _job_done(self, future: Any) -> None:
+        with self._lock:
+            self._jobs.discard(future)
+            late = self.closed
+        if late:  # the session ended while this job ran: it may have written there since
+            shutil.rmtree(self.dir, ignore_errors=True)
+
     def close(self) -> None:
-        """Remove the session directory and forget its download tokens (idempotent)."""
+        """Remove the session directory and forget its download tokens (idempotent).
+
+        A worker thread cannot be stopped, so one that is still running (an export, say) keeps
+        writing into the folder after it was removed -- possibly re-creating it. The folder is
+        therefore removed again when each of those jobs ends.
+        """
         with self._lock:
             if self.closed:
                 return

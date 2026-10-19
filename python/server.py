@@ -112,6 +112,9 @@ SAVE_TEXT_MAX_BYTES = 20 * 1024 * 1024
 WEB_SAVE_TEXT_MAX_BYTES = 5 * 1024 * 1024
 
 
+#: Identifies this engine process; reported by ``ping`` (see ``_handle_ping``).
+ENGINE_ID = uuid.uuid4().hex
+
 # True while the current message task has announced progress < 100 without closing it.
 _PROGRESS_OPEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "xradar_progress_open", default=False
@@ -267,7 +270,11 @@ class _ContextExecutor(concurrent.futures.ThreadPoolExecutor):
 
     def submit(self, fn, /, *args, **kwargs):  # type: ignore[override]
         ctx = contextvars.copy_context()
-        return super().submit(ctx.run, fn, *args, **kwargs)
+        future = super().submit(ctx.run, fn, *args, **kwargs)
+        session = _SESSION.get()
+        if session is not None:
+            session.track_job(future)  # lets the session folder be cleaned up after late writes
+        return future
 
 
 _context_loops: weakref.WeakSet[asyncio.AbstractEventLoop] = weakref.WeakSet()
@@ -290,6 +297,33 @@ def _mutation_lock() -> asyncio.Lock:
     """Serialises operations that mutate/consume shared processor/exporter state."""
     cs = _cs()
     return (_locks if cs is None else cs.locks).get("mutation")
+
+
+async def _run_holding(lock: asyncio.Lock, func: Callable[..., Any], *args: Any) -> Any:
+    """Run ``func(*args)`` in the executor while holding *lock*, until the worker really ends.
+
+    ``async with lock: await loop.run_in_executor(...)`` frees the lock the moment the awaiting
+    task is cancelled (the client disconnected, a newer request replaced it) although the thread
+    keeps running -- and the next request then starts alongside it. For work that is only safe
+    (or only affordable: radarx uses every core) one at a time that stacks up. Here the lock is
+    released by the worker thread itself when it returns, whatever happened to the caller.
+    """
+    loop = asyncio.get_running_loop()
+    await lock.acquire()
+
+    def job() -> Any:
+        try:
+            return func(*args)
+        finally:
+            with contextlib.suppress(RuntimeError):  # RuntimeError: the loop is already closed
+                loop.call_soon_threadsafe(lock.release)
+
+    try:
+        future = loop.run_in_executor(None, job)
+    except BaseException:
+        lock.release()
+        raise
+    return await future
 
 
 class UnknownFileError(KeyError):
@@ -433,6 +467,85 @@ def _describe_open_error(path: str, exc: BaseException) -> str:
     return f"Could not open {name} ({type(exc).__name__}: {exc}). The file may be damaged."
 
 
+#: Fragments of the messages HDF5 / NetCDF / zlib / xradar raise when the bytes of an already
+#: opened file turn out to be damaged (opening is lazy, so this shows up on the first data read).
+_DAMAGED_DATA_MARKERS = (
+    "netcdf: hdf error",
+    "netcdf: unknown file format",
+    "filter returned failure",
+    "can't synchronously read",
+    "unable to synchronously",
+    "file signature not found",
+    "unexpected file end",
+    "bad crc",
+    "while decompressing",
+    "compressed file ended",
+    "incorrect header check",
+    "invalid block type",
+)
+
+_MAX_ERROR_TEXT = 400
+
+
+def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
+    """``(log level, user-facing text)`` for an exception raised while handling *msg_type*.
+
+    The text names the handler (``... in <type>`` / ``... for <type>``: the UI uses that to decide
+    which request a failure belongs to), says what is wrong in plain words and, where the user can
+    do something about it, what to do next. It never contains a traceback.
+    """
+    import errno
+
+    detail = " ".join(str(exc).split())
+    if len(detail) > _MAX_ERROR_TEXT:
+        detail = detail[:_MAX_ERROR_TEXT] + "..."
+    low = detail.lower()
+    if isinstance(exc, MemoryError):
+        return logging.ERROR, (
+            f"Not enough memory in {msg_type}. Close other open files or applications, or ask "
+            "for a smaller area / lower resolution, and try again."
+        )
+    if isinstance(exc, (FileNotFoundError, PermissionError, KeyError, IndexError)):
+        pass  # handled below; these are never "damaged data"
+    elif any(marker in low for marker in _DAMAGED_DATA_MARKERS):
+        return logging.WARNING, (
+            f"Unreadable data in {msg_type}: the open file looks truncated or damaged ({detail}). "
+            "Re-download or re-copy it, then open it again."
+        )
+    if isinstance(exc, (ValueError, TypeError, OverflowError)):
+        return logging.WARNING, f"Invalid input for {msg_type}: {detail}"
+    if isinstance(exc, FileNotFoundError):
+        return logging.WARNING, f"File not found: {detail}. Check that the file or folder exists."
+    if isinstance(exc, (KeyError, IndexError)):
+        return logging.WARNING, f"Not found: {detail}"
+    if isinstance(exc, OSError):
+        where = (
+            f" ({os.path.basename(str(exc.filename))})" if getattr(exc, "filename", None) else ""
+        )
+        if exc.errno == errno.ENOSPC:
+            tail = f"the disk is full{where}. Free some space or choose another folder, then retry."
+        elif exc.errno in (errno.EACCES, errno.EPERM):
+            tail = f"permission denied{where}. Choose a folder you are allowed to write to."
+        elif exc.errno == errno.EROFS:
+            tail = f"the location is read-only{where}. Choose another folder."
+        elif exc.errno == errno.ENAMETOOLONG:
+            tail = f"the file name is too long{where}. Choose a shorter name."
+        else:
+            tail = f"{detail}. Check that the file or folder is still available."
+        return logging.ERROR, f"I/O error in {msg_type}: {tail}"
+    if isinstance(exc, ImportError):
+        return logging.ERROR, f"Missing dependency: {detail}. Reinstall xradar-desktop's engine."
+    return logging.ERROR, (
+        f"Unexpected error in {msg_type}: {detail}. Try again; if it keeps happening, restart "
+        "the app (details are in the engine log)."
+    )
+
+
+def _blank_to_none(value: Any) -> Any:
+    """An empty path means "choose for me" -- not the engine's working directory."""
+    return None if value == "" else value
+
+
 def _cache_token(file_id: str | None) -> tuple[str, int] | None:
     """Identity of the data behind a reader: (file_id, generation)."""
     if file_id is None:
@@ -514,9 +627,12 @@ def _byte_views(arrays: Sequence[Any]) -> list[memoryview]:
     views: list[memoryview] = []
     for arr in arrays:
         if isinstance(arr, (bytes, bytearray, memoryview)):
-            views.append(memoryview(arr).cast("B"))
+            view = memoryview(arr).cast("B")
+        elif getattr(arr, "size", 1) == 0:
+            continue  # nothing to send (and memoryview cannot cast a zero-length shape)
         else:
-            views.append(memoryview(np.ascontiguousarray(arr)).cast("B"))
+            view = memoryview(np.ascontiguousarray(arr)).cast("B")
+        views.append(view)
     return views
 
 
@@ -794,8 +910,11 @@ class ConnectionHandler:
     async def _handle_message(self, raw: str) -> None:
         try:
             msg = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            await self.send_error(f"Invalid JSON: {exc}")
+        except RecursionError:
+            await self.send_error("Invalid JSON: nested too deeply")
+            return
+        except ValueError as exc:  # JSONDecodeError, or e.g. an integer with thousands of digits
+            await self.send_error(f"Invalid JSON: {str(exc)[:200]}")
             return
 
         if not isinstance(msg, dict):
@@ -892,29 +1011,21 @@ class ConnectionHandler:
         _PROGRESS_OPEN.set(False)
         try:
             await handler(msg)
-        except (ValueError, TypeError) as exc:
-            logger.warning("Validation error in '%s': %s", msg_type, exc)
-            await self.send_error(f"Invalid input for {msg_type}: {exc}")
-        except FileNotFoundError as exc:
-            logger.warning("File not found in '%s': %s", msg_type, exc)
-            await self.send_error(f"File not found: {exc}")
-        except (KeyError, IndexError) as exc:
-            logger.warning("Lookup error in '%s': %s", msg_type, exc)
-            await self.send_error(f"Not found: {exc}")
-        except OSError as exc:
-            logger.error("I/O error in '%s': %s", msg_type, exc)
-            await self.send_error(f"I/O error in {msg_type}: {exc}")
-        except ImportError as exc:
-            logger.error("Missing dependency in '%s': %s", msg_type, exc)
-            await self.send_error(f"Missing dependency: {exc}")
-        except Exception as exc:
-            logger.error(
-                "Unexpected error handling '%s': %s\n%s",
-                msg_type,
-                exc,
-                traceback.format_exc(),
+        except (SystemExit, KeyboardInterrupt, GeneratorExit) as exc:
+            # Code that runs on a worker thread (a plug-in module, a library) must not be able to
+            # stop the whole engine: asyncio re-raises these out of the event loop.
+            logger.error("'%s' tried to stop the engine (%s)", msg_type, type(exc).__name__)
+            await self.send_error(
+                f"Unexpected error in {msg_type}: the operation tried to stop the program "
+                f"({type(exc).__name__}). Nothing was changed; try again."
             )
-            await self.send_error(f"Unexpected error in {msg_type}: {exc}")
+        except Exception as exc:
+            level, text = _failure_text(str(msg_type), exc)
+            if level == logging.ERROR:
+                logger.error("Error handling '%s': %s\n%s", msg_type, exc, traceback.format_exc())
+            else:
+                logger.warning("Error in '%s': %s", msg_type, exc)
+            await self.send_error(text)
         finally:
             if _PROGRESS_OPEN.get():
                 _PROGRESS_OPEN.set(False)
@@ -986,7 +1097,7 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
-            lambda: histogram_data(datatree, variable, sweep, bins=int(bins), overrides=overrides),
+            lambda: histogram_data(datatree, variable, sweep, bins=bins, overrides=overrides),
         )
 
         await self.send({"type": "histogram_result", "sweep": sweep, **result})
@@ -1087,7 +1198,7 @@ class ConnectionHandler:
                     box,
                     resolution=resolution,
                     z_max=float(z_max_val),
-                    sweep_loader=reader.get_sweep_dataset,
+                    sweep_loader=_loader_for(reader, variable),
                 ),
             )
         except ValueError as exc:
@@ -1155,7 +1266,7 @@ class ConnectionHandler:
                     start,
                     end,
                     width=float(width),
-                    sweep_loader=reader.get_sweep_dataset,
+                    sweep_loader=_loader_for(reader, variable),
                 ),
             )
         except ValueError as exc:
@@ -1338,6 +1449,9 @@ class ConnectionHandler:
                 "status": "ok",
                 "file_open": has_file,
                 "memory": memory_status(),
+                # Differs after the engine process was restarted (crash, kill, update): the UI
+                # then knows its file ids are gone instead of failing on each request.
+                "engine_id": ENGINE_ID,
             }
         )
 
@@ -1641,7 +1755,7 @@ class ConnectionHandler:
             await self.send_error("get_sweep_data: 'sweep' must be a non-negative integer")
             return
 
-        reader = _get_reader(file_id)
+        resolved_id, reader = _resolve_reader(file_id)
         logger.info("get_sweep_data: variable=%s sweep=%d file_id=%s", variable, sweep, file_id)
 
         loop = asyncio.get_running_loop()
@@ -1653,8 +1767,17 @@ class ConnectionHandler:
             return _pack_field(reader.get_sweep_data(sweep, variable), variable)
 
         fields, arrays = await loop.run_in_executor(None, _load_and_pack)
+        # file_id: replies arrive in any order, and two open files can both be asked for the
+        # same variable and sweep -- the UI needs to know whose data this is.
         await self._send_binary_chunks(
-            arrays, {"type": "sweep_data", "variable": variable, "sweep": sweep, **fields}
+            arrays,
+            {
+                "type": "sweep_data",
+                "variable": variable,
+                "sweep": sweep,
+                "file_id": resolved_id,
+                **fields,
+            },
         )
 
     async def _handle_process(self, msg: dict[str, Any]) -> None:
@@ -1673,14 +1796,9 @@ class ConnectionHandler:
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock():
-            result_tree = await loop.run_in_executor(
-                None,
-                _processor().process,
-                datatree,
-                pipeline,
-                progress_sync,
-            )
+        result_tree = await _run_holding(
+            _mutation_lock(), _processor().process, datatree, pipeline, progress_sync
+        )
 
         # Swap the data and bump the generation together (no await in between) so
         # no render can pair the new generation with the old tree or vice versa.
@@ -1701,7 +1819,7 @@ class ConnectionHandler:
     async def _handle_export(self, msg: dict[str, Any]) -> None:
         fmt = msg.get("format", "png")
         dpi = msg.get("dpi", 300)
-        output_path = msg.get("path")
+        output_path = _blank_to_none(msg.get("path"))
         variable = msg.get("variable")
         sweep = msg.get("sweep", 0)
         options = msg.get("options", {})
@@ -1767,12 +1885,11 @@ class ConnectionHandler:
             )
             return path, names
 
-        async with _mutation_lock():
-            try:
-                saved_path, derived_names = await loop.run_in_executor(None, _do_export)
-            except BaseException:
-                self._web_discard(output_path)
-                raise
+        try:
+            saved_path, derived_names = await _run_holding(_mutation_lock(), _do_export)
+        except BaseException:
+            self._web_discard(output_path)
+            raise
 
         result_path: dict[str, Any] = {"path": saved_path}
         if self.session is not None:
@@ -1791,7 +1908,7 @@ class ConnectionHandler:
         sweeps = msg.get("sweeps", [])
         fmt = msg.get("format", "png")
         dpi = msg.get("dpi", 300)
-        output_dir = msg.get("output_dir")
+        output_dir = _blank_to_none(msg.get("output_dir"))
         options = msg.get("options", {})
         file_id = msg.get("file_id")
 
@@ -1829,35 +1946,34 @@ class ConnectionHandler:
 
         progress_sync = self._progress_callback(loop)
 
-        async with _mutation_lock():
-            batch_reader = _get_reader(file_id)
+        batch_reader = _get_reader(file_id)
 
-            def _do_batch() -> list[str]:
-                tree, mapped, opts, _ = _export_inputs(
-                    batch_reader,
-                    datatree,
-                    variables=variables,
-                    include_derived=None,
-                    include_original=True,
-                    options=options,
-                )
-                return _exporter().batch_export(
-                    tree,
-                    variables=mapped,
-                    sweeps=sweeps,
-                    fmt=fmt,
-                    dpi=dpi,
-                    output_dir=output_dir,
-                    progress=progress_sync,
-                    options=opts,
-                )
+        def _do_batch() -> list[str]:
+            tree, mapped, opts, _ = _export_inputs(
+                batch_reader,
+                datatree,
+                variables=variables,
+                include_derived=None,
+                include_original=True,
+                options=options,
+            )
+            return _exporter().batch_export(
+                tree,
+                variables=mapped,
+                sweeps=sweeps,
+                fmt=fmt,
+                dpi=dpi,
+                output_dir=output_dir,
+                progress=progress_sync,
+                options=opts,
+            )
 
-            try:
-                saved_paths = await loop.run_in_executor(None, _do_batch)
-            except BaseException:
-                if self.session is not None and output_dir:
-                    shutil.rmtree(output_dir, ignore_errors=True)
-                raise
+        try:
+            saved_paths = await _run_holding(_mutation_lock(), _do_batch)
+        except BaseException:
+            if self.session is not None and output_dir:
+                shutil.rmtree(output_dir, ignore_errors=True)
+            raise
 
         if self.session is not None:
             try:
@@ -1889,7 +2005,7 @@ class ConnectionHandler:
     async def _handle_export_animation(self, msg: dict[str, Any]) -> None:
         variable = msg.get("variable")
         sweeps = msg.get("sweeps", [])
-        output_path = msg.get("path")
+        output_path = _blank_to_none(msg.get("path"))
         frame_duration_ms = msg.get("frame_duration_ms", 500)
         dpi = msg.get("dpi", 150)
         options = msg.get("options", {})
@@ -1904,11 +2020,13 @@ class ConnectionHandler:
         if not sweeps:
             await self.send_error("export_animation: 'sweeps' must not be empty")
             return
-        if not isinstance(frame_duration_ms, int) or frame_duration_ms < 50:
-            await self.send_error("export_animation: 'frame_duration_ms' must be >= 50")
+        if not isinstance(frame_duration_ms, int) or not 50 <= frame_duration_ms <= 60_000:
+            await self.send_error(
+                "export_animation: 'frame_duration_ms' must be between 50 and 60000"
+            )
             return
-        if not isinstance(dpi, int) or dpi <= 0 or dpi > 600:
-            await self.send_error("export_animation: 'dpi' must be between 1 and 600")
+        if not isinstance(dpi, int) or not 72 <= dpi <= 600:  # below 72 matplotlib cannot set fonts
+            await self.send_error("export_animation: 'dpi' must be between 72 and 600")
             return
         if output_path is not None and not isinstance(output_path, str):
             await self.send_error("export_animation: 'path' must be a string")
@@ -1956,12 +2074,11 @@ class ConnectionHandler:
                 options=opts,
             )
 
-        async with _mutation_lock():
-            try:
-                saved_path = await loop.run_in_executor(None, _do_animation)
-            except BaseException:
-                self._web_discard(output_path)
-                raise
+        try:
+            saved_path = await _run_holding(_mutation_lock(), _do_animation)
+        except BaseException:
+            self._web_discard(output_path)
+            raise
 
         result_path: dict[str, Any] = {"path": saved_path}
         if self.session is not None:
@@ -2120,7 +2237,7 @@ class ConnectionHandler:
         await self.send_progress(10, "Extracting cross-section...")
 
         loop = asyncio.get_running_loop()
-        loader = _get_reader(msg.get("file_id")).get_sweep_dataset
+        loader = _loader_for(_get_reader(msg.get("file_id")), variable)
 
         def run() -> dict[str, Any]:
             if rhi:
@@ -2159,7 +2276,7 @@ class ConnectionHandler:
         await self.send_progress(10, "Extracting vertical profile...")
 
         loop = asyncio.get_running_loop()
-        loader = _get_reader(msg.get("file_id")).get_sweep_dataset
+        loader = _loader_for(_get_reader(msg.get("file_id")), variable)
         result = await loop.run_in_executor(
             None,
             lambda: extract_vertical_profile(
@@ -3642,8 +3759,8 @@ class ConnectionHandler:
             )
 
         t0 = time.perf_counter()
-        async with _locks.get("mosaic"):  # one heavy build at a time (radarx uses every core)
-            record = await loop.run_in_executor(None, _build)
+        # one heavy build at a time (radarx uses every core), even if this request is abandoned
+        record = await _run_holding(_locks.get("mosaic"), _build)
         if self.session is not None:  # only the creator may probe / export this mosaic
             self.session.owned["mosaics"].add(record.mosaic_id)
         header = {
@@ -3856,12 +3973,15 @@ class ConnectionHandler:
                 pairs, grid, options, progress=progress_sync, cancel=cancel.is_set
             )
 
+        def _build_unless_cancelled() -> mdop.WindRecord:
+            if cancel.is_set():  # cancelled while queued behind another run
+                raise mdop.MultiDopplerCancelledError("cancelled")
+            return _build()
+
         t0 = time.perf_counter()
         try:
-            async with _locks.get("multidoppler"):  # one heavy run at a time (radarx is threaded)
-                if cancel.is_set():
-                    raise mdop.MultiDopplerCancelledError("cancelled")
-                record = await loop.run_in_executor(None, _build)
+            # one heavy run at a time (radarx is threaded), even if this request is abandoned
+            record = await _run_holding(_locks.get("multidoppler"), _build_unless_cancelled)
         except BaseException:
             cancel.set()  # connection gone / task cancelled: the worker stops at its next check
             raise
@@ -4104,6 +4224,15 @@ def _volume_result_message(
     }
 
 
+def _loader_for(reader: RadarReader, variable: str) -> Callable[[int], Any]:
+    """``sweep_loader`` for code that reads one moment: only *variable* is decoded and masked."""
+
+    def load(index: int) -> Any:
+        return reader.get_sweep_dataset(index, only=[variable])
+
+    return load
+
+
 def _sweep_dataset(reader: RadarReader, index: int):
     """Full ``xr.Dataset`` of one sweep, loading lazy (ARCO) sweeps on demand."""
     getter = getattr(reader, "get_sweep_dataset", None)  # public API if the reader has one
@@ -4288,12 +4417,16 @@ async def _handle_connection(ws: ServerConnection) -> None:
 
 
 def _preload_heavy_imports() -> None:
-    """Warm the imports the first open + first render need (xradar, colorcet/matplotlib)."""
+    """Warm the imports the first open + first render need (xradar, palettes, scipy)."""
     preload_backends()
     try:
         _palettes()
     except Exception as exc:  # the render reports the real problem later
         logger.debug("palette preload failed: %s", exc)
+    try:
+        import scipy.ndimage  # noqa: F401  (deferred at import: QC, 3D volume, tracking use it)
+    except Exception as exc:
+        logger.debug("scipy preload failed: %s", exc)
 
 
 async def _run_server(port: int, host: str | None = None) -> None:

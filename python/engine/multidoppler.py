@@ -591,7 +591,7 @@ def _prepare_volume(
     With ``dealias`` "auto" the Doppler sweeps up to ``dealias_max_elevation`` that look aliased
     are unfolded (a copy: the opened file is not touched); "always" unfolds all of them.
     """
-    from engine.reader import sorted_sweep_names
+    from engine.reader import mask_below_threshold, sorted_sweep_names
 
     tree = getattr(reader, "datatree", None)
     if tree is None:
@@ -622,7 +622,7 @@ def _prepare_volume(
         "_after": [],
     }
     for i, _ in enumerate(names):
-        ds = reader.get_sweep_dataset(i)
+        ds = reader.get_sweep_dataset(i, mask=False)  # mask just the moments used (below)
         if "azimuth" not in ds.coords or "range" not in ds.coords:
             continue
         mode = str(np.asarray(ds["sweep_mode"].values).ravel()[0]) if "sweep_mode" in ds else ""
@@ -633,7 +633,7 @@ def _prepare_volume(
         if vel is None:
             continue  # e.g. the reflectivity-only surveillance cut of a split cut
         wanted = [n for n in (vel, dbz) if n is not None]
-        sub = ds[wanted]
+        sub = mask_below_threshold(ds[wanted])
         if "sweep_fixed_angle" in ds.variables:
             sub = sub.assign({"sweep_fixed_angle": ds["sweep_fixed_angle"]})
         sub = sub.load()
@@ -679,7 +679,7 @@ def _prepare_volume(
     has_dbz = n_dbz == n_vel_sweeps
     if not has_dbz and n_dbz:  # reflectivity on only some velocity sweeps: use none of it
         nodes = {k: (v.drop_vars("DBZH") if "DBZH" in v else v) for k, v in nodes.items()}
-    lat, lon, alt = _site(tree, reader.get_sweep_dataset(0))
+    lat, lon, alt = _site(tree, reader.get_sweep_dataset(0, mask=False))
     nodes["/"] = xr.Dataset(
         coords={
             "latitude": np.float64(lat),

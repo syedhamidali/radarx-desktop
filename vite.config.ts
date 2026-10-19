@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv, type Plugin } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { readFileSync } from "node:fs";
+import { codecovVitePlugin } from "@codecov/vite-plugin";
 
 // The app version shown in the UI comes from package.json (kept in step with tauri.conf.json and
 // Cargo.toml by the release bump), so it cannot go stale.
@@ -54,7 +55,16 @@ function webCsp(engineUrl: string | undefined): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   return {
-    plugins: [svelte(), ...(mode === "web" ? [webCsp(env.VITE_ENGINE_URL)] : [])],
+    plugins: [
+      svelte(),
+      ...(mode === "web" ? [webCsp(env.VITE_ENGINE_URL)] : []),
+      // Bundle size report to Codecov: CI only (needs CODECOV_TOKEN), always the last plugin.
+      codecovVitePlugin({
+        enableBundleAnalysis: Boolean(process.env.CODECOV_TOKEN),
+        bundleName: "xradar-desktop",
+        uploadToken: process.env.CODECOV_TOKEN,
+      }),
+    ],
     define: { __APP_VERSION__: JSON.stringify(appVersion) },
     clearScreen: false,
     server: {

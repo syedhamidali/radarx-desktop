@@ -42,6 +42,18 @@ def _sweep_elevation(ds: xr.Dataset) -> float:
 # ---------------------------------------------------------------------------
 
 
+MAX_BINS = 10_000
+
+
+def _clamp_bins(bins: Any, default: int = 50) -> int:
+    """A usable histogram bin count (1..MAX_BINS): a huge request must not allocate gigabytes."""
+    try:
+        n = int(bins)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(n, 1), MAX_BINS)
+
+
 def compute_histogram(
     data: xr.DataArray,
     *,
@@ -67,8 +79,10 @@ def compute_histogram(
         (str), ``units`` (str), ``stats`` (dict with mean, std, min,
         max, median, count_valid).
     """
-    vals = data.values.ravel()
+    # float64: float32 values near the type's limit overflow the histogram's bin arithmetic
+    vals = data.values.ravel().astype(np.float64, copy=False)
     valid = vals[np.isfinite(vals)]
+    n_bins = _clamp_bins(n_bins)
 
     if len(valid) == 0:
         return {
@@ -142,7 +156,7 @@ def area_averaged_profile(
     counts: list[int] = []
 
     for sname in sweep_names:
-        ds = mask_below_threshold(datatree[sname].to_dataset())
+        ds = mask_below_threshold(datatree[sname].to_dataset(), only=[variable])
         if variable not in ds.data_vars:
             continue
 
@@ -363,7 +377,7 @@ def get_statistics(
     if sweep >= len(sweep_names):
         raise IndexError(f"Sweep {sweep} out of range (0..{len(sweep_names) - 1})")
 
-    ds = mask_below_threshold(datatree[sweep_names[sweep]].to_dataset())
+    ds = mask_below_threshold(datatree[sweep_names[sweep]].to_dataset(), only=[variable])
     if variable not in ds.data_vars:
         available = sorted(str(v) for v in ds.data_vars if ds[v].ndim == 2)
         raise KeyError(f"Variable '{variable}' not found. Available: {available}")
