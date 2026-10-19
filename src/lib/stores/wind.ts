@@ -19,6 +19,7 @@ import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { openFiles } from './fileManager';
 import { connectionStatus } from './radarData';
 import { addToast } from './toasts';
+import { maskOf, valueMasks } from './valueMask';
 import { RADAR_COLORS, fileSite, fileTimeMs, formatTimeMs, fitMapToBounds, inTauri } from './mosaic';
 import {
   FIELD_STYLES,
@@ -216,7 +217,13 @@ export function updateWindDisplay(patch: Partial<WindDisplay>): void {
 }
 
 /** Everything the map component needs to draw the wind analysis; null when there is nothing. */
-export const windLayer = derived([windResult, windDisplay], ([$res, $d]): WindLayer | null => {
+/**
+ * Key of the value mask of a wind field. Wind fields get their own masks ("hide w below 1 m/s"), apart
+ * from the radar variables of the same name.
+ */
+export const windMaskKey = (field: string): string => `wind:${field}`;
+
+export const windLayer = derived([windResult, windDisplay, valueMasks], ([$res, $d, $masks]): WindLayer | null => {
   if (!$res) return null;
   const level = Math.max(0, Math.min($res.grid.nz - 1, $d.level));
   const [lo, hi] = defaultRange($res, $d.field);
@@ -236,6 +243,7 @@ export const windLayer = derived([windResult, windDisplay], ([$res, $d]): WindLa
     visible: $d.visible,
     minCrossing: $d.minCrossing,
     maxUncertainty: $d.maxUncertainty,
+    mask: maskOf($masks, windMaskKey($d.field)),
     radars: $res.radars.map((r, i) => ({ ...r, color: RADAR_COLORS[i % RADAR_COLORS.length] })),
   };
 });

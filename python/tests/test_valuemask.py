@@ -179,15 +179,15 @@ def test_volume_exports_mask_only_the_selected_variable(
     synthetic_datatree: xr.DataTree, tmp_path: Path
 ) -> None:
     """NetCDF / CfRadial2 / Zarr all write ``_netcdf_safe_tree(...)``: check it and that it stores."""
-    from engine.exporter import _netcdf_safe_tree, _volume_value_mask
+    from engine.exporter import _netcdf_safe_tree, _volume_value_masks
 
-    options = {"value_mask": mk("below", 40), "value_mask_variable": "DBZH"}
-    vm, params = _volume_value_mask(options, "DBZH", synthetic_datatree)
-    assert vm is not None and vm[0] == "DBZH" and "hide below 40" in vm[2]
-    assert "value_mask" in params
-    assert _volume_value_mask(options, "VRADH", synthetic_datatree) == (None, {})
+    options = {"value_masks": {"DBZH": mk("below", 40), "ZDR": mk("above", None, 3)}}
+    vm, params = _volume_value_masks(options, synthetic_datatree)
+    assert list(vm) == ["DBZH", "ZDR"] and "hide below 40" in vm["DBZH"][1]
+    assert "DBZH: hide below 40" in params["value_mask"]
+    assert _volume_value_masks({}, synthetic_datatree) == ({}, {})
 
-    safe = _netcdf_safe_tree(synthetic_datatree, value_mask=vm)
+    safe = _netcdf_safe_tree(synthetic_datatree, value_masks=vm)
     for i in range(3):
         ds = safe[f"sweep_{i}"].to_dataset()
         dbz = ds["DBZH"].values

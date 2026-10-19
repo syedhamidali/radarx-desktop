@@ -48,6 +48,8 @@
   import MaskPopover from './MaskPopover.svelte';
   import { maskOf, valueMasks } from '../stores/valueMask';
   import { maskVecNorm } from '../utils/valueMaskGl';
+  import { maskPredicate } from '../stores/valueMask';
+  import { windMaskKey } from '../stores/wind';
 
   // ── Sources ───────────────────────────────────────────────────────────────
   const src = $derived($source3d);
@@ -509,6 +511,8 @@
     const unc = uncMax;
     const lo = wLevelLo, hi = wLevelHi, sh = wStrideH, sv = wStrideV, len = wLength, col = wColor, minC = wMinCrossing, ve = vexag;
     const off = windOffset;
+    // value mask of what the arrows show: the horizontal speed, or w when coloured by w
+    const wm = maskOf($valueMasks, windMaskKey(col === 'w' ? 'w' : 'speed'));
     if (!ready) return;
     untrack(() => {
       if (!renderer) return;
@@ -523,12 +527,19 @@
       glyphSet = buildGlyphs(w, {
         ...DEFAULT_GLYPH_OPTIONS,
         zMinKm: zl, zMaxKm: zh, strideH: sh, strideV: sv, minCrossing: minC, lengthScale: len, vexag: ve,
-        colorBy: col, offsetX: off[0], offsetY: off[1], maxUncertainty: unc,
+        colorBy: col, offsetX: off[0], offsetY: off[1], maxUncertainty: unc, hidden: arrowHidden(wm, col === 'w'),
       }, stats);
       glyphInfo = { count: glyphSet.count, strideH: glyphSet.strideH, strideV: glyphSet.strideV, kmPerMs: glyphSet.kmPerMs, colorMax: glyphSet.colorMax };
       renderer.setGlyphs(glyphSet.data, glyphSet.count);
     });
   });
+
+  /** Arrows the value mask hides: by horizontal speed, or by w when the arrows are coloured by w. */
+  function arrowHidden(mask: ReturnType<typeof maskOf>, byW: boolean) {
+    const test = maskPredicate(mask, { f32: true });
+    if (!test) return null;
+    return (u: number, v: number, w: number) => test(byW ? w : Math.hypot(u, v));
+  }
 
   // arrow colours: white on a dark scene, dark on a light one; the outline is the opposite
   $effect(() => {

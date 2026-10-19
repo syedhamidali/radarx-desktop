@@ -26,6 +26,7 @@
     exportWind,
     fitWindToMap,
     parseProfile,
+    windMaskKey,
     type WindSettings,
   } from '../stores/wind';
   import {
@@ -36,6 +37,8 @@
     type WindFieldKey,
   } from '../utils/wind';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+  import ValueMaskControl from './ValueMaskControl.svelte';
+  import { maskOf, valueMasks } from '../stores/valueMask';
 
   const isConnected = $derived($connectionStatus === 'connected');
   const rows = $derived($windFileRows);
@@ -91,6 +94,7 @@
     return `${(v / 1000).toFixed(0)} km`;
   });
 
+  const sectionMask = $derived(maskOf($valueMasks, windMaskKey(disp.sectionField)));
   let sectionCanvas = $state<HTMLCanvasElement | null>(null);
   let sectionWidth = $state(0);
   const sectionRange = $derived(res ? defaultRange(res, disp.sectionField) : ([0, 1] as [number, number]));
@@ -107,6 +111,7 @@
       vmax: sectionRange[1],
       minCrossing: disp.minCrossing,
       maxUncertainty: disp.maxUncertainty,
+      mask: sectionMask,
     });
   });
 
@@ -428,6 +433,7 @@
               onchange={(e) => { const n = Number(e.currentTarget.value); updateWindDisplay({ vmax: e.currentTarget.value.trim() === '' || !Number.isFinite(n) ? null : n, vmin: e.currentTarget.value.trim() === '' || !Number.isFinite(n) ? null : style.symmetric ? -n : (style.floor ?? vmin) }); }} />
           </label>
         </div>
+        <ValueMaskControl variable={windMaskKey(disp.field)} units={fieldUnits} compact />
         <label class="slider-row">
           <span>Height</span>
           <input type="range" min="0" max={res.grid.nz - 1} step="1" value={disp.level}
@@ -482,6 +488,7 @@
             </div>
           </div>
         </div>
+        <ValueMaskControl variable={windMaskKey(disp.sectionField)} units={res.fields.find((f) => f.name === disp.sectionField)?.units ?? ''} compact />
         <label class="slider-row">
           <span>{disp.sectionAxis === 'x' ? 'y' : 'x'}</span>
           <input type="range" min="0" max={sectionMax} step="1" value={Math.min(disp.sectionIndex, sectionMax)}

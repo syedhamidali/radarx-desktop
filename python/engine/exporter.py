@@ -359,7 +359,7 @@ def _netcdf_safe_tree(
     datatree: xr.DataTree,
     *,
     mask: bool = False,
-    value_mask: tuple[str, dict[str, Any], str] | None = None,
+    value_masks: dict[str, tuple[dict[str, Any], str]] | None = None,
 ) -> xr.DataTree:
     """A shallow copy of *datatree* that NetCDF can store.
 
@@ -368,8 +368,8 @@ def _netcdf_safe_tree(
     set to NaN (they would otherwise be written as real measurements such as -33 dBZ). The
     original (the reader's live tree) is never modified.
 
-    *value_mask* is ``(variable, mask, description)``: in every sweep the values of that variable
-    that the value mask hides are set to NaN (see :mod:`engine.valuemask`).
+    *value_masks* maps a variable name to ``(mask, description)``: in every sweep the values of that
+    variable that its value mask hides are set to NaN (see :mod:`engine.valuemask`).
     """
     safe = datatree.copy(deep=False)
     for node in safe.subtree:
@@ -378,8 +378,9 @@ def _netcdf_safe_tree(
             ds = _collapse_site_position(ds)
         if mask and node is not safe:
             ds = mask_below_threshold(ds)
-        if value_mask is not None and node is not safe:
-            ds = _apply_value_mask_to_dataset(ds, *value_mask)
+        if value_masks and node is not safe:
+            for name, (vmask, text) in value_masks.items():
+                ds = _apply_value_mask_to_dataset(ds, name, vmask, text)
         ds.attrs = {k: _netcdf_attr(v) for k, v in ds.attrs.items()}
         for var in ds.variables.values():
             var.attrs = {k: _netcdf_attr(v) for k, v in var.attrs.items()}
@@ -1273,24 +1274,29 @@ def _pick_ring_interval_km(max_range_km: float) -> float:
 # ---------------------------------------------------------------------------
 
 
-def _volume_value_mask(
-    options: dict[str, Any], variable: str, datatree: xr.DataTree
-) -> tuple[tuple[str, dict[str, Any], str] | None, dict[str, Any]]:
-    """``(value_mask for _netcdf_safe_tree, extra provenance params)`` for a volume export.
+def _volume_value_masks(
+    options: dict[str, Any], datatree: xr.DataTree
+) -> tuple[dict[str, tuple[dict[str, Any], str]], dict[str, Any]]:
+    """``(value_masks for _netcdf_safe_tree, extra provenance params)`` for a volume export.
 
-    The mask belongs to the exported *variable* (the one on screen); it is applied to that variable
-    in every sweep and recorded in the file (variable attribute ``value_mask`` and the history).
+    Every variable that has an active value mask is masked in every sweep, with its own mask, and
+    the file says so (variable attribute ``value_mask`` and the history line).
     """
-    vmask = valuemask.pick(options, variable)
-    if vmask is None:
-        return None, {}
-    units = ""
-    try:
-        units = _get_units(variable, dict(_extract_sweep_dataset(datatree, 0)[variable].attrs))
-    except Exception:  # no sweep 0 / variable missing there: the mask text just has no unit
-        units = _get_units(variable)
-    text = valuemask.describe(vmask, units) or ""
-    return (variable, vmask, text), {"value_mask": f"{variable}: {text}"}
+    masks: dict[str, tuple[dict[str, Any], str]] = {}
+    candidates = list(options.get("value_masks") or {}) if isinstance(options, dict) else []
+    if isinstance(options, dict) and options.get("value_mask") is not None:
+        candidates.append(options.get("value_mask_variable"))
+    for name in dict.fromkeys(c for c in candidates if isinstance(c, str)):
+        vmask = valuemask.pick(options, name)
+        if vmask is None:
+            continue
+        try:
+            units = _get_units(name, dict(_extract_sweep_dataset(datatree, 0)[name].attrs))
+        except Exception:  # not in sweep 0: the mask text just has no unit
+            units = _get_units(name)
+        masks[name] = (vmask, valuemask.describe(vmask, units) or "")
+    params = {"value_mask": "; ".join(f"{k}: {t}" for k, (_, t) in masks.items())} if masks else {}
+    return masks, params
 
 
 class RadarExporter:
@@ -1679,13 +1685,13 @@ class RadarExporter:
     ) -> str:
         progress(10, "Preparing CfRadial1 NetCDF export")
         mask = bool(options.get("mask_no_echo", True))
-        vm, vm_params = _volume_value_mask(options, variable, datatree)
+        vm, vm_params = _volume_value_masks(options, datatree)
         with (
             _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target,
             _fast_cfradial1_mapper(),
         ):
             cfwrite.write_cfradial1(
-                _netcdf_safe_tree(datatree, mask=mask, value_mask=vm),
+                _netcdf_safe_tree(datatree, mask=mask, value_masks=vm),
                 target,
                 source_files=options.get("source_files"),
                 params={"format": "cfradial1", "mask_no_echo": mask, **vm_params},
@@ -1709,10 +1715,10 @@ class RadarExporter:
     ) -> str:
         progress(10, "Preparing CfRadial2 export")
         mask = bool(options.get("mask_no_echo", True))
-        vm, vm_params = _volume_value_mask(options, variable, datatree)
+        vm, vm_params = _volume_value_masks(options, datatree)
         with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
             cfwrite.write_cfradial2(
-                _netcdf_safe_tree(datatree, mask=mask, value_mask=vm),
+                _netcdf_safe_tree(datatree, mask=mask, value_masks=vm),
                 target,
                 source_files=options.get("source_files"),
                 params={"format": "cfradial2", "mask_no_echo": mask, **vm_params},
@@ -1808,13 +1814,13 @@ class RadarExporter:
         options: dict[str, Any],
     ) -> str:
         progress(10, "Preparing Zarr export")
-        vm, vm_params = _volume_value_mask(options, variable, datatree)
+        vm, vm_params = _volume_value_masks(options, datatree)
         with _output_target(
             output_path, suffix=".zarr", prefix="xradar_export_", directory=True
         ) as target:
             mask = bool(options.get("mask_no_echo", True))
             cfwrite.write_zarr(
-                _netcdf_safe_tree(datatree, mask=mask, value_mask=vm),
+                _netcdf_safe_tree(datatree, mask=mask, value_masks=vm),
                 target,
                 source_files=options.get("source_files"),
                 params={"format": "zarr", "mask_no_echo": mask, **vm_params},

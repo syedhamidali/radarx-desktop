@@ -33,6 +33,8 @@
     type MosaicResult,
   } from '../stores/mosaic';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
+  import ValueMaskControl from './ValueMaskControl.svelte';
+  import { maskDescription, maskOf, valueMasks } from '../stores/valueMask';
   import { viewMosaicIn3D, volume3dLoading } from '../stores/volume3d';
 
   // ── Derived state ────────────────────────────────────────────────────────
@@ -55,6 +57,15 @@
   });
 
   let showAdvanced = $state(false);
+
+  // Value mask of the mosaic variable: applied when the mosaic is made (hidden cells are empty in the
+  // image, probes, statistics and exports). The 3D view of the mosaic masks the volume live.
+  const mask = $derived(maskOf($valueMasks, s.variable));
+  const maskNow = $derived(maskDescription(mask, res?.units ?? ''));
+  /** The mosaic on screen was made with another mask than the one set now. */
+  const maskStale = $derived(
+    !!res && res.variable === s.variable && (res.value_mask_text ?? null) !== maskDescription(mask, res.units ?? ''),
+  );
 
   const PRODUCTS: { value: MosaicProduct; label: string; hint: string }[] = [
     { value: 'composite', label: 'Composite (column max)', hint: 'Maximum over all heights' },
@@ -354,6 +365,12 @@
       {/if}
     </section>
 
+    <!-- ── Value mask ────────────────────────────────────────────────────── -->
+    <section class="block" aria-label="Value mask">
+      <ValueMaskControl variable={s.variable} units={res?.units ?? ''} compact />
+      <p class="help">Applied when the mosaic is made. Hidden values are empty on the map, in probes and exports.</p>
+    </section>
+
     <!-- ── Run ───────────────────────────────────────────────────────────── -->
     <section class="block run-block">
       {#if run.running}
@@ -390,6 +407,15 @@
           <span class="spacer"></span>
           <span class="mono muted">{res.elapsed_ms >= 1000 ? (res.elapsed_ms / 1000).toFixed(1) + ' s' : Math.round(res.elapsed_ms) + ' ms'}</span>
         </div>
+
+        {#if res.value_mask_text}
+          <p class="help mask-note" data-testid="mosaic-mask-note">Value mask: {res.value_mask_text}</p>
+        {/if}
+        {#if maskStale}
+          <p class="help mask-stale" role="status" data-testid="mosaic-mask-stale">
+            The value mask is {maskNow ?? 'off'} now, this mosaic was made {res.value_mask_text ? `with "${res.value_mask_text}"` : 'without a mask'}. Re-run to apply it.
+          </p>
+        {/if}
 
         <div class="legend">
           <div class="legend-bar" style="background: {legendGradient(res)}"></div>
@@ -555,6 +581,12 @@
     font-size: 11px;
     color: var(--text-muted, #5c6088);
     line-height: 1.35;
+  }
+  .mask-note {
+    color: var(--c-accent);
+  }
+  .mask-stale {
+    color: var(--c-caution);
   }
 
   .warn-text {

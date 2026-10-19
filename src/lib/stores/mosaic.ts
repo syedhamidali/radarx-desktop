@@ -18,6 +18,7 @@ import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { openFiles, type FileEntry } from './fileManager';
 import { connectionStatus } from './radarData';
 import { addToast } from './toasts';
+import { getMask, isMaskActive, type ValueMask } from './valueMask';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -112,6 +113,9 @@ export interface MosaicHeader {
   has_volume?: boolean;
   volume_shape?: [number, number, number] | null;
   volume_note?: string | null;
+  /** The value mask the product was made with (hidden cells are empty), and its wording. */
+  value_mask?: ValueMask | null;
+  value_mask_text?: string | null;
   elapsed_ms: number;
   png_bytes: number;
   chunks: number;
@@ -569,6 +573,9 @@ export function runMosaic(opts: RunOptions = {}): string | null {
   if (s.vmin !== null) msg.vmin = s.vmin;
   if (s.vmax !== null) msg.vmax = s.vmax;
   msg.keep_volume = s.keepVolume;
+  // The shared value mask of this variable: hidden values are empty in the image, probes and exports.
+  const vmask = getMask(s.variable);
+  if (isMaskActive(vmask)) msg.value_mask = vmask;
 
   pendingRingKm.set(requestId, s.maxRangeKm);
   if (mosaicOp) {
