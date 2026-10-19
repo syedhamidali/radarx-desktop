@@ -1280,7 +1280,8 @@ Window: **{man["window"]["start"]} to {man["window"]["end"]}** ({man["window"]["
 - {ex("stations/stations.json")} stations/stations.json (+ *_dsd.npz, hail_events.json)
 - {ex("soundings/index.json")} soundings/index.json (+ CSV per launch)
 - {ex("tornadoes/tornadoes.json")} tornadoes/tornadoes.json
-- {ex("context/rotation_tracks.json")} context/rotation_tracks.json
+- {ex("context/rotation_tracks.json")} context/rotation_tracks.json (vortex candidates, tracks, survey comparison)
+- {ex("context/vortex_kinematics.json")} context/vortex_kinematics.json (Vrot, couplet diameter, omega, sense, resolved / unresolved verdict per step), {ex("context/kgwx_polar_local_011153.npz")} context/kgwx_polar_local_*.npz (native KGWX gates around the tornado; no mobile-radar polar data exist for that time)
 - {ex("context/mrms_0000.npz")} context/mrms_NNNN.npz, {ex("context/surface_0000.npz")} context/surface_NNNN.npz
 - {ex("profiles/mrr_RaDAPS.npz")} profiles/mrr_RaDAPS.npz, {ex("profiles/rwp_RaDAPS.npz")} profiles/rwp_RaDAPS.npz
 - {ex("science_events.json")} science_events.json (data-derived events with numbers)
