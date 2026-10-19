@@ -18,8 +18,10 @@
   import { resolveBasemap, IMAGERY_EOX_S2 } from '../utils/basemaps';
   import { buildGroundMap } from '../utils/groundMap';
   import { buildTerrain, TERRAIN_ATTRIBUTION } from '../utils/terrain';
-  import { buildRealisticTf, lookFor } from '../utils/realisticStyle';
-  import { sunLight, type SunLight } from '../utils/sunPosition';
+  import { buildRealisticTf, lookFor, lookWith, sampleOptions, type Palette, type LightKind } from '../utils/realisticStyle';
+  import { sunLight, daylightAssumed, type SunLight } from '../utils/sunPosition';
+  import { defaultLook, validateLook, changedLook, applyPreset, type LookConfig } from '../utils/lookConfig';
+  import LookPanel from './LookPanel.svelte';
   import { scaleLut } from '../utils/wind';
   import {
     variableKind, buildTf, recolorTf, thresholdSpec, thresholdToShader, adaptiveShiftDb,
@@ -209,6 +211,19 @@
   /** Status of the realistic ground: loading, or what could not be fetched. */
   let realNote = $state('');
   let sunInfo = $state<SunLight | null>(null);
+  /** The look of the realistic storm (lookConfig.ts); kept in this browser. */
+  let lookCfg = $state<LookConfig>(loadLook());
+  let showLook = $state(false);
+  function loadLook(): LookConfig {
+    try { return validateLook(JSON.parse(localStorage.getItem('xradar.3d.look') ?? '{}')); } catch { return defaultLook(); }
+  }
+  function onLookChange(next: LookConfig) {
+    lookCfg = next;
+    try { localStorage.setItem('xradar.3d.look', JSON.stringify(changedLook(next))); } catch { /* storage blocked */ }
+    // a preset that is the scientific colour scale switches the style; any other look is the realistic style
+    const st: StormStyle = next.style === 'scientific' ? 'scientific' : 'realistic';
+    if (st !== stormStyle) { stormStyle = st; savePref('stormStyle', st); }
+  }
 
   // wind controls
   let wLevelLo = $state(0);
@@ -414,20 +429,28 @@
     const real = realisticStorm;
     const lo = vmin, hi = vmax, st = stepKm;
     if (!ready) return;
-    untrack(() => renderer?.setTransfer(real ? buildRealisticTf(lo, hi, st) : t));
+    const pal = lookCfg.palette as Palette;
+    const opts = sampleOptions(lookCfg);
+    untrack(() => renderer?.setTransfer(real ? buildRealisticTf(lo, hi, st, pal, opts) : t));
   });
   // light of the realistic look: the real sun at the scan time and place, or the documented dusk light
   $effect(() => {
     const real = realisticStorm;
     const fr = frame;
     const when = volume?.analysisTime ?? null;
+    const cfg = lookCfg;
     if (!ready) return;
     untrack(() => {
       if (!renderer) return;
       if (!real || !fr) { sunInfo = null; renderer.setRealistic(null); return; }
-      const d = when ? new Date(when) : new Date();
-      sunInfo = sunLight(Number.isNaN(d.getTime()) ? new Date() : d, fr.lat, fr.lon);
-      renderer.setRealistic(lookFor(sunInfo, 4));
+      const d0 = when ? new Date(when) : new Date();
+      const d = Number.isNaN(d0.getTime()) ? new Date() : d0;
+      const kind = cfg.light as LightKind;
+      let sun = sunLight(d, fr.lat, fr.lon);
+      if (sun.stylised && (kind === 'daylight' || kind === 'overcast')) sun = daylightAssumed(d, fr.lat, fr.lon);
+      sunInfo = sun;
+      renderer.setRealistic(lookWith(lookFor(sun, 4, 1, kind === 'overcast' || kind === 'night' ? kind : undefined), cfg));
+      renderer.setFov(cfg.fov as number);
     });
   });
 
@@ -680,6 +703,8 @@
   function onStormStyle(e: Event) {
     stormStyle = (e.target as HTMLSelectElement).value as StormStyle;
     savePref('stormStyle', stormStyle);
+    if (stormStyle === 'scientific') lookCfg = { ...lookCfg, style: 'scientific' };
+    else if (lookCfg.style === 'scientific') lookCfg = applyPreset('Daylight cumulonimbus');
   }
   function onBgChange(e: Event) {
     bgMode = (e.target as HTMLSelectElement).value as BgMode;
@@ -795,6 +820,9 @@
           <option value="scientific">Scientific colours</option>
           <option value="realistic">Realistic (stylised)</option>
         </select>
+        {#if stormStyle === 'realistic'}
+          <button class="reset-btn" class:active={showLook} aria-pressed={showLook} onclick={() => (showLook = !showLook)} title="Colours, light, haze, finish and presets of the realistic look">Look…</button>
+        {/if}
       </div>
     {/if}
     <div class="ctrl-group" title="Background of the scene. Auto follows the app theme.">
@@ -965,6 +993,10 @@
     </div>
   {/if}
 
+  {#if showLook && stormStyle === 'realistic'}
+    <LookPanel look={lookCfg} onchange={onLookChange} />
+  {/if}
+
   <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div class="canvas-wrap" bind:this={container} tabindex="0" role="application" aria-label="3D scene"
        onkeydown={(e) => { if (e.key === 'r' || e.key === 'R') resetCamera(); else if ((e.key === 'f' || e.key === 'F') && wv) toggleFlow(); }}>
@@ -973,7 +1005,8 @@
     {#if (realGround && groundMode === 'map') || realisticStorm}
       <div class="real-note" aria-label="Realistic look notes">
         {#if realisticStorm}
-          <span>{sunInfo?.stylised ? `Stylised lighting, not a photograph: dusk light (the real sun was ${Math.round(Math.abs(sunInfo.realElevationDeg))}° ${sunInfo.realElevationDeg < 0 ? 'below' : 'above'} the horizon)` : 'Stylised rendering, not a photograph'}</span>
+          <span>{sunInfo?.daylightAssumed ? `Stylised daylight; the real sun was ${Math.round(Math.abs(sunInfo.realElevationDeg))}° below the horizon at this time (not a photograph)` : sunInfo?.stylised ? `Stylised lighting, not a photograph (the real sun was ${Math.round(Math.abs(sunInfo.realElevationDeg))}° ${sunInfo.realElevationDeg < 0 ? 'below' : 'above'} the horizon)` : 'Stylised rendering, not a photograph'}</span>
+          <span>Radar sees rain and ice, not cloud droplets: cloud look and fine detail are stylised; echo position and strength are radar data</span>
         {/if}
         {#if realGround && groundMode === 'map'}
           <span>Terrain and storm are stretched ×{vexag} vertically</span>

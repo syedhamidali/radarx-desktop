@@ -11,7 +11,7 @@
 
 export const REALISTIC_UNIFORM_NAMES = [
   'u_dem', 'u_terrOn', 'u_terrZ', 'u_demTexel', 'u_style', 'u_sunDir', 'u_sunCol', 'u_skyCol',
-  'u_horizonCol', 'u_zenithCol', 'u_sunSteps', 'u_fog', 'u_exposure', 'u_groundGain', 'u_seed', 'u_flashP', 'u_flashN', 'u_flashCol', 'u_flashSky', 'u_noiseOff', 'u_noiseAmt', 'u_glowCol', 'u_bounceCol', 'u_sunGain', 'u_skyGain',
+  'u_horizonCol', 'u_zenithCol', 'u_sunSteps', 'u_fog', 'u_exposure', 'u_groundGain', 'u_seed', 'u_flashP', 'u_flashN', 'u_flashCol', 'u_flashSky', 'u_noiseOff', 'u_noiseAmt', 'u_noiseFreq', 'u_seaOn', 'u_windS', 'u_windGrid', 'u_glowCol', 'u_bounceCol', 'u_sunGain', 'u_skyGain', 'u_hazeCol', 'u_shadowP', 'u_rim', 'u_post1', 'u_wb', 'u_post2', 'u_terrainP', 'u_oceanCol', 'u_whitecap', 'u_rainP', 'u_rainCol',
 ] as const;
 
 export const GLSL_REALISTIC_UNIFORMS = `
@@ -24,6 +24,17 @@ export const GLSL_REALISTIC_UNIFORMS = `
     uniform vec3  u_sunCol;
     uniform vec3  u_skyCol;
     uniform vec3  u_horizonCol;
+    uniform vec3  u_hazeCol;          // haze colour
+    uniform vec2  u_shadowP;          // shadow strength, softness
+    uniform float u_rim;
+    uniform vec4  u_post1;            // brightness, contrast, saturation, gamma
+    uniform vec3  u_wb;               // white balance multipliers
+    uniform vec3  u_post2;            // bloom, vignette, grain
+    uniform vec2  u_terrainP;         // terrain brightness, saturation
+    uniform vec3  u_oceanCol;
+    uniform float u_whitecap;
+    uniform float u_rainP;            // rain streak amount
+    uniform vec3  u_rainCol;
     uniform vec3  u_zenithCol;
     uniform int   u_sunSteps;         // secondary march toward the light (0 = no shadows)
     uniform float u_fog;              // haze per km
@@ -35,6 +46,10 @@ export const GLSL_REALISTIC_UNIFORMS = `
     uniform vec3  u_bounceCol;        // light bounced up from the ground
     uniform float u_sunGain;
     uniform float u_skyGain;
+    uniform vec2  u_noiseFreq;        // detail frequency per km: horizontal, vertical (layered for a cyclone)
+    uniform int   u_seaOn;            // 1: terrain at sea level is ocean, with whitecaps from the surface wind
+    uniform highp sampler2D u_windS;  // RGBA16F over the ground square: u, v (m/s) and confidence of the near-surface wind
+    uniform vec4  u_windGrid;         // unused (reserved)
     uniform vec3  u_glowCol;          // warm colour near the horizon in the light's direction only
     uniform float u_flashSky;         // the flash light that reaches the sky and the haze
     uniform vec3  u_noiseOff;         // km: the storm's translation since the start, so the cloud texture rides with the storm
@@ -44,6 +59,23 @@ export const GLSL_REALISTIC_UNIFORMS = `
 
 export const GLSL_REALISTIC = `
     vec3 toneMap(vec3 c) { return 1.0 - exp(-c * 1.15); }
+
+    // The finishing stage of the look: white balance, a soft bloom of the brightest parts, brightness,
+    // contrast, saturation, gamma, vignette and film grain (mirrored by lookConfig.ts postProcess).
+    vec3 postProcess(vec3 c, vec2 fc, vec2 res) {
+      c *= u_wb;
+      float l0 = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c += max(l0 - 0.78, 0.0) * u_post2.x * 1.5;
+      c += u_post1.x;
+      c = (c - 0.5) * u_post1.y + 0.5;
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      c = vec3(l) + (c - vec3(l)) * u_post1.z;
+      c = pow(clamp(c, 0.0, 1.0), vec3(1.0 / u_post1.w));
+      vec2 q = fc / res - 0.5;
+      c *= 1.0 - u_post2.y * min(1.0, dot(q, q) * 2.2);
+      float g = fract(sin(dot(fc + vec2(u_seed * 7.13, u_seed * 3.77), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+      return c + g * u_post2.z;
+    }
     vec2 demUv(vec2 xy) {
       vec2 q = xy - u_groundCenter;
       return vec2(q.x / (2.0 * u_groundHalf) + 0.5, 0.5 - q.y / (2.0 * u_groundHalf));
@@ -124,7 +156,7 @@ export const GLSL_REALISTIC = `
     // haze: a bluish neutral, warm only toward the light
     vec3 hazeColor(vec3 d) {
       float glow = pow(max(dot(normalize(d.xy + 1e-5), normalize(u_sunDir.xy + 1e-5)), 0.0), 4.0);
-      return u_horizonCol + u_glowCol * (0.42 * glow) + u_flashCol * u_flashSky * 0.3;
+      return u_hazeCol + u_glowCol * (0.42 * glow) + u_flashCol * u_flashSky * 0.3;
     }
 
     float vnoise(vec2 p) {
@@ -170,13 +202,13 @@ export const GLSL_REALISTIC = `
     float detailShade(vec3 pos) {
       if (u_noiseAmt <= 0.0) return 1.0;
       vec3 q = detailCoord(pos);
-      float n = fbm(vec3(q.xy * 1.5, q.z * 0.7));
+      float n = fbm(vec3(q.xy * u_noiseFreq.x, q.z * u_noiseFreq.y));
       return 1.0 + u_noiseAmt * 0.8 * (n - 0.5);
     }
     float erodeOpacity(vec3 pos, float a0) {
       if (u_noiseAmt <= 0.0) return 1.0;
       vec3 q = detailCoord(pos);
-      float n = fbm(vec3(q.xy * 0.7, q.z * 0.35) + 17.0);
+      float n = fbm(vec3(q.xy * u_noiseFreq.x * 0.5, q.z * u_noiseFreq.y * 0.5) + 17.0);
       float thin = 1.0 - smoothstep(0.12, 0.55, a0);          // 1 where the echo is faint
       return 1.0 - u_noiseAmt * thin * (1.0 - smoothstep(0.3, 0.7, n)) * 0.85;
     }
@@ -213,9 +245,10 @@ export const GLSL_REALISTIC = `
       float tau = 0.0;
       if (u_sunSteps > 0) tau = sunTau(pos, 26.0, u_sunSteps, 0.25 + 0.5 * jit);
       // multiple scattering keeps a fraction of the light inside dense cloud
-      float T = max(exp(-tau * 0.3), 0.6 * exp(-0.07 * tau));
+      float T = max(exp(-tau * 0.3), (0.35 + 0.55 * u_shadowP.y) * exp(-0.07 * tau));
+      T = mix(1.0, T, u_shadowP.x);
       float cs = dot(d, u_sunDir);
-      float phase = 0.8 + 4.0 * mix(hg(cs, 0.62), hg(cs, -0.25), 0.4);
+      float phase = 0.8 + 4.0 * mix(hg(cs, 0.62) * u_rim, hg(cs, -0.25), 0.4);
       float hz = clamp(pos.z / max(u_boxMax.z, 1.0), 0.0, 1.0);
       // powder: thin cloud edges are not darkened, dense cores are
       float powder = 1.0 - 0.55 * smoothstep(0.1, 0.7, a0) * (1.0 - exp(-tau * 0.6));
@@ -227,6 +260,13 @@ export const GLSL_REALISTIC = `
       // the underside and the base are in the shade of the cloud above: blue-grey
       float base = 0.78 + 0.22 * smoothstep(0.0, 0.5, hz);
       vec3 col = toneMap(alb * lit * u_exposure * base + fl * 0.22);
+      // rain: translucent vertical streaks in the lower part of the cloud (columns, not layers)
+      if (u_rainP > 0.0) {
+        vec3 qq = detailCoord(pos);
+        float st = smoothstep(0.5, 0.9, vnoise(qq.xy * 3.2 + 4.1)) * (0.6 + 0.4 * vnoise(qq.xy * 11.0));
+        float low = 1.0 - smoothstep(0.05, 0.65, hz);
+        col = mix(col, u_rainCol * (0.35 + 0.65 * dot(col, vec3(0.33))), clamp(u_rainP * st * low * 0.6, 0.0, 0.8));
+      }
       // aerial perspective: far cloud takes the colour of the haze
       return mix(col, hazeColor(d), 0.9 * (1.0 - exp(-dist * u_fog)));
     }
@@ -240,6 +280,29 @@ export const GLSL_REALISTIC = `
       float sd = max(dot(d, u_sunDir), 0.0);
       col += u_sunCol * (0.5 * pow(sd, 90.0) + 0.12 * pow(sd, 12.0));
       if (h < 0.0) col = hazeColor(d);   // the haze the ground fades into
+      return col;
+    }
+
+    // Ocean: dark grey-green water with whitecap and foam streaks along the wind, spray; the amount
+    // follows the RETRIEVED near-surface wind (where none was retrieved the sea is left calm: nothing
+    // is invented).
+    vec3 seaColor(vec3 gp, float t, vec3 d, float foot, vec3 lit) {
+      vec3 water = u_oceanCol * mix(0.7, 1.3, vnoise(gp.xy * 0.4));
+      vec4 w = texture(u_windS, demUv(gp.xy));
+      float sp = length(w.xy);
+      float conf = w.z;
+      vec2 dir = w.xy / max(sp, 0.1);
+      float along = dot(gp.xy, dir), cross2 = dot(gp.xy, vec2(-dir.y, dir.x));
+      // streaks along the flow: stretched noise (long along the wind, narrow across it)
+      float streak = vnoise(vec2(along * 1.1, cross2 * 9.0)) * 0.6 + vnoise(vec2(along * 3.0, cross2 * 26.0)) * 0.4;
+      float breaking = smoothstep(9.0, 30.0, sp) * conf * u_whitecap;
+      float fine = smoothstep(0.05, 0.6, 1.0 - smoothstep(0.02, 0.4, foot));   // fine foam only where it can be resolved
+      float foam = smoothstep(0.52, 0.85, streak + 0.25 * (vnoise(gp.xy * 22.0) - 0.5) * fine) * breaking;
+      foam = mix(foam, breaking * 0.35, smoothstep(0.05, 0.6, foot));          // far away: a general whitening
+      vec3 col = water * (lit * 0.7 + 0.25) ;
+      col = mix(col, vec3(0.72, 0.76, 0.75) * lit * 0.8, clamp(foam, 0.0, 0.9));
+      // spray and mist at the surface in the strongest wind
+      col = mix(col, vec3(0.5, 0.54, 0.54) * (0.4 + 0.6 * dot(lit, vec3(0.33))), 0.3 * smoothstep(22.0, 45.0, sp) * conf);
       return col;
     }
 
@@ -274,7 +337,13 @@ export const GLSL_REALISTIC = `
         float dn = 0.6 * vnoise(gp.xy * 40.0) + 0.4 * vnoise(gp.xy * 9.0);
         alb *= 1.0 + 0.5 * near * (dn - 0.5);
       }
+      alb = mix(vec3(dot(alb, vec3(0.3, 0.59, 0.11))), alb, u_terrainP.y) * u_terrainP.x;
       vec3 col = toneMap(alb * u_groundGain * lit * u_exposure);
+      if (u_seaOn != 0 && terrainZ(gp.xy) < 1e-4 * u_vexag) {
+        // sea: the satellite image is replaced by dark water; coastal shallows keep a hint of the image
+        vec3 sea = seaColor(gp, t, d, foot, lit * u_exposure);
+        col = toneMap(mix(sea, col * 0.6, 0.18));
+      }
       float haze = 1.0 - exp(-t * u_fog);
       haze = max(haze, smoothstep(10.0, 130.0, outside));
       return mix(col, hazeColor(d), clamp(haze, 0.0, 1.0));

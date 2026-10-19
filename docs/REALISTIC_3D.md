@@ -119,3 +119,137 @@ What still looks fake (honest list): the cloud is the radar's 500 m smooth field
 vertically, so it reads as soft vertical rain shafts and a hazy body, not as a cumulonimbus with a
 hard anvil, cauliflower tops and a defined base; the ground imagery is a summer-biased composite at
 10 m resolution that blurs at ground level; the cloud is only where the echo is.
+
+## Look controls
+The **Look…** button of the 3D tab (Storm: Realistic) opens a collapsible panel with every control below: a slider and a number box (type a value), a reset per control (↺), colour pickers (an empty colour is "auto": chosen by the light and palette), a preset menu, **Save** (kept in this browser), **Export** (JSON) / **TOML**, and **Import** (JSON or TOML). Changes are live. The same names are the keys of a look file for the clip tool (`--look file.json|toml`, `--look-preset NAME`, `--set key=value`).
+
+### Scene
+| key | what it does | range | default |
+|---|---|---|---|
+| `style` | Style: realistic: the stylised storm look. scientific: the dBZ colour scale (the data colours, unchanged). | realistic / scientific | realistic |
+| `light` | Light: daylight (the real sun when it is up, otherwise an assumed daytime sun, labelled), dusk, thick overcast, or night (lit by lightning). | daylight / dusk / overcast / night | daylight |
+| `palette` | Cloud palette: Colours and density of the echo as cloud: white cumulonimbus, soft, stormy grey, or a dense hurricane wall. | white / soft / stormy / cyclone | white |
+
+### Exposure and colour
+| key | what it does | range | default |
+|---|---|---|---|
+| `exposure` | Exposure: Overall light level (multiplies the light of the chosen scene). | 0.3 to 3 | 1.25 |
+| `brightness` | Brightness: Added to the final colour: lifts or lowers everything, shadows included. | -0.4 to 0.4 | 0 |
+| `contrast` | Contrast: Spreads the tones around mid grey. | 0.5 to 1.8 | 1 |
+| `saturation` | Saturation: 0 is grey, 1 as lit, 2 vivid. | 0 to 2 | 1 |
+| `gamma` | Gamma: Mid-tone brightness (above 1 lifts the mid tones and shadows). | 0.6 to 1.8 | 1 |
+| `temperature` | White balance (cool - warm): Negative cools (bluer), positive warms (yellower). | -1 to 1 | 0 |
+| `tint` | Tint (green - magenta): Negative greener, positive more magenta. | -1 to 1 | 0 |
+
+### Cloud
+| key | what it does | range | default |
+|---|---|---|---|
+| `cloudAlbedo` | Cloud whiteness: Reflectivity of the cloud colour (above 1 brightens the body, below greys it). | 0.5 to 1.3 | 1 |
+| `densityScale` | Cloud density: Opacity of the echo as cloud (multiplies its extinction). | 0.2 to 4 | 1 |
+| `lowDbzCutoff` | Faint-echo cutoff: Echo weaker than this is not drawn; just above it the echo shows as thin haze. | 0 to 40 dBZ | 12 |
+| `detail` | Fine detail: Stylised fractal detail: brightness of billows and thinning of faint echo. Never adds echo or moves cores. | 0 to 1.5 | 1 |
+| `rainStreaks` | Rain streaks: Vertical translucent streaks in the rain below the cloud base. | 0 to 1 | 0.25 |
+
+### Rain and eyewall colours
+| key | what it does | range | default |
+|---|---|---|---|
+| `rampLowDbz` | Haze to rain at: Reflectivity where the pale haze colour ends. | 5 to 40 dBZ | 16 |
+| `rampMidDbz` | Rain to heavy at: Reflectivity where the heavy-rain colour starts. | 20 to 55 dBZ | 38 |
+| `rampHeavyDbz` | Heavy to core at: Reflectivity where the core colour starts. | 35 to 65 dBZ | 52 |
+| `rampHailDbz` | Hail hint from: Reflectivity above which the hail tint blends in. | 50 to 75 dBZ | 58 |
+| `rampLow` | Colour: thin / low: Colour of faint echo (empty = the palette). | #rrggbb or empty | auto |
+| `rampMid` | Colour: moderate: Colour of moderate rain. | #rrggbb or empty | auto |
+| `rampHeavy` | Colour: heavy: Colour of heavy rain and the eyewall. | #rrggbb or empty | auto |
+| `rampCore` | Colour: core: Colour of the strongest cores. | #rrggbb or empty | auto |
+| `rampHail` | Colour: hail hint: Tint of the very strongest cores. | #rrggbb or empty | auto |
+| `rainColor` | Rain streak colour: Colour of the rain streaks (empty = grey-blue). | #rrggbb or empty | auto |
+
+### Light
+| key | what it does | range | default |
+|---|---|---|---|
+| `sunElevation` | Sun elevation: -1 = chosen by the light. Degrees above the horizon. | -1 to 80 ° | auto |
+| `sunAzimuth` | Sun azimuth: -1 = chosen by the light. Degrees clockwise from north. | -1 to 360 ° | auto |
+| `sunColor` | Sun colour: Colour of the direct light (empty = the light kind). | #rrggbb or empty | auto |
+| `sunIntensity` | Sun intensity: Strength of the direct light on cloud and ground. | 0 to 3 | 1 |
+| `ambient` | Ambient (sky fill): Light from the sky: lifts the shadows and the cloud base. | 0 to 2.5 | 1 |
+| `shadowStrength` | Shadow strength: How dark the cloud shades itself and the ground (0 = none). | 0 to 1.5 | 1 |
+| `shadowSoftness` | Shadow softness: Higher keeps more light inside dense cloud: softer, lighter shadows. | 0 to 1 | 0.5 |
+| `rim` | Rim / silver lining: Brightening of cloud edges lit from behind. | 0 to 2.5 | 1 |
+
+### Sky and haze
+| key | what it does | range | default |
+|---|---|---|---|
+| `skyZenith` | Sky: overhead: Sky colour overhead (empty = the light kind). | #rrggbb or empty | auto |
+| `skyHorizon` | Sky: horizon: Sky colour at the horizon. | #rrggbb or empty | auto |
+| `sunGlow` | Sun glow: Warm glow of the sky toward the sun. | 0 to 2 | 1 |
+| `glowColor` | Glow colour: Colour of that glow. | #rrggbb or empty | auto |
+| `hazeColor` | Haze colour: Colour distant cloud and ground fade into (empty = the sky at the horizon). | #rrggbb or empty | auto |
+| `hazeDistanceKm` | Haze distance: Distance at which haze reaches 63% (0 = chosen by the scene size; smaller = hazier). | 0 to 2000 km | 0 |
+
+### Ground and ocean
+| key | what it does | range | default |
+|---|---|---|---|
+| `terrainBrightness` | Terrain brightness: Brightness of the satellite imagery. | 0.3 to 2.2 | 1 |
+| `terrainSaturation` | Terrain saturation: Colour of the satellite imagery. | 0 to 2 | 1 |
+| `oceanColor` | Ocean colour: Colour of open water (empty = dark grey-green). | #rrggbb or empty | auto |
+| `whitecaps` | Whitecaps and spray: Foam and spray streaks; they follow the retrieved surface wind (none where no wind was retrieved). | 0 to 2 | 1 |
+
+### Lightning
+| key | what it does | range | default |
+|---|---|---|---|
+| `lightningBrightness` | Lightning brightness: Brightness of the channels and of the light they throw. | 0 to 3 | 1 |
+| `lightningColor` | Lightning colour: Colour of the flash (empty = blue-white). | #rrggbb or empty | auto |
+
+### Finish
+| key | what it does | range | default |
+|---|---|---|---|
+| `bloom` | Bloom: Glow of very bright areas. | 0 to 1 | 0.15 |
+| `vignette` | Vignette: Darkening toward the frame corners. | 0 to 1 | 0.2 |
+| `grain` | Film grain: Fine noise (changes every frame). | 0 to 0.15 | 0.02 |
+
+### Camera
+| key | what it does | range | default |
+|---|---|---|---|
+| `fov` | Field of view: Vertical field of view (0 = the camera's own: 45° orbit, 60° window and flight; useful values 30 to 100). | 0 to 100 ° | 0 |
+| `shake` | Camera shake: Strength of the shake of the flight camera in heavy rain (0 = none). | 0 to 3 | 1 |
+
+## Presets
+| preset | what it is | settings (on top of the defaults) |
+|---|---|---|
+| Daylight cumulonimbus | Bright white towering cloud, shadowed base, saturated blue sky (an assumed daytime sun when the real one was down). | `{"style":"realistic","light":"daylight","palette":"white","exposure":1.25}` |
+| Golden hour | A low warm sun, long shadows, warm haze toward the sun. | `{"style":"realistic","light":"daylight","palette":"white","exposure":1.2,"sunElevation":9,"sunColor":"#ffb870","temperature":0.28,"sunGlow":1.5,"glowColor":"#ff9a4a","shadowStrength":1.15,"saturation":1.12}` |
+| Dusk | Low warm light, blue-grey sky, orange glow only toward the light. | `{"style":"realistic","light":"dusk","palette":"white","exposure":1.3,"ambient":1.2}` |
+| Stormy overcast | Heavy grey-green storm under thick cloud; readable, not black. | `{"style":"realistic","light":"overcast","palette":"stormy","exposure":1.55,"ambient":1.35,"shadowSoftness":0.65,"brightness":0.03,"contrast":1.05,"saturation":0.9,"rainStreaks":0.35}` |
+| Night + lightning | No sun; a faint ambient light; the storm is lit by lightning. | `{"style":"realistic","light":"night","palette":"stormy","exposure":2,"lightningBrightness":1.8,"ambient":1.4}` |
+| Hurricane (daylight) | A dense eyewall and rainbands in bright, hazy daylight; ocean with whitecaps. | `{"style":"realistic","light":"daylight","palette":"cyclone","exposure":1.3,"ambient":1.3,"shadowSoftness":0.6,"detail":1.1,"rainStreaks":0,"whitecaps":1.2,"saturation":0.95,"sunElevation":42}` |
+| Hurricane (stormy) | The same wall under thick overcast: dim, desaturated, but readable. | `{"style":"realistic","light":"overcast","palette":"cyclone","exposure":1.75,"ambient":1.45,"shadowSoftness":0.7,"brightness":0.04,"detail":1.1,"rainStreaks":0,"whitecaps":1.3,"saturation":0.88,"vignette":0.28}` |
+| Satellite white | Bright white cloud over the imagery, no dramatic shading: like a satellite picture. | `{"style":"realistic","light":"daylight","palette":"white","exposure":1.4,"shadowStrength":0.35,"shadowSoftness":0.9,"rim":0.4,"rainStreaks":0,"detail":0.7,"vignette":0,"grain":0,"bloom":0.08,"ambient":1.4,"cloudAlbedo":1.1}` |
+| Scientific (dBZ) | The data colour scale, unchanged (the default of the viewer). | `{"style":"scientific"}` |
+
+Your own looks: **Save** in the panel (stored in this browser, listed under "Saved" in the preset menu), **Export** to share a file, **Import** to load one. A look file is the settings that differ from the defaults; a file with unknown keys is refused with the nearest known key (for example `unknown look key "exposur" (did you mean "exposure"?)`), and out-of-range values, wrong types, bad colours and bad choices are errors naming the key.
+
+### Config file example (TOML; JSON has the same keys)
+```toml
+# xradar-desktop look: every key is optional
+[scene]
+light = "overcast"
+palette = "cyclone"
+[exposure_and_colour]
+exposure = 1.7
+temperature = -0.1
+saturation = 0.9
+[ground_and_ocean]
+whitecaps = 1.3
+oceanColor = "#16302c"
+```
+```
+python tools/storm_clip/render_clip.py --bundle B --out clip.mp4 --realistic --camera flight \
+    --look mylook.toml --look-preset "Hurricane (stormy)" --set exposure=1.9
+```
+Priority, lowest to highest: the defaults, `--look-preset`, `--look`, `--set` (and the flags `--palette` / `--light`). The look never changes the data: where echo exists and how strong it is come from the radar in every setting; the detail control only reshapes brightness and thins faint echo, and the density and cutoff controls scale the opacity law you can see in the transfer function. `tools/storm_clip/verify_look.py` renders a real frame and checks that exposure, brightness, gamma, sun intensity and ambient make it lighter step by step, that saturation 0 is grey and that warm white balance is warmer than cool.
+
+## Realistic cyclone
+A tropical cyclone is not a daylight cumulonimbus. The `cyclone` palette and the `overcast` or `night`
+light make a dark, desaturated, heavy look with a dense eyewall, layered (horizontal) detail, an
+ocean with whitecaps from the retrieved wind, and a flight camera that goes through the wall into the
+eye. See `docs/STORM_CLIP.md` ("Realistic cyclone") for the options and what is data and what is style.

@@ -163,6 +163,35 @@ class TestStorm:
         assert u == pytest.approx(steps[0] * 1000.0 / 300.0)
         assert clipdata.linear_track(cells[:1], times[:1]) == cells[:1]
 
+    def ring_field(self, r_in=12.0, r_out=30.0, n=100, cell_m=2000.0, cx=0.0, cy=0.0):
+        """Column-maximum reflectivity of a synthetic hurricane: an echo ring around an eye."""
+        x0 = y0 = -n / 2 * cell_m
+        jj, ii = np.mgrid[0:n, 0:n]
+        xs = (x0 + ii * cell_m) / 1000.0
+        ys = (y0 + jj * cell_m) / 1000.0
+        r = np.hypot(xs - cx, ys - cy)
+        comp = np.where((r >= r_in) & (r <= r_out), 45.0, np.nan)
+        return comp, x0, y0, cell_m
+
+    def test_find_eye_centre_and_radius_of_a_ring(self):
+        comp, x0, y0, cm = self.ring_field(cx=4.0, cy=-6.0)
+        eye = clipdata.find_eye(comp, x0, y0, cm, (30.0, 10.0))  # anchored on the wall, off centre
+        assert eye is not None
+        assert eye.x_km == pytest.approx(4.0, abs=2.5) and eye.y_km == pytest.approx(-6.0, abs=2.5)
+        assert eye.radius_km == pytest.approx(12.0, abs=2.5)
+
+    def test_open_water_is_not_an_eye(self):
+        comp, x0, y0, cm = self.ring_field()
+        # a patch of echo with no hole, far from the ring: the search near it finds nothing
+        comp[:] = np.nan
+        comp[40:60, 40:60] = 40.0
+        assert clipdata.find_eye(comp, x0, y0, cm, (0.0, 0.0), search_km=60.0) is None
+        assert clipdata.find_eye(np.full_like(comp, np.nan), x0, y0, cm, (0.0, 0.0)) is None
+
+    def test_a_small_gap_is_not_an_eye(self):
+        comp, x0, y0, cm = self.ring_field(r_in=2.0, r_out=20.0)
+        assert clipdata.find_eye(comp, x0, y0, cm, (0.0, 0.0), min_radius_km=4.0) is None
+
     def test_box_around_points(self):
         assert clipdata.box_around([(0.0, 0.0), (10.0, -4.0)], 5.0) == (-5.0, -9.0, 15.0, 5.0)
 

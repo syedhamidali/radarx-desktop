@@ -135,13 +135,35 @@ async def render(a: argparse.Namespace) -> None:
             "azimuthDeg": a.sun_azimuth if a.sun_azimuth is not None else 205.0,
             "elevationDeg": a.sun_elevation if a.sun_elevation is not None else 13.0,
         }
+    if a.sea:
+        settings["sea"] = True
+    if a.cloud_freq:
+        hf, vf = (float(v) for v in a.cloud_freq.split(","))
+        settings["cloudFreq"] = [hf, vf]
+    if a.look_preset:
+        settings["lookPreset"] = a.look_preset
+    if a.look:
+        lp = Path(a.look).expanduser()
+        settings["lookText"] = lp.read_text()
+        settings["lookFormat"] = "toml" if lp.suffix.lower() == ".toml" else "json"
+    overrides: dict = {}
+    for item in a.set or []:
+        if "=" not in item:
+            sys.exit(f"--set expects key=value, got '{item}'")
+        k, v = item.split("=", 1)
+        try:
+            overrides[k.strip()] = float(v)
+        except ValueError:
+            overrides[k.strip()] = v.strip()
+    if overrides:
+        settings["lookOverrides"] = overrides
     settings["flow"] = not a.no_flow
     settings["lightning"] = "off" if a.no_lightning else "auto"
     settings["lightningSeed"] = a.lightning_seed
     settings["lightningRate"] = a.lightning_rate
     settings["t10Km"] = a.t10_km
     settings["soundCompress"] = a.sound_compress
-    with_sound = a.camera == "observer" and not a.no_sound
+    with_sound = a.camera in ("observer", "flight") and not a.no_sound
     settings["audio"] = with_sound
     ground = "realistic" if a.realistic else a.ground
     storm_style = "realistic" if a.realistic else a.storm_style
@@ -180,7 +202,13 @@ async def render(a: argparse.Namespace) -> None:
         page.on("pageerror", lambda e: logs.append(f"PAGEERROR: {str(e)[:300]}"))
         await page.goto(f"http://127.0.0.1:{port}/?clip=1")
         await page.wait_for_function("() => !!window.__xrClip", timeout=30000)
-        info = await page.evaluate("(a) => window.__xrClip.load(a[0], a[1])", ["/bundle", settings])
+        try:
+            info = await page.evaluate(
+                "(a) => window.__xrClip.load(a[0], a[1])", ["/bundle", settings]
+            )
+        except Exception as exc:  # a bad look file: say which key, no stack trace
+            msg = str(exc).split("\n")[0]
+            sys.exit(f"error: {msg.replace('Page.evaluate: ', '')}")
         print(f"loaded {info['steps']} time steps, grid {info['grid']}, '{info['title']}'")
         await page.evaluate("(p) => window.__xrClip.prepare(p)", a.basemap)
         st = await page.evaluate("() => window.__xrClip.info()")
@@ -303,20 +331,22 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--camera",
         default="orbit",
-        choices=["orbit", "observer"],
-        help="the cinematic orbit (default) or a fixed camera on the ground, like one on a window sill",
+        choices=["orbit", "observer", "flight"],
+        help="the cinematic orbit (default), a fixed camera on the ground like one on a window sill, "
+        "or the cyclone flight (in along a rainband, through the eyewall, into the eye)",
     )
     ap.add_argument(
         "--palette",
         default=None,
-        choices=["white", "soft", "stormy"],
+        choices=["white", "soft", "stormy", "cyclone"],
         help="palette of the realistic storm look (default white)",
     )
     ap.add_argument(
         "--light",
         default="daylight",
-        choices=["daylight", "dusk"],
-        help="realistic look: a stylised daylight (default; labelled) or the dusk light when the sun was down",
+        choices=["daylight", "dusk", "overcast", "night"],
+        help="realistic look: a stylised daylight (default; labelled), the dusk light, a thick overcast "
+        "(dim stylised light) or night (no sun, lit by lightning)",
     )
     ap.add_argument(
         "--orbit",
@@ -371,6 +401,33 @@ def main(argv: list[str] | None = None) -> None:
         type=float,
         default=None,
         help="time-lapse factor (clip length = data span / factor + 3 s), overrides --duration",
+    )
+    ap.add_argument(
+        "--look",
+        default=None,
+        help="a look file (.json or .toml): any keys of docs/REALISTIC_3D.md, the others keep their defaults",
+    )
+    ap.add_argument(
+        "--look-preset",
+        default=None,
+        help="a built-in look preset by name, e.g. 'Hurricane (stormy)' (a file and --set go on top)",
+    )
+    ap.add_argument(
+        "--set",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="one look setting, highest priority (repeat), e.g. --set exposure=1.6 --set temperature=0.2",
+    )
+    ap.add_argument(
+        "--sea",
+        action="store_true",
+        help="ocean with whitecaps and spray from the retrieved surface wind",
+    )
+    ap.add_argument(
+        "--cloud-freq",
+        default=None,
+        help="detail noise frequency per km, horizontal,vertical (a cyclone is layered: 0.9,1.8)",
     )
     ap.add_argument(
         "--no-flow", action="store_true", help="translation only, even if the bundle has winds"

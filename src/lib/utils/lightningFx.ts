@@ -44,7 +44,9 @@ export function flashDistanceKm(f: Flash, eye: [number, number, number], vexag: 
 }
 
 /** Draw the flashes active at clip time `t`; returns how many were drawn. */
-export function drawFlashes(ctx: CanvasRenderingContext2D, cam: FxCam, flashes: Flash[], t: number, vexag: number): number {
+export function drawFlashes(ctx: CanvasRenderingContext2D, cam: FxCam, flashes: Flash[], t: number, vexag: number, gain = 1, colour = ''): number {
+  const tint = /^#[0-9a-f]{6}$/i.test(colour) ? [parseInt(colour.slice(1, 3), 16), parseInt(colour.slice(3, 5), 16), parseInt(colour.slice(5, 7), 16)] : [255, 253, 248];
+  const core = `rgb(${Math.round(255 * 0.65 + tint[0] * 0.35)},${Math.round(255 * 0.65 + tint[1] * 0.35)},${Math.round(255 * 0.65 + tint[2] * 0.35)})`;
   const act = activeFlashes(flashes, t);
   let drawn = 0;
   const u = cam.h / 1080;
@@ -78,13 +80,13 @@ export function drawFlashes(ctx: CanvasRenderingContext2D, cam: FxCam, flashes: 
       any = true;
       const dMid = Math.max(1.5, dist);
       const wpx = BASE_WIDTH[level] * u * Math.max(0.55, Math.min(2.2, Math.pow(10 / dMid, 0.45)));
-      sx.strokeStyle = 'rgb(255,253,248)';
+      sx.strokeStyle = core;
       sx.lineWidth = wpx;
       sx.stroke();
     }
     if (!any) continue;
     drawn++;
-    const a = Math.min(1, Math.pow(lv.channel, 0.8)) * far;
+    const a = Math.min(1, Math.pow(lv.channel, 0.8) * far * gain);
     ctx.save();
     ctx.globalCompositeOperation = 'lighter';
     // wide halo, soft halo, then the channel itself

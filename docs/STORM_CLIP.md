@@ -72,6 +72,41 @@ The test case in the collection is Hurricane Laura (`laura`: KHGX, KLCH, KLIX, K
 THOU and TIAH are skipped, named once: THOU cannot be read and TIAH has unscaled site coordinates):
 it has only four time steps over 15 minutes (04:52 to 05:07 UTC), not an hour.
 
+**Realistic cyclone** (`--camera flight --realistic --palette cyclone --light overcast --sea
+--cloud-freq 0.9,1.8 --vexag 2`, bundle from `clipdata.py --track eye --detail-m 1000 --crop-km 140`).
+![Three candidate looks of the same frames: overcast, night, dusk](images/cyclone-looks.png)
+- **Eye from the data.** `clipdata.py` finds the eye as the centre of the largest echo-free hole
+  (column maximum below 20 dBZ) that echo surrounds on most sides (`find_eye`: distance transform, an
+  open-water patch is rejected), with its radius; `--track eye` follows its centre. Laura: 17 to
+  18 km radius. This is a hole in the radar echo, not the wind-based radius of maximum wind.
+- **Look.** The `cyclone` palette has a dense, near-opaque eyewall and rainbands from about 35 dBZ,
+  pale grey where thin, charcoal green-grey in the wall; the detail noise has its vertical frequency
+  higher than the horizontal (layered; the vertical streaks of the earlier look came from the opposite),
+  shading and thinning of the faint echo only. `--light overcast` is a dim light filtered by thick
+  cloud with a dark horizon haze, labelled "Stylised lighting ... thick overcast; the real scene was at
+  night". `--light night` is the honest night: no sun, a faint ambient, the storm lit by lightning
+  (it is very dark between flashes). Dusk was the third candidate: cheerful and cream coloured; rejected.
+- **Ocean.** Terrain at sea level is dark grey-green water; whitecap and foam streaks follow the
+  wind direction (stretched noise along the retrieved wind), their amount rises from 9 to 30 m/s of
+  RETRIEVED near-surface wind (the lowest retrieved level, 1.5 km for Laura, x 0.65 for the step down to
+  the surface: a labelled estimate), and spray whitens the surface above 22 m/s. Where no wind was
+  retrieved the sea stays calm: nothing is invented (the analysis covers 22 to 30% of its box).
+- **Flight.** `cycloneFlight` (clipCamera.ts): a wide establishing view, a descent to 12 km along the
+  rainband, down through the wall to 3 km into the eye, looking back at the wall around it, out, and a
+  high look straight down. The camera is placed relative to the moving eye; in heavy echo it shakes a
+  little (`cameraShake`: smooth, deterministic, eased by the echo at the camera).
+- **HUD, real numbers only**: eye radius from the echo, the strongest 1% of the retrieved wind speed
+  cells (99th percentile; the single highest cell is shown too but it is often an outlier at the
+  QC limit of 100 m/s), the lowest 3 km, the analysis coverage and number of radars, the centre's
+  movement since the start, camera altitude and distance from the eye. It says that winds exist only
+  where radars cross well and that no intensity category is inferred.
+- **Rotation and motion**: the echo is carried by the retrieved wind between scans (see above);
+  Laura has only four volumes in 15 minutes, two of which repeat for some radars, so the translation of
+  the eye is 2 km in the data and the rotation comes from the winds.
+- **Sound**: wind roar from the retrieved wind near the camera (within 16 km), louder in heavy echo
+  (x (0.6 + 0.4 x rain level)); rain hiss; the thunder machinery for the rare modelled flashes
+  (`--lightning-rate 0.12`).
+
 **Lightning** (`src/lib/utils/lightning.ts`, `lightningFx.ts`). Every flash carries its source and
 the screen says which: *OBSERVED* if the bundle has lightning files (`clipdata.py --lightning FILE...`
 reads GLM L2 LCFA netCDF or LMA `.dat` files from DISK; nothing is downloaded: the GLM files
@@ -103,6 +138,13 @@ arrival time (this makes the rolling), louder the nearer, a lower low-pass cutof
 the channel is, and a sharp crack on top of the rumble for a strike within 4 km. No samples are used.
 `render_clip.py` prints every flash with its distance and thunder arrival, and writes them into
 `<clip>.audio.json`.
+
+## Look files and presets
+Every colour and light of the realistic look is a named setting (`docs/REALISTIC_3D.md` lists all of
+them with ranges, the presets and an example). For clips: `--look-preset "Hurricane (stormy)"`,
+`--look my.toml` (JSON or TOML), `--set exposure=1.6`; the viewer's **Look…** panel edits the same
+keys live. The defaults are bright (exposure 1.25); `--look-preset "Scientific (dBZ)"` is the
+data colour scale. `verify_look.py` checks the controls on a real frame.
 
 ## Make a clip
 ```

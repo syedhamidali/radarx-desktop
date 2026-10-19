@@ -32,6 +32,7 @@
       debugScaleTerrain: (k: number) => clip!.debugScaleTerrain(k),
       renderAudio: (sr?: number) => clip!.renderAudio(sr),
       report: () => clip!.report(),
+      setLook: (o: any) => clip!.setLook(o),
       flashList: () => clip!.flashList(),
       morphSelfTest: () => runMorphSelfTest(),
       stateAt: (t: number) => clip!.stateAt(t),

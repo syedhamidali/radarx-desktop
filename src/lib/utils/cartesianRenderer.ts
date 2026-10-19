@@ -300,7 +300,9 @@ ${GLSL_THRESHOLD}${GLSL_HASH}${glslGroundColor({
 
       vec3 behind = bg;
       if (groundHit) behind = terrHit ? terrainColor(gp, tG, rayDir, whiteNoise(gl_FragCoord.xy)) : groundColor(gp, tG, rayDir);
-      fragColor = vec4(color.rgb + (1.0 - color.a) * behind, 1.0);
+      vec3 final = color.rgb + (1.0 - color.a) * behind;
+      if (u_style == 1) final = postProcess(final, gl_FragCoord.xy, u_resolution);
+      fragColor = vec4(final, 1.0);
     }
   `;
 }
@@ -528,11 +530,15 @@ export class CartesianRenderer {
   private groundTex: WebGLTexture | null = null;
   private demTex: WebGLTexture | null = null;
   private frameSeed = 0;
+  private fovRad = 0;
   private fpMode = false;
   private flashPts: Float32Array = new Float32Array(16);
   private flashN = 0;
   private noiseOff: [number, number, number] = [0, 0, 0];
   private noiseAmt = 0;
+  private noiseFreq: [number, number] = [1.5, 0.7];
+  private seaOn = false;
+  private windSTex: WebGLTexture | null = null;
   private flashSky = 0;
   private flashCol: [number, number, number] = [0.75, 0.82, 1];
   // GPU time interpolation along a flow (clip export): see morphPass.ts
@@ -1183,9 +1189,39 @@ export class CartesianRenderer {
   }
 
   /** Stylised cloud texture (realistic look): its amount 0..1 and the storm translation (km) it rides along. */
-  setCloudTexture(amount: number, offsetKm: [number, number, number] = [0, 0, 0]): void {
+  setCloudTexture(amount: number, offsetKm: [number, number, number] = [0, 0, 0], freq: [number, number] = [1.5, 0.7]): void {
     this.noiseAmt = amount;
     this.noiseOff = offsetKm;
+    this.noiseFreq = freq;
+  }
+
+  /**
+   * Ocean with whitecaps: terrain at sea level is drawn as water, foam and spray follow the surface wind
+   * `wind` (RGBA32F, 4 floats per texel: u, v in m/s, confidence, unused) over the ground's square.
+   * null with `sea` false = no ocean treatment.
+   */
+  setSea(sea: boolean, wind: { size: number; data: Float32Array } | null = null): void {
+    this.seaOn = sea;
+    if (this.lost) return;
+    const gl = this.gl;
+    if (!this.windSTex) this.windSTex = gl.createTexture()!;
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.windSTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    if (wind) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, wind.size, wind.size, 0, gl.RGBA, gl.FLOAT, wind.data);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, 1, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array(4));
+    gl.activeTexture(gl.TEXTURE0);
+    this.markDirty();
+  }
+
+  /** Vertical field of view in degrees (0 = the default 45). */
+  setFov(deg: number): void {
+    this.fovRad = deg > 0 ? (deg * Math.PI) / 180 : 0;
+    this.markDirty();
   }
 
   /** Leave the first-person mode (the next `exportRender` is an orbit frame without the ground extension). */
@@ -1498,11 +1534,12 @@ export class CartesianRenderer {
       this.nudge();
     }
     const { eye, fwd, right, up } = this.camVectors();
-    const tanY = Math.tan(FOV / 2);
+    const fovR = this.fovRad > 0 ? this.fovRad : FOV;
+    const tanY = Math.tan(fovR / 2);
     const tanX = tanY * (w / h);
     const near = Math.max(0.5, this.camDist * 0.01);
     const far = this.camDist * 6 + 4000;
-    const viewProj = mat4Mul(mat4Perspective(FOV, w / h, near, far), mat4View(eye, right, up, fwd));
+    const viewProj = mat4Mul(mat4Perspective(fovR, w / h, near, far), mat4View(eye, right, up, fwd));
     this.frame = { viewProj, eye, w, h, params, tanY };
     const compass = (Math.atan2(dot3([0, 1, 0], right), dot3([0, 1, 0], up)) * 180) / Math.PI;
     this.opts.onFrame?.({ eye, fwd, right, up, tanX, tanY, compass, params });
@@ -1565,6 +1602,17 @@ export class CartesianRenderer {
     gl.uniform3f(u.u_skyCol, lk.skyCol[0], lk.skyCol[1], lk.skyCol[2]);
     gl.uniform3f(u.u_horizonCol, lk.horizonCol[0], lk.horizonCol[1], lk.horizonCol[2]);
     gl.uniform3f(u.u_zenithCol, lk.zenithCol[0], lk.zenithCol[1], lk.zenithCol[2]);
+    gl.uniform3f(u.u_hazeCol, lk.hazeCol[0], lk.hazeCol[1], lk.hazeCol[2]);
+    gl.uniform2f(u.u_shadowP, lk.shadowStrength, lk.shadowSoft);
+    gl.uniform1f(u.u_rim, lk.rim);
+    gl.uniform4f(u.u_post1, lk.brightness, lk.contrast, lk.saturation, lk.gamma);
+    gl.uniform3f(u.u_wb, lk.wb[0], lk.wb[1], lk.wb[2]);
+    gl.uniform3f(u.u_post2, lk.bloom, lk.vignette, lk.grain);
+    gl.uniform2f(u.u_terrainP, lk.terrainGain, lk.terrainSat);
+    gl.uniform3f(u.u_oceanCol, lk.oceanCol[0], lk.oceanCol[1], lk.oceanCol[2]);
+    gl.uniform1f(u.u_whitecap, lk.whitecap);
+    gl.uniform1f(u.u_rainP, lk.rainStreak);
+    gl.uniform3f(u.u_rainCol, lk.rainCol[0], lk.rainCol[1], lk.rainCol[2]);
     gl.uniform3f(u.u_glowCol, lk.glowCol[0], lk.glowCol[1], lk.glowCol[2]);
     gl.uniform3f(u.u_bounceCol, lk.bounceCol[0], lk.bounceCol[1], lk.bounceCol[2]);
     gl.uniform1f(u.u_sunGain, lk.sunGain);
@@ -1584,6 +1632,8 @@ export class CartesianRenderer {
     gl.uniform1f(u.u_flashSky, this.flashSky);
     gl.uniform3f(u.u_noiseOff, this.noiseOff[0], this.noiseOff[1], this.noiseOff[2]);
     gl.uniform1f(u.u_noiseAmt, this.noiseAmt);
+    gl.uniform2f(u.u_noiseFreq, this.noiseFreq[0], this.noiseFreq[1]);
+    gl.uniform1i(u.u_seaOn, this.seaOn ? 1 : 0);
     gl.uniform1f(u.u_vexag, ve);
     gl.uniform1i(u.u_light, p.light ? 1 : 0);
     gl.uniform1f(u.u_themeLight, p.lightScene ? 1 : 0);
@@ -1709,6 +1759,9 @@ export class CartesianRenderer {
     gl.activeTexture(gl.TEXTURE5);
     gl.bindTexture(gl.TEXTURE_2D, this.demTex);
     gl.uniform1i(this.vu.u_dem, 5);
+    gl.activeTexture(gl.TEXTURE6);
+    gl.bindTexture(gl.TEXTURE_2D, this.windSTex);
+    gl.uniform1i(this.vu.u_windS, 6);
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_3D, this.windTex);
     gl.uniform1i(this.vu.u_windTex, 2);
@@ -1813,7 +1866,7 @@ export class CartesianRenderer {
     this.canvas.removeEventListener('webglcontextrestored', this.onRestored);
     if (!this.lost) {
       const gl = this.gl;
-      for (const t of [this.volTex, this.volTexB, this.tfTex, this.lutTex, this.groundTex, this.demTex]) if (t) gl.deleteTexture(t);
+      for (const t of [this.volTex, this.volTexB, this.tfTex, this.lutTex, this.groundTex, this.demTex, this.windSTex]) if (t) gl.deleteTexture(t);
       this.morphPass?.deleteFlow(this.flowA);
       this.morphPass?.deleteFlow(this.flowB);
       this.morphPass?.dispose();

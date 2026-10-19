@@ -225,3 +225,85 @@ export function cycloneChoreography(duration = 48, viewKm = 330, altKm = 3): Cam
     k(36, 380, 60, viewKm * 1.3, altKm),
   ];
 }
+
+// ─── Flight camera (cyclone tour) ───────────────────────────────────────────
+
+/**
+ * A key of the flight camera. The eye is placed relative to the moving storm centre (the eye of a
+ * cyclone): `r` km away at azimuth `az` (degrees clockwise from north), `alt` km above sea level, and
+ * looks at the point `lr` km from the centre at azimuth `laz`, height `lalt` km.
+ */
+export interface FlightKey {
+  t: number;
+  r: number;
+  az: number;
+  alt: number;
+  lr: number;
+  laz: number;
+  lalt: number;
+}
+
+const FLIGHT_CHANNELS: (keyof Omit<FlightKey, 't'>)[] = ['r', 'az', 'alt', 'lr', 'laz', 'lalt'];
+
+export interface FlightPose {
+  eye: [number, number, number];
+  yawDeg: number;
+  pitchDeg: number;
+  /** The interpolated key (for the HUD). */
+  key: FlightKey;
+}
+
+/** Pose of the flight camera at clip time `t` around the storm centre `c` (km). Pitch is limited to +/- 84 degrees. */
+export function flightPose(keys: FlightKey[], t: number, c: [number, number]): FlightPose {
+  const ts = keys.map((k) => k.t);
+  const out: any = { t };
+  for (const ch of FLIGHT_CHANNELS) out[ch] = hermite(ts, keys.map((k) => k[ch]), t);
+  const k = out as FlightKey;
+  const ar = (k.az * Math.PI) / 180, lr = (k.laz * Math.PI) / 180;
+  const eye: [number, number, number] = [c[0] + k.r * Math.sin(ar), c[1] + k.r * Math.cos(ar), k.alt];
+  const look: [number, number, number] = [c[0] + k.lr * Math.sin(lr), c[1] + k.lr * Math.cos(lr), k.lalt];
+  const dx = look[0] - eye[0], dy = look[1] - eye[1], dz = look[2] - eye[2];
+  const yaw = dx === 0 && dy === 0 ? ((k.az + 180) % 360 + 360) % 360 : ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+  const pitch = Math.max(-84, Math.min(84, (Math.atan2(dz, Math.hypot(dx, dy)) * 180) / Math.PI));
+  return { eye, yawDeg: yaw, pitchDeg: pitch, key: k };
+}
+
+/**
+ * The cyclone tour (about 48 s): a wide establishing view, a descent to a flight along a rainband
+ * toward the eyewall, through the wall into the eye (looking back at the wall around it), up out of the
+ * eye, and a high look straight down. `eyeR` = radius of the eye (km) from the data, `scale` = size of
+ * the system (km). Azimuth keys are unwrapped (a key at 400 after 330 is a further 70 degrees).
+ */
+export function cycloneFlight(duration = 48, eyeR = 15, scale = 330): FlightKey[] {
+  const f = duration / 48;
+  const k = (t: number, r: number, az: number, alt: number, lr: number, laz: number, lalt: number): FlightKey => ({ t: t * f, r, az, alt, lr, laz, lalt });
+  const wall = Math.max(eyeR * 1.5, 14);
+  return [
+    k(0, scale * 0.85, 205, 60, 0, 0, 2),
+    k(7, scale * 0.6, 235, 22, 0, 0, 3),
+    k(15, scale * 0.38, 275, 12, 0, 0, 3),
+    k(22, scale * 0.2, 325, 7, eyeR * 0.3, 590, 3),
+    k(28, wall * 1.1, 372, 4, eyeR * 0.8, 590, 3.5),
+    k(33, eyeR * 0.55, 410, 3, eyeR * 0.9, 590, 4),
+    k(38, eyeR * 0.4, 440, 3.5, eyeR * 0.9, 600, 7),
+    k(43, scale * 0.25, 480, 40, 0, 0, 2),
+    k(48, 1, 500, 260, 0, 0, 0),
+  ].map((q, i, a) => (i === a.length - 1 ? { ...q, t: duration } : q));
+}
+
+/**
+ * Subtle camera shake in heavy rain: deterministic, smooth (sums of sines), eased by `level` (0..1).
+ * Returns offsets: yaw and pitch in degrees, position in km.
+ */
+export function cameraShake(t: number, level: number): { yaw: number; pitch: number; dx: number; dy: number; dz: number } {
+  const a = Math.max(0, Math.min(1, level));
+  const e = a * a * (3 - 2 * a);
+  const n = (f: number, p: number) => Math.sin(2 * Math.PI * f * t + p) * 0.6 + Math.sin(2 * Math.PI * f * 2.3 * t + p * 1.7) * 0.4;
+  return {
+    yaw: 0.45 * e * n(1.3, 0.3),
+    pitch: 0.35 * e * n(1.7, 1.9),
+    dx: 0.012 * e * n(2.1, 2.5),
+    dy: 0.012 * e * n(1.9, 0.8),
+    dz: 0.01 * e * n(2.7, 4.1),
+  };
+}

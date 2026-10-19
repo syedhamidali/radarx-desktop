@@ -295,6 +295,72 @@ def linear_track(track: list[Cell], times_s: list[float]) -> list[Cell]:
     ]
 
 
+def column_max_dbz(volume: np.ndarray, value_range: tuple[float, float]) -> np.ndarray:
+    """Column-maximum reflectivity (dBZ, NaN where no echo) of the mosaic's uint8 volume."""
+    lo, hi = value_range
+    dbz = decode(volume, lo, hi)
+    with np.errstate(all="ignore"):
+        comp = np.nanmax(np.where(np.isfinite(dbz), dbz, -np.inf), axis=0)
+    return np.where(np.isfinite(comp), comp, np.nan)
+
+
+@dataclass
+class Eye:
+    x_km: float
+    y_km: float
+    radius_km: float  # radius of the echo-free hole, from the data (not a wind-based radius)
+
+
+def find_eye(
+    comp_dbz: np.ndarray,
+    x0_m: float,
+    y0_m: float,
+    cell_m: float,
+    around_km: tuple[float, float],
+    search_km: float = 80.0,
+    echo_dbz: float = 20.0,
+    min_radius_km: float = 4.0,
+) -> Eye | None:
+    """The eye of a tropical cyclone as the centre of the largest echo-free hole enclosed by echo.
+
+    The hole is where the column-maximum reflectivity is below ``echo_dbz``; its centre maximises the
+    distance to the nearest echo. Only holes within ``search_km`` of ``around_km`` that echo
+    surrounds on most sides (at least 60% of the ring between 1.2 and 2.2 radii holds echo) count,
+    so open sea beside the storm is not an eye. The radius is that distance (a measure of the hole
+    in the radar echo, not of the wind maximum). None if there is no such hole.
+    """
+    from scipy import ndimage
+
+    echo = np.nan_to_num(comp_dbz, nan=-99.0) >= echo_dbz
+    if not echo.any():
+        return None
+    dist_km = ndimage.distance_transform_edt(~echo) * (cell_m / 1000.0)
+    ny, nx = comp_dbz.shape
+    jj, ii = np.mgrid[0:ny, 0:nx]
+    xs = (x0_m + ii * cell_m) / 1000.0
+    ys = (y0_m + jj * cell_m) / 1000.0
+    near = np.hypot(xs - around_km[0], ys - around_km[1]) <= search_km
+    cand = np.where(near & ~echo, dist_km, 0.0)
+    for _ in range(60):  # the biggest hole first; reject open water and try the next best
+        k = int(np.argmax(cand))
+        r = float(cand.flat[k])
+        if r < min_radius_km:
+            return None
+        cj, ci = divmod(k, nx)
+        ring = (np.hypot(xs - xs[cj, ci], ys - ys[cj, ci]) >= 1.2 * r) & (
+            np.hypot(xs - xs[cj, ci], ys - ys[cj, ci]) <= 2.2 * r
+        )
+        if ring.any() and float(echo[ring].mean()) >= 0.6:
+            # sub-cell centre: the mean position of the points almost as far from the echo as the best
+            near_c = np.hypot(xs - xs[cj, ci], ys - ys[cj, ci]) <= r
+            core = (dist_km >= 0.9 * r) & ~echo & near_c
+            cx = float(xs[core].mean()) if core.any() else float(xs[cj, ci])
+            cy = float(ys[core].mean()) if core.any() else float(ys[cj, ci])
+            return Eye(cx, cy, r)
+        cand[np.hypot(xs - xs[cj, ci], ys - ys[cj, ci]) <= r] = 0.0
+    return None
+
+
 def storm_motion(
     track_xy_km: list[tuple[float, float]], times_s: list[float]
 ) -> tuple[float, float]:
@@ -428,6 +494,7 @@ def build_bundle(
 
     # 1. find and track the storm on coarse mosaics
     cells_per_step: list[list[Cell]] = []
+    comps: list[tuple[np.ndarray, float, float, float]] = []
     coarse_geo = None
     for i, step in enumerate(steps):
         log(f"[{i + 1}/{len(steps)}] coarse mosaic")
@@ -447,6 +514,7 @@ def build_bundle(
             rec.volume, rec.volume_range, rec.volume_z_m / 1000.0, rec.x0, rec.y0, rec.cell_m
         )
         cells_per_step.append(cells)
+        comps.append((column_max_dbz(rec.volume, rec.volume_range), rec.x0, rec.y0, rec.cell_m))
         coarse_geo = rec.origin
         log(
             "    cells: "
@@ -455,12 +523,30 @@ def build_bundle(
             )
         )
     track = track_storm(cells_per_step, times_s)
+    eyes: list[Eye | None] = [
+        find_eye(c, x0, y0, cm, (track[i].x_km, track[i].y_km))
+        for i, (c, x0, y0, cm) in enumerate(comps)
+    ]
+    if any(eyes):
+        log(
+            "eye (echo-free hole): "
+            + ", ".join(f"{e.radius_km:.0f} km" if e else "none" for e in eyes)
+        )
+    if track_mode == "eye":
+        track = [
+            Cell(e.x_km, e.y_km, c.max_dbz, c.area_km2, c.top_km, c.score) if e else c
+            for c, e in zip(track, eyes, strict=True)
+        ]
+        log("storm track: the centres of the echo-free eye (the cell centre where there is none)")
     if track_mode == "linear":
         track = linear_track(track, times_s)
         log("storm track: least-squares straight line through the cell positions")
     assert coarse_geo is not None
     proj0 = mosaic._aeqd(*coarse_geo)
     track_lonlat = [proj0(c.x_km * 1000.0, c.y_km * 1000.0, inverse=True) for c in track]
+    eye_lonlat = [
+        proj0(e.x_km * 1000.0, e.y_km * 1000.0, inverse=True) if e else None for e in eyes
+    ]
     log("storm track (lon, lat): " + ", ".join(f"({lo:.2f}, {la:.2f})" for lo, la in track_lonlat))
 
     # 2. the fine mosaics on a box around the whole track
@@ -527,6 +613,8 @@ def build_bundle(
                 },
                 "mosaic": {"header": f"{stem}.json", "bin": f"{stem}.bin"},
                 "wind": wind_files,
+                "eye_lonlat": eye_lonlat[i],
+                "eye_radius_km": eyes[i].radius_km if eyes[i] else None,
                 "storm": {
                     "max_dbz": track[i].max_dbz,
                     "area_km2": track[i].area_km2,
@@ -542,6 +630,14 @@ def build_bundle(
     proj_f = mosaic._aeqd(*origin)
     track_f = [proj_f(lo, la) for lo, la in track_lonlat]
     track_km = [(x / 1000.0, y / 1000.0) for x, y in track_f]
+    for st in manifest_steps:
+        ll = st.pop("eye_lonlat")
+        if ll is not None:
+            ex, ey = proj_f(ll[0], ll[1])
+            st["eye"] = {"x_km": ex / 1000.0, "y_km": ey / 1000.0, "radius_km": st["eye_radius_km"]}
+        else:
+            st["eye"] = None
+        st.pop("eye_radius_km")
     u, v = storm_motion(track_km, times_s)
     manifest = {
         "version": 1,
@@ -632,9 +728,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--track",
         default="cells",
-        choices=["cells", "linear"],
-        help="storm track: the tracked cell positions (default) or their least-squares straight line "
-        "(steady motion: tropical cyclones, steps whose volumes repeat)",
+        choices=["cells", "linear", "eye"],
+        help="storm track: the tracked cell positions (default), their least-squares straight line "
+        "(steady motion), or the centres of the echo-free eye of a tropical cyclone",
     )
     ap.add_argument(
         "--lightning",

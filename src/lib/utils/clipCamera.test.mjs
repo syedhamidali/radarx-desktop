@@ -198,3 +198,42 @@ test('the cyclone choreography scales with the scene and ends looking down on th
     prev = c;
   }
 });
+
+test('the cyclone flight: from afar, down to the rainband, through the wall into the eye, then looking down', async () => {
+  const { cycloneFlight, flightPose, cameraShake } = await import('./clipCamera.ts');
+  const keys = cycloneFlight(48, 15, 330);
+  assert.equal(keys[0].t, 0);
+  assert.equal(keys[keys.length - 1].t, 48);
+  assert.ok(keys.every((q, i) => i === 0 || q.t > keys[i - 1].t));
+  const c = [10, -5];
+  const start = flightPose(keys, 0, c);
+  assert.ok(Math.hypot(start.eye[0] - c[0], start.eye[1] - c[1]) > 250 && start.eye[2] > 50);
+  // inside the eye: within its radius of the centre, low, looking at the wall
+  const inside = flightPose(keys, 33, c);
+  assert.ok(Math.hypot(inside.eye[0] - c[0], inside.eye[1] - c[1]) < 15, 'in the eye');
+  assert.ok(inside.eye[2] < 5);
+  // the last view is straight down (limited to 84 degrees)
+  const end = flightPose(keys, 48, c);
+  assert.ok(end.pitchDeg <= -80 && end.eye[2] > 200);
+  // the eye follows the storm centre
+  const moved = flightPose(keys, 20, [c[0] + 30, c[1] + 40]);
+  const same = flightPose(keys, 20, c);
+  assert.ok(Math.abs(moved.eye[0] - same.eye[0] - 30) < 1e-9 && Math.abs(moved.eye[1] - same.eye[1] - 40) < 1e-9);
+  // smooth: no jump between frames at 30 fps (position in km, angles in degrees)
+  let prev = flightPose(keys, 0, c);
+  for (let t = 1 / 30; t <= 48; t += 1 / 30) {
+    const p = flightPose(keys, t, c);
+    assert.ok(Math.hypot(p.eye[0] - prev.eye[0], p.eye[1] - prev.eye[1], p.eye[2] - prev.eye[2]) < 6, `position jump at ${t}`);
+    const dyaw = Math.abs(((p.yawDeg - prev.yawDeg + 540) % 360) - 180);
+    assert.ok(dyaw < 6 || Math.abs(p.pitchDeg) > 80, `yaw jump ${dyaw} at ${t}`);
+    prev = p;
+  }
+  // shake: none without rain, small and smooth with it, deterministic
+  assert.ok(Object.values(cameraShake(3.3, 0)).every((v) => v === 0));
+  const s1 = cameraShake(3.3, 1), s2 = cameraShake(3.3, 1);
+  assert.deepEqual(s1, s2);
+  let big = 0;
+  for (let t = 0; t < 20; t += 0.03) big = Math.max(big, Math.abs(cameraShake(t, 1).yaw));
+  assert.ok(big > 0.1 && big <= 0.46, `largest yaw shake ${big}`);
+  assert.ok(Math.abs(cameraShake(5.0, 0.3).yaw) <= Math.abs(0.45 * 0.216) + 1e-9, 'eased with the rain level');
+});

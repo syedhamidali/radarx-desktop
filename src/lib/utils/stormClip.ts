@@ -30,11 +30,12 @@ import { buildTf, thresholdSpec, thresholdToShader, adaptiveShiftDb } from './vo
 import { resolveBasemap, IMAGERY_EOX_S2 } from './basemaps';
 import { buildGroundMap } from './groundMap';
 import { buildTerrain, TERRAIN_ATTRIBUTION, TERRARIUM_URL } from './terrain';
-import { buildRealisticTf, lookFor, realisticSample, type Palette } from './realisticStyle';
+import { buildRealisticTf, lookFor, lookWith, sampleOptions, realisticSample, type Palette, type LightKind } from './realisticStyle';
+import { defaultLook, applyPreset, validateLook, loadLookText, type LookConfig } from './lookConfig';
 import { sunLight, daylightAssumed, type SunLight } from './sunPosition';
 import {
-  cameraAt, stormAt, dataTimeAt, clipTimeOf, locate, intervalMotion, utcLabel, stormChoreography, cycloneChoreography, trackFrame, lagTarget,
-  type CamKey,
+  cameraAt, stormAt, dataTimeAt, clipTimeOf, locate, intervalMotion, utcLabel, stormChoreography, cycloneChoreography, cycloneFlight, flightPose, cameraShake, trackFrame, lagTarget,
+  type CamKey, type FlightKey,
 } from './clipCamera';
 import { placeObserver, observerPose, bearingDeg, compassLabel, horizontalFovDeg, OBSERVER_DEFAULTS, type ObserverSettings } from './observerCam';
 import { LruLoader, summarise, dbzAt, dbzOfCode, type StepSummary } from './clipSteps';
@@ -56,6 +57,8 @@ export interface ClipManifest {
     index: number; time_utc: string; t_s: number; files: Record<string, { name: string; offset_s: number }>;
     mosaic: { header: string; bin: string };
     wind?: { header: string; bin: string } | null;
+    /** The eye of a tropical cyclone as the echo-free hole (centre and radius from the radar echo), or null. */
+    eye?: { x_km: number; y_km: number; radius_km: number } | null;
   }[];
   storm: { track_km: [number, number][]; track_lonlat: [number, number][]; motion_ms: [number, number]; speed_ms: number; heading_deg: number };
   sites: any[];
@@ -85,6 +88,14 @@ export interface ClipSettings {
   /** 'scientific': the colour scale (default). 'realistic': the stylised precipitation look with sun light. */
   stormStyle?: 'scientific' | 'realistic';
   /**
+   * The look (lookConfig.ts), lowest to highest priority: a preset name (`lookPreset`), the text of a
+   * JSON / TOML look file (`lookText`, `lookFormat`), then explicit keys (`lookOverrides`, e.g. from CLI flags).
+   */
+  lookPreset?: string;
+  lookText?: string;
+  lookFormat?: 'json' | 'toml';
+  lookOverrides?: Record<string, number | string>;
+  /**
    * Where tiles come from: '' = the tile servers directly, or a base URL of a caching proxy that
    * serves /eox/{z}/{x}/{y} and /terrarium/{z}/{x}/{y} (render_clip.py does this, with a disk cache).
    */
@@ -92,8 +103,14 @@ export interface ClipSettings {
   /** Orbit choreography: 'storm' (a single thunderstorm, default) or 'cyclone' (a wide system); viewKm = its size. */
   preset?: 'storm' | 'cyclone';
   viewKm?: number;
-  /** 'orbit' (default) or 'observer': a camera on the ground at a fixed place. */
-  camera?: 'orbit' | 'observer';
+  /** 'orbit' (default), 'observer' (a camera on the ground at a fixed place) or 'flight' (the cyclone tour: in through the eyewall). */
+  camera?: 'orbit' | 'observer' | 'flight';
+  /** Flight keys; default: cycloneFlight(). */
+  flightKeys?: FlightKey[];
+  /** Detail noise frequency per km: horizontal and vertical (a cyclone is layered: vertical higher). */
+  cloudFreq?: [number, number];
+  /** Ocean with whitecaps and spray from the retrieved surface wind (needs the realistic ground). */
+  sea?: boolean;
   observer?: ObserverSettings;
   /** Carry the echo along the observed winds where the bundle has them (default true). */
   flow?: boolean;
@@ -113,7 +130,7 @@ export interface ClipSettings {
   /** Palette of the realistic look: 'white' (default), 'soft' or 'stormy'. */
   palette?: Palette;
   /** Light of the realistic look: 'daylight' (assumed: a stylised daytime sun, default) or 'dusk' (the real sun when it is up). */
-  light?: 'daylight' | 'dusk';
+  light?: LightKind;
   /** Show the sound labels (the audio itself is rendered by `renderAudio`). */
   audio?: boolean;
 }
@@ -169,6 +186,18 @@ export class StormClip {
   private cur = { t: 0, td: 0, k: 0, s: 0 };
   private curPose = { yawDeg: 0, pitchDeg: 0 };
   flashesDrawn = 0;
+  private lightKind: LightKind = 'daylight';
+  private look: LookConfig = defaultLook();
+  private look0: LookConfig = defaultLook();
+  private flightKeys: FlightKey[] = [];
+  private eyeR = 15;
+  /** Retrieved wind of every step: maxima over the analysis box (m/s) and the share of cells with wind. */
+  windStats: ({ maxAll: number; maxLow: number; p99All: number; p99Low: number; coverage: number; nRadars: number } | null)[] = [];
+  private pairVols: [CartVolume, CartVolume] | null = null;
+  private surfA: Float32Array | null = null;
+  private surfB: Float32Array | null = null;
+  private surfBuf: Float32Array | null = null;
+  private povNow = { x: 0, y: 0, yawDeg: 0, altKm: 0, rKm: 0 };
 
   constructor(private container: HTMLElement, private overlay: HTMLCanvasElement) {
     this.ctx = overlay.getContext('2d')!;
@@ -182,10 +211,18 @@ export class StormClip {
     return this.settings.camera === 'observer';
   }
 
+  /** A first-person camera: the observer on the ground or the flight. */
+  private get pov(): boolean {
+    return this.settings.camera === 'observer' || this.settings.camera === 'flight';
+  }
+
   /** Load the bundle served at `baseUrl`: the manifest, then every volume once (to summarise it) and the winds. */
   async load(baseUrl: string, settings: Partial<ClipSettings> = {}): Promise<{ steps: number; grid: number[]; title: string }> {
     this.settings = { ...DEFAULTS, ...settings };
     if (this.observer && settings.vexag === undefined) this.settings.vexag = 1;
+    if (this.settings.camera === 'flight' && settings.vexag === undefined) this.settings.vexag = 1;
+    this.look = this.resolveLook();
+    this.look0 = this.look;
     this.baseUrl = baseUrl;
     this.manifest = await (await this.get('manifest.json')).json();
     const m = this.manifest;
@@ -210,10 +247,71 @@ export class StormClip {
         throw new Error('the time steps are not on the same grid');
       }
       this.summaries.push(summarise(v, this.settings.t10Km ?? 5));
+      const w = await this.windLoader.get(k);
+      this.windStats.push(w ? this.windSummary(w) : null);
     }
+    const radii = m.steps.map((st) => st.eye?.radius_km).filter((r): r is number => typeof r === 'number');
+    if (radii.length) this.eyeR = radii.reduce((a, b) => a + b, 0) / radii.length;
+    this.flightKeys = this.settings.flightKeys ?? cycloneFlight(this.settings.duration, this.eyeR, this.settings.viewKm ?? 330);
     this.fullBox = gridBox(this.g0);
     this.windSource = m.steps.some((s) => s.wind) ? 'retrieved' : 'proxy';
     return { steps: m.steps.length, grid: [this.g0.nx, this.g0.ny, this.g0.nz], title: m.title };
+  }
+
+  /**
+   * Statistics of the retrieved wind speed (m/s): the 99th percentile over the whole analysis box and in
+   * the lowest 3 km (robust: the maximum of a retrieval is often an outlier at the QC limit), the maximum,
+   * and the share of cells with a wind.
+   */
+  private windSummary(w: WindStep): { maxAll: number; maxLow: number; p99All: number; p99Low: number; coverage: number; nRadars: number } {
+    const all: number[] = [], low: number[] = [];
+    const n = w.nx * w.ny;
+    for (let k = 0; k < w.nz; k++) {
+      const isLow = w.z0 + k * w.dz <= 3.0;
+      for (let i = 0; i < n; i++) {
+        const u = w.u[k * n + i], v = w.v[k * n + i];
+        if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+        const sp = Math.hypot(u, v);
+        all.push(sp);
+        if (isLow) low.push(sp);
+      }
+    }
+    const pct = (a: number[], q: number) => {
+      if (!a.length) return 0;
+      a.sort((x, y) => x - y);
+      return a[Math.min(a.length - 1, Math.floor(q * a.length))];
+    };
+    let maxAll = 0, maxLow = 0;
+    for (const v of all) if (v > maxAll) maxAll = v;
+    for (const v of low) if (v > maxLow) maxLow = v;
+    return { maxAll, maxLow, p99All: pct(all, 0.99), p99Low: pct(low, 0.99), coverage: all.length / (n * w.nz), nRadars: w.nRadars ?? 0 };
+  }
+
+  /** The look: defaults, a preset, a look file, then explicit keys; errors name the key and a suggestion. */
+  private resolveLook(): LookConfig {
+    const sets = this.settings;
+    let cfg = sets.lookPreset ? applyPreset(sets.lookPreset) : defaultLook();
+    if (sets.lookText) cfg = loadLookText(sets.lookText, sets.lookFormat ?? 'json', cfg);
+    const ov: Record<string, number | string> = { ...(sets.lookOverrides ?? {}) };
+    if (sets.palette && !('palette' in ov)) ov.palette = sets.palette;
+    if (sets.light && !('light' in ov)) ov.light = sets.light;
+    if (Object.keys(ov).length) cfg = validateLook(ov, cfg);
+    return cfg;
+  }
+
+  /** Change the look (relative to the one loaded: `overrides` replace the loaded values); for tests and previews. */
+  setLook(overrides: Record<string, number | string>): void {
+    this.look = validateLook(overrides, this.look0);
+    this.sunKey = '';
+    if (this.renderer && this.realistic) {
+      const g0 = this.g0;
+      this.renderer.setTransfer(buildRealisticTf(g0.vmin, g0.vmax, 0.35, this.look.palette as Palette, sampleOptions(this.look)));
+    }
+  }
+
+  /** The realistic look is on when asked for and the look's style is not the scientific one. */
+  private get realistic(): boolean {
+    return this.settings.stormStyle === 'realistic' && this.look.style !== 'scientific';
   }
 
   private async get(u: string): Promise<Response> {
@@ -263,9 +361,9 @@ export class StormClip {
       if (acc >= 0.995 * sum) { p995 = g0.vmin + ((i - 1) / 254) * (g0.vmax - g0.vmin); break; }
     }
     this.tfShift = adaptiveShiftDb(p995);
-    const realisticStorm = this.settings.stormStyle === 'realistic';
+    const realisticStorm = this.realistic;
     this.tf = realisticStorm
-      ? buildRealisticTf(g0.vmin, g0.vmax, 0.35, this.settings.palette ?? 'white')
+      ? buildRealisticTf(g0.vmin, g0.vmax, 0.35, this.look.palette as Palette, sampleOptions(this.look))
       : buildTf('reflectivity', COLORMAP_DATA['NWSRef'], g0.vmin, g0.vmax, 'default', this.tfShift);
     r.setTransfer(this.tf);
     const spec = thresholdSpec('reflectivity', g0.vmin, g0.vmax, 'dBZ')!;
@@ -306,6 +404,7 @@ export class StormClip {
     }
     // the observer stands on the terrain
     this.obsEyeKm = this.terrainKmAt(this.obs[0], this.obs[1]) + (this.settings.observer?.eyeM ?? OBSERVER_DEFAULTS.eyeM) / 1000;
+    if (this.settings.sea) r.setSea(true, null);
     this.prepareInset();
     this.prepareLightning();
   }
@@ -378,13 +477,41 @@ export class StormClip {
     this.sunKey = key;
     this.sun = sunLight(when, o.lat, o.lon);
     // when the real sun is down the default is a stylised daylight; 'dusk' keeps the dusk light
-    if (this.sun.stylised && (this.settings.light ?? 'daylight') === 'daylight') this.sun = daylightAssumed(when, o.lat, o.lon);
+    const kind = this.look.light as LightKind;
+    this.lightKind = kind;
+    if (this.sun.stylised && (kind === 'daylight' || kind === 'overcast')) this.sun = daylightAssumed(when, o.lat, o.lon);
     if (this.settings.sun) {
       this.sun = { ...this.sun, azimuthDeg: this.settings.sun.azimuthDeg, elevationDeg: this.settings.sun.elevationDeg, stylised: true, chosen: true } as SunLight & { chosen?: boolean };
     }
     // the window camera sees far: more haze than the orbit view
-    const lk = lookFor(this.sun, this.lookSteps, this.observer ? 2.4 : 1);
+    const lk = lookWith(lookFor(this.sun, this.lookSteps, this.settings.camera === 'flight' ? 0.35 : this.pov ? 2.4 : 1, kind === 'overcast' || kind === 'night' ? kind : undefined), this.look);
     this.renderer!.setRealistic(lk);
+  }
+
+  /** The first-person camera at clip time `t`: position (km, eye height ASL in km, true), yaw and pitch. */
+  private povAt(t: number, shake = false): { x: number; y: number; zKm: number; yawDeg: number; pitchDeg: number; rKm: number } {
+    const st = this.stateAt(t);
+    if (this.settings.camera === 'flight') {
+      const fp = flightPose(this.flightKeys, t, [st.cx, st.cy]);
+      let [x, y, z, yaw, pit] = [fp.eye[0], fp.eye[1], fp.eye[2], fp.yawDeg, fp.pitchDeg];
+      if (shake && this.pairVols && st.k === this.pair) {
+        const [va, vb] = this.pairVols;
+        const da = dbzAt(va, x, y, Math.max(0.3, z)), db = dbzAt(vb, x, y, Math.max(0.3, z));
+        const lv = (d: number) => (Number.isFinite(d) ? Math.max(0, Math.min(1, (d - 30) / 25)) : 0);
+        const sh = cameraShake(t, ((1 - st.s) * lv(da) + st.s * lv(db)) * (this.look.shake as number));
+        x += sh.dx; y += sh.dy; z += sh.dz; yaw += sh.yaw; pit += sh.pitch;
+      }
+      return { x, y, zKm: z, yawDeg: yaw, pitchDeg: pit, rKm: fp.key.r };
+    }
+    return { x: this.obs[0], y: this.obs[1], zKm: this.obsEyeKm, yawDeg: st.pose.yawDeg, pitchDeg: st.pose.pitchDeg, rKm: 0 };
+  }
+
+  /** Lightning light with the look's brightness and colour. */
+  private applyFlashLook(r: CartesianRenderer, fl: { points: { x: number; y: number; z: number; i: number }[]; sky: number }): void {
+    const g = this.look.lightningBrightness as number;
+    const hex = this.look.lightningColor as string;
+    const col: [number, number, number] = hex ? [parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255] : [0.75, 0.82, 1];
+    r.setFlashLight(fl.points.map((p) => ({ ...p, i: p.i * g })), fl.sky * g, col);
   }
 
   /** What the light is, for the info line (null in the scientific style). */
@@ -442,6 +569,8 @@ export class StormClip {
     if (!r || k === this.pair) return;
     const [a, b] = await Promise.all([this.volumes.get(k), this.volumes.get(k + 1)]);
     await r.setVolumePair(a, b);
+    this.pairVols = [a, b];
+    this.surfA = this.surfB = null;
     let flow = false;
     if (this.settings.flow !== false) {
       const [wa, wb] = await Promise.all([this.windLoader.get(k), this.windLoader.get(k + 1)]);
@@ -451,6 +580,10 @@ export class StormClip {
         flow = true;
         this.lastFlow = { active: true, nRadars: wa.nRadars ?? 0 };
       }
+      if (this.settings.sea && wa && wb) {
+        this.surfA = this.surfaceWind(wa, a);
+        this.surfB = this.surfaceWind(wb, b);
+      }
     }
     if (!flow) {
       r.setMorphFlow(null, null);
@@ -458,6 +591,45 @@ export class StormClip {
     }
     this.pairFlow = flow;
     this.pair = k;
+  }
+
+  /**
+   * Near-surface wind over the ground square (256 x 256 texels, u, v in m/s, confidence): for every texel the
+   * nearest valid retrieved cell (within 2 cells) of the lowest levels, x 0.65 for the step down to the
+   * surface. Texels without a retrieval have confidence 0 and the sea there stays calm.
+   */
+  private surfaceWind(w: WindStep, vol: CartVolume): Float32Array | null {
+    const g = this.groundImg;
+    if (!g) return null;
+    const N = 256;
+    const out = new Float32Array(N * N * 4);
+    const off = aeqdOffsetKm(w.originLat, w.originLon, vol.originLat, vol.originLon);
+    const nl = Math.min(w.nz, 6);
+    for (let j = 0; j < N; j++) {
+      const y = g.cy + g.half - ((j + 0.5) / N) * 2 * g.half + off[1];
+      for (let i = 0; i < N; i++) {
+        const x = g.cx - g.half + ((i + 0.5) / N) * 2 * g.half + off[0];
+        const i0 = Math.round((x - w.x0) / w.dx), j0 = Math.round((y - w.y0) / w.dy);
+        let done = false;
+        for (let k = 0; k < nl && !done; k++) {
+          for (let dj = -2; dj <= 2 && !done; dj++) {
+            for (let di = -2; di <= 2 && !done; di++) {
+              const ii = i0 + di, jj = j0 + dj;
+              if (ii < 0 || jj < 0 || ii >= w.nx || jj >= w.ny) continue;
+              const idx = (k * w.ny + jj) * w.nx + ii;
+              const u = w.u[idx], v = w.v[idx];
+              if (!Number.isFinite(u) || !Number.isFinite(v)) continue;
+              const o = (j * N + i) * 4;
+              out[o] = u * SURFACE_WIND_FACTOR;
+              out[o + 1] = v * SURFACE_WIND_FACTOR;
+              out[o + 2] = 1 - 0.25 * Math.hypot(di, dj) / 2;
+              done = true;
+            }
+          }
+        }
+      }
+    }
+    return out;
   }
 
   /** Storm-relative flow of a wind step: the mean over the echo is the storm's translation, the rest turns the echo. */
@@ -540,22 +712,44 @@ export class StormClip {
     const m = intervalMotion(this.track, st.k);
     r.setMorph(st.s, [0, 0, 0], [0, 0, 0]);
     r.setMorphMotion(this.ts[st.k + 1] - this.ts[st.k], m, this.flowOffset);
-    if (this.settings.stormStyle === 'realistic') {
+    if (this.realistic) {
       this.updateLight(st.td);
+      const fovDeg = (this.look.fov as number) > 0 ? (this.look.fov as number) : this.pov ? 60 : 0;
+      r.setFov(fovDeg);
       // the cloud texture rides with the storm: its offset is how far the storm centre has moved
       const [s0x, s0y] = stormAt(this.track, this.ts[0]);
-      r.setCloudTexture(this.settings.cloudTexture ?? 1, [st.cx - s0x, st.cy - s0y, 0]);
+      r.setCloudTexture((this.settings.cloudTexture ?? 1) * (this.look.detail as number), [st.cx - s0x, st.cy - s0y, 0], this.settings.cloudFreq ?? (this.look.palette === 'cyclone' ? [0.9, 1.8] : [1.5, 0.7]));
     }
     this.cur = { t: st.t, td: st.td, k: st.k, s: st.s };
     this.curPose = st.pose;
+    if (this.settings.sea && this.surfA && this.surfB && this.groundImg) {
+      // blend the two steps' surface wind at the position in the interval (where only one has wind, that one)
+      const N = 256;
+      const a = this.surfA, b = this.surfB;
+      const out = this.surfBuf ?? (this.surfBuf = new Float32Array(N * N * 4));
+      const sB = st.s;
+      for (let i = 0; i < N * N; i++) {
+        const o = i * 4;
+        const wa = (1 - sB) * a[o + 2], wb = sB * b[o + 2];
+        const sum = wa + wb;
+        if (sum <= 1e-6) { out[o] = out[o + 1] = out[o + 2] = 0; continue; }
+        out[o] = (wa * a[o] + wb * b[o]) / sum;
+        out[o + 1] = (wa * a[o + 1] + wb * b[o + 1]) / sum;
+        out[o + 2] = sum;
+      }
+      r.setSea(true, { size: N, data: out });
+    }
     const ve = this.settings.vexag;
-    if (this.observer) {
-      const eye: [number, number, number] = [this.obs[0], this.obs[1], this.obsEyeKm * ve];
+    if (this.pov) {
+      const pv = this.povAt(t, true);
+      const eye: [number, number, number] = [pv.x, pv.y, pv.zKm * ve];
+      this.povNow = { x: pv.x, y: pv.y, yawDeg: pv.yawDeg, altKm: pv.zKm, rKm: pv.rKm };
+      this.curPose = { yawDeg: pv.yawDeg, pitchDeg: pv.pitchDeg };
       this.crop = this.fullBox;
       r.setCropBox(null);
       const fl = flashLight(this.flashes, t, eye, ve);
-      r.setFlashLight(fl.points, fl.sky);
-      r.exportRenderFP(eye, st.pose.yawDeg, st.pose.pitchDeg);
+      this.applyFlashLook(r, fl);
+      r.exportRenderFP(eye, pv.yawDeg, pv.pitchDeg);
     } else {
       const half = this.cropHalf;
       const [ax, ay] = this.anchor;
@@ -563,7 +757,7 @@ export class StormClip {
       r.setCropBox(this.crop);
       r.setExtendDown(false);
       const fl = flashLight(this.flashes, t, [st.tx, st.ty, 0], ve);
-      r.setFlashLight(fl.points, fl.sky);
+      this.applyFlashLook(r, fl);
       r.exportRender({
         theta: st.cam.theta, phi: st.cam.phi, dist: st.cam.dist,
         target: [st.tx + st.cam.dx, st.ty + st.cam.dy, st.cam.dz * ve],
@@ -581,7 +775,7 @@ export class StormClip {
     if (!crop) return;
     const cam = { eye: f.eye, fwd: f.fwd, right: f.right, up: f.up, tanX: f.tanX, tanY: f.tanY, w: c.width, h: c.height };
     this.lastCam = cam;
-    if (this.observer) {
+    if (this.pov) {
       this.ctx.clearRect(0, 0, c.width, c.height);
       drawCompassStrip(this.ctx, c.width, c.height, this.curPose.yawDeg, f.tanX, c.height / 1080);
     } else {
@@ -592,7 +786,7 @@ export class StormClip {
       drawOffBoxSites(this.ctx, cam, crop, this.g0.sites, false);
       this.drawTrack(cam);
     }
-    this.flashesDrawn = drawFlashes(this.ctx, cam, this.flashes, this.cur.t, this.settings.vexag);
+    this.flashesDrawn = drawFlashes(this.ctx, cam, this.flashes, this.cur.t, this.settings.vexag, this.look.lightningBrightness as number, this.look.lightningColor as string);
   }
 
   /** The storm centre's path on the map: travelled part solid, the rest faint, observed positions as dots. */
@@ -676,12 +870,13 @@ export class StormClip {
 
   /** The base of the inset: the ground image around the observer and the storm track. */
   private prepareInset(): void {
-    if (!this.observer) return;
+    if (!this.pov) return;
     const S = StormClip.INSET_PX;
     const pts: [number, number][] = [this.obs, ...this.track.map((p) => [p.x, p.y] as [number, number])];
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const half = Math.max(22, (Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2) * 1.5 + 6);
+    let half = Math.max(22, (Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)) / 2) * 1.5 + 6);
+    if (this.settings.camera === 'flight') half = Math.max(half, (this.settings.viewKm ?? 330) * 0.4);
     this.insetView = { cx, cy, half };
     const cv = document.createElement('canvas');
     cv.width = S;
@@ -773,7 +968,7 @@ export class StormClip {
 
     // title and time (the observer clip keeps the top centre for the compass strip)
     const pad = 34 * u;
-    const obsMode = this.observer;
+    const obsMode = this.pov;
     const y0 = pad + (obsMode ? 28 : 0) * u;
     text(this.settings.title ?? m.title, pad, y0 + 34 * u, 38, 'rgba(255,255,255,0.98)', 700);
     text(this.settings.subtitle ?? 'merged 3-D radar reflectivity', pad, y0 + 64 * u, 19, 'rgba(200,215,240,0.95)', 500);
@@ -784,7 +979,23 @@ export class StormClip {
     const [sx0, sy0] = stormAt(this.track, first);
     const [sx1, sy1] = stormAt(this.track, td);
     const moved = Math.hypot(sx1 - sx0, sy1 - sy0);
-    if (obsMode) {
+    if (this.settings.camera === 'flight') {
+      // numbers from the data only: nothing here is an intensity category or a forecast
+      const ws = this.windStats[Math.min(this.cur.k + (this.cur.s > 0.5 ? 1 : 0), this.windStats.length - 1)];
+      const eye = m.steps[Math.min(this.cur.k + (this.cur.s > 0.5 ? 1 : 0), m.steps.length - 1)].eye;
+      text(
+        eye ? `Eye (hole in the radar echo): radius ${eye.radius_km.toFixed(0)} km` : 'Eye: no echo-free hole found in this step',
+        pad, y0 + 184 * u, 19, 'rgba(255,235,150,0.98)', 600,
+      );
+      text(
+        ws
+          ? `Retrieved Doppler wind (${ws.nRadars}-radar, ${(100 * ws.coverage).toFixed(0)}% of its box): strongest 1% of cells ${ws.p99All.toFixed(0)} m/s (${(ws.p99All * 1.944).toFixed(0)} kt), lowest 3 km ${ws.p99Low.toFixed(0)} m/s; highest cell ${ws.maxAll.toFixed(0)} m/s`
+          : 'Retrieved Doppler wind: none for this step',
+        pad, y0 + 208 * u, 17, 'rgba(255,235,150,0.98)', 600,
+      );
+      text(`centre moved ${moved.toFixed(1)} km since ${utcLabel(t0, 0, false)} · camera ${this.povNow.altKm.toFixed(1)} km up, ${this.povNow.rKm.toFixed(0)} km from the eye`, pad, y0 + 230 * u, 16, 'rgba(210,222,245,0.95)', 500);
+      text('Winds exist only where two or more radars cross well, from 1.5 km up; an analysis is not the true maximum. No intensity category is inferred.', pad, y0 + 250 * u, 14, 'rgba(210,222,245,0.9)', 500);
+    } else if (this.observer) {
       const dx = sx1 - this.obs[0], dy = sy1 - this.obs[1];
       const bd = bearingDeg(dx, dy);
       text(`storm centre ${Math.hypot(dx, dy).toFixed(1)} km ${compassLabel(bd)} of the observer · moved ${moved.toFixed(1)} km`, pad, y0 + 184 * u, 19, 'rgba(255,235,150,0.98)', 600);
@@ -797,12 +1008,12 @@ export class StormClip {
       const n = this.flashes.length;
       text(
         obsL ? `Lightning: OBSERVED flashes (${m.lightning?.kind ?? 'lightning data'}), channel shape synthetic · ${n}` : `Lightning: MODELLED from radar echo, NOT observed · ${n} flashes, thinned for the time-lapse`,
-        pad, y0 + 210 * u, 16, obsL ? 'rgba(170,230,255,0.97)' : 'rgba(255,190,150,0.98)', 600,
+        pad, y0 + (this.settings.camera === 'flight' ? 276 : 210) * u, 16, obsL ? 'rgba(170,230,255,0.97)' : 'rgba(255,190,150,0.98)', 600,
       );
     }
 
     // progress bar with the observation times
-    const lift = this.settings.ground === 'realistic' || this.settings.stormStyle === 'realistic' || this.settings.audio ? 50 : 0;
+    const lift = this.settings.ground === 'realistic' || this.realistic || this.settings.audio ? 50 : 0;
     const bw = W * 0.56, bx = (W - bw) / 2, by = H - (92 + lift) * u;
     const px = (t: number) => bx + ((t - first) / (last - first)) * bw;
     ctx.fillStyle = 'rgba(8,12,22,0.55)';
@@ -840,7 +1051,7 @@ export class StormClip {
     // colour bar (the scientific scale) or, in the realistic look, what a dBZ looks like as a shaft
     const cbx = W - pad - 22 * u, cby = H * (obsMode ? 0.46 : 0.28), cbh = H * (obsMode ? 0.24 : 0.36);
     const lut = COLORMAP_DATA['NWSRef'];
-    const stylised = this.settings.stormStyle === 'realistic';
+    const stylised = this.realistic;
     if (stylised) {
       ctx.fillStyle = 'rgba(70,82,110,0.9)';
       ctx.fillRect(cbx, cby, 22 * u, cbh);
@@ -849,7 +1060,7 @@ export class StormClip {
       const i = Math.min(255, Math.round((1 - y / cbh) * 255));
       if (stylised) {
         const dbz = this.g0.vmin + (i / 255) * (this.g0.vmax - this.g0.vmin);
-        const smp = realisticSample(dbz, this.settings.palette ?? 'white');
+        const smp = realisticSample(dbz, this.look.palette as Palette, sampleOptions(this.look));
         ctx.fillStyle = `rgba(${Math.round(smp.rgb[0] * 255)},${Math.round(smp.rgb[1] * 255)},${Math.round(smp.rgb[2] * 255)},${(1 - Math.exp(-smp.sigma * 5)).toFixed(3)})`;
       } else {
         ctx.fillStyle = `rgb(${lut[i * 3]},${lut[i * 3 + 1]},${lut[i * 3 + 2]})`;
@@ -875,9 +1086,10 @@ export class StormClip {
       const oi = this.observerInfo();
       drawInset(ctx, {
         x: W - pad - S, y: pad + 36 * u, size: S, u, cx, cy, half, base: this.insetBase, echo: this.insetEcho(),
-        track: this.track.map((p) => [p.x, p.y]), storm: [scx, scy], passed, observer: this.obs,
+        track: this.track.map((p) => [p.x, p.y]), storm: [scx, scy], passed, observer: this.settings.camera === 'flight' ? [this.povNow.x, this.povNow.y] : this.obs,
         yawDeg: this.curPose.yawDeg, hfovDeg: this.lastCam ? horizontalFovDeg(this.lastCam.tanY, W / H) : 73,
-        title: 'Where the camera stands', caption: `${Math.abs(oi.lat).toFixed(2)}°${oi.lat >= 0 ? 'N' : 'S'} ${Math.abs(oi.lon).toFixed(2)}°${oi.lon >= 0 ? 'E' : 'W'} · eye ${oi.eyeM} m`,
+        title: this.settings.camera === 'flight' ? 'Where the camera is (the eye in white)' : 'Where the camera stands',
+        caption: this.settings.camera === 'flight' ? `${this.povNow.altKm.toFixed(1)} km up · view heading ${Math.round(this.curPose.yawDeg)}°` : `${Math.abs(oi.lat).toFixed(2)}°${oi.lat >= 0 ? 'N' : 'S'} ${Math.abs(oi.lon).toFixed(2)}°${oi.lon >= 0 ? 'E' : 'W'} · eye ${oi.eyeM} m`,
       });
     }
 
@@ -886,7 +1098,11 @@ export class StormClip {
       const la: string[] = [];
       const lb: string[] = [];
       if (stylised) {
-        la.push(this.sun?.daylightAssumed
+        la.push(this.lightKind === 'night'
+          ? 'Night version: no sun, a faint ambient light; the storm is lit by modelled lightning (stylised, not a photograph)'
+          : this.lightKind === 'overcast'
+            ? `Stylised lighting, not a photograph: thick overcast, dim filtered light; the real scene was at night (the real sun was ${Math.round(Math.abs(this.sun?.realElevationDeg ?? 0))}° below the horizon)`
+            : this.sun?.daylightAssumed
           ? `Stylised daylight; the real sun was ${Math.round(Math.abs(this.sun.realElevationDeg))}° below the horizon at this time (not a photograph)`
           : this.sun?.stylised
             ? `Stylised lighting, not a photograph: ${this.settings.sun ? 'light direction chosen for the shot' : 'dusk light at the sunset azimuth'} (the real sun was ${Math.round(Math.abs(this.sun.realElevationDeg))}° ${this.sun.realElevationDeg < 0 ? 'below' : 'above'} the horizon)`
@@ -918,10 +1134,13 @@ export class StormClip {
     const vb = await this.volumes.get(k + 1);
     const m = intervalMotion(this.track, k);
     const dt = this.ts[k + 1] - this.ts[k];
-    const [ox, oy] = this.obs;
+    const pv = this.povAt(t);
+    const [ox, oy] = [pv.x, pv.y];
+    const flight = this.settings.camera === 'flight';
     // rain: the echo near the ground over the observer, carried like the cloud; 20 dBZ none, 55 dBZ full
-    const da = dbzAt(v, ox - m[0] * s * dt, oy - m[1] * s * dt, 0.5);
-    const db = dbzAt(vb, ox + m[0] * (1 - s) * dt, oy + m[1] * (1 - s) * dt, 0.5);
+    const zq = flight ? Math.max(0.5, pv.zKm) : 0.5;
+    const da = dbzAt(v, ox - m[0] * s * dt, oy - m[1] * s * dt, zq);
+    const db = dbzAt(vb, ox + m[0] * (1 - s) * dt, oy + m[1] * (1 - s) * dt, zq);
     const lv = (d: number) => (Number.isFinite(d) ? Math.max(0, Math.min(1, (d - 20) / 35)) : 0);
     const rain = (1 - s) * lv(da) + s * lv(db);
     let wind: number | null = null;
@@ -934,9 +1153,10 @@ export class StormClip {
         const i0 = Math.round((x - w.x0) / w.dx), j0 = Math.round((y - w.y0) / w.dy);
         // the nearest valid cell of the lowest levels within a few cells
         for (let k2 = 0; k2 < w.nz; k2++) {
-          let best: number | null = null, bd = 9;
-          for (let dj = -3; dj <= 3; dj++) {
-            for (let di = -3; di <= 3; di++) {
+          const R = flight ? 8 : 3;
+          let best: number | null = null, bd = (R + 1) * (R + 1);
+          for (let dj = -R; dj <= R; dj++) {
+            for (let di = -R; di <= R; di++) {
               const i = i0 + di, j = j0 + dj;
               if (i < 0 || j < 0 || i >= w.nx || j >= w.ny) continue;
               const idx = (k2 * w.ny + j) * w.nx + i;
@@ -957,18 +1177,20 @@ export class StormClip {
       // a labelled proxy, not a measurement: a light breeze, more when rain is falling on the observer
       wind = 3 + 6 * rain + 0.2 * this.manifest.storm.speed_ms;
     }
+    // inside the heavy rain of the wall the wind roars: its level rises with the echo at the camera
+    if (flight && this.windSource === 'retrieved') wind *= 0.6 + 0.4 * rain;
     return { wind, rain };
   }
 
   /** Render the soundscape of the observer camera offline; returns 16-bit stereo PCM as base64 plus a report. */
   async renderAudio(sampleRate = 48000): Promise<{ pcm: string; sampleRate: number; frames: number; peak: number; thunders: { flash: number; tFlash: number; arrival: number; delay: number; distKm: number; kind: string; source: string }[]; windMs: { min: number; max: number }; windSource: string }> {
-    if (!this.observer) throw new Error('sound is rendered for the observer camera');
+    if (!this.pov) throw new Error('sound is rendered for the observer and flight cameras');
     const fps = this.settings.fps, dur = this.settings.duration;
     const nL = Math.ceil(dur * fps) + 1;
     const x = new Float32Array(nL), y = new Float32Array(nL), z = new Float32Array(nL), yaw = new Float32Array(nL), pit = new Float32Array(nL);
     for (let i = 0; i < nL; i++) {
-      const p = this.stateAt(i / fps).pose;
-      x[i] = this.obs[0]; y[i] = this.obs[1]; z[i] = this.obsEyeKm; yaw[i] = p.yawDeg; pit[i] = p.pitchDeg;
+      const p = this.povAt(i / fps);
+      x[i] = p.x; y[i] = p.y; z[i] = p.zKm; yaw[i] = p.yawDeg; pit[i] = p.pitchDeg;
     }
     const dtS = 0.1;
     const nS = Math.floor(dur / dtS) + 1;
@@ -1011,6 +1233,7 @@ export class StormClip {
       lightning: { source: this.lightningSource, flashes: this.flashes.length, kinds: { CG: this.flashes.filter((f) => f.kind === 'CG').length, IC: this.flashes.filter((f) => f.kind === 'IC').length } },
       flow: { winds: this.windSource, steps: this.manifest.steps.length },
       observer: this.observer ? this.observerInfo() : null,
+      cyclone: this.settings.camera === 'flight' ? { eyeRadiusKm: this.eyeR, windStats: this.windStats } : null,
     };
   }
 
