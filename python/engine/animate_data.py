@@ -63,6 +63,10 @@ def default_cache_dir() -> Path:
     return Path.home() / ".cache" / "xradar-desktop" / "animate"
 
 
+def default_cache_dir_for(explicit: str | Path | None) -> Path:
+    return Path(explicit).expanduser() if explicit else default_cache_dir()
+
+
 @dataclass
 class GridOptions:
     """Settings of the gridding and of the storm search (all part of the cache key)."""

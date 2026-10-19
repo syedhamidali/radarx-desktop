@@ -12,6 +12,7 @@ Read [the command line page](CLI.md) first for the options used here.
 | `xrd info` | yes | one report per file |
 | `xrd cells` | yes | the files are one radar over time and the cells are **tracked** |
 | `xrd mosaic`, `xrd winds` | yes | the files are different radars at one time and are **combined** |
+| `xrd animate` | yes | the files are one or more radars over time: grouped by radar and time, the nearest volume of each radar per step, one 3D animation (see [ANIMATE.md](ANIMATE.md)) |
 | `xrd run`, `xrd pipeline`, `xrd plot`, `xrd export` | one file per call | loop over the files |
 
 So a bulk job over many independent files is a loop around one of the last four commands. Every

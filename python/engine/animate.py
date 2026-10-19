@@ -15,13 +15,14 @@ without a browser, so a job can be checked with ``--no-render`` before it is ren
 # ruff: noqa: E501
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -90,6 +91,8 @@ class AnimateOptions:
     offline: bool = False
     app_dist: str | None = None
     browser: str = "chrome"
+    software: bool = False
+    command: str = ""  # the command line, recorded in the provenance file
     crf: int = 18
     preset: str = "medium"
     frame_format: str = "png"
@@ -289,7 +292,13 @@ def plan_inputs(
     """Scan, group and choose the time steps (no radar data is decoded for NEXRAD style names)."""
     if not o.files:
         raise AnimatePlanError("no input files: give them with -i (files, globs or folders)")
+    cache = None
+    if meta is None:  # files whose names carry no time are opened once; the answer is remembered
+        cache = plan.MetaCache(data.default_cache_dir_for(o.cache_dir) / "scan.json")
+        meta = cache.wrap(plan.read_file_meta)
     refs, unreadable = plan.scan_files(o.files, meta)
+    if cache is not None:
+        cache.save()
     if not refs:
         why = "; ".join(f"{s.what}: {s.reason}" for s in unreadable[:3])
         raise AnimatePlanError(
@@ -556,18 +565,8 @@ def _render(
         video_path_wanted = video_path
 
     still_png: bytes | None = None
-    with render.Renderer(
-        dist,
-        w,
-        h,
-        store=cache.dir,
-        manifest=manifest_path,
-        tile_cache=o.tile_cache,
-        offline=o.offline,
-        channel=o.browser,
-        log=detail,
-    ) as r:
-        info = r.load(settings)
+    renderer, info = _start_renderer(o, dist, (w, h), cache, manifest_path, settings, note, detail)
+    with renderer as r:
         detail(f"renderer ready at {info['state']['w']}x{info['state']['h']}, grid {info['grid']}")
         st = info["state"]
         out["map_ok"] = bool(st.get("mapOk"))
@@ -627,15 +626,33 @@ def _render(
                     )
 
             if todo:
-                render.render_frames(r, frames_dir, todo, n, ext=ext, progress=progress)
+                try:
+                    render.render_frames(r, frames_dir, todo, n, ext=ext, progress=progress)
+                except BaseException as exc:
+                    left = n - len(render.existing_frames(frames_dir, n, ext))
+                    note(
+                        f"stopped with {left} of {n} frames still to draw ({type(exc).__name__}): "
+                        "run the same command again to resume"
+                    )
+                    raise
         out["browser_messages"] = r.messages[-10:]
         out["tiles"] = r.tiles.summary()
+        out["browser"] = r.browser_version
+        out["software_renderer"] = r.software
 
     if want_video:
         if video_path is not None:
             note(f"encoding {n} frames to {video_path.name}")
             render.encode_mp4(
-                frames_dir, n, video_path, res.fps, (w, h), crf=o.crf, preset=o.preset, ext=ext
+                frames_dir,
+                n,
+                video_path,
+                res.fps,
+                (w, h),
+                crf=o.crf,
+                preset=o.preset,
+                ext=ext,
+                metadata=mp4_metadata(res, video_path),
             )
             out.update({"video": str(video_path), "encoder": "pyav (H.264, yuv420p)"})
             out["video_bytes"] = video_path.stat().st_size
@@ -649,6 +666,169 @@ def _render(
             out["video_wanted"] = str(video_path_wanted) if video_path_wanted else None
     else:
         out["video"] = None
+    out["provenance"] = write_provenance(res, settings, dist, video_path or sequence_dir)
+
+
+def mp4_metadata(res: AnimateResult, video: Path) -> dict[str, str]:
+    """Tags written into the MP4: what it is, and where the full record is."""
+    sp = res.steps
+    return {
+        "title": res.bundle.manifest["title"],
+        "comment": (
+            f"xrd animate {_xrd_version()}: {len(sp.steps)} time steps of {', '.join(sp.used_radars)} "
+            f"({sp.steps[0].time:%Y-%m-%d %H:%M:%S} to {sp.steps[-1].time:%H:%M:%S} UTC); frames between "
+            "volumes are interpolated (carried along the storm motion), not observed, and are "
+            f"labelled so on screen. Parameters and data: {video.with_suffix('').name}.animate.json"
+        ),
+    }
+
+
+def _xrd_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return version("xradar-desktop-engine")
+    except Exception:
+        return "unknown"
+
+
+def _module_version(name: str) -> str | None:
+    """Installed version of a package, or None when it is not installed."""
+    try:
+        from importlib.metadata import version
+
+        return version(name)
+    except Exception:
+        pass
+    try:
+        import importlib
+
+        v = getattr(importlib.import_module(name), "__version__", None)
+        return str(v) if v is not None else None
+    except Exception:
+        return None
+
+
+def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) -> dict[str, Any]:
+    """Everything needed to say what a clip is made of: data, versions, parameters, method."""
+    import platform
+    import sys
+    from dataclasses import asdict
+
+    from engine import animate_render as render
+
+    o = res.options
+    params = {k: v for k, v in asdict(o).items() if k not in ("files", "command")}
+    inputs = []
+    for i, st in enumerate(res.steps.steps):
+        for radar, (vol, off) in sorted(st.files.items()):
+            size = None
+            with contextlib.suppress(OSError):
+                size = vol.path.stat().st_size
+            inputs.append(
+                {
+                    "step": i,
+                    "radar": radar,
+                    "volume_time": vol.time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "offset_s": off,
+                    "file": vol.name,
+                    "path": str(vol.path),
+                    "size_bytes": size,
+                    "time_from": vol.source,
+                }
+            )
+    doc = res.to_dict()
+    doc["tool"] = "xrd animate"
+    doc["created_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    doc["command"] = o.command
+    doc["versions"] = {
+        "xradar_desktop_engine": _xrd_version(),
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "radarx": _module_version("radarx"),
+        "xradar": _module_version("xradar"),
+        "playwright": _module_version("playwright"),
+        "av": _module_version("av"),
+        "browser": res.output.get("browser"),
+        "app_build": render.frontend_fingerprint(dist) if dist else None,
+    }
+    doc["parameters"] = params
+    doc["page_settings"] = {k: v for k, v in settings.items() if k != "keys"}
+    doc["input_volumes"] = inputs
+    doc["method"] = {
+        "gridding": f"engine.mosaic: composite of DBZH reflectivity from every radar of a step on a "
+        f"{o.detail_m:g} m grid (storm search on a coarse grid), weights by range and time",
+        "storm": f"strongest convective cell (column maximum >= {o.cell_dbz:g} dBZ), tracker '{o.track}'",
+        "interpolation": (
+            "between two observed volumes the earlier is carried forward and the later back along "
+            "the storm motion (and the retrieved Doppler wind where available), then blended"
+        ),
+        "labels": f"a frame within {plan.OBSERVED_TOL_S:g} s of a volume is 'observed'; others are "
+        "'interpolated' and say so on the screen",
+        "nothing_invented": "echo is only drawn where a radar measured it; the look controls never add echo",
+    }
+    return doc
+
+
+def write_provenance(
+    res: AnimateResult, settings: dict[str, Any], dist: Path | None, target: Path | None
+) -> str | None:
+    """Write the provenance record next to the result (``clip.animate.json`` or ``folder/animate.json``)."""
+    if target is None and res.options.still:
+        target = Path(res.options.still).expanduser()
+    if target is None:
+        return None
+    path = target / "animate.json" if target.is_dir() else target.with_suffix(".animate.json")
+    doc = provenance(res, settings, dist)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".part")
+    from engine.api_results import dumps
+
+    tmp.write_text(dumps(doc))
+    tmp.replace(path)
+    return str(path)
+
+
+def _start_renderer(
+    o: AnimateOptions,
+    dist: Path,
+    size: tuple[int, int],
+    cache: data.GridCache,
+    manifest_path: Path,
+    settings: dict[str, Any],
+    note: Note,
+    detail: Note,
+):
+    """Start Chrome and load the clip; if the GPU path fails, fall back to the software renderer."""
+    from engine import animate_render as render
+
+    software = o.software
+    while True:
+        r = render.Renderer(
+            dist,
+            size[0],
+            size[1],
+            store=cache.dir,
+            manifest=manifest_path,
+            tile_cache=o.tile_cache,
+            offline=o.offline,
+            channel=o.browser,
+            software=software,
+            log=detail,
+        )
+        try:
+            return r, r.load(settings)
+        except BaseException as exc:
+            r.close()
+            text = str(exc).lower()
+            gpu = any(k in text for k in ("webgl", "gl context", "3d texture", "context lost"))
+            if software or not gpu or isinstance(exc, AnimateConfigError):
+                raise
+            note(
+                "the GPU renderer could not start in Chrome: falling back to the software renderer "
+                "(much slower; --software chooses it directly)"
+            )
+            software = True
 
 
 def _finish_sequence(frames_dir: Path, dest: Path, n: int, ext: str, keep: bool) -> None:

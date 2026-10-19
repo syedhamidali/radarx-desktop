@@ -108,6 +108,49 @@ class TestFiles:
             plan.parse_time("yesterday")
 
 
+class TestMetaCache:
+    def test_a_file_is_opened_once_and_the_answer_is_remembered(self, tmp_path):
+        f = tmp_path / "volume.nc"
+        f.write_bytes(b"x")
+        calls = []
+
+        def meta(p):
+            calls.append(p.name)
+            return "KABC", T0
+
+        store = tmp_path / "scan.json"
+        c1 = plan.MetaCache(store)
+        refs, _ = plan.scan_files([f], meta=c1.wrap(meta))
+        c1.save()
+        assert refs[0].radar == "KABC" and calls == ["volume.nc"]
+        refs, _ = plan.scan_files([f], meta=plan.MetaCache(store).wrap(meta))  # a new process
+        assert refs[0].time == T0 and calls == ["volume.nc"]  # not read again
+        f.write_bytes(b"a changed file")
+        plan.scan_files([f], meta=plan.MetaCache(store).wrap(meta))
+        assert calls == ["volume.nc", "volume.nc"]  # a changed file is read again
+
+    def test_radar_label_prefers_what_the_file_says(self):
+        assert plan.radar_label({"instrument_name": " dow8 "}, 36.7, -87.2, "cfrad.2021") == "DOW8"
+        assert (
+            plan.radar_label({"instrument_name": "None"}, 36.74, -87.29, "x") == "SITE+36.74-87.29"
+        )
+        assert plan.radar_label({}, None, None, "file_stem") == "FILE_STEM"
+        # files of one radar named by time must still be one radar
+        a = plan.radar_label({}, 36.7369, -87.2856, "cfrad.20211011_201557")
+        b = plan.radar_label({}, 36.7371, -87.2854, "cfrad.20211011_202557")
+        assert a == b
+
+    def test_real_netcdf_without_a_time_in_its_name(self):
+        from tests import radar_data
+
+        f = radar_data.get(radar_data.DOW8_PPI)
+        if f is None:
+            pytest.skip("open-radar-data sample not available")
+        refs, bad = plan.scan_files([f])
+        assert not bad and refs[0].source == "file" and refs[0].time.year == 2021
+        assert refs[0].radar != f.stem.upper()  # a name for the radar, not for the file
+
+
 class TestSteps:
     def test_each_radar_contributes_its_nearest_volume(self, tmp_path):
         files = series(tmp_path, {"REF1": 0, "OTH2": 120, "OTH3": -45}, 4)
@@ -590,6 +633,43 @@ class TestCameraFiles:
         assert cam.describe_path(spec.keys, 30, 30)["holds_last_pose_s"] == pytest.approx(10.0)
 
 
+EXAMPLES = Path(__file__).resolve().parents[2] / "docs" / "examples"
+
+
+class TestDocumentedExamples:
+    def test_the_example_camera_file_is_valid(self):
+        pytest.importorskip("tomllib")
+        spec = cam.load_camera(str(EXAMPLES / "animate_camera.toml"))
+        r = cam.resolve_camera(spec, None, 55.0)
+        assert len(spec.keys) == 5 and r.duration == 24 and r.target_lag == 0.35
+        assert [k.fov for k in r.keys] == [50, 50, 70, 50, 50]
+        assert cam.describe_path(r.keys, r.duration)["max_turn_deg_s"] < 60
+
+    def test_the_example_look_file_is_read_by_the_renderer(self, chrome):
+        dist = render.find_frontend()
+        with render.Renderer(dist, 64, 64, offline=True) as r:
+            changed = r.check_look(
+                render.look_settings(
+                    render.LookArgs(None, str(EXAMPLES / "animate_look.toml"), None)
+                )
+            )
+        assert changed["exposure"] == 1.35 and changed["densityScale"] == 1.2
+
+    def test_the_cli_text_of_the_docs_parses(self):
+        from engine import cli
+
+        parser = cli.build_parser()
+        for argv in (
+            ["animate", "-i", "mayfield", "-o", "m.mp4", "--camera", "top-down", "--duration", "30"],
+            ["animate", "-i", "mayfield", "-p", "still.png", "--still-at", "12"],
+            ["animate", "-i", "mayfield", "-o", "w.mp4", "--camera", "window", "--realistic", "--timelapse", "24"],
+            ["animate", "-i", "laura", "-o", "l.mp4", "--track", "eye", "--camera", "flight", "--crop-km", "140",
+             "--detail-m", "1000", "--realistic", "--look-preset", "Hurricane (stormy)"],
+        ):  # fmt: skip
+            _, extras = parser.parse_known_args(argv)
+            assert not [e for e in extras if e.startswith("-")], argv
+
+
 class TestLookArguments:
     def test_set_values(self):
         assert render.parse_overrides(["exposure=1.6", "light=night", " temperature = -0.2"]) == {
@@ -942,6 +1022,32 @@ class TestRunWithoutRendering:
         assert doc["storm"]["track"][1]["speed_ms_since_previous"] == pytest.approx(
             1000 * SPEED_KM_S * math.hypot(0.9, 0.45), rel=0.06
         )
+
+    def test_provenance_record_names_data_versions_parameters_and_method(self, tmp_path):
+        res = animate.run(
+            self.opts(tmp_path, command="xrd animate -i x --no-render", fps=24, duration=20.0),
+            gridder=SyntheticGridder(),
+        )
+        doc = json.loads(json.dumps(animate.provenance(res, {"fps": 24, "keys": [1]}, None)))
+        assert doc["tool"] == "xrd animate" and doc["command"] == "xrd animate -i x --no-render"
+        assert doc["created_utc"].endswith("Z")
+        assert {"python", "radarx", "playwright", "av", "browser", "app_build"} <= set(
+            doc["versions"]
+        )
+        assert doc["parameters"]["fps"] == 24 and "files" not in doc["parameters"]
+        assert "keys" not in doc["page_settings"] and doc["page_settings"]["fps"] == 24
+        vols = doc["input_volumes"]
+        assert len(vols) == 8 and vols[0]["file"].startswith("AAAA") and vols[0]["size_bytes"] == 1
+        assert {v["time_from"] for v in vols} == {"name"} and vols[1]["offset_s"] == 40
+        assert "interpolation" in doc["method"] and "observed" in doc["method"]["labels"]
+        assert "nothing_invented" in doc["method"] and doc["frames"]["frames"] == 480
+
+    def test_mp4_tags_say_what_the_clip_is(self, tmp_path):
+        res = animate.run(self.opts(tmp_path), gridder=SyntheticGridder())
+        tags = animate.mp4_metadata(res, tmp_path / "storm.mp4")
+        assert tags["title"] == res.bundle.manifest["title"]
+        assert "interpolated" in tags["comment"] and "storm.animate.json" in tags["comment"]
+        assert "AAAA, BBBB" in tags["comment"]
 
     def test_timelapse_sets_the_length(self, tmp_path):
         res = animate.run(self.opts(tmp_path, timelapse=30.0), gridder=SyntheticGridder())
@@ -1458,6 +1564,13 @@ def test_end_to_end_mp4_and_still(tmp_path, chrome):
         assert sum(1 for _ in c.decode(video=0)) == 16
     assert res.output["encoder"].startswith("pyav")
     assert not (tmp_path / "cache" / "jobs" / res.output["job"]).exists()
+    # the provenance file sits next to the clip and the tags in the MP4 point to it
+    record = json.loads((tmp_path / "clip.animate.json").read_text())
+    assert record["frames"]["frames"] == 16 and record["versions"]["browser"]
+    assert record["output"]["video"] == str(target) and record["versions"]["av"]
+    with av.open(str(target)) as c:
+        assert "interpolated" in c.metadata.get("comment", "")
+        assert "clip.animate.json" in c.metadata["comment"]
 
 
 def test_only_a_still_renders_no_video(tmp_path, chrome):

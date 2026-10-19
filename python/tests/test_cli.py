@@ -205,7 +205,7 @@ def test_documented_final_form_parses() -> None:
 def test_unknown_option_and_missing_command_are_usage_errors(capsys, nc: Path) -> None:
     code, _, err = run_cli(capsys, "info", "-i", nc, "--bogus")
     assert code == 2 and "unrecognized" in err
-    code, _, err = run_cli(capsys, "frobnicate")
+    code, _, err = run_cli(capsys, "zzqx")
     assert code == 2 and "invalid choice" in err
     code, _, err = run_cli(capsys, "run", "-i", nc)
     assert code == 2 and "needs a module" in err

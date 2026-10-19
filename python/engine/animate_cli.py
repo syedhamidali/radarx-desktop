@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -250,13 +251,18 @@ def add_parser(
         metavar="CHANNEL",
         help="Playwright browser channel (chrome); '' = Playwright's own Chromium",
     )
+    g.add_argument(
+        "--software",
+        action="store_true",
+        help="no GPU: Chrome's software renderer (works anywhere, very slow; also the automatic fallback)",
+    )
     g.add_argument("--crf", type=int, default=18, help="x264 quality, lower is better (18)")
     g.add_argument("--x264-preset", default="medium", help="x264 speed preset (medium)")
     g.add_argument(
         "--frame-format",
         choices=["png", "jpg"],
         default="png",
-        help="frames on disk: png (lossless, default) or jpg (about 5x smaller)",
+        help="frames on disk: png (lossless, default) or jpg (about 3x smaller)",
     )
     g.add_argument(
         "--keep-frames",
@@ -418,6 +424,8 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         offline=args.offline,
         app_dist=args.app_dist,
         browser=args.browser,
+        software=args.software,
+        command=shlex.join(["xrd", *getattr(args, "argv", [])]),
         crf=args.crf,
         preset=args.x264_preset,
         frame_format=args.frame_format,
@@ -455,14 +463,18 @@ def cmd_animate(args: argparse.Namespace, out: Any) -> int:
     if opts.output is None and opts.still is None and o.get("video"):
         out.chose(f"{Path(o['video']).name} as the output (add -o to choose)", "-o", o["video"])
     if out.json:
-        out.files += [v for v in (o.get("video"), o.get("still"), o.get("frames_written")) if v]
+        out.files += [
+            v
+            for v in (o.get("video"), o.get("still"), o.get("frames_written"), o.get("provenance"))
+            if v
+        ]
         payload = res.to_dict()
         payload["files"] = out.files
         out.emit_json(payload)
         return cli.EXIT_OK
     if not out.quiet:
         out.result(animate.format_report(res, cli._table))
-    for key in ("video", "still", "frames_written"):
+    for key in ("video", "still", "frames_written", "provenance"):
         if o.get(key):
             out.wrote(o[key])
     if o.get("ffmpeg"):

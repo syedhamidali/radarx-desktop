@@ -280,10 +280,14 @@ def look_settings(look: LookArgs) -> dict[str, Any]:
     return s
 
 
-def chrome_args() -> list[str]:
-    """Chrome switches: the GPU on, no proxy (only the local server and the tile proxy are used)."""
+def chrome_args(software: bool = False) -> list[str]:
+    """Chrome switches: the GPU on, no proxy (only the local server and the tile proxy are used).
+
+    ``software``: no GPU, Chrome's software renderer (SwiftShader): works anywhere, very slow."""
     args = ["--no-proxy-server", "--ignore-gpu-blocklist", "--enable-gpu-rasterization"]
-    if sys.platform == "darwin":
+    if software:
+        args += ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader"]
+    elif sys.platform == "darwin":
         args += ["--use-gl=angle", "--use-angle=metal"]
     else:
         args += ["--use-gl=angle", "--enable-unsafe-swiftshader"]
@@ -310,6 +314,7 @@ class Renderer:
         tile_cache: str | None = None,
         offline: bool = False,
         channel: str = "chrome",
+        software: bool = False,
         log: Callable[[str], None] = lambda _m: None,
     ) -> None:
         require_playwright()
@@ -320,20 +325,21 @@ class Renderer:
         self._pw: Any = None
         self._browser: Any = None
         self.page: Any = None
+        self.software = software
         self.messages: list[str] = []
         try:
-            self._start(channel)
+            self._start(channel, software)
         except BaseException:
             self.close()
             raise
 
-    def _start(self, channel: str) -> None:
+    def _start(self, channel: str, software: bool = False) -> None:
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.launch(
-                channel=channel or None, headless=True, args=chrome_args()
+                channel=channel or None, headless=True, args=chrome_args(software)
             )
         except Exception as exc:
             text = str(exc)
@@ -363,6 +369,13 @@ class Renderer:
         self.page.on("pageerror", lambda e: self.messages.append(f"PAGEERROR: {str(e)[:300]}"))
         self.page.goto(f"http://127.0.0.1:{self.port}/?clip=1")
         self.page.wait_for_function("() => !!window.__xrClip", timeout=30000)
+
+    @property
+    def browser_version(self) -> str | None:
+        try:
+            return str(self._browser.version)
+        except Exception:
+            return None
 
     def _call(self, expr: str, arg: Any = None) -> Any:
         try:
@@ -490,6 +503,7 @@ def encode_mp4(
     crf: int = 18,
     preset: str = "medium",
     ext: str = "png",
+    metadata: dict[str, str] | None = None,
 ) -> None:
     """H.264 (yuv420p, faststart) from the numbered frames; written to ``out.part`` then renamed, so
     a crash never leaves a broken file under the final name."""
@@ -501,6 +515,8 @@ def encode_mp4(
     out.parent.mkdir(parents=True, exist_ok=True)
     container = av.open(str(part), "w", format="mp4", options={"movflags": "+faststart"})
     try:
+        for k, v in (metadata or {}).items():
+            container.metadata[k] = v
         stream = container.add_stream("libx264", rate=round(fps))
         w, h = size[0] - size[0] % 2, size[1] - size[1] % 2
         stream.width, stream.height = w, h

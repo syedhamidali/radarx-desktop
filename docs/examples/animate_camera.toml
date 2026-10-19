@@ -1,0 +1,48 @@
+# A camera for `xrd animate --camera animate_camera.toml`: five keyframes, 24 s.
+#
+# azimuth    degrees; where the camera is seen from the target (180 = south of it, looking north)
+# elevation  degrees above the horizon (90 = straight down)
+# distance   km from the target
+# target     [east, north, height] in km, relative to the point the camera follows
+#            (the height is above sea level and is stretched like the storm)
+# fov        vertical field of view in degrees (optional; 45 when no key sets one)
+# Between the keys every value follows a smooth curve (no overshoot, no jerk, still at both ends).
+
+target_lag = 0.35   # follow 35% of the storm's move: it still travels across the map
+fov = 50            # the field of view of every key that does not set its own
+
+[[key]]             # a high oblique view from the south-west
+t = 0
+azimuth = 230
+elevation = 32
+distance = 200
+target = [0, 0, 4]
+
+[[key]]             # swing round to the south and close in
+t = 7
+azimuth = 180
+elevation = 20
+distance = 120
+target = [0, 0, 5]
+
+[[key]]             # low and wide-angle along the inflow side
+t = 14
+azimuth = 150
+elevation = 7
+distance = 70
+fov = 70
+target = [2, 0, 6]
+
+[[key]]             # lift and look down on all of it
+t = 20
+azimuth = 150
+elevation = 70
+distance = 150
+fov = 50
+target = [0, 0, 0]
+
+[[key]]             # settle back into the opening view
+t = 24
+azimuth = 180
+elevation = 40
+distance = 190

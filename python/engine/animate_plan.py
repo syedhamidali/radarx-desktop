@@ -20,6 +20,9 @@ fast and testable without a browser or radarx:
 from __future__ import annotations
 
 import bisect
+import json
+import math
+import os
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
@@ -112,16 +115,83 @@ def parse_time(text: str) -> datetime:
     return t if t.tzinfo else t.replace(tzinfo=UTC)
 
 
+def radar_label(attrs: dict[str, Any], lat: float | None, lon: float | None, fallback: str) -> str:
+    """A name for the radar of a file: its ``instrument_name``, else its position, else ``fallback``.
+
+    The file name is not used when the file says better: a series of files of one radar must group
+    together, and a series named by time (``cfrad.20211011_201557.nc``) would otherwise be one
+    "radar" per file.
+    """
+    for key in ("instrument_name", "station", "site_name", "platform_name"):
+        val = attrs.get(key)
+        if val is not None and str(val).strip() not in ("", "None", "nan"):
+            return str(val).strip().upper()
+    if lat is not None and lon is not None and math.isfinite(lat) and math.isfinite(lon):
+        return f"SITE{lat:+.2f}{lon:+.2f}"
+    return fallback.upper()
+
+
 def read_file_meta(path: Path) -> tuple[str, datetime]:
     """Radar and volume time from the file itself (slow: the file is opened)."""
     from engine import api
 
     with api.open(str(path)) as vol:
         info = vol.info()
+        attrs: dict[str, Any] = {}
+        try:
+            tree = vol.tree
+            attrs = {**dict(getattr(tree, "attrs", {})), **dict(tree.root.to_dataset().attrs)}
+        except Exception:  # a format without root attributes
+            attrs = {}
     when = info.get("time")
     if not when:
         raise AnimatePlanError(f"{path.name}: the file has no volume time")
-    return str(info.get("radar") or path.stem).upper(), parse_time(str(when))
+    radar = radar_label(attrs, info.get("latitude"), info.get("longitude"), path.stem)
+    return radar, parse_time(str(when))
+
+
+class MetaCache:
+    """Radar and time of files that were read once (``path, size, mtime`` -> radar, time), in a JSON
+    file, so a large set of files whose names carry no time is opened only the first time."""
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+        self.data: dict[str, list[str]] = {}
+        self.dirty = False
+        if path and path.is_file():
+            try:
+                self.data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                self.data = {}
+
+    @staticmethod
+    def _key(p: Path) -> str:
+        st = p.stat()
+        return f"{p.resolve()}|{st.st_size}|{st.st_mtime_ns}"
+
+    def wrap(
+        self, meta: Callable[[Path], tuple[str, datetime]]
+    ) -> Callable[[Path], tuple[str, datetime]]:
+        def cached(p: Path) -> tuple[str, datetime]:
+            key = self._key(p)
+            if key in self.data:
+                radar, when = self.data[key]
+                return radar, parse_time(when)
+            radar, when_dt = meta(p)
+            self.data[key] = [radar, when_dt.isoformat()]
+            self.dirty = True
+            return radar, when_dt
+
+        return cached
+
+    def save(self) -> None:
+        if not (self.path and self.dirty):
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_name(self.path.name + f".part{os.getpid()}")
+        tmp.write_text(json.dumps(self.data))
+        tmp.replace(self.path)
+        self.dirty = False
 
 
 def scan_files(

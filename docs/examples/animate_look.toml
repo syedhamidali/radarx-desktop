@@ -1,0 +1,12 @@
+# A look for `xrd animate --realistic --look animate_look.toml` (the keys of docs/REALISTIC_3D.md).
+# Every key is optional; a file with an unknown key is refused with the nearest known one.
+[scene]
+light = "daylight"
+palette = "white"
+
+[exposure_and_colour]
+exposure = 1.35
+saturation = 1.05
+
+[cloud]
+densityScale = 1.2
