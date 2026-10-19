@@ -160,7 +160,7 @@ async def main_async(a: argparse.Namespace) -> None:
                 t = float(np.interp(tc, tl_clip, tl_data))
                 res = await page.evaluate(
                     "(a) => window.__tornado.frameGeo(a)",
-                    {"geo": geo, "t": t, "labels": not a.no_labels, "tau": tau, "duration": a.duration},
+                    {"geo": geo, "t": t, "labels": not a.no_labels and not a.overlay, "tau": tau, "duration": a.duration, "overlay": a.overlay},
                 )
             else:
                 res = await page.evaluate(
@@ -169,6 +169,11 @@ async def main_async(a: argparse.Namespace) -> None:
                 )
             last = res
             ms.append(res["stats"]["ms"])
+            if a.overlay and stills:
+                import base64
+
+                data = await page.evaluate("() => window.__tornado.png()")
+                (stills / f"overlay_{tau:05.1f}s.png").write_bytes(base64.b64decode(data.split(",", 1)[1]))
             png = await page.screenshot(type="png")
             img = Image.open(io.BytesIO(png)).convert("RGB")
             luma = float(sum(img.convert("L").resize((48, 27)).getdata())) / (48 * 27)
@@ -233,6 +238,7 @@ def main() -> None:
     ap.add_argument("--online", action="store_true", help="allow the tile proxy to download missing tiles (default: cache only)")
     ap.add_argument("--no-tiles", action="store_true")
     ap.add_argument("--no-labels", action="store_true")
+    ap.add_argument("--overlay", action="store_true", help="mode movie: also save the tornado alone with alpha (overlay_*.png in --stills) for compositing over another render")
     ap.add_argument("--report", default=None, help="write per-frame stats (luma, ms, wind, shake) as JSON")
     ap.add_argument("--exposure", type=float, default=1.0, help="multiplier on the exposure of the look preset")
     ap.add_argument("--flash", type=float, default=1.0, help="multiplier on the lightning illumination (0 = no lightning light)")

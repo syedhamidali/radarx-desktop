@@ -185,7 +185,7 @@ export class TornadoScene {
     canvas.width = this.width;
     canvas.height = this.height;
     this.canvas = canvas;
-    const gl = (canvas as HTMLCanvasElement).getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, alpha: false, powerPreference: 'high-performance' }) as WebGL2RenderingContext | null;
+    const gl = (canvas as HTMLCanvasElement).getContext('webgl2', { antialias: false, preserveDrawingBuffer: true, alpha: true, premultipliedAlpha: true, powerPreference: 'high-performance' }) as WebGL2RenderingContext | null;
     if (!gl) throw new Error('WebGL2 is not available');
     if (!gl.getExtension('EXT_color_buffer_float')) throw new Error('EXT_color_buffer_float is not available');
     this.gl = gl;
@@ -205,7 +205,7 @@ export class TornadoScene {
     const names = [
       'uT0', 'uT1', 'uT2', 'uInt', 'uG', 'uAxis', 'uTrans', 'uM0', 'uM1', 'uTime', 'uNoise', 'uFlash', 'uFlashGain',
       'uScene', 'uDepth', 'uEcho', 'uEchoGrid', 'uEchoOn', 'uCam', 'uRight', 'uUp', 'uFwd', 'uTan', 'uRes', 'uFrame',
-      'uCloud', 'uFunnel', 'uFunnel2', 'uMask', 'uAmb', 'uGlowDir', 'uFog', 'uFogK', 'uDust', 'uDebug',
+      'uCloud', 'uFunnel', 'uFunnel2', 'uMask', 'uOverlay', 'uAmb', 'uGlowDir', 'uFog', 'uFogK', 'uDust', 'uDebug',
       'uViewProj', 'uGroundCentre', 'uMaxR', 'uTerrain', 'uTerrainGrid', 'uTerrainSize', 'uTerrainRef',
       'uLand', 'uLandL', 'uLandGrid', 'uImagery', 'uImageryGrid', 'uWet', 'uRainRate',
       'uCls', 'uShutter', 'uCamFwd', 'uBox', 'uCamVel',
@@ -824,6 +824,11 @@ export class TornadoScene {
     return s.airborne();
   }
 
+  /** The dither / grain seed: a pure function of the simulation time, so the same frame is always identical. */
+  private frameKey(): number {
+    return Math.round(this.t * 997) % 65521;
+  }
+
   /** Screen-space slope of the falling rain (dx per dy) from the wind at the camera and the camera roll. */
   private rainSlope(cam: ReturnType<typeof basis>): number {
     const r = this.seed!;
@@ -835,7 +840,8 @@ export class TornadoScene {
   }
 
   /** Render one frame of the current time for the camera into the canvas. */
-  render(camera: TornadoCamera): FrameStats {
+  render(camera: TornadoCamera, opts: { overlay?: boolean } = {}): FrameStats {
+    const overlay = !!opts.overlay;
     const gl = this.gl;
     if (!this.seed || !this.sim) throw new Error('setSeedData first');
     const t0 = performance.now();
@@ -854,7 +860,7 @@ export class TornadoScene {
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneFbo);
     gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
     gl.viewport(0, 0, this.rw, this.rh);
-    gl.clearBufferfv(gl.COLOR, 0, [amb.fog[0], amb.fog[1], amb.fog[2], 1]);
+    gl.clearBufferfv(gl.COLOR, 0, overlay ? [0, 0, 0, 0] : [amb.fog[0], amb.fog[1], amb.fog[2], 1]);
     gl.clearBufferfv(gl.COLOR, 1, [1e6, 0, 0, 0]);
     gl.clearBufferfi(gl.DEPTH_STENCIL, 0, 1, 0);
     gl.enable(gl.DEPTH_TEST);
@@ -864,7 +870,7 @@ export class TornadoScene {
     gl.disable(gl.CULL_FACE);
 
     // ground
-    {
+    if (!overlay) {
       const p = this.progs.ground;
       gl.useProgram(p.prog);
       this.setCommon(p, cam);
@@ -891,7 +897,7 @@ export class TornadoScene {
       gl.drawElements(gl.TRIANGLES, this.groundIdx, gl.UNSIGNED_INT, 0);
     }
     // buildings and poles
-    if (this.boxN && this.boxVao) {
+    if (!overlay && this.boxN && this.boxVao) {
       const p = this.progs.box;
       gl.useProgram(p.prog);
       this.setCommon(p, cam);
@@ -900,7 +906,7 @@ export class TornadoScene {
       gl.drawElementsInstanced(gl.TRIANGLES, this.boxIdxCount, gl.UNSIGNED_SHORT, 0, this.boxN);
     }
     // trees
-    if (this.treeN && this.treeVao) {
+    if (!overlay && this.treeN && this.treeVao) {
       const p = this.progs.tree;
       gl.useProgram(p.prog);
       this.setCommon(p, cam);
@@ -913,7 +919,7 @@ export class TornadoScene {
       const p = this.progs.debris;
       gl.useProgram(p.prog);
       this.setCommon(p, cam);
-      gl.uniform1f(p.u.uFrame, this.frameNo);
+      gl.uniform1f(p.u.uFrame, this.frameKey());
       gl.uniformMatrix4fv(p.u.uViewProj, false, vp);
       const cls = new Float32Array(24);
       DEBRIS_CLASSES.forEach((c, i) => { cls[i * 4] = c.a; cls[i * 4 + 1] = c.b; cls[i * 4 + 2] = c.tone; cls[i * 4 + 3] = i === 0 ? 0 : i === 1 ? 1 : 2; });
@@ -943,7 +949,7 @@ export class TornadoScene {
       gl.uniform3f(p.u.uFwd, cam.fwd[0], cam.fwd[1], cam.fwd[2]);
       gl.uniform2f(p.u.uTan, tanX, tanY);
       gl.uniform2f(p.u.uRes, this.rw, this.rh);
-      gl.uniform1f(p.u.uFrame, this.frameNo);
+      gl.uniform1f(p.u.uFrame, this.frameKey());
       const wc = this.opts.wallCloud ?? { lowerM: 60, radiusM: 700 };
       gl.uniform4f(p.u.uCloud, r.cloudCondition.lcl, wc.lowerM, wc.radiusM, 100);
       gl.uniform4f(p.u.uFunnel, r.condition.dpCrit, Math.max(60, 0.08 * r.condition.dpCrit), 0.55, 0.11);
@@ -952,7 +958,8 @@ export class TornadoScene {
       gl.uniform4f(p.u.uFogK, 1 / 4500, 800, 0.00006, this.echoOn ? this.echoMean : 25);
       gl.uniform4f(p.u.uDust, 32, 0.035, 0.06, 1);
       gl.uniform1f(p.u.uDebug, 0);
-      gl.uniform1f(p.u.uMask, this.mask);
+      gl.uniform1f(p.u.uMask, overlay ? (this.mask & 52) : this.mask);
+      gl.uniform1f(p.u.uOverlay, overlay ? 1 : 0);
       gl.bindVertexArray(this.vaoEmpty);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
@@ -993,7 +1000,7 @@ export class TornadoScene {
       this.bindTex(p, 'uBloom', gl.TEXTURE_2D, this.bloomTex[1], 1);
       gl.uniform1f(p.u.uExposure, amb.exposure * this.exposureMul);
       gl.uniform1f(p.u.uBloomK, 0.5);
-      gl.uniform1f(p.u.uFrame, this.frameNo);
+      gl.uniform1f(p.u.uFrame, this.frameKey());
       gl.uniform2f(p.u.uRes, this.width, this.height);
       gl.uniform1f(p.u.uGrain, 0.018);
       gl.uniform1f(p.u.uTime, this.t);
@@ -1031,6 +1038,7 @@ export class TornadoScene {
     gl.uniform2f(p.u.uTan, 1, 1);
     gl.uniform1f(p.u.uDebug, single ? 2 : 1);
     gl.uniform1f(p.u.uMask, 63);
+    gl.uniform1f(p.u.uOverlay, 0);
     gl.bindVertexArray(this.vaoEmpty);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.finish();

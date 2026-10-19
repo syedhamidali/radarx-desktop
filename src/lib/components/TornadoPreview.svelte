@@ -69,11 +69,11 @@
         return { stats: st, pose: { pos: pose.pos, target: pose.target, fov: pose.fovDeg, wind: pose.windAtCamera, shakeDeg: pose.shakeDeg, distance: pose.distance } };
       },
       /** Render from a geographic camera pose (the movie's camera_path.json) at data time t. */
-      frameGeo: (a: { geo: any; t: number; labels?: boolean; tau?: number; duration?: number }) => {
+      frameGeo: (a: { geo: any; t: number; labels?: boolean; tau?: number; duration?: number; overlay?: boolean }) => {
         const s = scene!;
         s.setTime(a.t);
         const cam = s.cameraFromGeo(a.geo);
-        const st = s.render(cam);
+        const st = s.render(cam, { overlay: !!a.overlay });
         const ctx = ov!.getContext('2d')!;
         if (a.labels === false) ctx.clearRect(0, 0, ov!.width, ov!.height);
         else {
@@ -104,6 +104,8 @@
         const meso = sd.meso ? v.omega(sd.meso, r, z) : 0;
         return { tornado: om, meso, total: om + meso };
       },
+      /** The WebGL canvas as a PNG data URL (with alpha in overlay mode). */
+      png: () => (scene!.canvas as HTMLCanvasElement).toDataURL('image/png'),
       mask: (m: number) => { scene!.mask = m; },
       tune: (o: { exposure?: number; flash?: number }) => { if (o.exposure) scene!.exposureMul = o.exposure; if (o.flash !== undefined) scene!.flashMul = o.flash; },
       info: (t?: number) => scene!.info(t),

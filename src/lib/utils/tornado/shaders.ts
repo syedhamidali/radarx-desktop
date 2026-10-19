@@ -208,6 +208,7 @@ uniform vec3 uFog;          // distance haze colour
 uniform vec4 uFogK;         // density at ground (1/m), height scale, rain extinction scale, fallback rain mm/h
 uniform vec4 uDust;         // damage onset speed, dust strength, debris dark strength, scale
 uniform float uDebug;       // 1 = top-down swirl-noise slice
+uniform float uOverlay;     // 1: output the tornado alone with alpha (no ground, sky or far fog), to composite over another render
 uniform float uMask;        // bit mask of the components drawn (1 haze, 2 cloud, 4 funnel, 8 rain, 16 dust, 32 debris): diagnostics
 
 float cloudBaseAt(vec2 pw, out float lowerAmt) {
@@ -284,8 +285,10 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     float eye = smoothstep(uFunnel.z * 0.6, uFunnel.z * 1.1, r / coreR(z));
     float band = fn1.b * 0.6 + fn2.g * 0.5 + (fn3.r - 0.5) * 0.4;
     float streak = 0.22 + 1.6 * smoothstep(0.32, 0.72, band);
-    float top = 1.0 - smoothstep(zb - 20.0, zb + 80.0, p.z);
-    m.sFunnel = uFunnel.w * body * (0.03 + 0.97 * eye) * streak;
+    // the saturated region above the cloud base is the cloud itself: fade the funnel's roof out (completely when only the tornado is drawn)
+    float top = 1.0 - smoothstep(zb - 10.0, zb + 70.0, p.z);
+    float roof = 1.0 - smoothstep(2.2 * coreR(z), 4.2 * coreR(z), r);
+    m.sFunnel = uFunnel.w * body * (0.03 + 0.97 * eye) * streak * mix(roof, roof * top, uOverlay);
   }
 
   // ---- debris and dust skirt where the surface wind exceeds the damage onset
@@ -444,12 +447,13 @@ void main() {
   // beyond the march: distance haze colour (far cloud deck / horizon)
   float haze = T;
   vec3 farc = uFog * (0.55 + 0.45 * hg(cosGlow, 0.25) * 4.0) + flashLight(ro + rd * 6000.0, 9000.0) * 0.5;
-  if (sceneT >= 17999.0) {
+  if (sceneT >= 17999.0 && uOverlay < 0.5) {
     col += T * farc;
     T = 0.0;
   }
+  float sceneA = texture(uScene, vUv).a;
   vec3 outc = col + T * scene;
-  outColor = vec4(outc, 1.0);
+  outColor = vec4(outc, uOverlay > 0.5 ? 1.0 - T * (1.0 - sceneA) : 1.0);
 }
 `;
 
@@ -974,12 +978,15 @@ float rainLayer(vec2 uv, float aspect, float scale, float speed, float dens, flo
   return line * smoothstep(len, len * 0.2, f.y) * smoothstep(0.0, 0.08, f.y) * (0.5 + 0.5 * hash12(id + 1.7));
 }
 void main() {
-  vec3 c = texture(uHdr, vUv).rgb + texture(uBloom, vUv).rgb * uBloomK;
+  vec4 hdr = texture(uHdr, vUv);
+  float alpha = hdr.a;
+  vec3 c = hdr.rgb + texture(uBloom, vUv).rgb * uBloomK * (alpha > 0.999 ? 1.0 : 0.0);
+  if (alpha < 0.999) c = c / max(alpha, 1e-3);   // straight colour for the tone curve, premultiplied again at the end
   float aspect = uRes.x / uRes.y;
   float rn = rainLayer(vUv, aspect, 14.0, 17.0, 0.10, 0.030, uRainK.y)
            + rainLayer(vUv, aspect, 30.0, 26.0, 0.16, 0.040, uRainK.y) * 0.8
            + rainLayer(vUv, aspect, 64.0, 34.0, 0.20, 0.055, uRainK.y) * 0.6;
-  c += rn * uRainK.x * uRainCol * (1.0 + uRainK.z);
+  c += rn * uRainK.x * uRainCol * (1.0 + uRainK.z) * (alpha > 0.999 ? 1.0 : 0.0);
   // gentle vignette
   vec2 q = vUv - 0.5;
   float vig = 1.0 - 0.35 * dot(q, q) * 2.2;
@@ -990,6 +997,6 @@ void main() {
   c = mix(c, c * vec3(0.96, 1.0, 1.05), 0.5);
   c = pow(c, vec3(1.0 / 2.2));
   float g = hash12(gl_FragCoord.xy + fract(uFrame * 0.1234) * 311.0) - 0.5;
-  c += g * uGrain;
-  outColor = vec4(c, 1.0);
+  c += g * uGrain * (alpha > 0.999 ? 1.0 : 0.0);
+  outColor = vec4(alpha < 0.999 ? c * alpha : c, alpha);
 }`;
