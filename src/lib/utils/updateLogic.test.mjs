@@ -145,6 +145,10 @@ test('download / install failures are worded for what failed, not as a "check"',
   assert.equal(describeUpdateError('invalid peer certificate: verify failed').kind, 'offline');
 });
 
+test('a reply that is not valid update JSON is "not available", not "offline"', () => {
+  assert.equal(describeUpdateError('error decoding response body').kind, 'unavailable');
+});
+
 test('progress and sizes', () => {
   assert.equal(progressPercent(50, 200), 25);
   assert.equal(progressPercent(500, 200), 100);

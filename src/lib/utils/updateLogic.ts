@@ -161,10 +161,10 @@ export function describeUpdateError(
   if (/fallback platforms|platform .* was not found|targets? not found/.test(t)) {
     return { kind: 'no-build', message: 'The latest release has no build for this system.' };
   }
-  if (/error sending request|dns|connect|network|offline|unreachable|resolve|tls|ssl|certificate|error decoding response|incomplete|broken pipe|reset by peer/.test(t)) {
-    return { kind: 'offline', message: `${lead}: no connection to the update server.` };
+  if (/error sending request|dns|connect|network|offline|unreachable|resolve|tls|ssl|certificate|broken pipe|reset by peer/.test(t)) {
+    return { kind: 'offline', message: `${lead}: the update server could not be reached.` };
   }
-  if (/\b(404|403|410|5\d\d)\b|status code|not found|valid release json/.test(t)) {
+  if (/\b(404|403|410|5\d\d)\b|status code|not found|valid release json|error decoding response|expected value|invalid (json|response)/.test(t)) {
     return { kind: 'unavailable', message: `${lead}: the update information is not available right now.` };
   }
   const short = String(raw).replace(/\s+/g, ' ').trim().slice(0, 140);
