@@ -5,6 +5,8 @@ cells of a volume, the storm followed from step to step, the echo-free eye of a 
 the storm motion and the box around a track. No file reading, no browser.
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import math

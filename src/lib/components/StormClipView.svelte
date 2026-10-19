@@ -33,6 +33,7 @@
       renderAudio: (sr?: number) => clip!.renderAudio(sr),
       report: () => clip!.report(),
       setLook: (o: any) => clip!.setLook(o),
+      checkLook: (s: any) => clip!.checkLook(s),
       flashList: () => clip!.flashList(),
       morphSelfTest: () => runMorphSelfTest(),
       stateAt: (t: number) => clip!.stateAt(t),

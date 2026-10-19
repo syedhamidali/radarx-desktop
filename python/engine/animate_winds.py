@@ -12,6 +12,8 @@ and ``wind_<i>.bin``: float32 little-endian, the u block then the v block, each 
 no wind; u east and v north in m/s, grid axes in km of the wind's own AEQD origin.
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import contextlib

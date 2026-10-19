@@ -6,6 +6,19 @@ import {
   hermite, cameraAt, stormAt, dataTimeAt, locate, morphShifts, intervalMotion, utcLabel, stormChoreography, nearTo, trackFrame, lagTarget,
 } from './clipCamera.ts';
 
+test('an optional field of view follows the same eased curve; keys without one take 45', () => {
+  const keys = [
+    { t: 0, theta: 0, phi: 30, dist: 100, dx: 0, dy: 0, dz: 0 },
+    { t: 10, theta: 90, phi: 30, dist: 100, dx: 0, dy: 0, dz: 0, fov: 85 },
+  ];
+  assert.ok(Math.abs(cameraAt(keys, 0).fov - 45) < 1e-9);
+  assert.ok(Math.abs(cameraAt(keys, 10).fov - 85) < 1e-9);
+  const mid = cameraAt(keys, 5).fov;
+  assert.ok(mid > 45 && mid < 85);
+  // no key sets one: the camera has no fov channel and the renderer keeps its own
+  assert.equal(cameraAt(keys.map(({ fov, ...k }) => k), 5).fov, undefined);
+});
+
 test('hermite passes through the keyframes, eases at both ends and has no jumps', () => {
   const ts = [0, 5, 12, 20];
   const vs = [0, 10, 4, 30];

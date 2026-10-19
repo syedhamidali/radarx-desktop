@@ -11,6 +11,8 @@ Sources (see docs/STORM_CLIP.md for the terms):
   terrarium  Terrain Tiles on AWS (Terrarium elevation PNG)
 """
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 import os
