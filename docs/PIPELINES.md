@@ -3,6 +3,15 @@
 A **pipeline** chains several cleaning / processing steps on one variable and returns **one**
 result variable, instead of one derived variable per step.
 
+```{image} images/ui/pipeline-preview.png
+:alt: Previewing the Doppler-velocity recipe: the cleaned velocity on the map and the pipeline panel
+:width: 100%
+```
+
+*Doppler velocity: dealias + clutter + bio filter* previewed on a KTLX Doppler sweep: the map shows the cleaned
+velocity (green toward the radar, red away) and the panel lists the steps with the number of gates each removed.
+
+
 > "Apply de-aliasing, then a clutter filter, then a biological filter, then another filter, and
 > then use that result for wind analysis."
 

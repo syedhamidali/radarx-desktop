@@ -89,7 +89,7 @@ the registry.
 
 Protocol (WebSocket JSON):
 
-```jsonc
+```javascript
 // -> sidecar
 {"type": "set_variable_mapping", "file_id": "...", "mapping": {"velocity": "VEL_DEALIASED"}}
 //    a blank value (or "auto") clears a role; "replace": true replaces the whole mapping

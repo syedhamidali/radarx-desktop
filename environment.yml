@@ -1,0 +1,40 @@
+name: xradar-desktop-docs
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python >=3.12
+  # documentation
+  - sphinx
+  - pydata-sphinx-theme
+  - myst-nb
+  - jupytext
+  - sphinx-copybutton
+  - ipykernel
+  # the engine (autodoc imports it; notebooks run it)
+  - xradar >=0.12
+  - xarray >=2024.10
+  - dask
+  - numpy
+  - scipy
+  - pandas
+  - pyproj
+  - proj-data
+  - h5py
+  - h5netcdf
+  - netcdf4
+  - zarr
+  - pyarrow
+  - websockets
+  - pillow
+  - matplotlib-base
+  - colorcet
+  - cmweather
+  - pycairo
+  - cairo
+  - boto3
+  - s3fs
+  - fsspec
+  - pip
+  - pip:
+      - radarx>=0.5.1

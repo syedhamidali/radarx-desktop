@@ -14,3 +14,10 @@ build/
 # runtime artifacts
 public/.sidecar-port
 .DS_Store
+
+# documentation build products (only sources are committed; see docs/conf.py)
+docs/_build/
+docs/_api/
+docs/generated/
+docs/render/
+docs/changes/unreleased.md
