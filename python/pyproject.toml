@@ -31,6 +31,12 @@ bundle = ["pyinstaller>=6.16"]
 # Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
 radarx = ["radarx>=0.5.1; python_version >= '3.12'"]
 
+# Command line: `xrd info FILE`, `xrd run radarx_hid FILE --all-sweeps` ... (docs/CLI.md).
+# Also `python -m engine`. engine.cli imports the heavy engine lazily and is never imported by
+# the sidecar server.
+[project.scripts]
+xrd = "engine.cli:main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
@@ -41,5 +47,6 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-# python/modules/ holds drop-in plugin files loaded by path, not an importable package
-include = ["engine*"]
+# python/modules/ holds drop-in plugin files loaded by path, not an importable package.
+# xrd/ is the short import alias of engine.api (`import xrd`).
+include = ["engine*", "xrd*"]
