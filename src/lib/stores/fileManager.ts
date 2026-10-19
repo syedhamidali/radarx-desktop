@@ -9,7 +9,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { radarData, selectedVariable, selectedSweep, type SweepInfo } from './radarData';
-import { clearSweepCache } from '../utils/ppiRenderer';
+import { clearSweepCache } from '../utils/sweepCache';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 

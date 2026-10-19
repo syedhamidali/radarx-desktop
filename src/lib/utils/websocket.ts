@@ -11,7 +11,7 @@ import {
   exportNotification,
 } from '../stores/radarData';
 import { addToast } from '../stores/toasts';
-import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './ppiRenderer';
+import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './sweepCache';
 import { addFile, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
 import { registerVariableStyle, styleFor } from './variableStyles';

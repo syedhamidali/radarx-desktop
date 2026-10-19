@@ -15,7 +15,7 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { wsManager } from '../utils/websocket';
-import { evictCachedVariable } from '../utils/ppiRenderer';
+import { evictCachedVariable } from '../utils/sweepCache';
 import { pickDefaultVariable } from '../utils/variables';
 import {
   registerVariableStyle,

@@ -386,26 +386,8 @@ export function resetParams(moduleId: string): void {
 
 // ── Variable availability ──────────────────────────────────────────────────
 
-const ALIAS_GROUPS: string[][] = [
-  // Client-side fallback only. The sidecar (python/engine/varmap.py) is the source of truth;
-  // stores/variableMapping.ts adds what it resolves (CF names, patterns, overrides, paired sweeps).
-  ['DBZH', 'DBZ', 'REFLECTIVITY', 'Z', 'CORRECTED_REFLECTIVITY_HORIZONTAL', 'DBZHCC', 'DBZHC'],
-  ['ZDR', 'DIFFERENTIAL_REFLECTIVITY', 'ZDRC'],
-  ['PHIDP', 'DIFFERENTIAL_PHASE', 'UPHIDP'],
-  ['KDP', 'SPECIFIC_DIFFERENTIAL_PHASE'],
-  ['RHOHV', 'CROSS_CORRELATION_RATIO', 'CCORH'],
-  ['VRADH', 'VRAD', 'VELOCITY', 'VEL', 'V', 'RADIAL_VELOCITY'],
-  ['WRADH', 'WIDTH', 'SPECTRUM_WIDTH'],
-];
-
-const ALIAS_MAP: Map<string, string> = new Map(
-  ALIAS_GROUPS.flatMap((g) => g.map((n) => [n, g[0]] as [string, string])),
-);
-
-export function canonicalVariable(name: string): string {
-  const up = name.trim().toUpperCase();
-  return ALIAS_MAP.get(up) ?? up;
-}
+export { canonicalVariable } from '../utils/variableAliases';
+import { canonicalVariable } from '../utils/variableAliases';
 
 /**
  * Variables available for the given sweep of the active file. Uses the sweep's

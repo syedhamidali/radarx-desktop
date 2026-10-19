@@ -68,6 +68,17 @@ def main():
         bench.view("2d")
         check("back to 2D canvas", page.locator(".viewer-area canvas").count() >= 1)
 
+        for title, what in (("Open data table viewer", "data table"), ("Open metadata tree viewer", "metadata viewer")):
+            page.locator(f"button[title='{title}']").first.click()
+            try:
+                page.wait_for_selector("[role=dialog], .modal, .dt-overlay", timeout=5000)
+                ok = True
+            except Exception:
+                ok = False
+            check(what + " opens", ok)
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+
         page.keyboard.press("Control+k")
         page.wait_for_selector(".cmd-palette", timeout=5000)
         check("command palette opens", True)

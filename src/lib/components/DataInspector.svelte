@@ -2,8 +2,7 @@
   import { radarData } from '../stores/radarData';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import RadarSweep from './RadarSweep.svelte';
-  import DataTable from './DataTable.svelte';
-  import MetadataViewer from './MetadataViewer.svelte';
+  import { lazy } from '../utils/lazy.svelte';
   import VariableMapping from './VariableMapping.svelte';
 
   const data = $derived($radarData);
@@ -11,6 +10,9 @@
 
   let showDataTable = $state(false);
   let showMetadata = $state(false);
+  // The two big modals are fetched the first time they are asked for (or when the pointer nears the button).
+  const dataTable = lazy(() => import('./DataTable.svelte'));
+  const metadataViewer = lazy(() => import('./MetadataViewer.svelte'));
 
   function formatValue(value: any): string {
     if (value === null || value === undefined) return 'null';
@@ -23,10 +25,12 @@
   }
 
   function openDataTable() {
+    void dataTable.load();
     showDataTable = true;
   }
 
   function openMetadata() {
+    void metadataViewer.load();
     showMetadata = true;
   }
 </script>
@@ -106,8 +110,8 @@
 </div>
 
 <!-- Modals -->
-<DataTable bind:visible={showDataTable} />
-<MetadataViewer bind:visible={showMetadata} />
+{#if dataTable.component}<dataTable.component bind:visible={showDataTable} />{/if}
+{#if metadataViewer.component}<metadataViewer.component bind:visible={showMetadata} />{/if}
 
 <style>
   .data-inspector {

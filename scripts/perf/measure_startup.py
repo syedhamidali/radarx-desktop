@@ -5,13 +5,14 @@
     python scripts/perf/measure_startup.py --url http://localhost:4173/ --runs 9 [--cpu 4] [--engine-port 25611]
 
 Per run (fresh browser context, cold HTTP cache, no engine unless --engine-port is given):
-  fcp        first-contentful-paint (ms)
-  ui         time until the welcome / boot UI is on screen and the first frame after it was drawn
-  tti        time-to-interactive proxy: first moment after FCP with a 1 s window free of long tasks
-  tbt        total blocking time: sum of (longtask - 50 ms) up to tti
-  js_kb      JS bytes transferred before tti (uncompressed over localhost, so this is raw size)
-  js_req     number of JS requests before tti
-  heap_mb    JS heap used after load settled
+  fcp              first-contentful-paint (ms)
+  ui               app shell (status bar + main area) inserted AND two frames painted (ms): usable UI
+  js_kb_critical   JS (gzip, as served) requested before `ui`: what first paint has to wait for
+  tbt_to_ui        blocking time (long tasks beyond 50 ms) that started before `ui`
+  js_kb_total      all JS fetched by the time the page has settled (includes idle prefetch of panels)
+  tbt_total        blocking time over the whole load incl. the idle prefetch / panel mounting
+  settled          last network response or long-task end (ms)
+  heap_mb          JS heap after settling
 Prints the median and p90 over the runs.
 """
 import argparse
@@ -24,6 +25,14 @@ from playwright.sync_api import sync_playwright
 
 LONGTASK_JS = """
 window.__lt = [];
+window.__ui = null;
+new MutationObserver((_, mo) => {
+  if (document.querySelector('.statusbar') && document.querySelector('.main-content')) {
+    // after the next frame, so "ui" means painted, not just inserted
+    requestAnimationFrame(() => requestAnimationFrame(() => { window.__ui = performance.now(); }));
+    mo.disconnect();
+  }
+}).observe(document, { childList: true, subtree: true });
 new PerformanceObserver((l) => { for (const e of l.getEntries()) window.__lt.push([e.startTime, e.duration]); })
   .observe({ type: 'longtask', buffered: true });
 """
@@ -40,22 +49,15 @@ def one_run(b, url, cpu, engine_port):
     cdp.send("Network.setCacheDisabled", {"cacheDisabled": True})
     if cpu > 1:
         cdp.send("Emulation.setCPUThrottlingRate", {"rate": cpu})
-    js = {"bytes": 0, "n": 0, "t": []}
-    sizes = {}
-
-    def on_resp(r):
-        if r.url.endswith(".js") or ".js?" in r.url:
-            sizes[r.url] = time.time()
-
-    page.on("response", on_resp)
-    t0 = time.time()
     page.goto(url, wait_until="commit")
-    page.wait_for_function("document.body && document.body.innerText.trim().length > 20", timeout=60000)
+    page.wait_for_function("window.__ui !== null", timeout=60000)
     # let the page settle: wait until a 1 s window without long tasks (max 20 s)
-    page.wait_for_timeout(1200)
+    page.wait_for_timeout(4000)  # the idle prefetch of the panels starts within ~1.5 s of the first paint
     deadline = time.time() + 20
     while time.time() < deadline:
-        last_end = page.evaluate("Math.max(0, ...window.__lt.map(x => x[0] + x[1]))")
+        last_end = page.evaluate(
+            "Math.max(0, ...window.__lt.map(x => x[0] + x[1]), ...performance.getEntriesByType('resource').map(r => r.responseEnd))"
+        )
         now = page.evaluate("performance.now()")
         if now - last_end > 1000:
             break
@@ -63,33 +65,29 @@ def one_run(b, url, cpu, engine_port):
     m = page.evaluate(
         """() => {
         const fcp = (performance.getEntriesByName('first-contentful-paint')[0] || {}).startTime || 0;
-        const lt = window.__lt;
-        const res = performance.getEntriesByType('resource').filter(r => /\\.js(\\?|$)/.test(r.name));
-        return {fcp, lt, js: res.map(r => [r.name, r.encodedBodySize || r.decodedBodySize || 0]),
-                ui: performance.getEntriesByName('xr-ui-ready')[0]?.startTime ?? null,
+        const res = performance.getEntriesByType('resource').filter(r => /\\.js(\\?|$)/.test(r.name))
+          .map(r => ({ start: r.startTime, end: r.responseEnd, kb: (r.encodedBodySize || 0) / 1024 }));
+        return {fcp, ui: window.__ui, lt: window.__lt, res,
                 heap: performance.memory ? performance.memory.usedJSHeapSize : 0,
-                nav: performance.getEntriesByType('navigation')[0]?.domContentLoadedEventEnd ?? 0};
+                lastRes: Math.max(0, ...performance.getEntriesByType('resource').map(r => r.responseEnd))};
     }"""
     )
     lt = m["lt"]
-    # tti: end of the last long task that started within the first 'quiet' stretch after fcp
-    tti = m["fcp"]
-    for start, dur in sorted(lt):
-        if start + dur <= tti:
-            continue
-        if start - tti > 1000:
-            break
-        tti = start + dur
-    tbt = sum(max(0, d - 50) for s, d in lt if s <= tti)
+    ui = m["ui"] or m["fcp"]
+    crit = [r for r in m["res"] if r["start"] < ui]
+    blocking = lambda tasks: sum(max(0, d - 50) for s_, d in tasks)
+    settled = max([m["lastRes"]] + [s_ + d for s_, d in lt])
     ctx.close()
     return {
         "fcp": m["fcp"],
-        "dcl": m["nav"],
-        "tti": tti,
-        "tbt": tbt,
-        "longtasks": len(lt),
-        "js_kb": sum(x[1] for x in m["js"]) / 1024,
-        "js_req": len(m["js"]),
+        "ui": ui,
+        "js_kb_critical": sum(r["kb"] for r in crit),
+        "js_req_critical": len(crit),
+        "tbt_to_ui": blocking([t for t in lt if t[0] < ui]),
+        "js_kb_total": sum(r["kb"] for r in m["res"]),
+        "js_req_total": len(m["res"]),
+        "tbt_total": blocking(lt),
+        "settled": settled,
         "heap_mb": m["heap"] / 1048576,
     }
 

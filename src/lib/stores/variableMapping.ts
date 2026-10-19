@@ -11,7 +11,8 @@ import { writable, derived, get } from 'svelte/store';
 import { wsManager } from '../utils/websocket';
 import { activeFileId } from './fileManager';
 import { connectionStatus, radarData, selectedSweep } from './radarData';
-import { canonicalVariable, type ModuleSpec } from './modules';
+import { canonicalVariable } from '../utils/variableAliases';
+import type { ModuleSpec } from './modules';
 
 export interface RoleInfo {
   role: string;
