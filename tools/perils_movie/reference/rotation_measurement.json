@@ -1,0 +1,15 @@
+{
+ "frames_used": 170,
+ "first_frame": 1571,
+ "last_frame": 1909,
+ "data_seconds_covered": 11.38839999999999,
+ "measured_omega_rad_s": 0.30303026924346677,
+ "measured_period_s": 20.734513825519592,
+ "expected_omega_rad_s": 0.30055,
+ "expected_period_s": 20.90562404651335,
+ "relative_error": 0.008252434681306877,
+ "sense": "counter-clockwise from above",
+ "azimuth_rms_residual_deg": 0.34348309477574307,
+ "median_radius_m": 229.16141467962325,
+ "expected_radius_m": 228.75
+}

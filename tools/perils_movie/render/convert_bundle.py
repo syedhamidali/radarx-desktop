@@ -379,23 +379,6 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
             }
         )
 
-    # radiosonde tracks inside the window: the echo at each point is sampled from the volume of the nearest step
-    snd_all = _load_json(bundle / man["soundings"]) if man.get("soundings") else None
-    balloon_pts: dict[str, list] = {}
-    for s in snd_all or []:
-        drift = s.get("drift") or []
-        if not drift:
-            continue
-        pts = []
-        for n, d in enumerate(drift):
-            t = float(d[0])
-            if times_s[0] - 60.0 <= t <= times_s[-1] + 60.0:
-                bx, by = geo.xy(d[1], d[2])
-                pts.append((n, t, float(bx), float(by), float(d[3]) / 1000.0))
-        if pts:
-            balloon_pts[s["id"]] = [len(drift), pts]
-    balloon_echo: dict[str, list] = {sid: [None] * v[0] for sid, v in balloon_pts.items()}
-
     colmax: list[np.ndarray] = []
     msteps = []
     hail_pts, tds_pts, layers_meta, zdrcol = [], [], [], []
@@ -440,29 +423,6 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         colmax.append(np.where(cm > -90, cm, np.nan))
         # the plan-view panel: the column maximum as 8-bit codes (same code book as the volume)
         (out / f"colmax_{k}.bin").write_bytes(encode_dbz(colmax[-1]).tobytes())
-        for sid, (_n, pts) in balloon_pts.items():
-            for n, t, bx, by, bz in pts:
-                kn = int(np.argmin(np.abs(np.asarray(times_s) - t)))
-                if kn != k:
-                    continue
-                i = round((bx - xs[0]) / cell)
-                j = round((by - ys[0]) / cell)
-                if not (0 <= i < nx and 0 <= j < ny):
-                    continue
-                col = dbz[:, j, i]
-                ok = np.isfinite(col)
-                kz = int(np.argmin(np.abs(zs - bz)))
-                top = (
-                    float(zs[np.nonzero(ok & (col >= 18.0))[0].max()])
-                    if (ok & (col >= 18.0)).any()
-                    else None
-                )
-                balloon_echo[sid][n] = {
-                    "dbz": float(col[kz]) if ok[kz] else None,
-                    "colmax": float(np.nanmax(col)) if ok.any() else None,
-                    "top18_km": top,
-                    "step": k,
-                }
         # extras of this step (all optional)
         hid = z["hid"] if "hid" in z.files else None
         if hid is not None:
@@ -731,7 +691,6 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
                 "x": float(x),
                 "y": float(y),
                 "drift": drift,
-                "echo": balloon_echo.get(s["id"]),
                 "levels": levels,
                 "diagnostics": s.get("diagnostics", {}),
             }
