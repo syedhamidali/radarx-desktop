@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import xarray as xr
 
-from engine import cfwrite, provenance, rhi
+from engine import cfwrite, provenance, rhi, valuemask
 from engine.reader import (
     collapse_site_position,
     mask_below_threshold,
@@ -220,6 +220,7 @@ def _csv_header(
         "source_path"
     )
     t = _extract_datetime(datatree, sweep_ds)
+    vmask_text = valuemask.describe(valuemask.pick(options, variable), units)
     extra = {
         "radar": root.attrs.get("instrument_name") or root.attrs.get("site_name"),
         "radar_position": ", ".join(
@@ -239,8 +240,14 @@ def _csv_header(
         title=f"Radar sweep {sweep}: {variable} (one row per gate with an echo)",
         columns={"azimuth_deg": "degrees clockwise from north", "range_m": "m", variable: units},
         source_files=sources,
-        fill="gates without an echo (below threshold / range folded / no data) are omitted",
-        params={"variable": variable, "sweep": sweep, "mask_no_echo": True},
+        fill="gates without an echo (below threshold / range folded / no data) are omitted"
+        + ("; gates hidden by the value mask are omitted too" if vmask_text else ""),
+        params={
+            "variable": variable,
+            "sweep": sweep,
+            "mask_no_echo": True,
+            **({"value_mask": vmask_text} if vmask_text else {}),
+        },
         extra=extra,
     )
 
@@ -332,13 +339,37 @@ def _netcdf_attr(value: Any) -> Any:
 _collapse_site_position = collapse_site_position  # the reader does this on open; kept for safety
 
 
-def _netcdf_safe_tree(datatree: xr.DataTree, *, mask: bool = False) -> xr.DataTree:
+def _apply_value_mask_to_dataset(
+    ds: xr.Dataset, variable: str, vmask: dict[str, Any], text: str
+) -> xr.Dataset:
+    """*ds* with the values of *variable* that the value mask hides set to NaN (a new variable;
+    the original is not modified). The variable's ``value_mask`` attribute records what was hidden."""
+    if variable not in ds.data_vars:
+        return ds
+    da = ds[variable]
+    if da.dtype.kind not in "fiu":
+        return ds
+    values, _ = valuemask.apply(da.values, vmask)
+    new = da.copy(data=values)
+    new.attrs = {**da.attrs, "value_mask": text}
+    return ds.assign({variable: new})
+
+
+def _netcdf_safe_tree(
+    datatree: xr.DataTree,
+    *,
+    mask: bool = False,
+    value_mask: tuple[str, dict[str, Any], str] | None = None,
+) -> xr.DataTree:
     """A shallow copy of *datatree* that NetCDF can store.
 
     Attributes are coerced to serialisable values and per-ray site position is collapsed to a
     scalar. With ``mask=True`` the "no echo" / "range folded" codes of integer-encoded moments are
     set to NaN (they would otherwise be written as real measurements such as -33 dBZ). The
     original (the reader's live tree) is never modified.
+
+    *value_mask* is ``(variable, mask, description)``: in every sweep the values of that variable
+    that the value mask hides are set to NaN (see :mod:`engine.valuemask`).
     """
     safe = datatree.copy(deep=False)
     for node in safe.subtree:
@@ -347,6 +378,8 @@ def _netcdf_safe_tree(datatree: xr.DataTree, *, mask: bool = False) -> xr.DataTr
             ds = _collapse_site_position(ds)
         if mask and node is not safe:
             ds = mask_below_threshold(ds)
+        if value_mask is not None and node is not safe:
+            ds = _apply_value_mask_to_dataset(ds, *value_mask)
         ds.attrs = {k: _netcdf_attr(v) for k, v in ds.attrs.items()}
         for var in ds.variables.values():
             var.attrs = {k: _netcdf_attr(v) for k, v in var.attrs.items()}
@@ -699,6 +732,7 @@ def render_publication_figure(
     vmax: float | None = None,
     rhi_clean: Any = None,
     rhi_view: dict[str, Any] | None = None,
+    value_mask: dict[str, Any] | None = None,
 ) -> plt.Figure:
     """Create a publication-quality matplotlib figure of a PPI sweep (or an RHI sweep as a
     range-height plot).
@@ -707,7 +741,9 @@ def render_publication_figure(
     or the data range is used).  *rhi_clean* only matters for RHI sweeps: how noise is hidden
     (``None`` = SQI / SNR / RHOHV masks and despeckle with the defaults, ``False`` = raw data, or a
     dict, see :func:`engine.rhi.parse_clean`); the figure's caption says what was applied.
-    *rhi_view* sets the RHI axes: ``{"height_max": 25, "full": False}``. By default the axes cover
+    *value_mask* hides the values of *variable* the way the viewer does (see
+    :mod:`engine.valuemask`); the figure says so in a footnote. For an RHI the mask travels in
+    *rhi_clean* instead. *rhi_view* sets the RHI axes: ``{"height_max": 25, "full": False}``. By default the axes cover
     the ground range and height that hold valid gates (rounded up), with the height cut at
     ``height_max`` km (25): the beams reach ~95 km but there is no weather up there.
     Returns the Figure object (caller is responsible for saving/closing).
@@ -779,6 +815,15 @@ def render_publication_figure(
         values = values[ray_ok][:, gate_ok]
 
     range_km = range_m / 1000.0
+
+    # The value mask (the same rules as on screen); hidden gates become NaN = not drawn.
+    mask_note = None
+    units_for_mask = _get_units(variable, dict(da.attrs))
+    vmask = valuemask.normalize(value_mask)
+    if vmask is not None:
+        values, n_hidden = valuemask.apply(values, vmask)
+        mask_note = "Value mask: " + (valuemask.describe(vmask, units_for_mask) or "")
+        mask_note += f" ({n_hidden} gates hidden)" if n_hidden else " (no gate affected)"
 
     # Edges for pcolormesh (flat shading needs n+1 edges per axis)
     az_edges, range_edges = _polar_edges(azimuth, range_km)
@@ -925,7 +970,11 @@ def render_publication_figure(
                 title = " | ".join(parts)
             ax.set_title(title, pad=12)
 
-        fig.tight_layout()
+        if mask_note:
+            fig.text(0.5, 0.004, mask_note, ha="center", va="bottom", fontsize=font_size - 3, color="gray")
+            fig.tight_layout(rect=(0, 0.035, 1, 1))
+        else:
+            fig.tight_layout()
     except BaseException:
         plt.close(fig)
         raise
@@ -1224,6 +1273,26 @@ def _pick_ring_interval_km(max_range_km: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+def _volume_value_mask(
+    options: dict[str, Any], variable: str, datatree: xr.DataTree
+) -> tuple[tuple[str, dict[str, Any], str] | None, dict[str, Any]]:
+    """``(value_mask for _netcdf_safe_tree, extra provenance params)`` for a volume export.
+
+    The mask belongs to the exported *variable* (the one on screen); it is applied to that variable
+    in every sweep and recorded in the file (variable attribute ``value_mask`` and the history).
+    """
+    vmask = valuemask.pick(options, variable)
+    if vmask is None:
+        return None, {}
+    units = ""
+    try:
+        units = _get_units(variable, dict(_extract_sweep_dataset(datatree, 0)[variable].attrs))
+    except Exception:  # no sweep 0 / variable missing there: the mask text just has no unit
+        units = _get_units(variable)
+    text = valuemask.describe(vmask, units) or ""
+    return (variable, vmask, text), {"value_mask": f"{variable}: {text}"}
+
+
 class RadarExporter:
     """Export radar data to image, data, and animation formats.
 
@@ -1316,6 +1385,10 @@ class RadarExporter:
         dark_bg = options.get("dark_background", False)
         vmin, vmax = _opt_range(options)
         rhi_clean = options.get("rhi_clean")
+        vmask = valuemask.pick(options, variable)
+        if isinstance(rhi_clean, dict) and ("value_masks" in options or "value_mask" in options):
+            # an RHI uses the mask of ITS variable (batch exports carry several variables)
+            rhi_clean = {**rhi_clean, "mask": vmask}
 
         progress(30, "Rendering figure")
 
@@ -1335,6 +1408,7 @@ class RadarExporter:
             vmax=vmax,
             rhi_clean=rhi_clean,
             rhi_view=options.get("rhi_view"),
+            value_mask=vmask,
         )
 
         try:
@@ -1352,6 +1426,11 @@ class RadarExporter:
                     "vmin": vmin,
                     "vmax": vmax,
                     "mask_no_echo": True,
+                    **(
+                        {"value_mask": valuemask.describe(vmask, _get_units(variable))}
+                        if vmask
+                        else {}
+                    ),
                 },
             )
             with _output_target(output_path, suffix=f".{fmt}", prefix="xradar_export_") as target:
@@ -1527,6 +1606,7 @@ class RadarExporter:
                 vmax=vmax,
                 rhi_clean=options.get("rhi_clean"),
                 rhi_view=options.get("rhi_view"),
+                value_mask=valuemask.pick(options, variable),
             )
 
             # Render figure to an opaque RGB PIL image (alpha composited on white)
@@ -1599,15 +1679,16 @@ class RadarExporter:
     ) -> str:
         progress(10, "Preparing CfRadial1 NetCDF export")
         mask = bool(options.get("mask_no_echo", True))
+        vm, vm_params = _volume_value_mask(options, variable, datatree)
         with (
             _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target,
             _fast_cfradial1_mapper(),
         ):
             cfwrite.write_cfradial1(
-                _netcdf_safe_tree(datatree, mask=mask),
+                _netcdf_safe_tree(datatree, mask=mask, value_mask=vm),
                 target,
                 source_files=options.get("source_files"),
-                params={"format": "cfradial1", "mask_no_echo": mask},
+                params={"format": "cfradial1", "mask_no_echo": mask, **vm_params},
                 masked=mask,
             )
 
@@ -1628,12 +1709,13 @@ class RadarExporter:
     ) -> str:
         progress(10, "Preparing CfRadial2 export")
         mask = bool(options.get("mask_no_echo", True))
+        vm, vm_params = _volume_value_mask(options, variable, datatree)
         with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
             cfwrite.write_cfradial2(
-                _netcdf_safe_tree(datatree, mask=mask),
+                _netcdf_safe_tree(datatree, mask=mask, value_mask=vm),
                 target,
                 source_files=options.get("source_files"),
-                params={"format": "cfradial2", "mask_no_echo": mask},
+                params={"format": "cfradial2", "mask_no_echo": mask, **vm_params},
                 masked=mask,
             )
 
@@ -1663,6 +1745,8 @@ class RadarExporter:
 
         da = mask_variable(sweep_ds[variable])  # no-echo / range-folded codes -> NaN -> no CSV row
         values = da.values
+        # the value mask of this variable: hidden gates become NaN and get no row
+        values, _n_hidden = valuemask.apply(values, valuemask.pick(options, variable))
 
         azimuth = (
             da.coords["azimuth"].values.astype(float)
@@ -1724,15 +1808,16 @@ class RadarExporter:
         options: dict[str, Any],
     ) -> str:
         progress(10, "Preparing Zarr export")
+        vm, vm_params = _volume_value_mask(options, variable, datatree)
         with _output_target(
             output_path, suffix=".zarr", prefix="xradar_export_", directory=True
         ) as target:
             mask = bool(options.get("mask_no_echo", True))
             cfwrite.write_zarr(
-                _netcdf_safe_tree(datatree, mask=mask),
+                _netcdf_safe_tree(datatree, mask=mask, value_mask=vm),
                 target,
                 source_files=options.get("source_files"),
-                params={"format": "zarr", "mask_no_echo": mask},
+                params={"format": "zarr", "mask_no_echo": mask, **vm_params},
                 masked=mask,
                 zarr_format=3 if options.get("zarr_format") == 3 else 2,
             )
