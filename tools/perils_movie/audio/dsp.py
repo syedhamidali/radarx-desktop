@@ -98,7 +98,7 @@ def convolve_events(n: int, idx: np.ndarray, amps: np.ndarray, kernel: np.ndarra
     return fftconvolve(train, kernel)[:n]
 
 
-def damped_sine(sr: int, f: float, tau_s: float, length_s: float = None, phase: float = 0.0) -> np.ndarray:
+def damped_sine(sr: int, f: float, tau_s: float, length_s: float | None = None, phase: float = 0.0) -> np.ndarray:
     length_s = length_s or 8 * tau_s
     t = np.arange(int(length_s * sr)) / sr
     return np.exp(-t / tau_s) * np.sin(2 * np.pi * f * t + phase)

@@ -295,8 +295,9 @@ def render_hail(scene: Scene, sr: int, n: int, seed: int):
     ):
         out[0] += convolve_events(n, idx[sel], (amps * gl)[sel], k)
         out[1] += convolve_events(n, idx[sel], (amps * gr)[sel], k)
+    out[np.abs(out) < 1e-12] = 0.0  # FFT round-off outside the events
     info = {
-        "evidence": h["sources"], "events": int(len(idx)), "evidence_events": h["n_events"],
+        "evidence": h["sources"], "events": len(idx), "evidence_events": h["n_events"],
         "active_seconds": float((w > 0.02).mean() * scene.duration),
         "dm_mm_mean_active": float(dm[w > 0.02].mean()),
         "note": "impact transients; only where hail events / radar hail class were reported",

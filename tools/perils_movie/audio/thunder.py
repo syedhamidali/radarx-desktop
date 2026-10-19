@@ -149,10 +149,8 @@ def _shaped_noise(rng, n: int, sr: int, r_m: float, temp_c: float, p_hpa: float,
     f = np.fft.rfftfreq(n, 1.0 / sr)
     alpha = air_absorption_db_per_m(np.maximum(f, 1.0), temp_c, rh, p_hpa)
     H = 10 ** (-alpha * r_m / 20.0)
-    if base == "rumble":
-        H = H * _rumble_shape(f)
-    else:  # crack: flat above 500 Hz
-        H = H * (f**2 / (f**2 + 500.0**2))
+    # the crack is flat above 500 Hz
+    H = H * (_rumble_shape(f) if base == "rumble" else f**2 / (f**2 + 500.0**2))
     y = np.fft.irfft(X * H, n)
     s = np.sqrt(np.mean(y * y))
     return y / s if s > 0 else y
@@ -218,11 +216,11 @@ def render_flash(row: dict, sr: int, seed: int, camera: CameraPath, prm: Thunder
         c = _shaped_noise(rng, nc, sr, float(r[k]), temp_c, p_hpa, prm.rh_pct, base="crack") * env
         c *= 0.8 * amp * (1.0 - row["dist_nearest_m"] / prm.crack_range_m)
         c = binaural(c, sr, row["az_rel_nearest_deg"])
-        i0 = int(round((float(arr[k]) - t_a) * sr))
+        i0 = round((float(arr[k]) - t_a) * sr)
         j1 = min(L, i0 + nc)
         if j1 > i0:
             out[:, i0:j1] += c[:, : j1 - i0]
-    return int(round(t_a * sr)), out
+    return round(t_a * sr), out
 
 
 def add_at(buf: np.ndarray, start: int, x: np.ndarray) -> None:

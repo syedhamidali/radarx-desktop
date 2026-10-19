@@ -71,7 +71,7 @@ def render_mix(
     cam = load_camera(camera_path)
     prm = thunder or ThunderParams()
     dur = float(tl.clip_duration_s)
-    n = int(round(dur * sr))
+    n = round(dur * sr)
     on = set(LAYER_NAMES) if layers is None else set(layers)
     ev = _load_events(events, b, tl_src)
     scene = Scene(b, tl, cam, dur, ev)

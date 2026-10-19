@@ -94,7 +94,7 @@ class Scene:
     def air_state(self, t_clip: float) -> tuple[float, float]:
         """(temperature C, pressure hPa) at the listener at a clip time: nearest station with data,
         else a standard 15 C / 1000 hPa (used only for the sound absorption)."""
-        i = min(self.n - 1, max(0, int(round(t_clip * CTL_RATE))))
+        i = min(self.n - 1, max(0, round(t_clip * CTL_RATE)))
         out = []
         for var, default in (("temperature_c", 15.0), ("pressure_hpa", 1000.0)):
             v, _, ok = self.blend(var)

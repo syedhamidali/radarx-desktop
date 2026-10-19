@@ -46,7 +46,7 @@ def mux_audio(video_in, wav, video_out, bitrate: int = 192_000) -> dict:
     src = av.open(str(video_in))
     vs = src.streams.video[0]
     vdur = float(src.duration) / 1e6 if src.duration else float(vs.duration * vs.time_base)
-    n_aud = int(round(vdur * sr))
+    n_aud = round(vdur * sr)
     if pcm.shape[1] >= n_aud:
         pcm = pcm[:, :n_aud]
     else:
