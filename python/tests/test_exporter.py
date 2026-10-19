@@ -10,6 +10,7 @@ import pytest
 import xarray as xr
 
 from engine.exporter import RadarExporter
+from tests import radar_data
 
 # ---------------------------------------------------------------------------
 # Format dispatch
@@ -412,10 +413,7 @@ def test_sanitized_attrs_are_accepted_by_netcdf4(tmp_path) -> None:
         node.to_dataset().to_netcdf(tmp_path / f"safe_{i}.nc", engine="netcdf4")
 
 
-_KATX = Path(
-    "/private/tmp/claude-502/-Users-syed44-Git-Stuff-Git-Projects-xradar-desktop/"
-    "4919c2aa-1324-499f-9e5a-79edf19be890/scratchpad/data/KATX20130717_195021_V06"
-)
+_KATX = radar_data.katx() or Path("/nonexistent/KATX20130717_195021_V06")
 
 
 @pytest.mark.skipif(
