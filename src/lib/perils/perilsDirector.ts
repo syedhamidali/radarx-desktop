@@ -35,6 +35,8 @@ export interface CamEntry {
   y_km: number;
   z_km: number;
   vexag: number;
+  /** Vertical field of view of the lens (degrees); absent = the renderer's default. */
+  fov_deg?: number;
   shot: string;
 }
 
@@ -45,6 +47,7 @@ export interface Pose {
   yawDeg: number;
   pitchDeg: number;
   vexag: number;
+  fov?: number;
   shot: string;
 }
 
@@ -125,6 +128,7 @@ export class Director {
       yawDeg: lerpAngle(a.heading_deg, b.heading_deg, f),
       pitchDeg: a.pitch_deg + (b.pitch_deg - a.pitch_deg) * f,
       vexag: a.vexag + (b.vexag - a.vexag) * f,
+      fov: a.fov_deg !== undefined ? a.fov_deg + ((b.fov_deg ?? a.fov_deg) - a.fov_deg) * f : undefined,
       shot: f < 0.5 ? a.shot : b.shot,
     };
   }

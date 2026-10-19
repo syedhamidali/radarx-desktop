@@ -117,7 +117,7 @@ export class PerilsExtras implements ClipExtras {
 
   pose(t: number): ExtrasPose {
     const p = this.director.pose(t);
-    return { x: p.x, y: p.y, zKm: p.zKm, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg, vexag: p.vexag, fov: this.opts.fov };
+    return { x: p.x, y: p.y, zKm: p.zKm, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg, vexag: p.vexag, fov: this.opts.fov ?? p.fov };
   }
 
   cropBox(): { xMin: number; xMax: number; yMin: number; yMax: number } | null {

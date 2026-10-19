@@ -32,6 +32,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from convert_bundle import Geo, parse_iso
+from vortex import vortex_params
 
 EYE_M = 2.0  # eye height of the ground-level (window) camera above the ground, m
 
@@ -67,14 +68,26 @@ def speed_profile(
     dip_width: float = 24.0,
     dip_level: float = 0.35,
     edge: float = 4.0,
+    core_width: float = 0.0,
+    core_level: float | None = None,
+    core_edge: float = 3.0,
 ) -> np.ndarray:
-    """Relative speed of the data clock at clip times ``t``: 1, and ``dip_level`` around ``dip_centre`` (smooth edges)."""
+    """Relative speed of the data clock at clip times ``t``: 1, and ``dip_level`` around ``dip_centre`` (smooth edges).
+
+    With ``core_level`` the middle ``core_width`` seconds of the slow-down are slower still (``core_level``): the
+    stretch in which the tornado is shown in (near) real time.
+    """
     s = np.ones_like(t, dtype=float)
     if dip_centre is None:
         return s
     h = dip_width / 2.0
     ramp = smoothstep((h + edge - np.abs(t - dip_centre)) / edge)
-    return 1.0 - (1.0 - dip_level) * ramp
+    sp = 1.0 - (1.0 - dip_level) * ramp
+    if core_level is not None and core_width > 0:
+        hc = core_width / 2.0
+        rc = smoothstep((hc + core_edge - np.abs(t - dip_centre)) / core_edge)
+        sp = sp - (dip_level - core_level) * rc
+    return sp
 
 
 def build_timeline(
@@ -84,14 +97,32 @@ def build_timeline(
     dip_centre: float | None = None,
     dip_width: float = 24.0,
     dip_level: float = 0.35,
+    core_speedup: float | None = None,
+    core_width: float = 10.0,
 ) -> dict:
-    """Dense mapping: ``t_data_s[i]`` = seconds after the data start shown at frame i (0..N, N = duration * fps)."""
+    """Dense mapping: ``t_data_s[i]`` = seconds after the data start shown at frame i (0..N, N = duration * fps).
+
+    ``core_speedup`` (data seconds per clip second, e.g. 1.0 = real time) makes the middle ``core_width`` seconds of
+    the slow-down run at that speed-up (solved by a few iterations, because the normalisation depends on it).
+    """
     n = round(duration * fps)
     t = np.arange(n + 1) / fps
-    sp = speed_profile(t, dip_centre, dip_width, dip_level)
-    cum = np.concatenate([[0.0], np.cumsum((sp[1:] + sp[:-1]) * 0.5 / fps)])
-    td = cum / cum[-1] * window_s
-    rate = np.gradient(td, t)  # data seconds per clip second
+
+    def build(core_level):
+        sp = speed_profile(t, dip_centre, dip_width, dip_level, 4.0, core_width, core_level)
+        cum = np.concatenate([[0.0], np.cumsum((sp[1:] + sp[:-1]) * 0.5 / fps)])
+        td = cum / cum[-1] * window_s
+        return td, np.gradient(td, t)  # data seconds per clip second
+
+    if dip_centre is not None and core_speedup is not None:
+        lvl = min(dip_level, core_speedup / max(window_s / duration, 1e-6))
+        for _ in range(30):
+            td, rate = build(lvl)
+            at = float(np.interp(dip_centre, t, rate))
+            lvl = float(np.clip(lvl * core_speedup / max(at, 1e-9), 1e-3, dip_level))
+        td, rate = build(lvl)
+    else:
+        td, rate = build(None)
     return {"fps": fps, "frames": n, "t_clip_s": t, "t_data_s": td, "speedup": rate}
 
 
@@ -113,11 +144,15 @@ def solve_dip_centre(
     hi: float,
     dip_width: float = 24.0,
     dip_level: float = 0.35,
+    core_speedup: float | None = None,
+    core_width: float = 10.0,
 ) -> float:
     """Clip time ``c`` in [lo, hi] such that, with the slow-down centred on ``c``, data time ``target_td`` is shown at ``c``."""
 
     def f(c: float) -> float:
-        tl = build_timeline(window_s, duration, fps, c, dip_width, dip_level)
+        tl = build_timeline(
+            window_s, duration, fps, c, dip_width, dip_level, core_speedup, core_width
+        )
         return float(data_time_of_clip(tl, c)) - target_td
 
     if f(lo) >= 0:
@@ -132,6 +167,25 @@ def solve_dip_centre(
         else:
             b = m
     return 0.5 * (a + b)
+
+
+def smooth_keys(t, keys, width: float = 2.5):
+    """Smooth curve through (time, value) keys: linear between them, then a Hann window of ``width`` s, so the
+    value and its slope are continuous (a camera that eases through its keys instead of stopping at each)."""
+    t = np.asarray(t, float)
+    kt = np.array([k[0] for k in keys], float)
+    kv = np.array([k[1] for k in keys], float)
+    h = 0.05
+    lo, hi = min(t.min(), kt[0]) - width, max(t.max(), kt[-1]) + width
+    g = np.arange(lo, hi + h, h)
+    v = np.interp(g, kt, kv)
+    n = max(3, int(round(width / h)) | 1)
+    w = np.hanning(n + 2)[1:-1]
+    w /= w.sum()
+    pad = n // 2
+    vp = np.concatenate([np.full(pad, v[0]), v, np.full(pad, v[-1])])
+    sm = np.convolve(vp, w, mode="valid")
+    return np.interp(t, g, sm)
 
 
 # ── the scene seen from the data ────────────────────────────────────────────
@@ -293,23 +347,49 @@ def plan_shots(
     t_after = b1
     if tor_c is not None:
 
+        t_a = tor_c - 12.0
+        # the camera closes in on the vortex: 2.6 km, then 0.9 km, then 250-300 m for the real-time core
+        # (tor_c +- 5 s), then backs off a little; low over the ground, looking up at the funnel
+        keys_d = [
+            (t_a, 2.6),
+            (t_a + 4.5, 0.9),
+            (tor_c - 4.0, 0.34),
+            (tor_c, 0.26),
+            (tor_c + 4.0, 0.30),
+            (tor_c + 12.0, 0.8),
+        ]
+        keys_h = [
+            (t_a, 0.35),
+            (t_a + 4.5, 0.12),
+            (tor_c - 4.0, 0.04),
+            (tor_c + 4.0, 0.035),
+            (tor_c + 12.0, 0.12),
+        ]
+        keys_l = [
+            (t_a, 0.5),
+            (t_a + 4.5, 0.35),
+            (tor_c - 4.0, 0.16),
+            (tor_c + 4.0, 0.16),
+            (tor_c + 12.0, 0.3),
+        ]
+
         def tor(t):
             q, _act = scene.tornado_at(data_time_of_clip(tl, t))
-            u = np.clip((t - (tor_c - 12.0)) / 24.0, 0, 1)
-            # a safe distance AHEAD of the tornado (the line is behind it), orbiting slowly
-            ang = np.radians(scene.perp_deg) + np.radians(-35.0 + 70.0 * smoothstep(u))
-            dist = 7.0 - 1.5 * np.sin(u * math.pi)
+            u = np.clip((t - t_a) / 24.0, 0, 1)
+            # AHEAD of the tornado (the line is behind it), orbiting slowly around it
+            ang = np.radians(scene.perp_deg) + np.radians(-32.0 + 64.0 * smoothstep(u))
+            dist = smooth_keys(t, keys_d)
             P = q + col(dist) * np.stack([np.sin(ang), np.cos(ang)], -1)
-            return P, 0.55 + 0.9 * smoothstep(u), q, _pad(0.8, len(t))
+            return P, smooth_keys(t, keys_h), q, smooth_keys(t, keys_l)
 
         shots.append(
             Shot(
                 "tornado",
-                "Tornado: a safe distance ahead, the line behind",
-                tor_c - 12.0,
+                "Tornado: close, low, the line behind",
+                t_a,
                 tor_c + 12.0,
                 tor,
-                1.8,
+                1.0,
             )
         )
         t_after = tor_c + 12.0
@@ -395,7 +475,33 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
     return P, alt, T, tz, vex, idx
 
 
-def build_camera(scene: Scene, tl: dict, shots: list[Shot]) -> list[dict]:
+def immersion(shots: list[Shot], t: np.ndarray, overlap: float = 5.0) -> np.ndarray:
+    """1 inside the tornado shot, 0 elsewhere, crossfading with the same smoothstep as the shots (and the layers)."""
+    w = np.zeros_like(t, dtype=float)
+    for s in shots:
+        if s.name == "tornado":
+            up = smoothstep((t - (s.t0 - overlap / 2.0)) / overlap)
+            down = smoothstep((t - (s.t1 - overlap / 2.0)) / overlap)
+            w = np.maximum(w, up * (1.0 - down))
+    return w
+
+
+WIDE_FOV = 64.0  # vertical field of view of the immersive tornado shot, degrees
+SHAKE = {"pos_m": 0.45, "heading_deg": 0.32, "pitch_deg": 0.26}  # amplitudes of the hand-held look
+
+
+def shake_signal(t: np.ndarray, seed: float) -> np.ndarray:
+    """Bounded, smooth, deterministic hand-held shake in [-1.6, 1.6] (three slow sines, no randomness)."""
+    return (
+        np.sin(2 * np.pi * 0.83 * t + seed)
+        + 0.5 * np.sin(2 * np.pi * 1.71 * t + 2.0 * seed + 1.0)
+        + 0.25 * np.sin(2 * np.pi * 3.07 * t + 3.0 * seed + 2.0)
+    ) / 1.75 * 1.6
+
+
+def build_camera(
+    scene: Scene, tl: dict, shots: list[Shot], shake: bool = True
+) -> list[dict]:
     t = tl["t_clip_s"]
     P, alt, T, tz, vex, idx = blend_shots(shots, t)
     d = T - P
@@ -403,7 +509,20 @@ def build_camera(scene: Scene, tl: dict, shots: list[Shot]) -> list[dict]:
     heading = bearing_deg(d[:, 0], d[:, 1])
     # the renderer stretches heights by the vertical exaggeration of the frame: so does the pitch
     pitch = np.degrees(np.arctan2((tz - alt) * vex, np.maximum(horiz, 1e-6)))
+    if shake:
+        w = immersion(shots, t)
+        if w.max() > 0:
+            # hand-held look inside the tornado shot: a few cm to decimetres of position, a third of a degree of aim
+            P = P + w[:, None] * np.stack(
+                [shake_signal(t, 0.4), shake_signal(t, 1.7)], -1
+            ) * (SHAKE["pos_m"] / 1000.0)
+            alt = alt + w * shake_signal(t, 2.9) * (SHAKE["pos_m"] / 2000.0)
+            alt = np.maximum(alt, 0.0021)
+            heading = (heading + w * shake_signal(t, 3.3) * SHAKE["heading_deg"]) % 360.0
+            pitch = pitch + w * shake_signal(t, 4.1) * SHAKE["pitch_deg"]
     pitch = np.clip(pitch, -86.0, 86.0)
+    # a wider lens inside the tornado shot (a phone-like first-person view); 45 degrees (the renderer's default) elsewhere
+    fov = 45.0 + (WIDE_FOV - 45.0) * immersion(shots, t)
     lat, lon = scene.geo.latlon(P[:, 0], P[:, 1])
     out = []
     for i in range(len(t)):
@@ -419,6 +538,7 @@ def build_camera(scene: Scene, tl: dict, shots: list[Shot]) -> list[dict]:
                 "y_km": round(float(P[i, 1]), 4),
                 "z_km": round(float(alt[i]), 5),
                 "vexag": round(float(vex[i]), 4),
+                "fov_deg": round(float(fov[i]), 3),
                 "shot": shots[min(idx[i], len(shots) - 1)].name,
             }
         )
@@ -490,6 +610,36 @@ def build_events(
             "t_clip_end_s": round(t_b, 3),
             "positions": pos,
         }
+        # the rotation of the vortex (vortex.py): at the middle of the tornado shot
+        sh = next((s for s in shots if s.name == "tornado"), None)
+        if sh is not None:
+            tm = 0.5 * (sh.t0 + sh.t1)
+            tdm = float(data_time_of_clip(tl, tm))
+            qm, _a = scene.tornado_at(tdm)
+            vp = vortex_params(tors[0], p.get("rotation") or [], tdm, float(qm[0]), float(qm[1]))
+            if vp is not None:
+                sp = tl["speedup"]
+                i0 = int(round(sh.t0 * tl["fps"]))
+                i1 = int(round(sh.t1 * tl["fps"]))
+                real = [
+                    float(tl["t_clip_s"][i])
+                    for i in range(i0, min(i1, len(sp)))
+                    if sp[i] <= 1.3
+                ]
+                ev["tornado"]["vortex"] = {
+                    **{k: (round(v, 5) if isinstance(v, float) else v) for k, v in vp.items()},
+                    "at_clip_s": round(tm, 3),
+                    "real_time_from_clip_s": round(min(real), 3) if real else None,
+                    "real_time_to_clip_s": round(max(real), 3) if real else None,
+                    "speedup_at_middle": round(float(np.interp(tm, tl["t_clip_s"], sp)), 3),
+                    "rotation_deg_per_clip_s_at_middle": round(
+                        math.degrees(vp["omega_rad_s"])
+                        * float(np.interp(tm, tl["t_clip_s"], sp)),
+                        2,
+                    ),
+                    "note": "stylised funnel: position from the survey, spin from the survey wind range and half the path width; "
+                    "the radar resolves only the mesocyclone-scale couplet (vrot_radar_ms, meso_*)",
+                }
     for s in p.get("stations", []):
         for h in s.get("events") or []:
             t = h.get("t_s")
@@ -623,8 +773,14 @@ def plan(
     fps: int = 30,
     dip_level: float = 0.35,
     dip_width: float = 24.0,
+    core_speedup: float | None = 1.0,
+    core_width: float = 10.0,
 ) -> dict:
-    """Everything: timeline.json, camera_path.json and events.json contents."""
+    """Everything: timeline.json, camera_path.json and events.json contents.
+
+    The tornado shot is slowed to ``dip_level`` of the base speed and its middle ``core_width`` seconds run at
+    ``core_speedup`` (1.0 = real time), so that the rotation of the vortex is paced as in nature.
+    """
     scene = Scene(perils)
     window = scene.window_s
     span = scene.tornado_span()
@@ -632,9 +788,20 @@ def plan(
     if span:
         mid = 0.5 * (span[0] + span[1])
         tor_c = solve_dip_centre(
-            window, mid, duration, fps, 36.0, duration - 62.0, dip_width, dip_level
+            window,
+            mid,
+            duration,
+            fps,
+            36.0,
+            duration - 62.0,
+            dip_width,
+            dip_level,
+            core_speedup,
+            core_width,
         )
-    tl = build_timeline(window, duration, fps, tor_c, dip_width, dip_level)
+    tl = build_timeline(
+        window, duration, fps, tor_c, dip_width, dip_level, core_speedup, core_width
+    )
     # the ground-level shot follows the tornado shot (or the flyby); pick its station from its time slot
     t_after = (tor_c + dip_width / 2.0) if tor_c is not None else 40.0
     station = pick_station(scene, tl, t_after, min(duration - 30.0, t_after + 27.0))
@@ -659,7 +826,13 @@ def plan(
         "note": "t_data_s[i] = seconds after data_start shown at clip time i / fps (monotone); speedup[i] = data seconds per clip second",
         "tornado_slowdown": None
         if tor_c is None
-        else {"centre_clip_s": tor_c, "width_s": dip_width, "level": dip_level},
+        else {
+            "centre_clip_s": tor_c,
+            "width_s": dip_width,
+            "level": dip_level,
+            "core_width_s": core_width if core_speedup is not None else None,
+            "core_speedup": core_speedup,
+        },
         "mapping": {
             "t_clip_s": [round(float(v), 4) for v in tl["t_clip_s"]],
             "t_data_s": [round(float(v), 4) for v in tl["t_data_s"]],
