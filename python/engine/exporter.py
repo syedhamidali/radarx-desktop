@@ -390,6 +390,29 @@ def _polar_edges(azimuth_deg: np.ndarray, range_km: np.ndarray) -> tuple[np.ndar
     return az_edges, range_edges
 
 
+def _expand_title(
+    template: str, datatree: xr.DataTree, sweep_ds: xr.Dataset, variable: str, sweep: int
+) -> str:
+    """A user-written title with ``{variable}``, ``{sweep}``, ``{elevation}``, ``{time}`` and
+    ``{radar}`` filled in (plain replacement, so stray braces in a title are left alone)."""
+    radar = ""
+    for attrs in (getattr(datatree, "attrs", {}), getattr(datatree.to_dataset(), "attrs", {})):
+        radar = str(attrs.get("instrument_name") or attrs.get("site_name") or "")
+        if radar:
+            break
+    elevation = _extract_elevation(sweep_ds)
+    values = {
+        "{variable}": variable,
+        "{sweep}": str(sweep),
+        "{elevation}": "" if elevation == "?" else f"{elevation}",
+        "{time}": _extract_datetime(datatree, sweep_ds) or "",
+        "{radar}": radar,
+    }
+    for key, value in values.items():
+        template = template.replace(key, value)
+    return template.strip()
+
+
 def render_publication_figure(
     datatree: xr.DataTree,
     variable: str,
@@ -571,7 +594,7 @@ def render_publication_figure(
         # Title
         if show_title:
             if title_override:
-                title = title_override
+                title = _expand_title(str(title_override), datatree, sweep_ds, variable, sweep)
             else:
                 elev = _extract_elevation(sweep_ds)
                 dt_str = _extract_datetime(datatree, sweep_ds)

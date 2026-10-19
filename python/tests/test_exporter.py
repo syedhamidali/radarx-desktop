@@ -432,3 +432,27 @@ def test_real_nexrad_netcdf_export_roundtrip(tmp_path) -> None:
     )
     with xr.open_dataset(out) as ds:
         assert ds.sizes["time"] > 0 and "DBZH" in ds.data_vars
+
+
+class TestCustomTitle:
+    def _title(self, **kw):
+        import matplotlib.pyplot as plt
+
+        from engine.exporter import render_publication_figure
+        from tests.conftest import make_synthetic_datatree
+
+        fig = render_publication_figure(make_synthetic_datatree(), "DBZH", 0, dpi=50, **kw)
+        try:
+            return fig.axes[0].get_title()
+        finally:
+            plt.close(fig)
+
+    def test_own_title_is_used_verbatim(self):
+        assert self._title(title_override="My storm") == "My storm"
+
+    def test_placeholders_are_filled_in(self):
+        text = self._title(title_override="{variable} sweep {sweep} {elevation}deg {unknown}")
+        assert text.startswith("DBZH sweep 0 ") and "{unknown}" in text and "{variable}" not in text
+
+    def test_hidden_title_stays_hidden(self):
+        assert self._title(show_title=False, title_override="x") == ""
