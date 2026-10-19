@@ -9,7 +9,8 @@
   once the app is the default for that type. This works for NetCDF/CfRadial, HDF5/ODIM, gzip files, numbered
   copies such as `file.nc.1` and, on macOS, for files with no extension.
 - **Cloud**: the *Cloud data* panel opens the latest NEXRAD Level II scan of a station from the public AWS archive,
-  browses the archive by date, or opens ARCO / icechunk data.
+  browses the archive by date, or opens ARCO / icechunk data. Click a radar marker on the map for the same
+  actions per site ({doc}`RADAR_SITES`).
 
 ```{image} images/ui/welcome.png
 :alt: The empty window

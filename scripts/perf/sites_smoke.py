@@ -35,7 +35,7 @@ def main():
     ap.add_argument("--file", required=True)
     ap.add_argument("--shots", default="")
     a = ap.parse_args()
-    fails, errors, to_engine, requests = [], [], [], []
+    fails, errors, to_engine, requests, opened = [], [], [], [], []
 
     def check(name, cond):
         print(("ok   " if cond else "FAIL ") + name)
@@ -75,6 +75,15 @@ def main():
                     st = json.loads(msg)["station"]
                     ws.send(canned(st))
                     return
+                if t == "list_nexrad_l2_files":
+                    m = json.loads(msg)
+                    ws.send(json.dumps({"type": "nexrad_l2_files", "station": m["station"], "date": m["date"], "files": [
+                        {"name": f"{m['station']}20260101_000000_V06", "path": f"s3://unidata-nexrad-level2/2026/01/01/{m['station']}/{m['station']}20260101_000000_V06", "size": 1234567}]}))
+                    return
+                if t in ("open_nexrad_l2", "open_nexrad_realtime"):
+                    opened.append(json.loads(msg))
+                    ws.send(json.dumps({"type": "error", "message": f"{t} failed: mocked by the smoke test (nothing was downloaded)"}))
+                    return
             server.send(msg)
 
         ws.on_message(from_page)
@@ -91,7 +100,7 @@ def main():
         page.add_init_script(f"window.__XRADAR_PORT__ = {a.engine_port};")
         page.route_web_socket(re.compile(rf"ws://(localhost|127\.0\.0\.1):{a.engine_port}"), on_ws)
         page.on("pageerror", lambda e: errors.append("pageerror: " + str(e)[:200]))
-        page.on("console", lambda m: errors.append("console: " + m.text[:200]) if m.type == "error" and "favicon" not in m.text and "tile" not in m.text.lower() and "Failed to load resource" not in m.text else None)
+        page.on("console", lambda m: errors.append("console: " + m.text[:200]) if m.type == "error" and "favicon" not in m.text and "tile" not in m.text.lower() and "Failed to load resource" not in m.text and "mocked by the smoke test" not in m.text else None)
         page.on("request", lambda r: requests.append(r.url))
         cdp = ctx.new_cdp_session(page)
         page.goto(a.url)
@@ -182,6 +191,15 @@ def main():
         check("session consent: no dialog on the next check", dlg.count() == 0)
         check("session consent: the engine was asked again", to_engine.count("get_nexrad_latest_info") >= 3)
 
+        # ── hand-off to the Cloud panel (the engine's reply is mocked: nothing is downloaded) ──
+        card.get_by_role("button", name="Browse archive").click()
+        page.get_by_text("20260101_000000_V06").first.wait_for(timeout=5000)
+        check("Browse archive: Cloud panel lists the station's folder", "20260101_000000_V06" in page.inner_text("body"))
+        check("Browse archive: the Archive tab with the station selected", "list_nexrad_l2_files" in to_engine)
+        card.get_by_role("button", name="Open latest volume").click()
+        page.wait_for_timeout(800)
+        check("Open latest: exactly the shown file is requested from the engine", len(opened) == 1 and opened[0]["type"] == "open_nexrad_l2" and opened[0]["path"].startswith(f"s3://unidata-nexrad-level2/") and opened[0]["path"].endswith("_V06") and f"/{sid}/" in opened[0]["path"])
+
         # ── keyboard ─────────────────────────────────────────────────────────────────────────
         page.locator(".rs-dot.open").focus()
         page.keyboard.press("ArrowRight")
@@ -206,6 +224,25 @@ def main():
         check(f"zoomed out: more markers ({n_zoom} -> {n_out}), labels thinned ({labels_out}/{n_out})", n_out > n_zoom and labels_out < n_out)
         shot(page, "zoomed_out")
         check("zoomed out: the layer never shows more labels than the cap", labels_out <= 60 + 2)
+
+        # ── Settings: own sites ──────────────────────────────────────────────────────────────
+        page.keyboard.press("Control+,")
+        page.wait_for_selector(".settings-dialog", timeout=5000)
+        page.locator(".tab-btn", has_text="Data").click()
+        page.wait_for_selector("input[type=file][aria-label*='radar sites']", timeout=5000)
+        csv = "id,name,lat,lon,elev_m,network\nTS1,Test one,40.0,-100.0,185,TEST\nBAD,x,99,1,,\nTS2,Test two,36.5,-92.0,,TEST\n"
+        page.locator("input[type=file][aria-label*='radar sites']").set_input_files({"name": "my.csv", "mimeType": "text/csv", "buffer": csv.encode()})
+        page.wait_for_selector("text=2 sites loaded from my.csv", timeout=5000)
+        check("own CSV: 2 good rows loaded, the bad one reported", "1 rows skipped" in page.inner_text(".settings-dialog") and "latitude out of range" in page.inner_text(".settings-dialog"))
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(400)
+        page.wait_for_selector(".rs-dot.custom", timeout=5000)
+        check("own sites appear as diamonds", page.locator(".rs-dot.custom").count() >= 1)
+        page.locator(".rs-dot.custom").first.click(force=True)
+        page.wait_for_selector("aside.rs-card")
+        check("own site card: no download, says why", page.get_by_role("button", name="Open latest volume").is_disabled() and "NEXRAD Level II only" in page.locator("aside.rs-card").inner_text())
+        page.keyboard.press("Escape")
+        page.evaluate("localStorage.removeItem('xradar-radar-sites-custom')")
 
         # ── persistence ──────────────────────────────────────────────────────────────────────
         page.reload()
