@@ -255,6 +255,39 @@ export function nearestSounding(snds: SoundingRec[], t: number, centre?: [number
   return best ? { snd: best, offsetS: best.launch - t } : null;
 }
 
+/** Surface-based CAPE (J/kg) of a sounding's engine diagnostics, or null. */
+export function sbCape(s: SoundingRec): number | null {
+  const d = s.diagnostics as { parcels?: Record<string, { cape?: number | null }> } | undefined;
+  const c = d?.parcels?.['surface-based']?.cape;
+  return typeof c === 'number' && Number.isFinite(c) ? c : null;
+}
+
+/**
+ * The environment of the storm and the air it left behind: the PRE-storm sounding (launched at least ten minutes before
+ * the window) with the most instability that is near the storm, and the POST-storm sounding of the same site (launched
+ * after the window, the cold pool) when there is one. The score of a pre-storm sounding is its CAPE in units of 100 J/kg
+ * minus its distance from the line in units of 40 km. A sounding is only used if it has a profile.
+ */
+export function chooseEnvironmentPair(snds: SoundingRec[], windowEnd: number, centre: [number, number]): { pre: SoundingRec; post: SoundingRec | null } | null {
+  let pre: SoundingRec | null = null;
+  let best = -Infinity;
+  for (const s of snds) {
+    if (!s.levels || s.launch > -600) continue;
+    const sc = (sbCape(s) ?? 0) / 100 - Math.hypot(s.x - centre[0], s.y - centre[1]) / 40;
+    if (sc > best) {
+      best = sc;
+      pre = s;
+    }
+  }
+  if (!pre) return null;
+  let post: SoundingRec | null = null;
+  for (const s of snds) {
+    if (!s.levels || s.site !== pre.site || s.launch < windowEnd - 120) continue;
+    if (!post || s.launch < post.launch) post = s;
+  }
+  return { pre, post };
+}
+
 /** One sounding's environment numbers of the bundle's environment.json (engine diagnostics at the launch site). */
 export interface EnvSounding {
   id: string;

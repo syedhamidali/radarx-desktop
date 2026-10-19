@@ -11,7 +11,7 @@ import '../styles/provenance.css';
 import type { ClipApi, ClipExtras, ExtrasPose, FrameInfo, OverlayCam } from './clipExtras';
 import { COLORMAP_DATA } from '../utils/colormaps';
 import {
-  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, observedStepAt, seriesAt, stationReadout, tornadoAt, rotationAt, interpWeights,
+  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, chooseEnvironmentPair, type SoundingRec, observedStepAt, seriesAt, stationReadout, tornadoAt, rotationAt, interpWeights,
 } from './perilsData';
 import { Director, type CamEntry, type TimelineFile, nearestStation } from './perilsDirector';
 import { LayerVis, crossfade, type LayerId } from './perilsLayers';
@@ -67,6 +67,7 @@ export class PerilsExtras implements ClipExtras {
   private lmaNow: FlashFrame = { sprites: [], links: [], active: 0 };
   private events: ScienceEvent[] = [];
   private sched: ScheduledCaption[] = [];
+  private pair: { pre: SoundingRec; post: SoundingRec | null } | null = null;
   private lut: Uint8Array = new Uint8Array(768);
   private frameNo = 0;
   private insetEl: HTMLDivElement | null = null;
@@ -89,6 +90,9 @@ export class PerilsExtras implements ClipExtras {
     this.lma = { ...LMA_DEFAULTS, ...(opts.lma ?? {}) };
     this.events = ((data.science as ScienceEvent[] | undefined) ?? []).slice().sort((a, b) => a.t_s - b.t_s);
     this.sched = scheduleCaptions(this.events, (td) => director.clipTimeOfData(td), director.duration);
+    const c0 = data.track.length ? ([data.track[0].x, data.track[0].y] as [number, number]) : ([0, 0] as [number, number]);
+    const wEnd = data.steps[data.steps.length - 1]?.t_s ?? 0;
+    this.pair = chooseEnvironmentPair(data.soundings, wEnd, c0);
     if (data.lma) {
       this.flashes = compileFlashes(data.lma.flashes, (td) => director.clipTimeOfData(td));
       this.maxDur = longestFlash(this.flashes);
@@ -324,7 +328,7 @@ export class PerilsExtras implements ClipExtras {
     this.lastTanX = cam.tanX;
     const centre = this.stormCentre(info.td);
     const env: SceneEnv = {
-      ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, nearStep: this.nearStep(info.td),
+      ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, sounding: this.pair?.pre ?? null, nearStep: this.nearStep(info.td),
     };
     const v = (id: LayerId) => this.vis.at(id, info.t);
     drawIsotherms(env, v('isotherms'), centre, 55);
@@ -445,7 +449,7 @@ export class PerilsExtras implements ClipExtras {
     const fmt = (v: unknown, unit: string, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(d)} ${unit}` : null);
     const list = env.soundings as EnvSounding[] | undefined;
     if (Array.isArray(list)) {
-      const e = pickEnvSounding(list, td, this.stormCentre(td));
+      const e = (this.pair && list.find((x) => x.launch === this.pair!.pre.launchIso)) || pickEnvSounding(list, td, this.stormCentre(td));
       if (!e) return null;
       const rows = ([
         ['surface-based CAPE', fmt(e.sbcape, 'J/kg')],
@@ -456,7 +460,7 @@ export class PerilsExtras implements ClipExtras {
         ['freezing level', typeof e.freezing_level_asl_m === 'number' ? `${(e.freezing_level_asl_m / 1000).toFixed(1)} km` : null],
       ] as [string, string | null][]).filter((r): r is [string, string] => r[1] !== null);
       const dt = e.launch_t_s - td;
-      return { title: `${e.site} sonde ${clockUtc(this.data.time0, e.launch_t_s).slice(0, 5)} UTC`, prov: 'observed', rows, note: `launched ${fmtOffset(dt)} from now; not at the storm` };
+      return { title: `pre-storm ${e.site} sonde ${clockUtc(this.data.time0, e.launch_t_s).slice(0, 5)} UTC`, prov: 'observed', rows, note: `launched ${fmtOffset(dt)} from this moment, ahead of the storm` };
     }
     const flat = ([
       ['CAPE', fmt(env.cape_jkg, 'J/kg')],
@@ -521,7 +525,7 @@ export class PerilsExtras implements ClipExtras {
   private updateInset(info: FrameInfo, top: number, alpha: number): void {
     const el = this.insetEl;
     if (!el) return;
-    const near = nearestSounding(this.data.soundings.filter((s) => s.levels), info.td, this.stormCentre(info.td));
+    const near = this.pair ? { snd: this.pair.pre, offsetS: this.pair.pre.launch - info.td } : nearestSounding(this.data.soundings.filter((s) => s.levels), info.td, this.stormCentre(info.td));
     if (!near || alpha <= 0.02) {
       el.style.opacity = '0';
       return;
@@ -532,15 +536,15 @@ export class PerilsExtras implements ClipExtras {
     if (this.insetId !== snd.id) {
       this.insetId = snd.id;
       this.insetUnmount?.();
-      this.pending = this.mountSounding(el, snd);
+      this.pending = this.mountSounding(el, snd, this.pair?.post ?? null);
     }
     const off = near.offsetS;
-    const when = `launched ${clockUtc(this.data.time0, snd.launch)} UTC · ${fmtOffset(off)} ${off < 0 ? '(before' : '(after'} the clip time at this moment)`;
+    const when = `pre-storm sounding, launched ${clockUtc(this.data.time0, snd.launch).slice(0, 5)} UTC (${fmtOffset(off)} from this moment)`;
     const whenEl = el.querySelector('.when');
     if (whenEl) whenEl.textContent = when;
   }
 
-  private async mountSounding(el: HTMLDivElement, snd: PerilsData['soundings'][number]): Promise<void> {
+  private async mountSounding(el: HTMLDivElement, snd: PerilsData['soundings'][number], post: PerilsData['soundings'][number] | null): Promise<void> {
     const [{ mount, unmount }, { default: Inset }] = await Promise.all([import('svelte'), import('../components/PerilsInset.svelte')]);
     const lv = snd.levels!;
     const first = lv.height_msl_m.find((v) => v != null) ?? 0;
@@ -561,7 +565,7 @@ export class PerilsExtras implements ClipExtras {
       surface_height_m: first, notes: [], drift_note: '', drift: null, levels: { ...lv, n_levels: lv.pressure_hpa.length, thinned: false },
       provenance: { kind: 'observed' as const, source: snd.site }, diagnostics: diag,
     };
-    const comp = mount(Inset, { target: el, props: { data, parcel: surfaceParcel(lv), title: `${snd.site} sounding`, when: '', rows } });
+    const comp = mount(Inset, { target: el, props: { data, parcel: surfaceParcel(lv), title: `${snd.site} sounding`, when: '', rows, post: post?.levels ?? null, postLabel: post ? `dashed: same site ${clockUtc(this.data.time0, post.launch).slice(0, 5)} UTC, after the storm` : '' } });
     this.insetUnmount = () => {
       void unmount(comp);
     };

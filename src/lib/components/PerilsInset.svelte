@@ -13,10 +13,14 @@
   import type { ParcelPath } from '../perils/perilsThermo';
   import '../styles/provenance.css';
 
-  let { data, parcel, title, when, rows }: { data: SoundingData; parcel: ParcelPath | null; title: string; when: string; rows: [string, string][] } = $props();
+  import type { SoundingLevels } from '../perils/perilsData';
+  let { data, parcel, title, when, rows, post = null, postLabel = '' }: { data: SoundingData; parcel: ParcelPath | null; title: string; when: string; rows: [string, string][]; post?: SoundingLevels | null; postLabel?: string } = $props();
 
   const f = makeFrame(560, 600, { left: 40, right: 64, top: 14, bottom: 28 });
   const pathD = $derived(parcel ? pathOf(f, parcel.path.map((q) => q[1]), parcel.path.map((q) => q[0])) : '');
+  // the sounding of the same site after the storm (the cold pool), dashed over the pre-storm one
+  const postT = $derived(post ? pathOf(f, post.temperature_c, post.pressure_hpa) : '');
+  const postTd = $derived(post ? pathOf(f, post.dewpoint_c, post.pressure_hpa) : '');
 </script>
 
 <div class="inset">
@@ -27,10 +31,15 @@
   <p class="when">{when}</p>
   <div class="skew">
     <SkewT {data} />
-    {#if pathD}
-      <svg class="over" viewBox="0 0 560 600" aria-hidden="true"><path d={pathD} /></svg>
+    {#if pathD || postT}
+      <svg class="over" viewBox="0 0 560 600" aria-hidden="true">
+        {#if pathD}<path d={pathD} />{/if}
+        {#if postT}<path class="post t" d={postT} />{/if}
+        {#if postTd}<path class="post td" d={postTd} />{/if}
+      </svg>
     {/if}
   </div>
+  {#if postLabel}<p class="when">{postLabel}</p>{/if}
   <div class="lower">
     <div class="hodo"><Hodograph {data} /></div>
     <dl>
@@ -51,6 +60,9 @@
   .skew { position: relative; }
   .over { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
   .over path { fill: none; stroke: var(--c-caution); stroke-width: 2; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
+  .over path.post { stroke-width: 1.6; stroke-dasharray: 2 3; opacity: 0.9; }
+  .over path.post.t { stroke: var(--c-alarm); }
+  .over path.post.td { stroke: var(--c-nominal); }
   .lower { display: flex; gap: 8px; margin-top: 8px; align-items: flex-start; }
   .hodo { width: 176px; flex: none; }
   .hodo :global(figcaption) { display: none; }

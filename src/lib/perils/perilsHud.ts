@@ -417,7 +417,7 @@ export function drawEndCard(ctx: CanvasRenderingContext2D, W: number, H: number,
   const h = (86 + rows * 36 + 6 * 22 + 40) * u;
   ctx.save();
   ctx.globalAlpha = a;
-  panel(ctx, x, y, w, h, u, 0.82);
+  panel(ctx, x, y, w, h, u, 0.94);
   drawText(ctx, 'Data and credits', x + 18 * u, y + 36 * u, u, { size: 24, weight: 700, halo: 0 });
   src.slice(0, rows).forEach((s, i) => {
     const yy = y + (74 + i * 36) * u;

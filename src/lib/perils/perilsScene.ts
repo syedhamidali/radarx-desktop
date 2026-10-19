@@ -10,7 +10,7 @@
  */
 import type { OverlayCam } from './clipExtras';
 import {
-  type PerilsData, type RotationTrack, type Station, type TornadoRec, balloonAt, heightOfTemp, nearestSounding, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
+  type PerilsData, type RotationTrack, type Station, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
 } from './perilsData.ts';
 import { type RGB, drawText, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR, GRAUPEL_COLOUR } from './perilsStyle.ts';
 import { recentHail } from './perilsInsets.ts';
@@ -28,6 +28,8 @@ export interface SceneEnv {
   nearestStation: string | null;
   /** Centre of the line (km) at this time. */
   centre: [number, number];
+  /** The pre-storm sounding the Skew-T and the isotherm references use. */
+  sounding: PerilsData['soundings'][number] | null;
   /** Index of the observed step nearest in time. */
   nearStep: number;
 }
@@ -655,7 +657,7 @@ export function drawBalloons(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
   // one sounding in full: the one the Skew-T shows (nearest in time and place); the others are small dots
-  const nearest = nearestSounding(e.data.soundings.filter((q) => q.levels), e.td, e.centre)?.snd ?? null;
+  const nearest = e.sounding;
   for (const s of e.data.soundings) {
     ctx.save();
     ctx.globalAlpha = a;
@@ -742,7 +744,7 @@ export function drawBalloons(e: SceneEnv, a: number): void {
 export function drawIsotherms(e: SceneEnv, a: number, centre: [number, number], radiusKm: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
-  const best = nearestSounding(e.data.soundings.filter((q) => q.levels), e.td, e.centre)?.snd ?? null;
+  const best = e.sounding;
   if (!best) return;
   ctx.save();
   ctx.globalAlpha = a * 0.7;
