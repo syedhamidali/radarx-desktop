@@ -193,11 +193,29 @@ trk = api.track(["KHPX20211211_015357_V06", "KHPX20211211_015930_V06", "KHPX2021
 trk.to_dataframe().head(3)     # one row per track; trk.cells_dataframe() has every cell; trk.plot()
 ```
 
+## Rainfall and hydrology
+
+```python
+res = api.qpe(["KHPX20211211_015357_V06", "KHPX20211211_015930_V06", "KHPX20211211_020457_V06"], out="rain.nc")
+res.stats()                      # max / mean depth, wet area, uncertainty_median_rel
+res.accumulation                 # mm on res.grid (NaN where no radar covers); res.accumulation_sigma is its 1 sigma
+res.provenance()["type"]         # 'RETRIEVED' (an estimate); 'ADJUSTED' after gauges
+res = api.qpe(files, relation="tropical", freezing_level_m=3800, gauges="gauges.csv", adjust="ked",
+              basins="watersheds.geojson", thresholds=[10, 25, 50], frequency="atlas14_6h.json")
+res.validation["cross_validation"]      # leave-one-gauge-out skill
+res.basin_series.summary()              # one dict per basin
+vol.qpe()                               # the instantaneous rate of one volume (res.rate_last)
+```
+
+Files are passed as paths and opened one at a time. Options are the `xrd qpe` ones; unknown names raise
+`XrdArgumentError` with a suggestion. Details, equations and limits: {doc}`HYDROLOGY`.
+
 ## Results at a glance
 
 | Class | Main members |
 |---|---|
-| `Volume` | `tree`, `path`, `format`, `sweeps`, `info()`, `variables()`, `field()`, `dataset()`, `to_dataset()`, `run()`, `pipeline()`, `cells()`, `plot()`, `export()`, `derived`, `add_derived()`, `drop_derived()`, `default_sweep()` |
+| `QpeResult` | `accumulation`, `accumulation_sigma`, `rate_max`, `rate_last`, `valid_fraction`, `quality`, `flags`, `basin_series`, `validation`, `exceedance`, `stats()`, `provenance()`, `save()`, `plot()`, `to_dataset()` |
+| `Volume` | `qpe()`, `tree`, `path`, `format`, `sweeps`, `info()`, `variables()`, `field()`, `dataset()`, `to_dataset()`, `run()`, `pipeline()`, `cells()`, `plot()`, `export()`, `derived`, `add_derived()`, `drop_derived()`, `default_sweep()` |
 | `ModuleResult` | `scalars`, `table(s)`, `text`, `overlays`, `fields`, `derived`, `skipped`, `plot()`, `to_dataset()`, `save()`, `to_dict()` |
 | `PipelineResult` | `steps` (DataFrame), `name`, `derived`, `sweeps`, `skipped`, `plot()`, `to_dataset()`, `save()` |
 | `Mosaic` | `image`, `bbox`, `radars`, `stats`, `to_dataset()`, `save()`, `save_png()`, `save_netcdf()`, `plot()` |

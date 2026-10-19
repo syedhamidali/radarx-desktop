@@ -81,6 +81,8 @@ COMMANDS = (
     "mosaic",
     "winds",
     "animate",
+    "qpe",
+    "basin",
     "export",
     "examples",
     "completion",
@@ -377,6 +379,8 @@ GROUPS = (
     ("Combine", (("mosaic", "merge several radars onto one map"),
                  ("winds", "3-D winds from two or more radars (multi-Doppler)"),
                  ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
+    ("Hydrology", (("qpe", "rain rate / accumulation with uncertainty, gauges (docs/HYDROLOGY.md)"),
+                   ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
     ("Help", (("examples", "a guided tour of copy-paste commands"),
               ("completion", "shell completion script for bash, zsh or fish"))),
@@ -811,6 +815,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dpi", type=int, default=300, help="image resolution (default 300)")
     p.set_defaults(func=cmd_export)
+
+    # -- hydrology: qpe, basin (engine/hydro/cli.py) -------------------------------------
+    from engine.hydro.cli import register as register_hydro
+
+    register_hydro(command, sys.modules[__name__])
 
     # -- examples / completion -----------------------------------------------------------
     p = command(
@@ -1927,6 +1936,13 @@ xrd winds -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 --extent 80 -o wind
 xrd animate -i 'mayfield/*/*_V06' --no-render
 xrd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
 xrd animate -i mayfield -p still.png --still-at 12""",
+    "hydrology": """\
+# HYDROLOGY - rain rate, accumulation with uncertainty, gauges, basins (needs radarx)
+xrd qpe --list-relations
+xrd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
+xrd qpe -i 'mayfield/*/*_V06' --relation tropical --composite best -o network.nc
+xrd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked -o adjusted.nc
+xrd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images
 xrd export -i {SAMPLE} -o ktlx.nc
@@ -1953,6 +1969,8 @@ TOPIC_ALIASES = {
     "mosaic": "combine",
     "winds": "combine",
     "animate": "animate",
+    "qpe": "hydrology",
+    "basin": "hydrology",
     "export": "save",
     "config": "reproduce",
 }

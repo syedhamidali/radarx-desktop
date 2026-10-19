@@ -1043,6 +1043,12 @@ class ConnectionHandler(EnvironmentMessages):
             "mosaic_probe": self._handle_mosaic_probe,
             "export_mosaic": self._handle_export_mosaic,
             "get_mosaic_volume": self._handle_get_mosaic_volume,
+            "qpe_info": self._handle_qpe,
+            "qpe_run": self._handle_qpe,
+            "qpe_layer": self._handle_qpe,
+            "qpe_adjust": self._handle_qpe,
+            "qpe_series": self._handle_qpe,
+            "qpe_export": self._handle_qpe,
             "get_wind_volume": self._handle_get_wind_volume,
             "run_multidoppler": self._handle_run_multidoppler,
             "multidoppler_cancel": self._handle_multidoppler_cancel,
@@ -3925,6 +3931,89 @@ class ConnectionHandler(EnvironmentMessages):
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
         }
         await self._send_binary_chunks([record.png], header, length_key="png_bytes")
+
+    # ------------------------------------------------------------------
+    # Hydrology: rain rate / accumulation / gauges / basins (engine/hydro/ws.py)
+    # ------------------------------------------------------------------
+
+    async def _handle_qpe(self, msg: dict[str, Any]) -> None:
+        """The ``qpe_*`` messages (info, run, layer, adjust, series, export); the protocol is in
+        ``engine/hydro/ws.py``. A failure is a ``qpe_error``; ``qpe_run`` always closes progress."""
+        from engine.hydro import ws as qpe_ws
+        from engine.hydro.qpe import QpeError
+
+        kind = msg.get("type")
+        request_id = msg.get("request_id")
+        try:
+            if web.is_web_mode():
+                raise QpeError(
+                    "The rainfall tools read local gauge and basin files: use the desktop app"
+                )
+            loop = asyncio.get_running_loop()
+            if kind == "qpe_run":
+                file_ids = msg.get("file_ids")
+                if (
+                    not isinstance(file_ids, list)
+                    or not file_ids
+                    or not all(isinstance(f, str) and f for f in file_ids)
+                ):
+                    raise QpeError("qpe_run: 'file_ids' must be a non-empty list of open files")
+                if len(set(file_ids)) != len(file_ids):
+                    raise QpeError("qpe_run: 'file_ids' contains duplicates")
+                readers = []
+                for fid in file_ids:
+                    _, reader = _resolve_reader(fid)
+                    if reader.datatree is None:
+                        raise QpeError(f"File {fid} is not open")
+                    readers.append(reader)
+                progress_sync = self._progress_callback(loop)
+                await self.send_progress(3, "Rainfall estimate...")
+                out = await _run_holding(
+                    _locks.get("mosaic"), lambda: qpe_ws.run(msg, readers, progress_sync)
+                )
+                await self.send({"type": "qpe_result", "request_id": request_id, **out})
+            elif kind in ("qpe_info", "qpe_layer", "qpe_adjust", "qpe_series"):
+                fn = {
+                    "qpe_info": qpe_ws.info,
+                    "qpe_layer": qpe_ws.layer,
+                    "qpe_adjust": qpe_ws.adjust,
+                    "qpe_series": qpe_ws.series,
+                }[kind]
+                out = await loop.run_in_executor(None, fn, msg)
+                await self.send({"type": f"{kind}_result", "request_id": request_id, **out})
+            elif kind == "qpe_export":
+                path = await loop.run_in_executor(None, qpe_ws.export, msg)
+                await self.send({"type": "file_saved", "path": str(path)})
+            else:  # pragma: no cover - the dispatch table only routes the types above
+                raise QpeError(f"unknown QPE message {kind!r}")
+        except (QpeError, plugins.ModuleError, UnknownFileError) as exc:
+            logger.warning("QPE error: %s", exc)
+            await self.send(
+                {"type": "qpe_error", "request_id": request_id, "kind": kind, "message": str(exc)}
+            )
+        except ImportError as exc:
+            await self.send(
+                {
+                    "type": "qpe_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"The rainfall tools need the Python package radarx: {exc} "
+                    "(pip install radarx)",
+                }
+            )
+        except Exception as exc:
+            logger.error("QPE failed: %s\n%s", exc, traceback.format_exc())
+            await self.send(
+                {
+                    "type": "qpe_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            if kind == "qpe_run":
+                await self.send_progress(100, "Rainfall estimate finished")
 
     async def _handle_mosaic_probe(self, msg: dict[str, Any]) -> None:
         """``{type: "mosaic_probe", mosaic_id, lon, lat}`` -> ``mosaic_probe_result``."""
