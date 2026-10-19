@@ -696,8 +696,25 @@
   // ── Noise panel + export ─────────────────────────────────────────────────
   let noiseOpen = $state(false);
   let noiseHost: HTMLDivElement | undefined = $state();
+  let popStyle = $state('');
+  /**
+   * Fixed placement for the noise panel: below its button, but shifted left so it never runs out of
+   * the window (it used to open rightwards and was cut off under the right-hand panels), and no
+   * taller than the space below it.
+   */
+  function placePop() {
+    if (!noiseHost) return;
+    const r = noiseHost.getBoundingClientRect();
+    const margin = 8;
+    const width = Math.min(372, window.innerWidth - 2 * margin);
+    const left = Math.max(margin, Math.min(r.left, window.innerWidth - width - margin));
+    const top = r.bottom + 6;
+    const maxHeight = Math.max(160, window.innerHeight - top - margin);
+    popStyle = `left:${left}px;top:${top}px;width:${width}px;max-height:${maxHeight}px;`;
+  }
   $effect(() => {
     if (!noiseOpen) return;
+    placePop();
     const away = (e: PointerEvent) => {
       if (noiseHost && !noiseHost.contains(e.target as Node)) noiseOpen = false;
     };
@@ -706,9 +723,13 @@
     };
     window.addEventListener('pointerdown', away, true);
     window.addEventListener('keydown', esc);
+    window.addEventListener('resize', placePop);
+    window.addEventListener('scroll', placePop, true);
     return () => {
       window.removeEventListener('pointerdown', away, true);
       window.removeEventListener('keydown', esc);
+      window.removeEventListener('resize', placePop);
+      window.removeEventListener('scroll', placePop, true);
     };
   });
 
@@ -870,7 +891,7 @@
         Noise &amp; smoothing {noiseOpen ? '\u25B4' : '\u25BE'}
       </button>
       {#if noiseOpen}
-        <div class="rhi-pop" role="dialog" aria-label="Noise and smoothing" data-testid="rhi-noise-panel">
+        <div class="rhi-pop" style={popStyle} role="dialog" aria-label="Noise and smoothing" data-testid="rhi-noise-panel">
           <label class="rhi-row check strong">
             <input type="checkbox" checked={noise.raw} onchange={(e) => setNoise({ raw: e.currentTarget.checked })} />
             <span>Raw data <em>(turns everything below off)</em></span>
@@ -1180,10 +1201,8 @@
     position: relative;
   }
   .rhi-pop {
-    position: absolute;
-    top: calc(100% + 6px);
-    left: 0;
-    z-index: 30;
+    position: fixed; /* left / top / width / max-height come from placePop() */
+    z-index: 200;
     width: 372px;
     max-height: min(70vh, 640px);
     overflow: auto;
@@ -1193,7 +1212,7 @@
     gap: 8px;
     font-size: 11px;
     color: var(--text-secondary, #9da2c2);
-    background: var(--overlay-bg, rgba(13, 16, 32, 0.96));
+    background: var(--c-panel-solid, #0d1020); /* opaque: it floats over the side panels */
     border: 1px solid var(--border-light, rgba(140, 160, 250, 0.14));
     border-radius: var(--radius-md, 8px);
     box-shadow: var(--shadow-lg, 0 8px 32px rgba(0, 0, 0, 0.6));
