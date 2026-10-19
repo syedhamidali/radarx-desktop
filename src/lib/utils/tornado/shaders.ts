@@ -28,6 +28,7 @@ uniform float uG[64];
 uniform vec2 uAxis; // vortex axis, world metres
 uniform vec2 uTrans; // storm translation m/s
 uniform vec4 uM0;   // meso: vt, rm, hv, sense
+uniform vec4 uM1;   // meso: hs, gNorm, hf, -
 uniform float uTime; // simulation seconds
 uniform sampler3D uNoise;
 
@@ -96,10 +97,14 @@ float wAt(float r, float z) {
 }
 // meso-scale (radar couplet) angular velocity at distance r from the axis, height z
 float omegaMeso(float r, float z) {
-  float x = r / uM0.y;
+  z = max(z, 0.0);
+  float qf = z / uM1.z;
+  float rc = uM0.y * sqrt(1.0 + qf * qf);
+  float x = r / rc;
   float fr = x < 1e-4 ? LO_B / LO_C : swirlShape(x) / x;
   float q = z / uM0.z;
-  return uM0.w * uM0.x * exp(-q * q) * fr / uM0.y;
+  float hf = (1.0 - 0.4 * exp(-z / uM1.x)) * exp(-q * q) * uM1.y;
+  return uM0.w * uM0.x * hf * fr / rc;
 }
 // wind (ground frame, m/s) at world position p: vortex + couplet + carried environment
 vec3 windWorld(vec3 p) {
@@ -274,7 +279,7 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
     float dpe = dp * (1.0 + 0.8 * tur);
     // total deficit: the ambient pressure drop with height plus the vortex's cyclostrophic deficit
     float ex = (dpe + uFunnel2.x * z - uFunnel.x) / uFunnel.y;
-    float body = smoothstep(0.0, 1.0, ex);
+    float body = smoothstep(0.0, 1.0, ex + 1.1 * (fn3.g - 0.5) + 0.7 * (fn2.g - 0.5));
     // two-cell core: a clear eye on the axis (modelled)
     float eye = smoothstep(uFunnel.z * 0.6, uFunnel.z * 1.1, r / coreR(z));
     float streak = 0.45 + 1.1 * fn1.b * fn2.g + 0.5 * (fn3.r - 0.5);
@@ -286,6 +291,8 @@ void sampleMedium(vec3 p, out Med m, out float occl) {
   if (uInt > 0.0 && r < 6.0 * uT0.y + 60.0 && z < 700.0) {
     float vs = uT0.x * swirlShape(r / uT0.y) * 0.8 * uInt;
     float amt = smoothstep(uDust.x * 0.7, uDust.x * 1.7, vs);
+    // the updraft carries the dust up the axis even where the swirl is weak
+    amt = max(amt, 0.75 * smoothstep(6.0, 28.0, wAt(r, 20.0) * uInt) * (1.0 - smoothstep(1.0 * uT0.y, 2.2 * uT0.y, r)));
     // skirt height grows toward the core and with the swirl, lofted by the updraft
     float hs = 12.0 + 75.0 * smoothstep(0.0, 1.0, vs / uT0.x) + 0.9 * max(wAt(r, 30.0), 0.0);
     vec4 dn = flowNoise(rel, 1.0 / 150.0);
@@ -357,7 +364,8 @@ void main() {
     // diagnostic: top-down slice of the swirl-advected noise at z = uDebug height (orthographic): used to measure the on-screen rotation
     vec2 p2 = (ndc * uTan) * 600.0;
     vec3 rel = vec3(p2, 60.0);
-    vec4 fn = flowNoise(rel, 1.0 / 130.0);
+    // uDebug 1: the noise as the volume uses it (two re-seeding phases blended); 2: one phase only (rigid transport, exact)
+    vec4 fn = uDebug > 1.5 ? noiseAt(traceBack(rel, fract(uTime / CYCLE) * CYCLE) / 130.0) : flowNoise(rel, 1.0 / 130.0);
     outColor = vec4(vec3(fn.r), 1.0);
     return;
   }
@@ -399,7 +407,7 @@ void main() {
     if (sum > 1e-7) {
       float z = max(ps.z, 0.0);
       // albedo-weighted colour of the mixture
-      vec3 cCloud = vec3(0.50, 0.52, 0.56);
+      vec3 cCloud = vec3(0.42, 0.44, 0.49);
       vec3 cFun = vec3(0.78, 0.80, 0.84);
       vec3 cRain = vec3(0.50, 0.54, 0.60);
       vec3 cDust = vec3(0.34, 0.27, 0.20);
@@ -552,10 +560,10 @@ void main() {
     road = smoothstep(0.35, 0.65, LL.b);
     treeD = LL.a;
     // base colours (dusk, linear): pasture, hay, ploughed, crop, woodland, wet, yard
-    vec3 pasture = mix(vec3(0.075, 0.12, 0.04), vec3(0.11, 0.15, 0.05), vr);
+    vec3 pasture = mix(vec3(0.075, 0.105, 0.04), vec3(0.11, 0.13, 0.05), vr);
     vec3 hay = mix(vec3(0.20, 0.17, 0.07), vec3(0.24, 0.20, 0.08), vr);
     vec3 plough = mix(vec3(0.115, 0.075, 0.05), vec3(0.15, 0.10, 0.07), vr);
-    vec3 crop = mix(vec3(0.055, 0.11, 0.04), vec3(0.085, 0.14, 0.05), vr);
+    vec3 crop = mix(vec3(0.06, 0.10, 0.04), vec3(0.09, 0.125, 0.05), vr);
     vec3 wood = vec3(0.025, 0.045, 0.02);
     vec3 wet = vec3(0.04, 0.055, 0.05);
     vec3 yard = vec3(0.09, 0.135, 0.05);
@@ -583,7 +591,7 @@ void main() {
   // wet ground: darker, glossy; puddles in the low spots
   float puddle = smoothstep(0.70, 0.82, n3.r * 0.6 + n1.g * 0.4) * uWet;
   float wet = clamp(uWet * (0.25 + 0.3 * n1.r) + puddle, 0.0, 1.0);
-  albedo *= 1.7 * mix(1.0, 0.6, uWet * 0.7);
+  albedo *= 2.6 * mix(1.0, 0.6, uWet * 0.7);
 
   vec3 N = vec3(0.0, 0.0, 1.0);
   // terrain normal
@@ -685,6 +693,7 @@ void main() {
     a = smoothstep(1.0, 0.85, max(abs(vUv.x), abs(vUv.y)));
   }
   a *= mix(0.55, 1.0, vStretch);
+  if (vKind > 1.5) a = a > 0.45 ? 1.0 : 0.0; // boards and sheets are crisp
   if (a < 0.04 || a < hash12(gl_FragCoord.xy + fract(uFrame * 0.37) * 131.0)) discard;
   vec3 N = normalize(vN);
   float lam = 0.55 + 0.45 * abs(N.z);

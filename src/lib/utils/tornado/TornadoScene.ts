@@ -200,7 +200,7 @@ export class TornadoScene {
   private build(): void {
     const gl = this.gl;
     const names = [
-      'uT0', 'uT1', 'uT2', 'uInt', 'uG', 'uAxis', 'uTrans', 'uM0', 'uTime', 'uNoise', 'uFlash', 'uFlashGain',
+      'uT0', 'uT1', 'uT2', 'uInt', 'uG', 'uAxis', 'uTrans', 'uM0', 'uM1', 'uTime', 'uNoise', 'uFlash', 'uFlashGain',
       'uScene', 'uDepth', 'uEcho', 'uEchoGrid', 'uEchoOn', 'uCam', 'uRight', 'uUp', 'uFwd', 'uTan', 'uRes', 'uFrame',
       'uCloud', 'uFunnel', 'uFunnel2', 'uMask', 'uAmb', 'uGlowDir', 'uFog', 'uFogK', 'uDust', 'uDebug',
       'uViewProj', 'uGroundCentre', 'uMaxR', 'uTerrain', 'uTerrainGrid', 'uTerrainSize', 'uTerrainRef',
@@ -720,7 +720,13 @@ export class TornadoScene {
     gl.uniform2f(u.uAxis, ax.x, ax.y);
     gl.uniform2f(u.uTrans, r.translation[0], r.translation[1]);
     const m = r.meso;
-    if (m) gl.uniform4f(u.uM0, m.vt, m.rm, m.hv, m.sense); else gl.uniform4f(u.uM0, 0, 1000, 1000, 1);
+    if (m) {
+      gl.uniform4f(u.uM0, m.vt, m.rm, m.hv, m.sense);
+      gl.uniform4f(u.uM1, m.hs, m.gNorm, m.hf, 0);
+    } else {
+      gl.uniform4f(u.uM0, 0, 1000, 1000, 1);
+      gl.uniform4f(u.uM1, 100, 1, 1000, 0);
+    }
     gl.uniform1f(u.uTime, this.t);
     // lightning: the four most effective flashes
     const act: { x: number; y: number; z: number; I: number; score: number }[] = [];
@@ -917,11 +923,11 @@ export class TornadoScene {
       gl.uniform2f(p.u.uRes, this.rw, this.rh);
       gl.uniform1f(p.u.uFrame, this.frameNo);
       const wc = this.opts.wallCloud ?? { lowerM: 60, radiusM: 700 };
-      gl.uniform4f(p.u.uCloud, r.cloudCondition.lcl, wc.lowerM, wc.radiusM, 70);
-      gl.uniform4f(p.u.uFunnel, r.condition.dpCrit, Math.max(60, 0.08 * r.condition.dpCrit), 0.38, 0.07);
+      gl.uniform4f(p.u.uCloud, r.cloudCondition.lcl, wc.lowerM, wc.radiusM, 100);
+      gl.uniform4f(p.u.uFunnel, r.condition.dpCrit, Math.max(60, 0.08 * r.condition.dpCrit), 0.34, 0.11);
       gl.uniform4f(p.u.uFunnel2, heightDeficit(r.condition, 500) / 500, 0, 0, 0);
       gl.uniform3f(p.u.uFog, amb.fog[0], amb.fog[1], amb.fog[2]);
-      gl.uniform4f(p.u.uFogK, 1 / 9000, 900, 0.00006, this.echoOn ? this.echoMean : 25);
+      gl.uniform4f(p.u.uFogK, 1 / 4500, 800, 0.00006, this.echoOn ? this.echoMean : 25);
       gl.uniform4f(p.u.uDust, 32, 0.035, 0.06, 1);
       gl.uniform1f(p.u.uDebug, 0);
       gl.uniform1f(p.u.uMask, this.mask);
@@ -989,7 +995,7 @@ export class TornadoScene {
   }
 
   /** Diagnostic: draw the top-down slice of the swirl-advected noise (see tools/tornado_sim/check_rotation.py). */
-  renderSwirlSlice(): void {
+  renderSwirlSlice(single = false): void {
     const gl = this.gl;
     if (!this.seed) return;
     const cam = basis([0, 0, 100], [0, 1, 0], 0);
@@ -1001,7 +1007,7 @@ export class TornadoScene {
     this.bindTex(p, 'uScene', gl.TEXTURE_2D, this.sceneColor, 0);
     this.bindTex(p, 'uDepth', gl.TEXTURE_2D, this.sceneDist, 1);
     gl.uniform2f(p.u.uTan, 1, 1);
-    gl.uniform1f(p.u.uDebug, 1);
+    gl.uniform1f(p.u.uDebug, single ? 2 : 1);
     gl.uniform1f(p.u.uMask, 63);
     gl.bindVertexArray(this.vaoEmpty);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

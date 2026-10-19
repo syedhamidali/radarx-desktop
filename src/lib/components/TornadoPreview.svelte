@@ -73,9 +73,17 @@
         scene!.setTime(t);
         return scene!.render(cam);
       },
-      slice: (t: number) => {
+      slice: (t: number, single = false) => {
         scene!.setTime(t);
-        scene!.renderSwirlSlice();
+        scene!.renderSwirlSlice(single);
+      },
+      /** Angular velocity (rad/s) the field gives at (r, z): tornado vortex plus the couplet, the same sum the shader advects the noise with. */
+      omega: async (r: number, z: number) => {
+        const v = await import('../utils/tornado/vortexField');
+        const sd = seedInfo;
+        const om = v.omega(sd.vortex, r, z);
+        const meso = sd.meso ? v.omega(sd.meso, r, z) : 0;
+        return { tornado: om, meso, total: om + meso };
       },
       mask: (m: number) => { scene!.mask = m; },
       tune: (o: { exposure?: number; flash?: number }) => { if (o.exposure) scene!.exposureMul = o.exposure; if (o.flash !== undefined) scene!.flashMul = o.flash; },
