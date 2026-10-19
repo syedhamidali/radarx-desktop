@@ -1179,6 +1179,12 @@ def _reduce_band(
         per_radar, _ = _echo_top(fld, z, threshold)
         cov2 = cov.any(axis=1)
         level = np.where(np.isfinite(m2), m2, z[kidx]).astype(np.float32)
+    if nr > 1 and do_merge:
+        # radarx's merge gives a covered cell without an echo a low "no echo" value (each radar's
+        # lowest reading) so that it takes part in the blend. That is right for the average at the
+        # edge of a storm, but a cell where NO covering radar measured anything is not data: drawn,
+        # it shows up as a flat plate over each radar's whole coverage disc. Leave it empty.
+        m2 = np.where(np.isfinite(per_radar).any(axis=0), m2, np.nan)
     m2 = np.where(inside, m2, np.nan).astype(np.float32)
     acc.merged[r0:r1] = m2
     acc.radars[:, r0:r1] = per_radar
