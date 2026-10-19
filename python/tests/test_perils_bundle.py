@@ -795,6 +795,77 @@ def test_build_step_end_to_end_on_synthetic_radars():
     assert arrays["tds"].max() == 0  # no low RHO anywhere
 
 
+def _rankine(spacing_km, omega=0.3, core_km=0.4, radar=(-10.0, 0.0), sign=1.0):
+    """Radial velocity of a Rankine vortex (solid-body core, 1/r outside) seen by a radar, on a grid."""
+    x = np.arange(-6.0, 6.0001, spacing_km)
+    X, Y = np.meshgrid(x, x)
+    r = np.maximum(np.hypot(X, Y), 1e-6)
+    vt = np.where(
+        r <= core_km, omega * 1000.0 * r * 1000.0 / 1000.0, omega * 1000.0 * core_km**2 / r
+    )
+    vt = vt * sign
+    u, w = -vt * Y / r, vt * X / r  # counter-clockwise for sign > 0
+    R = np.hypot(X - radar[0], Y - radar[1])
+    vr = (u * (X - radar[0]) + w * (Y - radar[1])) / R
+    return x, vr.astype(np.float32)
+
+
+class TestCouplet:
+    def test_couplet_of_a_resolved_vortex(self):
+        import couplet
+
+        x, vr = _rankine(0.05)  # 50 m grid: the 400 m core is resolved
+        c = couplet.couplet_on_line(
+            vr, x, x, (-10.0, 0.0), (0.0, 0.0), half_length_km=1.5, step_km=0.05
+        )
+        assert c["sense"] == "cyclonic"
+        assert c["couplet_diameter_km"] == pytest.approx(
+            0.8, abs=0.15
+        )  # peak to peak = 2 core radii
+        assert c["vrot_ms"] == pytest.approx(
+            0.3 * 400.0, rel=0.1
+        )  # V at the core edge = omega r = 120 m/s
+        assert c["omega_s-1"] == pytest.approx(0.3, rel=0.25)
+        assert c["period_s"] == pytest.approx(2 * math.pi / 0.3, rel=0.25)
+
+    def test_sense_flips_for_anticyclonic_rotation(self):
+        import couplet
+
+        x, vr = _rankine(0.05, sign=-1.0)
+        c = couplet.couplet_on_line(
+            vr, x, x, (-10.0, 0.0), (0.0, 0.0), half_length_km=1.5, step_km=0.05
+        )
+        assert c["sense"] == "anticyclonic" and c["omega_s-1"] < 0
+
+    def test_coarse_grid_smears_the_vortex(self):
+        import couplet
+
+        x1, v1 = _rankine(0.05)
+        x5, v5 = _rankine(0.5)  # a 500 m grid: the vortex is as wide as two cells
+        fine = couplet.couplet_on_line(
+            v1, x1, x1, (-10.0, 0.0), (0.0, 0.0), half_length_km=2.0, step_km=0.05
+        )
+        coarse = couplet.couplet_on_line(v5, x5, x5, (-10.0, 0.0), (0.0, 0.0), half_length_km=2.0)
+        assert coarse["dV_ms"] < 0.9 * fine["dV_ms"]  # part of the peak velocity difference is lost
+        assert (
+            coarse["couplet_diameter_km"] > fine["couplet_diameter_km"]
+        )  # and the couplet looks wider
+
+    def test_resolution_verdict(self):
+        import couplet
+
+        v = couplet.resolved_verdict(366.0, 500.0, 1.8)
+        assert (
+            not v["tornado_resolved"]
+            and v["couplet_resolved"]
+            and "parent circulation" in v["couplet_is"]
+        )
+        assert "UNRESOLVED" in v["verdict"]
+        w = couplet.resolved_verdict(1500.0, 300.0, 1.2)
+        assert w["tornado_resolved"] and w["verdict"] == "tornado vortex RESOLVED"
+        assert couplet.resolved_verdict(None, 500.0, None)["tornado_resolved"] is False
+
+
 class TestMoreStationsAndContext:
     def test_despike_removes_single_sample_dropouts_only(self):
         a = 20.0 + 0.01 * np.arange(60)

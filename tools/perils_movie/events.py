@@ -505,6 +505,86 @@ def build_all(c) -> None:
                 skipped.append(
                     f"tornado_radar_rotation {t['id']}: no rotation candidate (>= {cm['min_peak_as']} s-1) within {cm['search_km']} km of the surveyed track"
                 )
+        # couplet kinematics (Vrot, diameter, angular velocity, sense, resolution verdict)
+        vk = (rt or {}).get("vortex_kinematics")
+        if vk and vk.get("summary", {}).get("n_steps_with_couplet"):
+            sm = vk["summary"]
+            rows_k = [
+                {
+                    "t_s": r["t_s"],
+                    "radar": r["best_radar"],
+                    "offset_s": r["best"].get("offset_s"),
+                    "centre_km": r["best"]["centre_km"],
+                    "centre_offset_from_survey_km": r["best"]["centre_offset_from_survey_km"],
+                    "level_km": r["best"]["level_km"],
+                    **{
+                        k: r["best"]["couplet"][k]
+                        for k in (
+                            "vrot_ms",
+                            "dV_ms",
+                            "v_inbound_ms",
+                            "v_outbound_ms",
+                            "couplet_diameter_km",
+                            "couplet_radius_km",
+                            "omega_s-1",
+                            "period_s",
+                            "sense",
+                            "range_km",
+                        )
+                    },
+                    "effective_resolution_m": r["best"]["effective_resolution_m"],
+                    "verdict": r["resolution"]["verdict"],
+                    "debris_indicator": r.get("debris_indicator"),
+                }
+                for r in vk["per_step"]
+                if r.get("best")
+            ]
+            est = vk.get("survey_scale_estimate")
+            polar = [
+                {
+                    k: s_.get(k)
+                    for k in (
+                        "time",
+                        "fixed_angle_deg",
+                        "target_range_km",
+                        "azimuthal_sample_spacing_m",
+                        "gate_spacing_m",
+                        "beam_width_at_target_m",
+                        "beam_height_m_asl",
+                        "max_dV_adjacent_rays_ms",
+                        "max_dV_near_nyquist",
+                        "effective_resolution_m",
+                    )
+                }
+                for p_ in vk.get("kgwx_polar", [])
+                for s_ in p_["sweeps"]
+            ]
+            vm = sm["vrot_ms_min_median_max"]
+            dm = sm["couplet_diameter_km_min_median_max"]
+            add(
+                "tornado_rotation_kinematics",
+                ts,
+                f"Radar velocity couplet at the surveyed tornado ({', '.join(sm['best_radars'])}, 500 m grid): rotational velocity {vm[0]:.0f} to {vm[2]:.0f} m/s (median {vm[1]:.0f}) across a couplet {dm[0]:.1f} to {dm[2]:.1f} km wide, "
+                f"{sm['sense_counts']['cyclonic']} of {sm['n_steps_with_couplet']} steps cyclonic, angular velocity about {sm['omega_s-1_median']:.3f} s-1 (period about {sm['period_s_median'] / 60:.0f} min). "
+                f"This is the parent circulation: the {t.get('width_m') or 0:.0f} m wide tornado is UNRESOLVED (finest effective resolution {sm['effective_resolution_m_min']:.0f} m)."
+                + (
+                    f" From the survey alone (EF-scale wind {est['wind_range_ms'][0]:.0f}-{est['wind_range_ms'][1]:.0f} m/s, damage width {est['damage_width_m']:.0f} m) a tornado-scale spin period of {est['rotation_period_s_range'][0]:.0f}-{est['rotation_period_s_range'][1]:.0f} s is implied: an estimate, not a measurement."
+                    if est
+                    else ""
+                ),
+                {
+                    "tornado": t["id"],
+                    "summary": sm,
+                    "per_step": rows_k,
+                    "kgwx_native_polar": polar,
+                    "survey_scale_estimate": est,
+                    "method": vk["method"],
+                    "assumptions": vk["assumptions"],
+                    "polar_data_available": vk["polar_data_available"],
+                },
+                "retrieved",
+                tornado=t["id"],
+            )
         # debris flag near the track
         tds_rows = []
         for m, tt in zip(plans, times, strict=True):
@@ -608,7 +688,9 @@ def build_all(c) -> None:
         ex, ey = motion["u_ms"], motion["v_ms"]
         sp = math.hypot(ex, ey) or 1.0
         ex, ey = ex / sp, ey / sp
-        best_w = best_rij = best_conv = best_vort = None
+        w_rows: list[dict[str, Any]] = []
+        rij_rows: list[dict[str, Any]] = []
+        tor_rows: list[dict[str, Any]] = []
         for m, tt in wsteps:
             w = np.load(out_dir / m["winds"])
             x, y, z = w["x_km"], w["y_km"], w["z_km"]
@@ -626,119 +708,195 @@ def build_all(c) -> None:
             u = np.where(rel, w["u"], np.nan)
             v = np.where(rel, w["v"], np.nan)
             ww = np.where(rel, w["w"], np.nan)
-            lo = (z >= 1.0) & (z <= 8.0)
-            if np.isfinite(ww[lo]).any():
-                k = np.nanargmax(np.where(np.isfinite(ww), ww, -np.inf)[lo])
-                kk, jj, ii = np.unravel_index(k, ww[lo].shape)
-                val = float(ww[lo][kk, jj, ii])
-                if best_w is None or val > best_w["w_ms"]:
-                    best_w = {
-                        "w_ms": round(val, 1),
-                        "t_s": tt,
-                        "z_km": round(float(z[lo][kk]), 2),
-                        "x_km": float(x[ii]),
-                        "y_km": float(y[jj]),
-                        "step": m["index"],
-                    }
-            # rear inflow candidate: along-motion wind component at 1-4 km behind the convective line
             conv = vol["conv_strat"][::2, ::2]
             core = (cm_ >= 45) & (conv == 2)
+            # updraft statistic: the 99th percentile (not the maximum, which is dominated by artefacts) of w in
+            # the convective cores between 3 and 8 km, well-constrained cells only
+            zc = (z >= 3.0) & (z <= 8.0)
+            selw = rel & core[None] & zc[:, None, None] & np.isfinite(ww)
+            if selw.sum() >= 30:
+                w_rows.append(
+                    {
+                        "t_s": tt,
+                        "p99_w_ms": round(float(np.percentile(ww[selw], 99)), 1),
+                        "median_w_ms": round(float(np.median(ww[selw])), 1),
+                        "cells": int(selw.sum()),
+                    }
+                )
+            # rear-inflow candidate: the median along-motion wind component at each height in a band 5 to 40 km
+            # behind the leading convective cores (90th percentile of their along-motion position)
             if core.sum() > 50:
                 s_core = X[core] * ex + Y[core] * ey
                 lead = float(np.percentile(s_core, 90))
                 s_grid = X * ex + Y * ey
                 behind = (s_grid <= lead - 5.0) & (s_grid >= lead - 40.0)
                 ua = u * ex + v * ey
-                zr = (z >= 1.0) & (z <= 4.0)
-                cand = np.where(behind[None] & zr[:, None, None] & np.isfinite(ua), ua, -np.inf)
-                if np.isfinite(cand).any() and cand.max() > -np.inf:
-                    k = int(np.argmax(cand))
-                    kk, jj, ii = np.unravel_index(k, cand.shape)
-                    val = float(cand[kk, jj, ii])
-                    rec = {
-                        "along_motion_wind_ms": round(val, 1),
-                        "storm_relative_ms": round(val - sp, 1),
-                        "z_km": round(float(z[kk]), 2),
-                        "x_km": float(x[ii]),
-                        "y_km": float(y[jj]),
-                        "distance_behind_leading_core_km": round(lead - float(s_grid[jj, ii]), 1),
-                        "t_s": tt,
-                        "step": m["index"],
-                    }
-                    if best_rij is None or val > best_rij["along_motion_wind_ms"]:
-                        best_rij = rec
-            # low-level convergence and vorticity
-            low = z <= 1.0
-            dv = np.where(rel, w["divergence"].astype(np.float32), np.nan)[low]
-            if np.isfinite(dv).any():
-                val = float(np.nanmin(dv))
-                if best_conv is None or val < best_conv["divergence_s-1"]:
-                    kk, jj, ii = np.unravel_index(
-                        int(np.nanargmin(np.where(np.isfinite(dv), dv, np.inf))), dv.shape
+                prof, cnt = [], []
+                for k in range(z.size):
+                    sel_k = behind & np.isfinite(ua[k])
+                    cnt.append(int(sel_k.sum()))
+                    prof.append(
+                        float(np.median(ua[k][sel_k])) if sel_k.sum() >= 30 else float("nan")
                     )
-                    best_conv = {
-                        "divergence_s-1": round(val, 5),
-                        "x_km": float(x[ii]),
-                        "y_km": float(y[jj]),
-                        "z_km": float(z[low][kk]),
-                        "t_s": tt,
-                        "step": m["index"],
-                    }
-            vo = np.where(rel, w["vorticity"].astype(np.float32), np.nan)[z <= 2.0]
-            if np.isfinite(vo).any():
-                val = float(np.nanmax(vo))
-                if best_vort is None or val > best_vort["vorticity_s-1"]:
-                    kk, jj, ii = np.unravel_index(
-                        int(np.nanargmax(np.where(np.isfinite(vo), vo, -np.inf))), vo.shape
+                rij_rows.append(
+                    {"t_s": tt, "median_ms": prof, "cells": cnt, "lead_km": round(lead, 1)}
+                )
+            # the retrieved low-level flow around the surveyed tornado (within 5 km, below 1.5 km) while it lives
+            from tornadoes import position_at
+
+            for t_ in tors:
+                if not (t_["overlaps_window"] and t_.get("in_domain")):
+                    continue
+                pos = position_at(t_, tt)
+                if pos is None:
+                    continue
+                px, py = c.xy_km(pos[0], pos[1])
+                near = ((X - float(px)) ** 2 + (Y - float(py)) ** 2 <= 5.0**2)[None] & (z <= 1.5)[
+                    :, None, None
+                ]
+                sel = near & rel
+                if sel.sum() >= 10:
+                    vo_ = w["vorticity"].astype(np.float32)[sel]
+                    dv_ = w["divergence"].astype(np.float32)[sel]
+                    tor_rows.append(
+                        {
+                            "tornado": t_["id"],
+                            "t_s": tt,
+                            "cells": int(sel.sum()),
+                            "vorticity_max_s-1": round(float(np.nanmax(vo_)), 5),
+                            "divergence_min_s-1": round(float(np.nanmin(dv_)), 5),
+                            "u_sr_mean_ms": round(float(np.nanmean(w["u_sr"][sel])), 1),
+                            "v_sr_mean_ms": round(float(np.nanmean(w["v_sr"][sel])), 1),
+                            "speed_mean_ms": round(
+                                float(np.nanmean(np.hypot(w["u"][sel], w["v"][sel]))), 1
+                            ),
+                        }
                     )
-                    best_vort = {
-                        "vorticity_s-1": round(val, 5),
-                        "x_km": float(x[ii]),
-                        "y_km": float(y[jj]),
-                        "z_km": float(z[z <= 2.0][kk]),
-                        "t_s": tt,
-                        "step": m["index"],
-                    }
         cav = (
             "RETRIEVED multi-Doppler winds on a 1 km grid; the variational solver did not fully converge; w is the least "
             "reliable component; only cells with u,v error <= 3 m/s, beam crossing >= 45 deg, >= 3 radars, inside |x|,|y| <= 75 km "
             "and under echo >= 30 dBZ are searched"
         )
-        if best_w:
+        if w_rows:
+            top = max(w_rows, key=lambda r: r["p99_w_ms"])
+            zcol = [
+                (m.get("diagnostics") or {}).get("zdr_column_max_km")
+                for m, _ in wsteps
+                if (m.get("diagnostics") or {}).get("zdr_column_max_km") is not None
+            ]
             add(
                 "updraft_maximum",
-                best_w["t_s"],
-                f"Strongest retrieved updraft between 1 and 8 km: w = {best_w['w_ms']:.0f} m/s at {best_w['z_km']:.1f} km (x {best_w['x_km']:.0f}, y {best_w['y_km']:.0f} km).",
-                {**best_w, "caveat": cav},
-                "retrieved",
-            )
-        if best_rij:
-            add(
-                "rear_inflow_candidate",
-                best_rij["t_s"],
-                f"Strongest wind component toward the line motion at 1-4 km height, {best_rij['distance_behind_leading_core_km']:.0f} km behind the leading convective core: {best_rij['along_motion_wind_ms']:.0f} m/s ({best_rij['storm_relative_ms']:+.0f} m/s relative to the pattern motion) at {best_rij['z_km']:.1f} km. A candidate for rear inflow, not a proven jet.",
+                top["t_s"],
+                f"In the convective cores (45 dBZ or more, convective at 2 km) the 99th percentile of the retrieved vertical velocity between 3 and 8 km reaches {top['p99_w_ms']:.0f} m/s (median of the steps {float(np.median([r['p99_w_ms'] for r in w_rows])):.0f} m/s)"
+                + (f"; the deepest ZDR column is {max(zcol):.1f} km" if zcol else "")
+                + ".",
                 {
-                    **best_rij,
+                    "per_step": w_rows,
+                    "zdr_column_max_km": max(zcol) if zcol else None,
                     "caveat": cav
-                    + "; 'behind' = along-motion coordinate 5 to 40 km behind the 90th percentile of the 45 dBZ convective cores",
+                    + "; a percentile of a field with gridding artefacts, not a measured updraft speed",
                 },
                 "retrieved",
             )
-        if best_conv:
+        if rij_rows:
+            zz = np.arange(41) * 0.25
+            allp = np.array([r["median_ms"] for r in rij_rows], float)
+            with np.errstate(all="ignore"):
+                meanp = np.nanmean(allp, axis=0)
+            win = (zz >= 1.0) & (zz <= 5.0) & np.isfinite(meanp)
+            if win.any():
+                kmax = int(np.nanargmax(np.where(win, meanp, -np.inf)))
+                zmax = float(zz[kmax])
+                vmax_ = float(meanp[kmax])
+                ctx_winds = {}
+                sidx_p = out_dir / "soundings" / "index.json"
+                if sidx_p.exists():
+                    import csv as _csv
+
+                    for s_ in json.loads(sidx_p.read_text()):
+                        if not (
+                            s_["id"].startswith("WYO_BMX_20220331_0000")
+                            or (
+                                s_["id"].startswith("UIUC_")
+                                and -3600 <= s_["launch_t_s"] <= dur + 3600
+                            )
+                        ):
+                            continue
+                        try:
+                            rows = list(_csv.DictReader((out_dir / s_["profile_csv"]).open()))
+                            hh = np.array(
+                                [
+                                    float(r["height_asl_m"]) if r["height_asl_m"] else np.nan
+                                    for r in rows
+                                ]
+                            )
+                            sp_ = np.array(
+                                [
+                                    float(r["wind_speed_ms"]) if r["wind_speed_ms"] else np.nan
+                                    for r in rows
+                                ]
+                            )
+                            wd_ = np.array(
+                                [
+                                    float(r["wind_dir_deg"]) if r["wind_dir_deg"] else np.nan
+                                    for r in rows
+                                ]
+                            )
+                            i = int(np.nanargmin(np.abs(hh - zmax * 1000.0)))
+                            if abs(hh[i] - zmax * 1000.0) <= 300 and np.isfinite(sp_[i]):
+                                uu = -sp_[i] * math.sin(math.radians(wd_[i]))
+                                vv = -sp_[i] * math.cos(math.radians(wd_[i]))
+                                ctx_winds[s_["id"]] = round(float(uu * ex + vv * ey), 1)
+                        except Exception:
+                            continue
+                near_sonde = [v for k, v in ctx_winds.items() if k.startswith("UIUC_")]
+                add(
+                    "rear_inflow_candidate",
+                    float(np.mean([r["t_s"] for r in rij_rows])),
+                    f"Behind the leading convective cores (5 to 40 km) the median retrieved wind component toward the line motion peaks at {vmax_:.0f} m/s at {zmax:.2f} km ASL ({vmax_ - sp:+.0f} m/s relative to the pattern motion), mean over {len(rij_rows)} steps; radiosondes give "
+                    + (
+                        ", ".join(f"{k.split('_')[1]} {v:.0f}" for k, v in ctx_winds.items())
+                        or "no profile"
+                    )
+                    + " m/s along that direction at that height. A candidate (a mid-level maximum of the along-motion wind), not a proven rear-inflow jet"
+                    + (
+                        f"; the retrieval is {vmax_ - float(np.mean(near_sonde)):+.0f} m/s from the mean of the nearby sondes."
+                        if near_sonde
+                        else "."
+                    ),
+                    {
+                        "profile_mean_median_ms": [
+                            round(float(v), 1) if np.isfinite(v) else None for v in meanp
+                        ],
+                        "z_km": zz.tolist(),
+                        "peak_ms": round(vmax_, 1),
+                        "peak_z_km": zmax,
+                        "storm_relative_peak_ms": round(vmax_ - sp, 1),
+                        "radiosonde_along_motion_wind_at_that_height_ms": ctx_winds,
+                        "per_step": rij_rows,
+                        "caveat": cav
+                        + "; 'behind' = 5 to 40 km behind the 90th percentile of the 45 dBZ convective cores along the motion direction",
+                    },
+                    "retrieved",
+                )
+        if tor_rows:
+            vmax = max(tor_rows, key=lambda r: r["vorticity_max_s-1"])
+            cmin = min(tor_rows, key=lambda r: r["divergence_min_s-1"])
             add(
-                "low_level_convergence",
-                best_conv["t_s"],
-                f"Strongest low-level (below 1 km) convergence: {best_conv['divergence_s-1'] * 1000:.1f}e-3 s-1 at x {best_conv['x_km']:.0f}, y {best_conv['y_km']:.0f} km.",
-                {**best_conv, "caveat": cav},
+                "low_level_winds_at_tornado",
+                vmax["t_s"],
+                f"Within 5 km of the surveyed tornado and below 1.5 km the 1 km wind analysis has vertical vorticity up to {vmax['vorticity_max_s-1'] * 1000:.1f}e-3 s-1 and convergence down to {cmin['divergence_min_s-1'] * 1000:.1f}e-3 s-1 (resolution 1 km: the tornado vortex itself is not resolved).",
+                {
+                    "tornado": vmax["tornado"],
+                    "per_step": tor_rows,
+                    "caveat": cav,
+                },
                 "retrieved",
+                tornado=vmax["tornado"],
             )
-        if best_vort:
-            add(
-                "low_level_vorticity_maximum",
-                best_vort["t_s"],
-                f"Strongest low-level (below 2 km) vertical vorticity of the 1 km wind analysis: {best_vort['vorticity_s-1'] * 1000:.1f}e-3 s-1 at x {best_vort['x_km']:.0f}, y {best_vort['y_km']:.0f} km (resolution 1 km: a tornado vortex is not resolved).",
-                {**best_vort, "caveat": cav},
-                "retrieved",
+        else:
+            skipped.append(
+                "low_level_winds_at_tornado: fewer than 10 well-constrained wind cells within 5 km of the surveyed tornado"
             )
     elif not wsteps:
         skipped.append("wind events: no winds in the bundle")

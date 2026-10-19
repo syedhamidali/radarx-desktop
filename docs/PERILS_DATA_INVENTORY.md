@@ -28,7 +28,7 @@ How the bundle is built from these sources is in [PERILS_BUNDLE.md](PERILS_BUNDL
 | `PSL_Parsivel_610.037` | NOAA PSL Parsivel at Courtland, AL | 30 Mar to 31 Mar | 1 min | text | Outside the domain (about 116 km east of the grid origin) |
 | `TTU_StickNet`, `ttu/Sticknet_10s` | 24 StickNet probes (T, RH, p, wind, gust) with locations | 29 Mar to 31 Mar | 10 s (level 1 is 1 s) | txt / csv | **Yes** (24 stations) |
 | `UIUC_FARM_SCOUTS` SCOUT1 to 3, `soundings/non-radar_QC_Illinois/.../DOW7, DOW8` | vehicle mesonets (1 Hz, with GPS position), Parsivels on the scouts, pods | 30 Mar daytime to 31 Mar 02 | 1 s, 10 s | csv (L1 QC), xlsx | **Yes** (mesonets, 3 Parsivel records) |
-| Soundings, UIUC FARM (5 sites, 33 launches 20 to 02 UTC) | GRAW DFM-09, 1 s, positions, QC level 1 | launches 20:04 to 02:08 | 1 s | EOL sounding format | **Yes**, including launches inside the window |
+| Soundings, UIUC FARM (5 sites, 35 launches 20 to 02 UTC) | GRAW DFM-09, 1 s, positions, QC level 1 | launches 20:04 to 02:08 | 1 s | EOL sounding format | **Yes**, including launches inside the window |
 | Soundings, UAH (Brooksville, Amory, Maben), ULM (Sturgis) | iMet / ULM sondes | 15:00 to 22:55 | 3 to 5 s | text | Yes (pre-storm; they end at 4 to 6 km) |
 | Soundings, NWS operational (`WYO_SOUNDING`) | BMX, JAN, LZK, ... 00 UTC 31 Mar and others | 00 UTC cycle, balloon left about 23:15 | mandatory + significant levels | csv | Yes (BMX is the full-depth profile used for the freezing level) |
 | `Reanalyses/ERA5` | pressure-level fields (u, v, T, q, z, cloud and rain water) | 30 and 31 March hourly | 0.25 deg | netCDF (HDF5) | **No**: the file covers 25 to 65 N and **80 to 64 W** (the north-east), the storm was at 88.5 W |
@@ -72,16 +72,16 @@ Two windows have the radars, the lightning, the stations and a tornado at the sa
 | LMA sources per minute (chi2 <= 1, >= 6 stations, inside the box) | 12 500 to 21 500 (mean 17 200) | 11 700 to 16 000 (mean 14 200) |
 | Rain at the PIPS (60 s) | the line passes: peaks 155 mm/h (1A, 00:29), 156 (2A, 00:31), 142 (3B, 00:30), 131 (1B, 00:40) | trailing stratiform: 6 to 8 mm/h mean, 10 to 14 mm/h at most |
 | StickNet / mesonet | the PIPS cluster (10 StickNets) sees the gust front at 00:05 to 00:23 | 0102A (6 km from the tornado start) gust 15.2 m/s at 01:07:20; 0218A gust at 01:16; 0224A at 01:13; SCOUT1 (33.105 N, 88.561 W) sits 9 km from the tornado start |
-| Soundings within +-90 min | UAH Amory 22:55 (79 min before), 00 UTC BMX/JAN (balloon about 23:15), UIUC 23:30, 00:17, 00:32 | **UIUC SONDE5 01:03, SONDE1 01:06, SONDE2 01:07, SONDE3 01:08 (inside), SONDE4 00:32 and 01:51, SONDE2 01:58, SONDE3/5 02:00, SONDE1 02:08** (post-storm cold-pool profiles) |
+| Soundings within +-90 min | UAH Amory 22:55 (79 min before), 00 UTC BMX/JAN (balloon about 23:15), UIUC 23:30, 00:17, 00:32 | **UIUC SONDE5 01:03, SONDE1 01:06, SONDE2 01:07, SONDE3 01:08 (SONDE5 one minute before the window, the others inside), SONDE4 00:32 and 01:51, SONDE2 01:58, SONDE3/5 02:00, SONDE1 02:08** (post-storm cold-pool profiles); drift tracks in the bundle |
 | Multi-Doppler geometry | DOW8 + UAH + COW1 + SMART-R 2 + NOXP + KGWX + DOW7 + KBMX | NOXP, SMART-R 2, COW1, DOW7 and UAH cross over the tornado path; KGWX adds the north |
 
 **Choice: B.** It contains the whole life of the one tornado of the day that is rated EF2 within the dense network, five
 mobile radars scanning every 2 min around it (two within 25 km), lightning at 14 000 sources per minute, StickNet and a vehicle mesonet at
-the tornado, and radiosondes launched inside the window and 25 to 55 min after it (the cold pool behind the line). It does
-**not** contain the PIPS rain-rate peaks (those are 00:22 to 00:42, window A) and no sounding was launched earlier than 25 min before
-it from within the storm area except the UIUC ones; the operational 00 UTC soundings are 105 to 110 min before the start. Window A has
-the rain and the gust front at the PIPS cluster, eight radars (DOW8 every 27 s) and the weak EF0 tornado; the builder can make it with
-`--window 2022-03-31T00:14:00Z 2022-03-31T00:30:00Z`.
+the tornado, and radiosondes launched inside the window (UIUC SONDE1 01:06, SONDE2 01:07, SONDE3 01:08; SONDE5 one minute before, 01:03) and 31 to 56 min after it (SONDE4 01:51,
+SONDE2 01:58, SONDE3 and SONDE5 02:00, SONDE1 02:08: the cold pool behind the line). It does **not** contain the PIPS rain-rate peaks
+(those are 00:22 to 00:42, window A); the PIPS are in the trailing stratiform rain. The operational 00 UTC soundings are 105 to 110 min
+before the start and the UAH / ULM sondes end at 22:55. Window A has the rain and the gust front at the PIPS cluster, eight radars
+(DOW8 every 27 s) and the weak EF0 tornado; the builder can make it with `--window 2022-03-31T00:14:00Z 2022-03-31T00:30:00Z`.
 
 The window is 16 min (960 s) with steps every 60 s (17 steps): about 2 min of video at 8x.
 

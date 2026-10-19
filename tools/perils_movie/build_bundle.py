@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import sys
 import time
 import traceback
@@ -64,6 +65,7 @@ STAGES = [
     "lma",
     "stations",
     "tornadoes",
+    "couplet",
     "context",
     "profiles",
     "events",
@@ -424,6 +426,234 @@ def stage_arc(c: Ctx) -> None:
         }
         bundle.write_json(p, bundle.clean_nan(m), indent=1)
     c.log("arc: ZDR arc candidates written to the step diagnostics")
+
+
+def stage_couplet(c: Ctx) -> None:
+    """Couplet kinematics at the surveyed tornado per step and the KGWX native polar data around it.
+
+    Writes ``context/vortex_kinematics.json`` and ``context/kgwx_polar_local_<time>.npz``. Needs the volumes and
+    tornado stages. See ``couplet.py`` for the method and the resolution verdict.
+    """
+    import couplet
+
+    out_p = c.out / "context" / "vortex_kinematics.json"
+    if out_p.exists() and not c.a.force:
+        return
+    tj = c.out / "tornadoes" / "tornadoes.json"
+    if not tj.exists():
+        c.log("couplet: no tornado file")
+        return
+    tors = [t for t in json.loads(tj.read_text()) if t["overlaps_window"] and t.get("in_domain")]
+    if not tors:
+        return
+    tor = tors[0]
+    root = c.data / "GRID"
+    z_km = volumes.Z_M / 1000.0
+    rows = []
+    for p in sorted(c.work.glob("step_*.json")):
+        m = json.loads(p.read_text())
+        t_s = (datetime.fromisoformat(m["time"].replace("Z", "+00:00")) - c.start).total_seconds()
+        pos = tornadoes.position_at(tor, t_s)
+        if pos is None:
+            continue
+        sx, sy = c.xy_km(pos[0], pos[1])
+        survey = (float(sx), float(sy))
+        # debris-signature indicator within 5 km of the surveyed position (merged volume): evidence only
+        debris = None
+        try:
+            vol = np.load(c.out / m["volume"])
+            ii = round((survey[0] + 90.0) / 0.5)
+            jj = round((survey[1] + 90.0) / 0.5)
+            sl = (slice(None), slice(max(jj - 10, 0), jj + 11), slice(max(ii - 10, 0), ii + 11))
+            tds_ = vol["tds"][sl]
+            rho_ = vol["rho"][sl].astype(np.float32)
+            dbz_ = vol["dbz"][sl]
+            flag = tds_ >= 1
+            debris = {
+                "voxels_flag1_or_2_within_5km": int(flag.sum()),
+                "voxels_flag2_near_rotation": int((tds_ == 2).sum()),
+                "min_rho_in_flag": None
+                if not flag.any()
+                else round(float(np.nanmin(rho_[flag])), 2),
+                "max_dbz_in_flag": None
+                if not flag.any()
+                else round(float(np.nanmax(dbz_[flag])), 1),
+                "min_rho_below_2km_any": None
+                if not np.isfinite(rho_[:9]).any()
+                else round(float(np.nanmin(rho_[:9])), 2),
+                "criteria": "RHO < 0.8 coherent patch, Z >= 30 dBZ, below 2 km; flag 2 within 2 km of azimuthal shear >= 0.012 s-1",
+                "class": "candidate / evidence only (large drops, hail and X-band effects also lower RHO)",
+            }
+        except Exception:
+            debris = None
+        per_radar = {}
+        for radar, fn in m["files"].items():
+            f = next((root / radar).glob(fn), None)
+            if f is None:
+                continue
+            try:
+                g = pgrid.load_grid(f, radar, pgrid.QCConfig())
+            except Exception:
+                continue
+            if "vel" not in g.fields:
+                continue
+            rxy = c.xy_km(g.lat, g.lon)
+            res = couplet.grid_couplet(
+                g.fields["vel"],
+                g.fields.get("roi"),
+                volumes.X_KM,
+                volumes.Y_KM,
+                z_km,
+                (float(rxy[0]), float(rxy[1])),
+                survey,
+            )
+            if res:
+                res["radar"] = radar
+                res["offset_s"] = m["offsets_s"].get(radar)
+                per_radar[radar] = res
+        if not per_radar:
+            rows.append(
+                {
+                    "index": m["index"],
+                    "t_s": t_s,
+                    "survey_xy_km": [round(survey[0], 2), round(survey[1], 2)],
+                    "per_radar": {},
+                    "best": None,
+                    "debris_indicator": debris,
+                }
+            )
+            continue
+        # the radar with the finest effective resolution (ties: the larger velocity difference)
+        best_r = min(
+            per_radar,
+            key=lambda r: (
+                per_radar[r]["effective_resolution_m"],
+                -per_radar[r]["couplet"]["dV_ms"],
+            ),
+        )
+        b = per_radar[best_r]
+        verdict = couplet.resolved_verdict(
+            tor.get("width_m"), b["effective_resolution_m"], b["couplet"]["couplet_diameter_km"]
+        )
+        rows.append(
+            {
+                "index": m["index"],
+                "t_s": t_s,
+                "survey_xy_km": [round(survey[0], 2), round(survey[1], 2)],
+                "per_radar": per_radar,
+                "best_radar": best_r,
+                "best": b,
+                "resolution": verdict,
+                "debris_indicator": debris,
+            }
+        )
+        c.log(
+            f"  couplet step {m['index']:02d}: {best_r} dV {b['couplet']['dV_ms']:.0f} m/s over {b['couplet']['couplet_diameter_km']:.1f} km, {b['couplet']['sense']}, eff. res {b['effective_resolution_m']:.0f} m"
+        )
+    # polar data of KGWX at native resolution around the surveyed position
+    polar = []
+    cf = c.data / "CFRAD" / "KGWX"
+    site = None
+    g0 = next(iter(sorted((root / "KGWX").glob("*.nc"))), None)
+    if g0 is not None:
+        import netCDF4
+
+        with netCDF4.Dataset(g0) as ds:
+            site = (
+                float(np.ravel(ds["radar_latitude"][:])[0]),
+                float(np.ravel(ds["radar_longitude"][:])[0]),
+                float(np.ravel(ds["radar_altitude"][:])[0]),
+            )
+    if site and cf.exists():
+        for f in sorted(cf.glob("KGWX2022033*_V06_retr.nc")):
+            t0 = pgrid.parse_time(f)
+            if t0 is None or not (
+                c.start - timedelta(minutes=8) <= t0 <= c.end + timedelta(minutes=2)
+            ):
+                continue
+
+            def target(t_abs: float, tor=tor):
+                return tornadoes.position_at(tor, t_abs - c.start.timestamp())
+
+            res = couplet.polar_local(f, site, target, c.proj, survey_width_m=tor.get("width_m"))
+            if res:
+                tag = t0.strftime("%H%M%S")
+                np.savez_compressed(
+                    c.out / "context" / f"kgwx_polar_local_{tag}.npz",
+                    **res["arrays"],
+                    sweeps=np.array(json.dumps(res["sweeps"])),
+                    note=np.array(
+                        "KGWX native polar gates (VEL, REF, RHO, ZDR) within 4 km of the surveyed tornado position at the sweep time; x_km, y_km in the grid frame; heights m ASL"
+                    ),
+                )
+                polar.append(
+                    {
+                        "file": f.name,
+                        "npz": f"context/kgwx_polar_local_{tag}.npz",
+                        "sweeps": res["sweeps"],
+                    }
+                )
+                c.log(f"  polar {f.name}: {len(res['sweeps'])} sweeps near the tornado")
+    det = [r for r in rows if r.get("best")]
+    summary: dict[str, Any] = {"n_steps": len(rows), "n_steps_with_couplet": len(det)}
+    if det:
+        vr = [r["best"]["couplet"]["vrot_ms"] for r in det]
+        dd = [r["best"]["couplet"]["couplet_diameter_km"] for r in det]
+        om = [r["best"]["couplet"]["omega_s-1"] for r in det]
+        pr = [r["best"]["couplet"]["period_s"] for r in det if r["best"]["couplet"]["period_s"]]
+        summary.update(
+            {
+                "vrot_ms_min_median_max": [min(vr), float(np.median(vr)), max(vr)],
+                "couplet_diameter_km_min_median_max": [min(dd), float(np.median(dd)), max(dd)],
+                "omega_s-1_median": float(np.median(om)),
+                "period_s_median": float(np.median(pr)) if pr else None,
+                "sense_counts": {
+                    s: sum(1 for r in det if r["best"]["couplet"]["sense"] == s)
+                    for s in ("cyclonic", "anticyclonic")
+                },
+                "best_radars": sorted({r["best_radar"] for r in det}),
+                "effective_resolution_m_min": min(r["best"]["effective_resolution_m"] for r in det),
+                "tornado_resolved_any_step": any(
+                    r["resolution"].get("tornado_resolved") for r in det
+                ),
+            }
+        )
+    # what the survey implies for a tornado-scale vortex: an ESTIMATE from the EF-scale wind range and the damage width,
+    # not a radar measurement (the renderer may use it for the spin of a drawn funnel, labelled as such)
+    lo_mph, hi_mph = tornadoes.EF_WIND_MPH.get(tor["rating"], (None, None))
+    survey_est = None
+    if lo_mph and tor.get("width_m"):
+        v_lo, v_hi = lo_mph * 0.44704, hi_mph * 0.44704
+        d = float(tor["width_m"])
+        survey_est = {
+            "class": "ESTIMATE from the damage survey (EF-scale wind range and damage-path width), NOT a radar measurement",
+            "wind_range_ms": [round(v_lo, 1), round(v_hi, 1)],
+            "damage_width_m": d,
+            "angular_velocity_s-1_range": [round(2 * v_lo / d, 3), round(2 * v_hi / d, 3)],
+            "rotation_period_s_range": [round(math.pi * d / v_hi, 1), round(math.pi * d / v_lo, 1)],
+            "assumptions": "solid-body core with the rated peak wind at the edge of the damage width: period = pi D / V; the real vortex structure, the radius of maximum wind and the translation are unknown; the rated wind is a damage-based range",
+        }
+    doc = {
+        "class": "retrieved (the survey: observed)",
+        "survey_scale_estimate": survey_est,
+        "tornado": {
+            k: tor.get(k)
+            for k in ("id", "rating", "start", "end", "width_m", "path_kind", "begin", "end_point")
+        },
+        "method": "see tools/perils_movie/couplet.py: velocity sampled along the azimuthal line through the strongest shear centre within 3 km of the surveyed position, below 1 km ASL, of every radar of the step; Vrot = dV/2, omega = dV/d, period = 2 pi/omega (solid-body core assumption); sense from the order of the extremes",
+        "assumptions": [
+            f"beam width of the mobile radars taken as a nominal {couplet.NOMINAL_BEAM_WIDTH_DEG} degree (not in the grid files)",
+            "the surveyed position is the interpolated straight line between the survey's begin and end points",
+            "the couplet is that of the strongest shear within 3 km of the survey: a circulation wider than the tornado is the parent circulation, not the tornado",
+        ],
+        "per_step": rows,
+        "summary": summary,
+        "kgwx_polar": polar,
+        "polar_data_available": "KGWX only (CfRadial volumes 01:05, 01:11, 01:18 UTC). The COW1 CfRadial files end at 23:20 UTC and DOW7, DOW8, NOXP, SMART-R 2 and UAH exist only as 500 m grids in the folder: no native-gate mobile-radar data exist for the tornado time, so no 50-100 m local grid can be made from real gates",
+        "local_grid_note": "a finer grid would only be an interpolation of the 500 m data (no new information) and is not provided; the native KGWX gates around the position are in context/kgwx_polar_local_*.npz",
+    }
+    bundle.write_json(out_p, bundle.clean_nan(doc), indent=1)
+    c.log(f"couplet: {summary}")
 
 
 def stage_lma(c: Ctx) -> None:
@@ -824,6 +1054,11 @@ def stage_context(c: Ctx) -> None:
                 "n_candidate_tracks_all": len(all_trs),
                 "tracks_note": "only tracks of at least 3 steps are listed; per_step has every candidate",
                 "survey_comparison": comparison,
+                "vortex_kinematics": (
+                    json.loads((cdir / "vortex_kinematics.json").read_text())
+                    if (cdir / "vortex_kinematics.json").exists()
+                    else None
+                ),
                 "pattern_motion": mot,
                 "uncertainty": "position: about one grid cell (0.5 km) to the radius of influence of the data (up to 2.5 km), plus the time offset of the radar volume (up to 150 s) times the vortex motion (up to 20 m/s = 3 km)",
             }
@@ -1103,6 +1338,7 @@ def main(argv: list[str] | None = None) -> int:
         "soundings": stage_soundings,
         "volumes": stage_volumes,
         "arc": stage_arc,
+        "couplet": stage_couplet,
         "lma": stage_lma,
         "stations": stage_stations,
         "tornadoes": stage_tornadoes,
