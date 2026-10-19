@@ -84,6 +84,7 @@ class AnimateOptions:
     subtitle: str | None = None
     credit: str | None = None
     lightning_model: bool = False
+    sea: bool = False
     # rendering and output
     tile_cache: str | None = None
     offline: bool = False
@@ -309,6 +310,32 @@ def plan_inputs(
     return sp
 
 
+def drop_unreadable(
+    sp: plan.StepPlan, manifest: dict[str, Any], unreadable: dict[str, str]
+) -> dict[str, str]:
+    """Take the radars whose files could not be read out of the plan and the manifest, and list their
+    files as not used with the reason. Returns ``{radar: reason}`` for those that were in the plan."""
+    gone = {r: why for r, why in unreadable.items() if r in sp.used_radars}
+    if not gone:
+        return {}
+    radars_before = list(sp.used_radars)
+    for st, ms in zip(sp.steps, manifest["steps"], strict=True):
+        for radar, why in gone.items():
+            if radar in st.files:
+                vol, _off = st.files.pop(radar)
+                ms["files"].pop(radar, None)
+                sp.skipped.append(
+                    plan.Skip(vol.name, f"could not be read: {why}", radar, vol.time.isoformat())
+                )
+    seen: set[str] = set()
+    sp.skipped[:] = [s for s in sp.skipped if not (s.what in seen or seen.add(s.what))]
+    first = sp.steps[0].time
+    if manifest.get("title") == data.default_title_for(radars_before, first):
+        manifest["title"] = data.default_title_for(sp.used_radars, first)
+    manifest["case"] = ", ".join(sp.used_radars)
+    return gone
+
+
 def page_settings(
     o: AnimateOptions, cp: cam.CameraPlan, sp: plan.StepPlan, fps: int, duration: float
 ) -> dict[str, Any]:
@@ -323,6 +350,7 @@ def page_settings(
         "tileBase": "/tiles",
         "flow": True,
         "lightning": "auto" if o.lightning_model else "off",
+        "sea": bool(o.sea),
         "audio": False,
         "observedTolS": plan.OBSERVED_TOL_S,
         "radarCredit": radar_credit(o, sp),
@@ -369,7 +397,7 @@ def run(
     sp = plan_inputs(o, meta)
     note(
         f"{len(sp.steps)} time steps from {len(sp.used_radars)} radar(s) ({', '.join(sp.used_radars)}); "
-        f"reference {sp.reference}; {len(sp.skipped)} file(s)/step(s) not used"
+        f"reference {sp.reference}"
     )
     cache = data.GridCache(o.cache_dir, fresh=o.fresh)
     opts = data.GridOptions(
@@ -402,6 +430,7 @@ def run(
     g = gridder or data.EngineGridder(log=detail)
     bundle = data.build_bundle(sp, opts, cache, g, log=detail)
     m = bundle.manifest
+    left_out = drop_unreadable(sp, m, bundle.unreadable)
     heading = m["storm"]["heading_deg"]
     span = sp.times_s[-1]
 
@@ -421,7 +450,9 @@ def run(
     frames = plan.plan_frames(duration, o.fps, sp.times_s)
     summary = plan.summarise_frames(frames, sp.times_s)
     path = cam.describe_path(cp.keys, duration, o.fps) if cp.keys else None
-    warnings: list[str] = []
+    warnings: list[str] = [
+        f"{radar} left out: its files could not be used ({why})" for radar, why in left_out.items()
+    ]
     if cp.keys and path and path["ends_after_clip"]:
         warnings.append(
             f"the camera file has keys after the end of the clip ({cp.keys[-1].t:g} s > "

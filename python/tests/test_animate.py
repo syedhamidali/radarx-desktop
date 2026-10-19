@@ -1277,39 +1277,111 @@ def _chrome_ready() -> str | None:
     return None
 
 
-def test_end_to_end_with_chrome_png_sequence(tmp_path, monkeypatch):
+def _e2e_options(tmp_path: Path, output: str, **kw) -> animate.AnimateOptions:
+    radar_dir = tmp_path / "radar"
+    files = sorted(radar_dir.glob("*/*")) or series(radar_dir, {"AAAA": 0, "BBBB": 40}, 3)
+    base = {
+        "files": [str(f) for f in files],
+        "output": output,
+        "duration": 4.0,
+        "fps": 4,
+        "width": 320,
+        "height": 180,
+        "cache_dir": str(tmp_path / "cache"),
+        "tile_cache": str(tmp_path / "tiles"),
+        "offline": True,
+        "camera": "orbit",
+    }
+    return animate.AnimateOptions(**{**base, **kw})
+
+
+@pytest.fixture
+def chrome():
     reason = _chrome_ready()
     if reason:
         pytest.skip(reason)
+
+
+def test_end_to_end_png_sequence_and_resume(tmp_path, chrome):
     from PIL import Image
 
-    monkeypatch.setattr(
-        render,
-        "have_module",
-        lambda name: name != "av" and render.importlib.util.find_spec(name) is not None,
-    )
-    files = series(tmp_path / "radar", {"AAAA": 0, "BBBB": 40}, 3)
     out_dir = tmp_path / "frames_out"
-    opts = animate.AnimateOptions(
-        files=[str(f) for f in files],
-        output=str(out_dir) + "/",
-        duration=4.0,
-        fps=4,
-        width=320,
-        height=180,
-        cache_dir=str(tmp_path / "cache"),
-        tile_cache=str(tmp_path / "tiles"),
-        offline=True,
-        camera="orbit",
-    )
+    opts = _e2e_options(tmp_path, str(out_dir) + "/", keep_frames=True)
     res = animate.run(opts, gridder=SyntheticGridder(fine_shape=(16, 64, 64)))
     pngs = sorted(out_dir.glob("frame_*.png"))
     assert len(pngs) == 16 == res.frame_summary["frames"]
     first, mid = (np.asarray(Image.open(p).convert("RGB")) for p in (pngs[0], pngs[8]))
-    assert (
-        first.std() > 5 and np.abs(first.astype(int) - mid.astype(int)).mean() > 0.5
-    )  # drawn, and it moves
+    assert first.std() > 5  # something is drawn
+    assert np.abs(first.astype(int) - mid.astype(int)).mean() > 0.5  # and it moves
     assert res.output["resumed_frames"] == 0 and res.output["rendered_frames"] == 16
-    assert not (
-        tmp_path / "cache" / "jobs" / res.output["job"]
-    ).exists()  # the working frames are gone
+
+    # an interrupted job: three frames are missing from the working folder; a re-run draws only those
+    work = Path(res.output["frames_dir"])
+    keep = np.asarray(Image.open(work / render.frame_name(9)).convert("RGB")).astype(int)
+    for i in (5, 9, 12):
+        (work / render.frame_name(i)).unlink()
+    gridder = SyntheticGridder(fine_shape=(16, 64, 64))
+    shutil_dest = tmp_path / "again"
+    opts2 = _e2e_options(tmp_path, str(shutil_dest) + "/", keep_frames=False)
+    res2 = animate.run(opts2, gridder=gridder)
+    assert gridder.calls == {"coarse": 0, "fine": 0, "winds": 0}  # the grids came from the cache
+    assert res2.output["resumed_frames"] == 13 and res2.output["rendered_frames"] == 3
+    again = np.asarray(Image.open(shutil_dest / render.frame_name(9)).convert("RGB")).astype(int)
+    assert np.abs(again - keep).mean() < 0.5  # frames are deterministic: the same picture again
+    assert len(list(shutil_dest.glob("frame_*.png"))) == 16
+
+
+def test_end_to_end_without_pyav_writes_png_and_the_ffmpeg_line(tmp_path, chrome, monkeypatch):
+    monkeypatch.setattr(render, "video_status", lambda: {"playwright": True, "av": False})
+    target = tmp_path / "clip.mp4"
+    res = animate.run(
+        _e2e_options(tmp_path, str(target)), gridder=SyntheticGridder(fine_shape=(16, 64, 64))
+    )
+    assert not target.exists()
+    frames = tmp_path / "clip_frames"
+    assert len(list(frames.glob("frame_*.png"))) == 16
+    assert res.output["video"] is None and res.output["frames_written"] == str(frames)
+    assert res.output["ffmpeg"].startswith("ffmpeg -framerate 4 -i ")
+    assert any("PyAV is not installed" in w for w in res.warnings)
+
+
+def test_end_to_end_mp4_and_still(tmp_path, chrome):
+    pytest.importorskip("av")
+    import av
+
+    target = tmp_path / "clip.mp4"
+    still = tmp_path / "still.png"
+    res = animate.run(
+        _e2e_options(tmp_path, str(target), still=str(still), still_at=2.0),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
+    )
+    assert still.stat().st_size > 1000 and res.output["still_at_s"] == 2.0
+    assert not target.with_name("clip.mp4.part").exists()
+    with av.open(str(target)) as c:
+        v = c.streams.video[0]
+        assert (v.width, v.height) == (320, 180) and v.codec_context.name == "h264"
+        assert sum(1 for _ in c.decode(video=0)) == 16
+    assert res.output["encoder"].startswith("pyav")
+    assert not (tmp_path / "cache" / "jobs" / res.output["job"]).exists()
+
+
+def test_only_a_still_renders_no_video(tmp_path, chrome):
+    still = tmp_path / "only.png"
+    res = animate.run(
+        _e2e_options(tmp_path, None, still=str(still)),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
+    )
+    assert still.is_file() and res.output["video"] is None
+    assert not (tmp_path / "cache" / "jobs" / res.output["job"] / "frames").exists()
+
+
+def test_a_bad_look_key_fails_before_any_gridding(tmp_path, chrome):
+    gridder = SyntheticGridder()
+    with pytest.raises(
+        AnimateConfigError, match=r'unknown look key "exposur".*did you mean "exposure"'
+    ):
+        animate.run(
+            _e2e_options(tmp_path, str(tmp_path / "o") + "/", set_values=["exposur=1.4"]),
+            gridder=gridder,
+        )
+    assert gridder.calls == {"coarse": 0, "fine": 0, "winds": 0}

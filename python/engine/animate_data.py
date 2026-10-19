@@ -116,6 +116,7 @@ class Coarse:
     y0: float
     cell_m: float
     origin: tuple[float, float]  # lat, lon of the grid's projection centre
+    unreadable: dict[str, str] = field(default_factory=dict)  # radar -> why its file was left out
 
 
 @dataclass
@@ -179,7 +180,7 @@ class GridCache:
     # -- keys ----------------------------------------------------------------------------
     def key(self, kind: str, step: Step, opts: GridOptions, extra: Any = None) -> str:
         payload = {
-            "v": 1,
+            "v": 2,
             "kind": kind,
             "files": sorted(
                 [radar, *file_identity(v.path)] for radar, (v, _off) in step.files.items()
@@ -199,6 +200,7 @@ class GridCache:
             with np.load(p) as z:
                 cells = [Cell(*map(float, row)) for row in z["cells"]]
                 geo = z["geo"]
+                unread = json.loads(str(z["unreadable"])) if "unreadable" in z else {}
                 return Coarse(
                     cells,
                     z["comp"],
@@ -206,6 +208,7 @@ class GridCache:
                     float(geo[1]),
                     float(geo[2]),
                     (float(geo[3]), float(geo[4])),
+                    unread,
                 )
         except Exception:  # a damaged file is recomputed
             return None
@@ -221,6 +224,7 @@ class GridCache:
                 cells=rows,
                 comp=c.comp.astype(np.float32),
                 geo=np.array([c.x0, c.y0, c.cell_m, c.origin[0], c.origin[1]]),
+                unreadable=np.array(json.dumps(c.unreadable)),
             )
         tmp.replace(p)
 
@@ -277,6 +281,7 @@ class Bundle:
     store: Path  # folder holding the files the manifest names
     stats: BuildStats
     cells: list[list[Cell]] = field(default_factory=list)
+    unreadable: dict[str, str] = field(default_factory=dict)  # radars left out, with the reason
 
     @property
     def track_km(self) -> list[tuple[float, float]]:
@@ -339,6 +344,7 @@ def build_bundle(
 
     cells_per_step: list[list[Cell]] = []
     comps: list[Coarse] = []
+    unreadable: dict[str, str] = {}
     for i, st in enumerate(steps):
         key = cache.key("coarse", st, opts)
         got = cache.get_coarse(key)
@@ -353,6 +359,7 @@ def build_bundle(
             cache.computed["coarse"] += 1
             touched.add(i)
         comps.append(Coarse([], got.comp, got.x0, got.y0, got.cell_m, got.origin))
+        unreadable.update(got.unreadable)
         # every step's cells in the frame of the first step (radars that come and go move the origin)
         cells_per_step.append([_reproject_cell(c, got.origin, comps[0].origin) for c in got.cells])
         if got.cells:
@@ -519,11 +526,15 @@ def build_bundle(
     }
     stats.seconds = time.perf_counter() - t_start
     stats.peak_rss_mb = peak_rss_mb()
-    return Bundle(manifest, cache.dir, stats, cells_per_step)
+    return Bundle(manifest, cache.dir, stats, cells_per_step, unreadable)
+
+
+def default_title_for(radars: list[str], first: datetime) -> str:
+    return f"{', '.join(radars)}  {first:%d %b %Y}"
 
 
 def _default_title(plan: StepPlan, first: datetime) -> str:
-    return f"{', '.join(plan.used_radars)}  {first:%d %b %Y}"
+    return default_title_for(plan.used_radars, first)
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +564,7 @@ class EngineGridder:
                 try:
                     readers.append((radar, _open_valid(vol.path)))
                 except (ValueError, OSError) as exc:
-                    self.unreadable[radar] = str(exc)[:110]
+                    self.unreadable[radar] = _short(exc)
                     self.log(f"    skipping {radar}: {self.unreadable[radar]}")
             yield readers
         finally:
@@ -607,7 +618,10 @@ class EngineGridder:
             min_area_km2=opts.min_cell_km2,
         )
         comp = column_max_dbz(rec.volume, rec.volume_range).astype(np.float32)
-        return Coarse(cells, comp, rec.x0, rec.y0, rec.cell_m, (rec.origin[0], rec.origin[1]))
+        skipped = {r: self.unreadable[r] for r in step.files if r in self.unreadable}
+        return Coarse(
+            cells, comp, rec.x0, rec.y0, rec.cell_m, (rec.origin[0], rec.origin[1]), skipped
+        )
 
     def fine(self, step: Step, opts: GridOptions, extent: dict[str, float]) -> Fine:
         from engine import mosaic
@@ -641,6 +655,11 @@ class EngineGridder:
             dx_m=opts.wind_dx_m,
             log=self.log,
         )
+
+
+def _short(exc: BaseException, n: int = 150) -> str:
+    text = " ".join(str(exc).split())
+    return text if len(text) <= n else text[: n - 3].rstrip() + "..."
 
 
 def _open_valid(path: Path):

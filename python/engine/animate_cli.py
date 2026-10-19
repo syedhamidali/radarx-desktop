@@ -222,6 +222,11 @@ def add_parser(
     g.add_argument("--subtitle", help="line under the title")
     g.add_argument("--credit", help="credit line at the bottom (default names the radars)")
     g.add_argument(
+        "--sea",
+        action="store_true",
+        help="ocean with whitecaps from the retrieved surface wind (needs --winds and the realistic ground)",
+    )
+    g.add_argument(
         "--lightning-model",
         action="store_true",
         help="draw MODELLED lightning (labelled as not observed); off by default",
@@ -408,6 +413,7 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         subtitle=args.subtitle,
         credit=args.credit,
         lightning_model=args.lightning_model,
+        sea=args.sea,
         tile_cache=args.tile_cache,
         offline=args.offline,
         app_dist=args.app_dist,
