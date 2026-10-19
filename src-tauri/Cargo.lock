@@ -4135,7 +4135,6 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
- "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
@@ -5420,8 +5419,8 @@ dependencies = [
 name = "xradar-desktop"
 version = "0.2.1"
 dependencies = [
+ "getrandom 0.3.4",
  "portpicker",
- "rand 0.7.3",
  "serde",
  "serde_json",
  "tauri",

@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-use rand::RngCore;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// How long to wait for the sidecar's `READY:<port>` line. Generous because the very first start
@@ -443,7 +442,7 @@ fn sidecar_health_check(state: State<SharedSidecar>) -> Result<u16, String> {
 
 fn generate_sidecar_token() -> String {
     let mut bytes = [0_u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    getrandom::fill(&mut bytes).expect("the operating system has no random number source");
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
