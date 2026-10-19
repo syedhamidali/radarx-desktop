@@ -1,0 +1,14 @@
+xradar-desktop
+Copyright (c) 2024-2026 Hamid Ali Syed. All rights reserved except as granted in LICENSE.
+
+This software is licensed under the PolyForm Noncommercial License 1.0.0 (see LICENSE): you may use, copy and
+modify it for noncommercial purposes. Any commercial use needs a separate written license from the copyright
+holder. To ask for one, open an issue at https://github.com/syedhamidali/xradar-desktop/issues or contact the
+author through https://github.com/syedhamidali.
+
+Versions published before this change (v0.1.0 - v0.2.1) were announced under the MIT license; copies already
+received under those terms stay under them. From this version on, only the license in LICENSE applies.
+
+The installers and the source also contain or depend on third-party software (xradar, xarray, radarx, numpy,
+scipy, matplotlib, pyarrow, Cairo and others), each under its own license; those licenses are not changed by
+this one.

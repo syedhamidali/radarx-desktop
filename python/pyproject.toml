@@ -3,6 +3,8 @@ name = "xradar-desktop-engine"
 version = "0.1.0"
 description = "Python sidecar engine for xradar-desktop"
 requires-python = ">=3.10"
+license = { text = "PolyForm-Noncommercial-1.0.0" }
+authors = [{ name = "Hamid Ali Syed" }]
 dependencies = [
     "xradar>=0.12,<1.0",
     "xarray>=2026.4,<2027.0",
