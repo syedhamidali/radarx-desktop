@@ -80,6 +80,7 @@ BUNDLING
 DESIGN
 RELIABILITY
 RESPONSIVENESS
+PERFORMANCE
 contributing
 history
 _api/index
