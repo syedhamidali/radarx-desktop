@@ -42,6 +42,18 @@ def _sweep_elevation(ds: xr.Dataset) -> float:
 # ---------------------------------------------------------------------------
 
 
+MAX_BINS = 10_000
+
+
+def _clamp_bins(bins: Any, default: int = 50) -> int:
+    """A usable histogram bin count (1..MAX_BINS): a huge request must not allocate gigabytes."""
+    try:
+        n = int(bins)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return min(max(n, 1), MAX_BINS)
+
+
 def compute_histogram(
     data: xr.DataArray,
     *,
@@ -67,8 +79,10 @@ def compute_histogram(
         (str), ``units`` (str), ``stats`` (dict with mean, std, min,
         max, median, count_valid).
     """
-    vals = data.values.ravel()
+    # float64: float32 values near the type's limit overflow the histogram's bin arithmetic
+    vals = data.values.ravel().astype(np.float64, copy=False)
     valid = vals[np.isfinite(vals)]
+    n_bins = _clamp_bins(n_bins)
 
     if len(valid) == 0:
         return {

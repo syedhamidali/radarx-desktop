@@ -1060,7 +1060,11 @@ class TestUploads:
         replies = await client.call({"type": "open_file", "path": done["path"]})
         assert [m for m in replies if m["type"] == "file_opened"], replies
         assert set(Path(tempfile.gettempdir()).glob("tmp*")) == before
-        assert not list(client.ctx.dir.glob("tmp*"))  # decompressed scratch removed after open
+        # A NetCDF/HDF5 tree reads from its decompressed copy while the file is open, so the copy
+        # stays -- inside the session folder -- and goes away with the session.
+        assert len(list(client.ctx.dir.glob("tmp*"))) == 1
+        client.close()
+        assert not client.ctx.dir.exists()
 
     async def test_gzip_bomb_is_refused_without_filling_the_disk(self, client: WebClient) -> None:
         bomb = gzip.compress(b"\0" * (6 * 1024 * 1024), 9)  # 6 MB of zeros, ~6 KB gzipped

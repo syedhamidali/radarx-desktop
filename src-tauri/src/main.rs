@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use rand::RngCore;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -82,6 +82,8 @@ struct SidecarState {
     /// Why the sidecar could not be started / restarted (None while healthy). The window shows
     /// "Disconnected" either way, so the frontend asks for this to explain it.
     last_error: Mutex<Option<String>>,
+    /// When the running sidecar was started (used to tell a crash loop from an ordinary crash).
+    started: Mutex<Option<Instant>>,
 }
 
 impl Drop for SidecarState {
@@ -355,6 +357,9 @@ fn ensure_sidecar(state: &SidecarState) -> Result<u16, String> {
                 if let Ok(mut g) = state.last_error.lock() {
                     *g = None;
                 }
+                if let Ok(mut g) = state.started.lock() {
+                    *g = Some(Instant::now());
+                }
                 return Ok(port);
             }
             Err(e) => {
@@ -447,100 +452,200 @@ fn generate_sidecar_token() -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Background monitor that checks if the sidecar is still alive every 5 seconds.
-/// If the process has exited, it automatically restarts it on the same port.
-fn start_sidecar_monitor(state: Arc<SidecarState>) {
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(Duration::from_secs(5));
+/// How often the monitor looks at the sidecar process.
+const MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 
+/// An engine that dies within this long of being started counts as crash-looping (as opposed to
+/// one that ran fine and then hit a bad file).
+const CRASH_LOOP_WINDOW: Duration = Duration::from_secs(20);
+
+/// Pause before the next restart attempt after `failures` consecutive failed or too-quick-to-die
+/// starts: none for the first, then 5, 10, 20, 40 and never more than 60 seconds. Without it a
+/// broken installation would be re-launched every 5 s forever.
+fn restart_delay(failures: u32) -> Duration {
+    if failures == 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs((5_u64 << (failures - 1).min(4)).min(60))
+}
+
+/// What the monitor remembers between two passes.
+struct MonitorMemory {
+    /// Consecutive restarts that failed or that did not survive `crash_window`.
+    failures: u32,
+    /// When the pending restart may be attempted.
+    due: Option<Instant>,
+    crash_window: Duration,
+}
+
+impl Default for MonitorMemory {
+    fn default() -> Self {
+        Self { failures: 0, due: None, crash_window: CRASH_LOOP_WINDOW }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum MonitorOutcome {
+    /// Nothing to do (the sidecar runs, was never started, or the app is shutting down).
+    Healthy,
+    /// The sidecar is gone and the next attempt is delayed (backoff).
+    Waiting,
+    /// A new sidecar is up on this port (which may differ from the old one).
+    Restarted(u16),
+    /// The restart attempt failed; the message says why.
+    Failed(String),
+}
+
+/// One supervision pass: if the sidecar process has exited, start a new one. The same port is
+/// tried first (the UI reconnects there by itself); if something else took it, any free port is
+/// used and the caller announces it. Never holds the process lock while waiting for READY.
+fn monitor_step(state: &SidecarState, mem: &mut MonitorMemory) -> MonitorOutcome {
+    if state.shutting_down.load(Ordering::SeqCst) {
+        return MonitorOutcome::Healthy;
+    }
+    let port = match state.port.lock() {
+        Ok(guard) => match *guard {
+            Some(p) => p,
+            None => return MonitorOutcome::Healthy, // never started, nothing to monitor
+        },
+        Err(e) => {
+            eprintln!("[sidecar-monitor] Failed to lock port state: {}", e);
+            return MonitorOutcome::Healthy;
+        }
+    };
+
+    let exited = match state.process.lock() {
+        Ok(mut guard) => match guard.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    if mem.due.is_none() {
+                        eprintln!("[sidecar-monitor] Sidecar exited with status: {}", status);
+                    }
+                    true
+                }
+                Ok(None) => false, // still running
+                Err(e) => {
+                    eprintln!("[sidecar-monitor] Error checking process status: {}", e);
+                    false
+                }
+            },
+            // Handle was taken by shutdown_sidecar: nothing to restart.
+            None => false,
+        },
+        Err(e) => {
+            eprintln!("[sidecar-monitor] Failed to lock process state: {}", e);
+            return MonitorOutcome::Healthy;
+        }
+    };
+    if !exited {
+        mem.due = None;
+        return MonitorOutcome::Healthy;
+    }
+
+    if mem.due.is_none() {
+        let quick = state
+            .started
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .is_some_and(|t| t.elapsed() < mem.crash_window);
+        mem.failures = if quick { mem.failures + 1 } else { 0 };
+        let delay = restart_delay(mem.failures);
+        mem.due = Some(Instant::now() + delay);
+        if !delay.is_zero() {
+            let text = format!(
+                "The analysis engine keeps stopping right after it starts; trying again in {} s.",
+                delay.as_secs()
+            );
+            eprintln!("[sidecar-monitor] {}", text);
+            if let Ok(mut g) = state.last_error.lock() {
+                *g = Some(text);
+            }
+        }
+    }
+    if mem.due.is_some_and(|due| Instant::now() < due) {
+        return MonitorOutcome::Waiting;
+    }
+
+    // The (up to minutes long) start runs without the process lock, so health checks stay
+    // responsive; the spawn lock keeps it from racing a start requested by the UI.
+    let _spawn_guard = match state.spawn_lock.lock() {
+        Ok(g) => g,
+        Err(_) => return MonitorOutcome::Healthy,
+    };
+    if state.shutting_down.load(Ordering::SeqCst) {
+        return MonitorOutcome::Healthy;
+    }
+    let mut used_port = port;
+    let mut result = spawn_sidecar(port, &state.token);
+    if matches!(&result, Err(e) if e.retryable) {
+        // Most likely something else took the port while the engine was down.
+        if let Some(other) = portpicker::pick_unused_port() {
+            used_port = other;
+            result = spawn_sidecar(other, &state.token);
+        }
+    }
+    match result {
+        Ok(mut child) => {
+            if state.shutting_down.load(Ordering::SeqCst) {
+                terminate_child(&mut child);
+                return MonitorOutcome::Healthy;
+            }
+            SIDECAR_PID.store(child.id(), Ordering::SeqCst);
+            if let Ok(mut guard) = state.process.lock() {
+                *guard = Some(child);
+            }
+            if let Ok(mut g) = state.port.lock() {
+                *g = Some(used_port);
+            }
+            if let Ok(mut g) = state.started.lock() {
+                *g = Some(Instant::now());
+            }
+            if state.shutting_down.load(Ordering::SeqCst) {
+                shutdown_sidecar(state);
+                return MonitorOutcome::Healthy;
+            }
+            if let Ok(mut g) = state.last_error.lock() {
+                *g = None;
+            }
+            mem.due = None;
+            MonitorOutcome::Restarted(used_port)
+        }
+        Err(e) => {
+            mem.failures += 1;
+            mem.due = Some(Instant::now() + restart_delay(mem.failures));
+            let text = format!("The analysis engine stopped and could not restart: {}", e.message);
+            if let Ok(mut g) = state.last_error.lock() {
+                *g = Some(text.clone());
+            }
+            MonitorOutcome::Failed(text)
+        }
+    }
+}
+
+/// Background monitor: every few seconds, restart the sidecar if it has exited, and tell the UI
+/// (`sidecar-ready` with the port, or `sidecar-error` with the reason) so it reconnects at once
+/// instead of waiting out its own retry schedule.
+fn start_sidecar_monitor(state: Arc<SidecarState>, app: AppHandle) {
+    std::thread::spawn(move || {
+        let mut mem = MonitorMemory::default();
+        loop {
+            std::thread::sleep(MONITOR_INTERVAL);
             if state.shutting_down.load(Ordering::SeqCst) {
                 return;
             }
-
-            let port = {
-                match state.port.lock() {
-                    Ok(guard) => match *guard {
-                        Some(p) => p,
-                        None => continue, // sidecar was never started, nothing to monitor
-                    },
-                    Err(e) => {
-                        eprintln!("[sidecar-monitor] Failed to lock port state: {}", e);
-                        continue;
+            match monitor_step(&state, &mut mem) {
+                MonitorOutcome::Restarted(port) => {
+                    eprintln!("[sidecar-monitor] Sidecar restarted successfully on port {}", port);
+                    if let Err(e) = app.emit("sidecar-ready", port) {
+                        eprintln!("Failed to emit sidecar-ready event: {}", e);
                     }
                 }
-            };
-
-            let needs_restart = {
-                match state.process.lock() {
-                    Ok(mut guard) => match guard.as_mut() {
-                        Some(child) => match child.try_wait() {
-                            Ok(Some(status)) => {
-                                eprintln!(
-                                    "[sidecar-monitor] Sidecar exited with status: {}. Restarting...",
-                                    status
-                                );
-                                true
-                            }
-                            Ok(None) => false, // still running
-                            Err(e) => {
-                                eprintln!(
-                                    "[sidecar-monitor] Error checking process status: {}",
-                                    e
-                                );
-                                false
-                            }
-                        },
-                        // Handle was taken by shutdown_sidecar: nothing to restart.
-                        None => false,
-                    },
-                    Err(e) => {
-                        eprintln!("[sidecar-monitor] Failed to lock process state: {}", e);
-                        continue;
-                    }
+                MonitorOutcome::Failed(text) => {
+                    eprintln!("[sidecar-monitor] {}", text);
+                    let _ = app.emit("sidecar-error", text);
                 }
-            };
-
-            if needs_restart {
-                // The (up to 30 s) restart runs without holding the process lock, so
-                // health checks stay responsive; the spawn lock prevents racing a
-                // concurrent start.
-                let _spawn_guard = match state.spawn_lock.lock() {
-                    Ok(g) => g,
-                    Err(_) => continue,
-                };
-                if state.shutting_down.load(Ordering::SeqCst) {
-                    return;
-                }
-                match spawn_sidecar(port, &state.token) {
-                    Ok(mut child) => {
-                        if state.shutting_down.load(Ordering::SeqCst) {
-                            terminate_child(&mut child);
-                            return;
-                        }
-                        SIDECAR_PID.store(child.id(), Ordering::SeqCst);
-                        if let Ok(mut guard) = state.process.lock() {
-                            *guard = Some(child);
-                        }
-                        if state.shutting_down.load(Ordering::SeqCst) {
-                            shutdown_sidecar(&state);
-                            return;
-                        }
-                        if let Ok(mut g) = state.last_error.lock() {
-                            *g = None;
-                        }
-                        eprintln!(
-                            "[sidecar-monitor] Sidecar restarted successfully on port {}",
-                            port
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("[sidecar-monitor] Failed to restart sidecar: {}", e.message);
-                        if let Ok(mut g) = state.last_error.lock() {
-                            *g = Some(format!("The analysis engine stopped and could not restart: {}", e.message));
-                        }
-                    }
-                }
+                MonitorOutcome::Healthy | MonitorOutcome::Waiting => {}
             }
         }
     });
@@ -602,6 +707,7 @@ fn main() {
         shutting_down: AtomicBool::new(false),
         token: generate_sidecar_token(),
         last_error: Mutex::new(None),
+        started: Mutex::new(None),
     });
 
     // Clones for the monitor thread (started in setup) and the exit handler
@@ -665,7 +771,7 @@ fn main() {
             });
 
             // Start the background monitor thread
-            start_sidecar_monitor(monitor_handle);
+            start_sidecar_monitor(monitor_handle, app.handle().clone());
 
             // Ctrl-C / SIGTERM: exit through the normal path so the sidecar is stopped.
             let signal_handle = app.handle().clone();
@@ -741,6 +847,7 @@ mod tests {
             shutting_down: AtomicBool::new(false),
             token: "t".to_string(),
             last_error: Mutex::new(None),
+            started: Mutex::new(None),
         };
         shutdown_sidecar(&state);
         assert!(state.process.lock().unwrap().is_none());
@@ -762,6 +869,7 @@ mod tests {
             shutting_down: AtomicBool::new(false),
             token: "test-token".to_string(),
             last_error: Mutex::new(None),
+            started: Mutex::new(None),
         };
         let port = ensure_sidecar(&state).expect("sidecar should start");
         assert_eq!(ensure_sidecar(&state), Ok(port)); // idempotent: no second process
@@ -773,5 +881,160 @@ mod tests {
         }
         shutdown_sidecar(&state);
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
+    // ---- supervision, against a stand-in for the engine --------------------------------
+
+    fn fresh_state() -> SidecarState {
+        SidecarState {
+            port: Mutex::new(None),
+            process: Mutex::new(None),
+            spawn_lock: Mutex::new(()),
+            shutting_down: AtomicBool::new(false),
+            token: "t".to_string(),
+            last_error: Mutex::new(None),
+            started: Mutex::new(None),
+        }
+    }
+
+    /// The environment variables below are process-wide, so these tests take turns.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A shell script that behaves like the engine's start-up: prints `READY:<port>`, then lives
+    /// for `$STUB_LIFETIME` seconds (arguments are `<server.py> --port <port>`).
+    #[cfg(unix)]
+    fn stub_engine(dir: &std::path::Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let script = dir.join("stub-engine.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho \"READY:$3\"\nexec sleep \"${STUB_LIFETIME:-60}\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    fn child_pid(state: &SidecarState) -> u32 {
+        state.process.lock().unwrap().as_ref().expect("child").id()
+    }
+
+    fn kill_and_reap(state: &SidecarState) {
+        let mut guard = state.process.lock().unwrap();
+        let child = guard.as_mut().expect("child");
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn restart_delay_grows_and_is_capped() {
+        assert_eq!(restart_delay(0), Duration::ZERO);
+        let secs: Vec<u64> = (1..=8).map(|n| restart_delay(n).as_secs()).collect();
+        assert_eq!(secs, vec![5, 10, 20, 40, 60, 60, 60, 60]);
+        assert_eq!(restart_delay(u32::MAX), Duration::from_secs(60));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn monitor_restarts_a_killed_engine_and_the_ui_can_find_it() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("xradar-stub-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XRADAR_PYTHON", stub_engine(&dir));
+        std::env::set_var("STUB_LIFETIME", "60");
+
+        let state = fresh_state();
+        let port = ensure_sidecar(&state).expect("stub engine should start");
+        let first = child_pid(&state);
+        let mut mem = MonitorMemory { crash_window: Duration::ZERO, ..Default::default() };
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Healthy);
+
+        kill_and_reap(&state); // the engine crashes (or is killed from outside)
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Restarted(port));
+        assert_ne!(child_pid(&state), first, "a new process must be running");
+        assert_eq!(*state.port.lock().unwrap(), Some(port));
+        assert_eq!(*state.last_error.lock().unwrap(), None);
+        assert_eq!(mem.failures, 0, "an engine that ran a while is an ordinary crash");
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Healthy);
+
+        shutdown_sidecar(&state);
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Healthy);
+        std::env::remove_var("XRADAR_PYTHON");
+        std::env::remove_var("STUB_LIFETIME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn monitor_backs_off_when_the_engine_keeps_dying_at_start() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("xradar-stub2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XRADAR_PYTHON", stub_engine(&dir));
+        std::env::set_var("STUB_LIFETIME", "0"); // prints READY and exits at once
+
+        let state = fresh_state();
+        ensure_sidecar(&state).expect("stub engine should start");
+        std::thread::sleep(Duration::from_millis(300));
+        let mut mem = MonitorMemory::default();
+
+        let pid = child_pid(&state);
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Waiting);
+        assert_eq!(mem.failures, 1);
+        assert_eq!(child_pid(&state), pid, "no new process during the pause");
+        let message = state.last_error.lock().unwrap().clone().unwrap_or_default();
+        assert!(message.contains("keeps stopping"), "{message}");
+
+        // the pause is over: one more attempt, which dies again, and the pause doubles
+        mem.due = Some(Instant::now());
+        assert!(matches!(monitor_step(&state, &mut mem), MonitorOutcome::Restarted(_)));
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Waiting);
+        assert_eq!(mem.failures, 2);
+        let wait = mem.due.unwrap().saturating_duration_since(Instant::now());
+        assert!(wait > Duration::from_secs(8), "second pause should be ~10 s, was {wait:?}");
+
+        shutdown_sidecar(&state);
+        std::env::remove_var("XRADAR_PYTHON");
+        std::env::remove_var("STUB_LIFETIME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_restart_reports_why_and_waits_before_trying_again() {
+        let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("xradar-stub3-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("XRADAR_PYTHON", stub_engine(&dir));
+        std::env::set_var("STUB_LIFETIME", "60");
+
+        let state = fresh_state();
+        ensure_sidecar(&state).expect("stub engine should start");
+        let mut mem = MonitorMemory { crash_window: Duration::ZERO, ..Default::default() };
+        kill_and_reap(&state);
+        // the engine can no longer be launched at all (broken install, deleted files)
+        std::env::set_var("XRADAR_PYTHON", dir.join("does-not-exist"));
+
+        match monitor_step(&state, &mut mem) {
+            MonitorOutcome::Failed(text) => {
+                assert!(text.contains("could not restart"), "{text}");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert!(state.last_error.lock().unwrap().is_some());
+        assert_eq!(mem.failures, 1);
+        assert_eq!(monitor_step(&state, &mut mem), MonitorOutcome::Waiting);
+
+        // the install is repaired: the next attempt after the pause brings the engine back
+        std::env::set_var("XRADAR_PYTHON", stub_engine(&dir));
+        mem.due = Some(Instant::now());
+        assert!(matches!(monitor_step(&state, &mut mem), MonitorOutcome::Restarted(_)));
+        assert_eq!(*state.last_error.lock().unwrap(), None);
+
+        shutdown_sidecar(&state);
+        std::env::remove_var("XRADAR_PYTHON");
+        std::env::remove_var("STUB_LIFETIME");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

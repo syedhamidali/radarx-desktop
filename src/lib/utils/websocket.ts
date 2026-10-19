@@ -12,12 +12,14 @@ import {
 } from '../stores/radarData';
 import { addToast } from '../stores/toasts';
 import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './ppiRenderer';
-import { addFile, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
+import { addFile, clearAllFiles, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
 import { registerVariableStyle, styleFor } from './variableStyles';
 import { isWebMode, engineUrl, basename } from './env';
 import { collectDownloads, triggerDownloads } from './download';
 import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
+import { trackEngine } from './engineIdentity';
+import { findRequestForReply, isForOtherFile } from './sweepMatch';
 
 type MessageHandler = (data: any) => void;
 
@@ -118,6 +120,8 @@ class WebSocketManager {
   /** True when {@link target} is a remote engine (web build): cold starts are expected. */
   private remote = false;
   private everConnected = false;
+  /** `engine_id` of the engine process we last talked to (changes when the sidecar restarts). */
+  private engineId: string | null = null;
   private firstFailureAt = 0;
   private disconnectHandlers = new Set<() => void>();
   private retryCount = 0;
@@ -246,11 +250,16 @@ class WebSocketManager {
       if (this.remote) {
         // A new connection is a new server-side session: files opened on the old one are gone.
         if (this.everConnected && get(openFilesStore).length > 0) {
+          clearAllFiles(); // their ids belong to the old session
           addToast('warning', 'The engine session was reset. Please open your files again.', 10000);
         }
         this.everConnected = true;
         this.firstFailureAt = 0;
         setEngineState({ phase: 'connected', attempt: 0, reason: null, since: null });
+      } else {
+        // Desktop: ask which engine process this is. A different one than before means the
+        // sidecar was restarted (it crashed or was killed) and everything it held is gone.
+        void this.send({ type: 'ping' });
       }
       this.flushSendQueue();
     };
@@ -544,7 +553,11 @@ class WebSocketManager {
   /** A sweep payload could not be used: fail the request it answered so nothing waits for it. */
   private failSweepForHeader(header: any, message: string): void {
     if (!header || header.type !== 'sweep_data' || typeof header.variable !== 'string') return;
-    const job = this.sweepInflight.find((j) => j.variable === header.variable && j.sweep === header.sweep);
+    const job = findRequestForReply(this.sweepInflight, {
+      variable: header.variable,
+      sweep: header.sweep,
+      fileId: typeof header.file_id === 'string' ? header.file_id : '',
+    });
     if (job) this.failJob(job, message, 'error');
   }
 
@@ -754,6 +767,13 @@ class WebSocketManager {
         break;
       }
 
+      case 'pong': {
+        const seen = trackEngine(this.engineId, msg.engine_id);
+        this.engineId = seen.engineId;
+        if (seen.restarted) this.handleEngineRestarted();
+        break;
+      }
+
       case 'warning': {
         // Non-fatal notice from the engine (e.g. memory budget exceeded): the request succeeded.
         const text: string = typeof msg.message === 'string' ? msg.message : 'Warning from engine';
@@ -883,7 +903,7 @@ class WebSocketManager {
       }
     }
 
-    this.finalizeSweepEntry(entry, isQc, msgType);
+    this.finalizeSweepEntry(entry, isQc, msgType, typeof header.file_id === 'string' ? header.file_id : '');
   }
 
   /**
@@ -945,7 +965,7 @@ class WebSocketManager {
    * Common path after binary data has been parsed.
    * Caches the entry, notifies listeners, and triggers prefetch.
    */
-  private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data'): void {
+  private finalizeSweepEntry(entry: SweepDataEntry, isQc: boolean, msgType = 'sweep_data', replyFileId = ''): void {
     if (msgType === 'difference_result') {
       // A difference is not the sweep it is named after: it must neither replace that sweep in the
       // cache nor be announced as sweep data (the main PPI would show the difference disk).
@@ -963,7 +983,11 @@ class WebSocketManager {
     const key = `${entry.variable}:${entry.sweep}`;
     let broadcast = true;
     let cache = true;
-    const job = this.sweepInflight.find((j) => j.variable === entry.variable && j.sweep === entry.sweep);
+    const job = findRequestForReply(this.sweepInflight, {
+      variable: entry.variable,
+      sweep: entry.sweep,
+      fileId: replyFileId,
+    });
     if (job) {
       this.retireJob(job);
       this.clearFailedOp(job.key);
@@ -971,7 +995,10 @@ class WebSocketManager {
       // A prefetched neighbour only warms the cache: broadcasting it as sweep_data_ready would make
       // the viewer show it instead of the sweep the user selected. It is announced if it turns out
       // to be the sweep on screen (the user got there while it was loading).
-      broadcast = job.broadcast || this.matchesContext(job.variable, job.sweep, job.fileId);
+      // (A visible request of a file the user has since left is not painted over the new file.)
+      broadcast =
+        (job.broadcast && this.sameAsContextFile(job.fileId)) ||
+        this.matchesContext(job.variable, job.sweep, job.fileId);
       // The cache is not file-aware: another file's lookahead must not poison the shown file's entries.
       cache = broadcast || this.sameAsContextFile(job.fileId);
       this.settleWaiters(job, 'done');
@@ -983,6 +1010,12 @@ class WebSocketManager {
         cache = this.sameAsContextFile(orphan.fileId);
       }
       // else: unsolicited reply — legacy behaviour (cache + announce).
+      // ... except data of a file that is not the one on screen (the user switched tabs while it was
+      // on its way): it must neither be cached for, nor painted over, the file being shown.
+      if (isForOtherFile(replyFileId, this.viewCtx?.fileId)) {
+        broadcast = false;
+        cache = false;
+      }
     }
 
     if (cache) cacheSweepData(entry);
@@ -1373,6 +1406,27 @@ class WebSocketManager {
   }
 
   /**
+   * The engine process was replaced (it crashed or was killed and the app restarted it): its open
+   * files, derived data and caches are gone. Drop our references and say so, instead of letting
+   * every later request fail with "Unknown or closed file_id". The files are not re-opened
+   * automatically: if one of them is what crashed the engine, that would crash it again.
+   */
+  private handleEngineRestarted(): void {
+    const had = get(openFilesStore).length;
+    clearAllFiles();
+    clearSweepCache();
+    this.cancelQueuedSweeps(() => true);
+    processingProgress.set(null);
+    addToast(
+      'error',
+      had > 0
+        ? 'The analysis engine stopped unexpectedly and was restarted, so your open files were closed. Open them again; if the same file stops the engine again, it may be damaged.'
+        : 'The analysis engine stopped unexpectedly and was restarted.',
+      15000,
+    );
+  }
+
+  /**
    * Open a file on the server (multi-file aware).
    * Stores the pending path so the file_opened handler can build a FileEntry.
    */
@@ -1576,14 +1630,16 @@ export const wsManager = new WebSocketManager();
   (async () => {
     try {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<number>('sidecar-ready', (event) => {
+      // Stays registered for the whole session: the shell announces the port again every time it
+      // restarts a crashed engine, and reconnecting at once beats waiting out the retry timer
+      // (or, after the retries ran out, never reconnecting at all).
+      await listen<number>('sidecar-ready', (event) => {
         const port = event.payload;
         if (port > 0 && !wsManager.isConnected) {
           console.log(`[WS] autoConnect via Tauri event: port ${port}`);
           (window as any).__XRADAR_PORT__ = port;
           wsManager.connect(port);
         }
-        unlisten();
       });
     } catch {
       // Not running inside Tauri — ignore
