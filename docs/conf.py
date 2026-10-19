@@ -90,6 +90,9 @@ autodoc_default_options = {"members": True, "show-inheritance": True}
 autodoc_mock_imports = ["radarx", "icechunk", "boto3"]
 napoleon_numpy_docstring = True
 napoleon_google_docstring = False
+# 'Attributes' sections become :ivar: fields, so a documented property of the same name (for example
+# PipelineResult.steps) is not described twice.
+napoleon_use_ivar = True
 
 
 def _write_api_pages() -> None:
