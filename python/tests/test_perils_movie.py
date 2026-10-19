@@ -282,6 +282,34 @@ def test_without_a_tornado_the_plan_still_works(tiny):
     assert len(res["camera"]) == 3601
 
 
+def test_station_arrival_from_rain_pressure_or_wind(tiny):
+    _root, p = tiny
+    scene = choreography.Scene(p)
+    t = list(range(0, 600, 10))
+    rain = {"series": {"t_s": t, "rain_rate_mmh": [0.0] * 30 + [40.0] + [0.0] * 29}}
+    assert scene.station_arrival(rain) == (300.0, 40.0)
+    pres = {"series": {"t_s": t, "pressure_hpa": [1000.0] * 30 + [1003.0] * 30}}
+    tm, strength = scene.station_arrival(pres)
+    assert 285 <= tm <= 300 and strength >= 20  # the gust front: a 3 hPa jump
+    wind = {"series": {"t_s": t, "wind_speed_ms": [3.0] * 59 + [20.0]}}
+    assert scene.station_arrival(wind) == (590.0, 20.0)
+    assert scene.station_arrival({"series": {"t_s": [0, 1]}}) is None
+
+
+def test_events_carry_science_hail_and_rain_in_clip_time(tiny):
+    _root, p = tiny
+    q = dict(p)
+    q["science"] = [
+        {"kind": "gust_front", "t_s": 100.0, "numbers": ["+3 hPa"], "class": "observed"}
+    ]
+    res = choreography.plan(q)
+    ev = res["events"]
+    assert ev["science"][0]["kind"] == "gust_front"
+    assert 0 < ev["science"][0]["t_clip_s"] < 120
+    assert all("t_clip_s" in h and h["class"] == "retrieved" for h in ev["hail_cores"])
+    assert all(r["rain_rate_mmh"] >= 10 for r in ev["rain"])
+
+
 # ── Chrome (skipped when unavailable) ───────────────────────────────────────
 
 

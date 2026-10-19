@@ -189,16 +189,46 @@ class Scene:
         return min(pt), max(pt)
 
     def station_arrival(self, st: dict) -> tuple[float, float] | None:
-        """(time of the series' rain-rate maximum, that rate) of a station, or None without a series."""
+        """(time, strength) of the passage of the storm at a station, or None without a usable series.
+
+        A rain-rate maximum of at least 5 mm/h (a disdrometer) counts, strength = the rate in mm/h; otherwise the
+        steepest pressure rise over 60 s of at least 1 hPa (the gust front of a pressure series), strength = 10 x the
+        rise in hPa; otherwise the maximum gust or wind speed, strength = m/s.
+        """
         s = st.get("series") or {}
-        t, r = s.get("t_s"), s.get("rain_rate_mmh")
-        if not t or not r:
+        t = np.asarray(s.get("t_s") or [], float)
+        if len(t) < 3:
             return None
-        arr = np.array([np.nan if v is None else v for v in r], float)
-        if not np.isfinite(arr).any():
-            return None
-        i = int(np.nanargmax(arr))
-        return float(t[i]), float(arr[i])
+
+        def arr(key):
+            v = s.get(key)
+            return None if not v else np.array([np.nan if x is None else x for x in v], float)
+
+        rr = arr("rain_rate_mmh")
+        if rr is not None and np.isfinite(rr).any() and np.nanmax(rr) >= 5.0:
+            i = int(np.nanargmax(rr))
+            return float(t[i]), float(rr[i])
+        pr = arr("pressure_hpa")
+        if pr is not None and np.isfinite(pr).sum() > 5:
+            ok = np.isfinite(pr)
+            tt, pp = t[ok], pr[ok]
+            if len(tt) > 5 and tt[-1] - tt[0] > 120:
+                ahead = np.interp(tt + 60.0, tt, pp)
+                rise = ahead - pp
+                rise[tt + 60.0 > tt[-1]] = -np.inf
+                j = int(np.argmax(rise))
+                if rise[j] >= 1.0:
+                    # the passage is where the pressure rises fastest inside that minute
+                    grad = np.gradient(pp, tt)
+                    inw = (tt >= tt[j]) & (tt <= tt[j] + 60.0)
+                    k = int(np.flatnonzero(inw)[np.argmax(grad[inw])])
+                    return float(tt[k]), float(10.0 * rise[j])
+        for key in ("wind_gust_ms", "wind_speed_ms"):
+            w = arr(key)
+            if w is not None and np.isfinite(w).any():
+                i = int(np.nanargmax(w))
+                return float(t[i]), float(w[i])
+        return None
 
 
 # ── shots ───────────────────────────────────────────────────────────────────
@@ -473,6 +503,60 @@ def build_events(
                     **{k: v for k, v in h.items() if k not in ("t_s",)},
                 }
             )
+    # the data's own events (science_events.json) in clip time, so the sound can follow them
+    ev["science"] = []
+    for e in p.get("science", []):
+        ev["science"].append(
+            {
+                "kind": e["kind"],
+                "t_data_s": e["t_s"],
+                "t_clip_s": round(float(clip_time_of_data(tl, e["t_s"])), 3),
+                "numbers": e.get("numbers"),
+                "class": e.get("class"),
+                "where": e.get("where"),
+                "lat": e.get("lat"),
+                "lon": e.get("lon"),
+            }
+        )
+    # radar hail cores: per observed step the cells classified as hail, their centroid and count
+    ev["hail_cores"] = []
+    for k, h in enumerate(p.get("hail", [])):
+        if h and h.get("n", 0) > 0 and h.get("p"):
+            pts = np.asarray(h["p"], float)
+            la, lo = geo.latlon(pts[:, 0].mean(), pts[:, 1].mean())
+            td = float(p["steps"][k]["t_s"])
+            ev["hail_cores"].append(
+                {
+                    "t_data_s": td,
+                    "t_clip_s": round(float(clip_time_of_data(tl, td)), 3),
+                    "n_cells": int(h["n"]),
+                    "lat": round(float(la), 5),
+                    "lon": round(float(lo), 5),
+                    "max_height_km": round(float(pts[:, 2].max()), 2),
+                    "class": "retrieved",
+                }
+            )
+    # the onset of heavy rain at the disdrometers (OBSERVED rain rate crossing 10 mm/h)
+    ev["rain"] = []
+    for s in p.get("stations", []):
+        ser = s.get("series") or {}
+        ts, rr = ser.get("t_s"), ser.get("rain_rate_mmh")
+        if not ts or not rr:
+            continue
+        for i, v in enumerate(rr):
+            if v is not None and v >= 10.0 and (i == 0 or rr[i - 1] is None or rr[i - 1] < 10.0):
+                ev["rain"].append(
+                    {
+                        "station": s["id"],
+                        "t_data_s": ts[i],
+                        "t_clip_s": round(float(clip_time_of_data(tl, ts[i])), 3),
+                        "rain_rate_mmh": v,
+                        "lat": s["lat"],
+                        "lon": s["lon"],
+                        "class": "observed",
+                    }
+                )
+                break
     last = None
     for c in camera:
         sid = nearest_station(p.get("stations", []), c["x_km"], c["y_km"], c["z_km"])
@@ -495,17 +579,33 @@ def build_events(
 
 
 def pick_station(scene: Scene, tl: dict, t0: float, t1: float) -> dict | None:
-    """The station for the ground-level shot [t0, t1]: the strongest rain-rate maximum that arrives inside the shot, else the nearest in time."""
+    """The station of the ground-level shot [t0, t1].
+
+    A station whose storm passage (rain-rate maximum, gust-front pressure rise or wind maximum, see
+    ``Scene.station_arrival``) falls inside the shot wins, the stronger and the closer to the tornado path the
+    better; with none inside, the one whose passage is nearest in time to the shot.
+    """
     sts = scene.p.get("stations", [])
     best, score = None, -1e18
     ta, tb = float(data_time_of_clip(tl, t0)), float(data_time_of_clip(tl, t1))
+    tor = [t for t in scene.p.get("tornadoes", []) if len(t.get("path", [])) >= 2]
+    path = np.array([[q["x"], q["y"]] for q in tor[0]["path"]]) if tor else None
     for s in sts:
         arr = scene.station_arrival(s)
         if arr is None:
             continue
-        tm, rr = arr
+        tm, strength = arr
         inside = ta + 0.25 * (tb - ta) <= tm <= tb - 0.15 * (tb - ta)
-        sc = (1e6 if inside else -abs(tm - 0.6 * (ta + tb) - 0.4 * ta)) + (rr if inside else 0.0)
+        dist = (
+            float(np.min(np.hypot(path[:, 0] - s["x"], path[:, 1] - s["y"])))
+            if path is not None
+            else 0.0
+        )
+        sc = (
+            (1e6 if inside else -abs(tm - (ta + 0.6 * (tb - ta))))
+            + min(strength, 100.0)
+            - 0.5 * dist
+        )
         if sc > score:
             best, score = s, sc
     if best is None and sts:
