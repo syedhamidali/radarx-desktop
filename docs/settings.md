@@ -8,3 +8,6 @@
 
 The gear in the top bar opens the settings: the default data folder, the colour theme, the map background, the
 3D quality and what the interface remembers between sessions. Keyboard shortcuts are listed under `?`.
+
+The **Updates** tab (desktop app only) shows the version, checks for a new one and holds the switches for automatic checking and
+background download; see [UPDATES.md](UPDATES.md).

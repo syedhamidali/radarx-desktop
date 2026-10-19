@@ -40,6 +40,11 @@ The builds are not code-signed, so the first launch shows a warning:
 
 The first launch can take up to a minute while the OS scans the app; after that it starts in about a second.
 
+**Updates:** the installed app tells you when a newer version exists (a small chip in the status bar), shows the release notes
+and installs only when you say so; updates are signature-checked, never interrupt a running job, and can be switched off in
+Settings → Updates. Linux `.deb`/`.rpm` installs are told a new version exists and link to the release page. See
+[docs/UPDATES.md](docs/UPDATES.md).
+
 **Open files from the file manager:** right-click a radar file and choose **Open With → xradar-desktop**, or double-click it
 once you have chosen the app (Get Info → Open with → Change All on macOS). NetCDF/CfRadial, HDF5/ODIM and gzip files are
 registered by extension, including numbered copies such as `file.nc.1` or `file.h5.2`. On macOS the app is also offered
