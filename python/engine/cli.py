@@ -2045,6 +2045,14 @@ def _version() -> str:
         return "0.1.0"
 
 
+class _NoTraceback:
+    """Log filter: print a warning's message but not its traceback (``-vv`` shows tracebacks)."""
+
+    def filter(self, record: Any) -> bool:
+        record.exc_info = record.exc_text = None
+        return True
+
+
 def _quiet_libraries(verbose: int) -> None:
     import logging
 
@@ -2106,10 +2114,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     saved_logging = logging.root.manager.disable
     saved_color = _STATE["no_color"]
     _STATE["no_color"] = bool(getattr(args, "no_color", False))
+    no_traceback = _NoTraceback()
+    if args.verbose < 2:
+        logging.lastResort.addFilter(
+            no_traceback
+        )  # a failed sweep warns in one line, not a traceback
     try:
         with warnings.catch_warnings():
             return _execute(args)
     finally:  # nothing of this run leaks into a process that calls main() repeatedly
+        logging.lastResort.removeFilter(no_traceback)
         logging.disable(saved_logging)
         _STATE["no_color"] = saved_color
 

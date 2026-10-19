@@ -1070,3 +1070,13 @@ def test_equivalent_python_api_names() -> None:
         assert callable(getattr(api, name)), name
     doc = api.__doc__
     assert "Look" in doc and "Combine" in doc and "xrd mosaic" in doc
+
+
+def test_main_does_not_leak_log_filters(capsys, tmp_path) -> None:
+    import logging
+
+    f = tmp_path / "x.nc"
+    make_synthetic_datatree(n_azimuth=30, n_range=40).to_netcdf(f)
+    saved = logging.lastResort.filters[:]
+    run_cli(capsys, "info", "-i", str(f))
+    assert logging.lastResort.filters == saved  # nothing leaks out of main()
