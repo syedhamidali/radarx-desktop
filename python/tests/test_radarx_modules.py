@@ -827,7 +827,9 @@ def test_katx_missing_fields_give_module_errors(katx):
             module_id, katx.datatree, sweep, {}, get_sweep_dataset=katx.get_sweep_dataset
         )
 
-    with pytest.raises(ModuleError, match="VRADH"):
-        go("radarx_dealias", 0)  # surveillance cut has no velocity
+    # the surveillance cut has no velocity, but the paired Doppler cut (same elevation) does:
+    # dealiasing finds it there and says so
+    res = go("radarx_dealias", 0)
+    assert any("sweep 1" in n for n in res.get("notes", [])), res.get("notes")
     with pytest.raises(ModuleError, match="ZDR"):
         go("radarx_hid", 1)  # Doppler cut has no dual-pol
