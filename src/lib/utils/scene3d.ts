@@ -115,6 +115,17 @@ export function project(c: Cam, p: Vec3): [number, number, number] | null {
 
 // ─── Overlay ───────────────────────────────────────────────────────────────
 
+/** A radar site on the ground of the 3D scene (km east / north of the radar), drawn by `drawOverlay`. */
+export interface SceneMarker {
+  x: number;
+  y: number;
+  label: string;
+  /** CSS colour of the ring (and of the fill when `filled`). */
+  color: string;
+  /** Filled = the latest scan is known and recent; half = known and older; hollow = not checked. */
+  fill: 'none' | 'half' | 'full';
+}
+
 export interface OverlayOptions {
   rangeKm: number;
   zTopKm: number;
@@ -125,6 +136,8 @@ export interface OverlayOptions {
   showRings: boolean;
   /** Frame the volume with a faint wire cylinder. */
   showFrame: boolean;
+  /** Other radar sites on the ground (the "Radar sites" layer). */
+  markers?: SceneMarker[];
 }
 
 /** Ring spacing that gives 3-5 rings across the crop radius. */
@@ -257,6 +270,42 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, c: Cam, o: OverlayOpt
       ctx.stroke();
       haloText(ctx, o.siteName || 'Radar', g[0] + 9, g[1] + 11, 'rgba(255,225,140,0.98)', 'left');
     }
+  }
+
+  // ── Other radar sites: ground markers with a thinned id label (hollow = scan age not checked)
+  if (o.markers && o.markers.length) {
+    const boxes: Array<[number, number, number, number]> = [];
+    ctx.font = '500 10px ui-monospace, "IBM Plex Mono", monospace';
+    for (const m of o.markers) {
+      const s = project(c, [m.x, m.y, 0]);
+      if (!s) continue;
+      if (s[0] < -8 || s[1] < -8 || s[0] > c.w + 8 || s[1] > c.h + 8) continue;
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], 4, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(6,8,16,0.85)';
+      ctx.fill();
+      if (m.fill !== 'none') {
+        ctx.beginPath();
+        if (m.fill === 'full') ctx.arc(s[0], s[1], 4, 0, Math.PI * 2);
+        else ctx.arc(s[0], s[1], 4, Math.PI / 2, Math.PI * 1.5);
+        ctx.fillStyle = m.color;
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], 4, 0, Math.PI * 2);
+      ctx.strokeStyle = m.color;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      if (groundness > 0.14) {
+        const w = ctx.measureText(m.label).width + 6;
+        const box: [number, number, number, number] = [s[0] + 6, s[1] - 7, s[0] + 6 + w, s[1] + 7];
+        if (!boxes.some((b) => box[0] < b[2] && box[2] > b[0] && box[1] < b[3] && box[3] > b[1]) && boxes.length < 40) {
+          boxes.push(box);
+          haloText(ctx, m.label, s[0] + 8, s[1], 'rgba(225,232,250,0.92)', 'left');
+        }
+      }
+    }
+    ctx.font = FONT;
   }
 
   // ── Height scale: a vertical axis on the silhouette edge that is leftmost on screen
