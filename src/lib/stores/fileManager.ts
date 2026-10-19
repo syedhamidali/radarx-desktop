@@ -95,6 +95,16 @@ export function removeFile(id: string): string | null {
 }
 
 /**
+ * Forget every open file (the engine that held them is gone: restarted or a new web session).
+ * Their ids would only fail on every later request.
+ */
+export function clearAllFiles(): void {
+  openFiles.set([]);
+  activeFileId.set(null);
+  _syncToLegacyStores(null);
+}
+
+/**
  * Switch the active tab and sync the legacy stores.
  */
 export function setActiveFile(

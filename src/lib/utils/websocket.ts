@@ -12,12 +12,13 @@ import {
 } from '../stores/radarData';
 import { addToast } from '../stores/toasts';
 import { cacheSweepData, clearSweepCache, getCachedSweep, type SweepDataEntry } from './ppiRenderer';
-import { addFile, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
+import { addFile, clearAllFiles, getActiveFile, saveActiveSelection, openFiles as openFilesStore, type FileEntry } from '../stores/fileManager';
 import { perfStats } from '../stores/perfStats';
 import { registerVariableStyle, styleFor } from './variableStyles';
 import { isWebMode, engineUrl, basename } from './env';
 import { collectDownloads, triggerDownloads } from './download';
 import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
+import { trackEngine } from './engineIdentity';
 
 type MessageHandler = (data: any) => void;
 
@@ -118,6 +119,8 @@ class WebSocketManager {
   /** True when {@link target} is a remote engine (web build): cold starts are expected. */
   private remote = false;
   private everConnected = false;
+  /** `engine_id` of the engine process we last talked to (changes when the sidecar restarts). */
+  private engineId: string | null = null;
   private firstFailureAt = 0;
   private disconnectHandlers = new Set<() => void>();
   private retryCount = 0;
@@ -246,11 +249,16 @@ class WebSocketManager {
       if (this.remote) {
         // A new connection is a new server-side session: files opened on the old one are gone.
         if (this.everConnected && get(openFilesStore).length > 0) {
+          clearAllFiles(); // their ids belong to the old session
           addToast('warning', 'The engine session was reset. Please open your files again.', 10000);
         }
         this.everConnected = true;
         this.firstFailureAt = 0;
         setEngineState({ phase: 'connected', attempt: 0, reason: null, since: null });
+      } else {
+        // Desktop: ask which engine process this is. A different one than before means the
+        // sidecar was restarted (it crashed or was killed) and everything it held is gone.
+        void this.send({ type: 'ping' });
       }
       this.flushSendQueue();
     };
@@ -751,6 +759,13 @@ class WebSocketManager {
         console.error('[WS] Server error:', text);
         processingProgress.set(null);
         this.notifyError(text);
+        break;
+      }
+
+      case 'pong': {
+        const seen = trackEngine(this.engineId, msg.engine_id);
+        this.engineId = seen.engineId;
+        if (seen.restarted) this.handleEngineRestarted();
         break;
       }
 
@@ -1373,6 +1388,27 @@ class WebSocketManager {
   }
 
   /**
+   * The engine process was replaced (it crashed or was killed and the app restarted it): its open
+   * files, derived data and caches are gone. Drop our references and say so, instead of letting
+   * every later request fail with "Unknown or closed file_id". The files are not re-opened
+   * automatically: if one of them is what crashed the engine, that would crash it again.
+   */
+  private handleEngineRestarted(): void {
+    const had = get(openFilesStore).length;
+    clearAllFiles();
+    clearSweepCache();
+    this.cancelQueuedSweeps(() => true);
+    processingProgress.set(null);
+    addToast(
+      'error',
+      had > 0
+        ? 'The analysis engine stopped unexpectedly and was restarted, so your open files were closed. Open them again; if the same file stops the engine again, it may be damaged.'
+        : 'The analysis engine stopped unexpectedly and was restarted.',
+      15000,
+    );
+  }
+
+  /**
    * Open a file on the server (multi-file aware).
    * Stores the pending path so the file_opened handler can build a FileEntry.
    */
@@ -1576,14 +1612,16 @@ export const wsManager = new WebSocketManager();
   (async () => {
     try {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<number>('sidecar-ready', (event) => {
+      // Stays registered for the whole session: the shell announces the port again every time it
+      // restarts a crashed engine, and reconnecting at once beats waiting out the retry timer
+      // (or, after the retries ran out, never reconnecting at all).
+      await listen<number>('sidecar-ready', (event) => {
         const port = event.payload;
         if (port > 0 && !wsManager.isConnected) {
           console.log(`[WS] autoConnect via Tauri event: port ${port}`);
           (window as any).__XRADAR_PORT__ = port;
           wsManager.connect(port);
         }
-        unlisten();
       });
     } catch {
       // Not running inside Tauri — ignore
