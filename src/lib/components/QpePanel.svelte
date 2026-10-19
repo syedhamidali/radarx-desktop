@@ -72,12 +72,20 @@
   let valTab = $state<'scatter' | 'range' | 'amount' | 'map'>('scatter');
 
   const METHOD_LABELS: Record<string, string> = {
-    auto: 'Auto (best available)',
-    hybrid: 'Hybrid (class + rate regime)',
-    z: 'R(Z) reflectivity only',
-    kdp: 'R(KDP) specific differential phase',
-    z_zdr: 'R(Z,ZDR) reflectivity + ZDR',
-    a: 'R(A) specific attenuation',
+    auto: 'Auto',
+    hybrid: 'Hybrid',
+    z: 'R(Z)',
+    kdp: 'R(KDP)',
+    z_zdr: 'R(Z,ZDR)',
+    a: 'R(A)',
+  };
+  const METHOD_HINT: Record<string, string> = {
+    auto: 'Hybrid if ZDR and phase exist, else R(Z,ZDR), else R(Z)',
+    hybrid: 'Per gate: hydrometeor class and rain-rate regime choose R(Z), R(Z,ZDR) or R(KDP)',
+    z: 'Reflectivity only (the chosen Z-R relation)',
+    kdp: 'Specific differential phase: immune to calibration, attenuation and hail; noisy below 0.3 deg/km',
+    z_zdr: 'Reflectivity and differential reflectivity',
+    a: 'Specific attenuation (Ryzhkov et al. 2014)',
   };
   const FIELD_HINT: Record<string, string> = {
     accumulation: 'Rainfall depth over the period',
@@ -153,9 +161,9 @@
   const metricRows = $derived(
     validation
       ? [
-          metricRow('Radar (before)', validation.validation_before?.overall),
-          metricRow('Adjusted, in-sample', validation.validation_after_in_sample?.overall),
-          ...(validation.cross_validation ? [metricRow('Adjusted, leave-one-out', validation.cross_validation.adjusted)] : []),
+          metricRow('Radar', validation.validation_before?.overall),
+          metricRow('Adj. in-sample', validation.validation_after_in_sample?.overall),
+          ...(validation.cross_validation ? [metricRow('Adj. leave-1-out', validation.cross_validation.adjusted)] : []),
         ]
       : [],
   );
@@ -230,7 +238,7 @@
       <div class="grid2">
         <label class="field">
           <span>Method</span>
-          <select value={s.method} onchange={(e) => updateQpeSettings({ method: e.currentTarget.value })}>
+          <select value={s.method} title={METHOD_HINT[s.method]} onchange={(e) => updateQpeSettings({ method: e.currentTarget.value })}>
             {#each info?.methods ?? ['auto', 'hybrid', 'z', 'kdp', 'z_zdr', 'a'] as m}
               <option value={m}>{METHOD_LABELS[m] ?? m}</option>
             {/each}
@@ -247,7 +255,7 @@
           <span>{s.precip === 'snow' ? 'Z-S relation' : 'Z-R relation'}</span>
           <select value={s.relation} onchange={(e) => updateQpeSettings({ relation: e.currentTarget.value })}>
             {#each relations as r}
-              <option value={r.key}>{r.label}: {r.equation.split('  ')[0]}</option>
+              <option value={r.key} title={r.label}>{r.equation.split('  ')[0]} · {r.label}</option>
             {/each}
             {#if relations.length === 0}<option value={s.relation}>{s.relation}</option>{/if}
           </select>
@@ -297,7 +305,7 @@
           <label class="field">
             <span>Radars combined by</span>
             <select value={s.composite} onchange={(e) => updateQpeSettings({ composite: e.currentTarget.value as 'weighted' | 'best' })}>
-              <option value="weighted">Quality-weighted mean</option>
+              <option value="weighted">Weighted mean</option>
               <option value="best">Best beam only</option>
             </select>
           </label>
@@ -461,13 +469,13 @@
 
         <div class="table-wrap">
           <table class="data">
-            <thead><tr><th>Radar</th><th class="num">Scans</th><th>Span (UTC)</th><th class="num">Motion u,v</th></tr></thead>
+            <thead><tr><th>Radar</th><th class="num">Scans</th><th>Span UTC</th><th class="num">u, v m/s</th></tr></thead>
             <tbody>
               {#each summary.radars as r (r.name)}
                 <tr>
                   <td class="strong">{r.name}</td>
                   <td class="num mono">{r.scans}</td>
-                  <td class="mono">{(r.first ?? '–').slice(11, 19)}–{(r.last ?? '–').slice(11, 19)}</td>
+                  <td class="mono">{(r.first ?? '–').slice(11, 16)}–{(r.last ?? '–').slice(11, 16)}</td>
                   <td class="num mono">{r.motion_mean_ms ? `${r.motion_mean_ms[0].toFixed(1)}, ${r.motion_mean_ms[1].toFixed(1)}` : '–'}</td>
                 </tr>
               {/each}
@@ -519,7 +527,7 @@
           <p class="help">{validation.pairs} gauges used{validation.qc?.records ? ` of ${validation.qc.records} records` : ''}. Leave-one-out is the honest skill: each gauge predicted from the others. Gauges are point measurements with errors of their own.</p>
           <div class="table-wrap">
             <table class="data">
-              <thead><tr><th></th><th class="num">n</th><th class="num">Bias</th><th class="num">RMSE mm</th><th class="num">r</th><th class="num">KGE</th></tr></thead>
+              <thead><tr><th></th><th class="num">n</th><th class="num">Bias</th><th class="num" title="mm">RMSE</th><th class="num" title="Pearson correlation">r</th><th class="num" title="Kling-Gupta efficiency">KGE</th></tr></thead>
               <tbody>
                 {#each metricRows as m}
                   <tr><td class="strong">{m.label}</td><td class="num mono">{m.n}</td><td class="num mono">{m.bias}</td><td class="num mono">{m.rmse}</td><td class="num mono">{m.corr}</td><td class="num mono">{m.kge}</td></tr>
@@ -705,8 +713,8 @@
 
   .table-wrap { max-height: 190px; overflow: auto; border: 1px solid var(--c-border); border-radius: var(--radius-md); }
   .data { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
-  .data th { position: sticky; top: 0; padding: 4px 6px; font-size: var(--fs-2xs); font-weight: 600; text-align: left; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-muted); background: var(--c-surface-2); border-bottom: 1px solid var(--c-border-strong); }
-  .data td { padding: 3px 6px; color: var(--c-text-dim); border-bottom: 1px solid var(--c-border); white-space: nowrap; }
+  .data th { position: sticky; top: 0; padding: 4px 4px; font-size: var(--fs-2xs); font-weight: 600; text-align: left; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-muted); background: var(--c-surface-2); border-bottom: 1px solid var(--c-border-strong); }
+  .data td { padding: 3px 4px; color: var(--c-text-dim); border-bottom: 1px solid var(--c-border); white-space: nowrap; }
   .data .num { text-align: right; }
   .data tr.click { cursor: pointer; }
   .data tr.click:hover td { background: var(--bg-hover); }

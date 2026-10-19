@@ -2202,34 +2202,59 @@ def qpe(
         raise XrdArgumentError(str(exc)) from exc
     if extent is not None:
         acc_opts["extent"] = _extent4(extent)
-    vols, opened = _as_volumes(files)
-    try:
-        result = hydro_run.run_qpe(
-            [v._reader for v in vols],
-            config=config,
-            basins=basins,
-            basin_options=basin_options,
-            thresholds=thresholds,
-            frequency=frequency,
-            gauges=gauges,
-            gauge_options=gauge_options,
-            adjust=adjust or ("mfb" if gauges is not None else None),
-            adjust_options=adjust_options,
-            dem=dem,
-            progress=progress,
-            resolution_m=resolution_m,
-            max_range_km=max_range_km,
-            start=start,
-            end=end,
-            **acc_opts,
-        )
-    finally:
-        _close_all(opened)
+    sources = _qpe_sources(files)
+    result = hydro_run.run_qpe(
+        sources,
+        config=config,
+        basins=basins,
+        basin_options=basin_options,
+        thresholds=thresholds,
+        frequency=frequency,
+        gauges=gauges,
+        gauge_options=gauge_options,
+        adjust=adjust or ("mfb" if gauges is not None else None),
+        adjust_options=adjust_options,
+        dem=dem,
+        progress=progress,
+        resolution_m=resolution_m,
+        max_range_km=max_range_km,
+        start=start,
+        end=end,
+        **acc_opts,
+    )
     if out is not None:
         result.save(out, field=field)
     if plot is not None:
         save_figure(result.plot(field), plot)
     return result
+
+
+def _qpe_sources(files: Any) -> list[Any]:
+    """Volumes for :func:`qpe`: files stay paths (opened one at a time while accumulating, so a
+    long series needs the memory of one volume); an opened Volume or DataTree is used as it is."""
+    if isinstance(files, (str, os.PathLike, Volume, xr.DataTree)):
+        files = [files]
+    items = list(files)
+    if not items:
+        raise XrdArgumentError("Need at least 1 volume(s), got 0. Pass a list of files or Volumes.")
+    out: list[Any] = []
+    for item in items:
+        if isinstance(item, Volume):
+            out.append(item._reader)
+        elif isinstance(item, xr.DataTree):
+            out.append(item)
+        else:
+            raw = os.fspath(item)
+            resolved = os.path.abspath(os.path.expanduser(raw))
+            if not os.path.exists(resolved):
+                raise XrdInputError(
+                    f"File not found: {raw} (looked for {resolved}). "
+                    "Check the path and the spelling."
+                )
+            if os.path.isdir(resolved):
+                raise XrdInputError(f"{raw} is a directory. Give radar files, not a folder.")
+            out.append(resolved)
+    return out
 
 
 def _extent4(extent: Any) -> tuple[float, float, float, float]:

@@ -146,6 +146,13 @@ class RadarGeometry:
         s = np.hypot(xr_, yr_)
         return cls(latitude, longitude, altitude_m, az.astype(np.float32), s.astype(np.float32))
 
+    def footprint(self, max_range_m: float) -> tuple[int, int, int, int]:
+        """``(j0, j1, i0, i1)``: the rows and columns that can hold data within ``max_range_m``."""
+        rows, cols = np.nonzero(self.s_m <= max_range_m)
+        if rows.size == 0:
+            return (0, 0, 0, 0)
+        return (int(rows.min()), int(rows.max()) + 1, int(cols.min()), int(cols.max()) + 1)
+
 
 # ---------------------------------------------------------------------------
 # Sampling one sweep onto the grid

@@ -30,11 +30,16 @@ that *was* observed; compare it with ``valid_fraction`` before using it.
 from __future__ import annotations
 
 import contextlib
+import gc
 import itertools
 import math
+import os
+import tempfile
 import time as _time
+from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -491,6 +496,179 @@ class QpeResult:
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _Source:
+    """One input volume: an open reader, or a path that is opened when it is needed."""
+
+    reader: Any | None = None
+    path: str | None = None
+    meta: ScanMeta | None = None
+
+
+def _as_sources(items: Sequence[Any]) -> list[_Source]:
+    out: list[_Source] = []
+    for it in items:
+        if isinstance(it, (str, os.PathLike)):
+            out.append(_Source(path=os.fspath(it)))
+        elif isinstance(it, xr.DataTree):
+            out.append(_Source(reader=TreeReader(it)))
+        elif hasattr(it, "get_sweep_dataset"):
+            out.append(_Source(reader=it))
+        else:
+            raise hqpe.QpeError(
+                f"cannot use {type(it).__name__} as a radar volume: give file paths or open volumes"
+            )
+    return out
+
+
+@contextlib.contextmanager
+def _opened(src: _Source):
+    """The reader of a source; a path is opened here and closed again afterwards."""
+    if src.reader is not None:
+        yield src.reader
+        return
+    from engine.reader import RadarReader
+
+    name = Path(str(src.path)).name
+    reader = RadarReader()
+    try:
+        reader.open_file(str(src.path))
+    except (ValueError, OSError) as exc:
+        raise hqpe.QpeError(f"cannot open {name}: {exc}") from exc
+    try:
+        yield reader
+    finally:
+        with contextlib.suppress(Exception):
+            reader.close()
+        del reader
+        gc.collect()  # a decoded volume is hundreds of MB: free it before the next one
+
+
+@dataclass
+class ScanRef:
+    """A scan of one radar in the series: when, which radar and where its grids are kept."""
+
+    key: tuple
+    name: str
+    time: np.datetime64
+    handle: int
+    meta: dict[str, Any]
+
+
+class FieldStore:
+    """The best-beam grids of all scans.
+
+    A short series stays in memory. A long one (more than ``SPILL_AFTER`` scans) is cropped to the
+    radar's footprint, stored with float16 for the derived fields (quality, height, range,
+    sigma) and written to a temporary folder, so a 24 h accumulation of several radars needs
+    a few MB of memory per scan in use, not per scan in the series. ``get`` keeps the
+    most recently used fields.
+    """
+
+    SPILL_AFTER = 24
+    KEEP = 10
+
+    def __init__(self, n_expected: int, shape: tuple[int, int] | None = None) -> None:
+        self.spill = n_expected > self.SPILL_AFTER
+        self._mem: dict[int, hgrid.RadarField] = {}
+        self._files: dict[int, tuple[str, tuple[int, int, int, int], hgrid.RadarField]] = {}
+        self._lru: OrderedDict[int, hgrid.RadarField] = OrderedDict()
+        self._dir: tempfile.TemporaryDirectory | None = None
+        self._n = 0
+        self.shape = shape
+
+    def put(self, rf: hgrid.RadarField, box: tuple[int, int, int, int]) -> int:
+        h = self._n
+        self._n += 1
+        if not self.spill:
+            self._mem[h] = rf
+            return h
+        if self._dir is None:
+            self._dir = tempfile.TemporaryDirectory(prefix="xrd_qpe_")
+        j0, j1, i0, i1 = box
+        path = os.path.join(self._dir.name, f"{h}.npz")
+        sl = (slice(j0, j1), slice(i0, i1))
+        np.savez(
+            path,
+            rate=rf.rate[sl],
+            sigma=rf.sigma[sl].astype(np.float16),
+            quality=rf.quality[sl].astype(np.float16),
+            hagl=rf.height_agl_m[sl].astype(np.float16),
+            rng=rf.range_km[sl].astype(np.float16),
+            flags=rf.flags[sl],
+            beam=rf.beam[sl],
+            blockage=(
+                rf.blockage[sl].astype(np.float16) if rf.blockage is not None else np.zeros(0)
+            ),
+        )
+        shell = hgrid.RadarField(
+            name=rf.name,
+            latitude=rf.latitude,
+            longitude=rf.longitude,
+            altitude_m=rf.altitude_m,
+            time=rf.time,
+            rate=None,
+            sigma=None,
+            quality=None,
+            height_agl_m=None,  # type: ignore[arg-type]
+            range_km=None,
+            blockage=None,
+            flags=None,
+            beam=None,
+            sweeps=rf.sweeps,
+            meta=rf.meta,  # type: ignore[arg-type]
+        )
+        self._files[h] = (path, box, shell)
+        return h
+
+    def get(self, h: int) -> hgrid.RadarField:
+        if h in self._mem:
+            return self._mem[h]
+        if h in self._lru:
+            self._lru.move_to_end(h)
+            return self._lru[h]
+        path, (j0, j1, i0, i1), shell = self._files[h]
+        ny, nx = self.shape  # type: ignore[misc]
+        sl = (slice(j0, j1), slice(i0, i1))
+        with np.load(path) as z:
+
+            def full(name: str, fill: float, dtype: Any = np.float32) -> np.ndarray:
+                out = np.full((ny, nx), fill, dtype=dtype)
+                out[sl] = z[name].astype(dtype)
+                return out
+
+            blk = z["blockage"]
+            rf = hgrid.RadarField(
+                name=shell.name,
+                latitude=shell.latitude,
+                longitude=shell.longitude,
+                altitude_m=shell.altitude_m,
+                time=shell.time,
+                rate=full("rate", np.nan),
+                sigma=full("sigma", np.nan),
+                quality=full("quality", np.nan),
+                height_agl_m=full("hagl", np.nan),
+                range_km=full("rng", np.nan),
+                blockage=full("blockage", np.nan) if blk.size else None,
+                flags=full("flags", 0, np.uint8),
+                beam=full("beam", -1, np.int8),
+                sweeps=shell.sweeps,
+                meta=shell.meta,
+            )
+        self._lru[h] = rf
+        while len(self._lru) > self.KEEP:
+            self._lru.popitem(last=False)
+        return rf
+
+    def close(self) -> None:
+        self._mem.clear()
+        self._lru.clear()
+        self._files.clear()
+        if self._dir is not None:
+            self._dir.cleanup()
+            self._dir = None
+
+
 def _as_time(value: Any) -> np.datetime64 | None:
     if value is None:
         return None
@@ -505,7 +683,8 @@ def _as_time(value: Any) -> np.datetime64 | None:
         ) from exc
 
 
-def accumulate(
+def _accumulate(
+    store: FieldStore,
     readers: Sequence[Any],
     config: hqpe.QpeConfig | dict | None = None,
     *,
@@ -526,38 +705,7 @@ def accumulate(
     progress: ProgressFn | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> QpeResult:
-    """Accumulate rainfall from opened volumes (readers) of one or several radars.
-
-    Parameters
-    ----------
-    readers : sequence
-        Opened volumes (``engine.reader.RadarReader`` or anything with ``datatree`` and
-        ``get_sweep_dataset``). With one volume per radar and no ``start``/``end`` the result is
-        an instantaneous composite: the accumulation is 0 mm over 0 s, read ``result.rate_last``.
-    config : QpeConfig or dict
-        Estimator options (relation, band, freezing level ...), see
-        :class:`engine.hydro.qpe.QpeConfig`.
-    resolution_m, extent, max_range_km
-        The grid (cell size, west/south/east/north box in degrees, default: all radars).
-    start, end
-        Period (ISO 8601 UTC). Default: first to last scan. Time outside the scans is not
-        extrapolated: it counts as missing (``valid_fraction``).
-    composite : {"weighted", "best"}
-        How radars are combined, see :func:`engine.hydro.grid.composite`.
-    advect : bool
-        Advection-corrected interpolation between scans (else linear in time).
-    step_s : float
-        Spacing of the integration nodes; every scan time is a node as well.
-    max_gap_s : float
-        Longest gap between two scans of a radar that is bridged by interpolation.
-    hold_edges_s : float
-        Hold the first (last) scan of a radar for up to this many seconds before (after) it, so a
-        period that starts or ends on the hour is covered although the scans start 20 s later.
-        A stated assumption (the rate stays constant for those seconds); 0 = off, the time is
-        missing.
-    basins : engine.hydro.basins.BasinSet, optional
-        Collect the basin-average series while accumulating.
-    """
+    """The work of :func:`accumulate`; ``store`` keeps the per-scan grids."""
     cfg = config if isinstance(config, hqpe.QpeConfig) else hqpe.QpeConfig.from_dict(config)  # type: ignore[arg-type]
     cfg.validate()
     if n_sweeps is None:  # a second beam only matters where the lowest one is blocked
@@ -577,57 +725,83 @@ def accumulate(
     if not readers:
         raise hqpe.QpeError("no radar volumes given")
 
-    rep(2, "Reading volume metadata")
-    scans = [scan_meta(r, i) for i, r in enumerate(readers)]
-    bad = [s.name for s in scans if np.isnat(s.time)]
-    if bad:
-        raise hqpe.QpeError(
-            f"volume(s) without a time: {', '.join(bad)}. An accumulation needs scan times."
+    sources = _as_sources(readers)
+    notes: list[str] = []
+    t_read = _time.perf_counter()
+    if extent is None:  # the box of all radars is needed before anything is gridded
+        rep(2, "Reading volume metadata")
+        for j, src in enumerate(sources):
+            if cancel and cancel():
+                raise hqpe.QpeError("cancelled")
+            if src.meta is None:
+                with _opened(src) as rd:
+                    src.meta = scan_meta(rd, j)
+                if src.path is not None:
+                    src.meta.reader = None  # reopened when its turn comes
+        sites0 = {s.meta.key: s.meta for s in sources if s.meta is not None}
+        box = hgrid.bbox_for_radars(
+            [{"latitude": m.latitude, "longitude": m.longitude} for m in sites0.values()],
+            max_range_km,
         )
-    sites = {s.key: s for s in scans}
-    box = extent or hgrid.bbox_for_radars(
-        [{"latitude": s.latitude, "longitude": s.longitude} for s in sites.values()], max_range_km
-    )
+    else:
+        box = tuple(extent)
     try:
         grid = hgrid.make_grid(tuple(box), resolution_m)
     except Exception as exc:  # engine.mosaic.MosaicError: grid too large / box outside the map
         if type(exc).__name__ != "MosaicError":
             raise
         raise hqpe.QpeError(str(exc)) from exc
-    geoms = {
-        k: hgrid.RadarGeometry.build(grid, s.latitude, s.longitude, s.altitude_m)
-        for k, s in sites.items()
-    }
-    names = _unique_names([sites[k].name for k in sites])
-    name_of = dict(zip(sites, names, strict=True))
+    store.shape = grid.shape
+    store.spill = len(sources) > FieldStore.SPILL_AFTER
 
-    # ---- one RadarField per volume -------------------------------------------------------
-    t_read = _time.perf_counter()
-    series: dict[tuple, list[hgrid.RadarField]] = {k: [] for k in sites}
-    notes: list[str] = []
-    ordered = sorted(scans, key=lambda s: s.time)
-    n = len(ordered)
+    # ---- one best-beam grid per volume, one volume in memory at a time ----------------------
+    geoms: dict[tuple, hgrid.RadarGeometry] = {}
+    boxes: dict[tuple, tuple[int, int, int, int]] = {}
+    sites: dict[tuple, ScanMeta] = {}
+    series: dict[tuple, list[ScanRef]] = {}
     seen_times: set[tuple] = set()
-    for j, sc in enumerate(ordered):
+    n = len(sources)
+    for j, src in enumerate(sources):
         if cancel and cancel():
             raise hqpe.QpeError("cancelled")
-        ident = (sc.key, str(sc.time))
-        if ident in seen_times:
-            notes.append(f"{sc.name}: duplicate volume at {prov.iso_utc(sc.time)} skipped")
-            continue
-        seen_times.add(ident)
-        rep(5 + int(55 * j / max(n, 1)), f"QPE {sc.name} {j + 1}/{n}")
-        rf, _ = radar_field(
-            sc,
-            cfg,
-            grid,
-            geoms[sc.key],
-            n_sweeps=n_sweeps,
-            max_elev_deg=max_elev_deg,
-            max_range_km=max_range_km,
-        )
-        rf.name = name_of[sc.key]
-        series[sc.key].append(rf)
+        with _opened(src) as rd:
+            sc = src.meta or scan_meta(rd, j)
+            sc.reader = rd
+            if np.isnat(sc.time):
+                raise hqpe.QpeError(f"{sc.name} has no time. An accumulation needs scan times.")
+            if sc.key not in geoms:
+                geoms[sc.key] = hgrid.RadarGeometry.build(
+                    grid, sc.latitude, sc.longitude, sc.altitude_m
+                )
+                boxes[sc.key] = geoms[sc.key].footprint(max_range_km * 1000.0)
+                sites[sc.key] = sc
+                series[sc.key] = []
+            ident = (sc.key, str(sc.time))
+            if ident in seen_times:
+                notes.append(f"{sc.name}: duplicate volume at {prov.iso_utc(sc.time)} skipped")
+                continue
+            seen_times.add(ident)
+            rep(5 + int(55 * j / max(n, 1)), f"QPE {sc.name} {j + 1}/{n}")
+            rf, _ = radar_field(
+                sc,
+                cfg,
+                grid,
+                geoms[sc.key],
+                n_sweeps=n_sweeps,
+                max_elev_deg=max_elev_deg,
+                max_range_km=max_range_km,
+            )
+        rf.time = sc.time
+        sc.reader = None
+        h = store.put(rf, boxes[sc.key])
+        series[sc.key].append(ScanRef(sc.key, sc.name, sc.time, h, dict(rf.meta)))
+        src.meta = sc
+        del rf
+    names = _unique_names([sites[k].name for k in sites])
+    name_of = dict(zip(sites, names, strict=True))
+    for key, lst in series.items():
+        for ref in lst:
+            ref.name = name_of[key]
     t_read = _time.perf_counter() - t_read
 
     first = min(f.time for lst in series.values() for f in lst)
@@ -687,38 +861,53 @@ def accumulate(
     interps: dict[tuple, tuple[int, PairInterpolator | None]] = {}
     motion_log: dict[tuple, list[tuple[float, float, str]]] = {k: [] for k in series}
 
+    def fld(ref: ScanRef) -> hgrid.RadarField:
+        return store.get(ref.handle)
+
     def radar_rate(key: tuple, t: np.datetime64) -> tuple[np.ndarray, hgrid.RadarField] | None:
         lst = series[key]
         times = [f.time for f in lst]
         if snapshot:
-            return lst[0].rate, lst[0]
+            f = fld(lst[0])
+            return f.rate, f
         if t < times[0]:
-            return (lst[0].rate, lst[0]) if (times[0] - t) / SECONDS <= hold_edges_s else None
+            if (times[0] - t) / SECONDS <= hold_edges_s:
+                f = fld(lst[0])
+                return f.rate, f
+            return None
         if t > times[-1]:
-            return (lst[-1].rate, lst[-1]) if (t - times[-1]) / SECONDS <= hold_edges_s else None
+            if (t - times[-1]) / SECONDS <= hold_edges_s:
+                f = fld(lst[-1])
+                return f.rate, f
+            return None
         # bracketing pair
         i = max(0, min(len(lst) - 2, int(np.searchsorted(times, t, side="right")) - 1))
         if len(lst) == 1:
-            return (lst[0].rate, lst[0]) if t == times[0] else None
-        a, b = lst[i], lst[i + 1]
-        gap = float((b.time - a.time) / SECONDS)
-        if t == a.time:
-            return a.rate, a
-        if t == b.time:
-            return b.rate, b
+            if t == times[0]:
+                f = fld(lst[0])
+                return f.rate, f
+            return None
+        ra, rb = lst[i], lst[i + 1]
+        gap = float((rb.time - ra.time) / SECONDS)
+        if t == ra.time:
+            f = fld(ra)
+            return f.rate, f
+        if t == rb.time:
+            f = fld(rb)
+            return f.rate, f
         if gap > max_gap_s:
             return None
         cached = interps.get(key)
         if cached is None or cached[0] != i:
             it = PairInterpolator(
-                a, b, grid, advect=advect, tile_m=tile_km * 1000.0 if tile_km else None
+                fld(ra), fld(rb), grid, advect=advect, tile_m=tile_km * 1000.0 if tile_km else None
             )
             interps[key] = (i, it)
             motion_log[key].append((it.u, it.v, it.method))
         else:
             it = cached[1]
-        near = a if (t - a.time) <= (b.time - t) else b
-        return it.at(t), near
+        near = ra if (t - ra.time) <= (rb.time - t) else rb
+        return it.at(t), fld(near)
 
     rep(62, "Integrating over time")
     t_loop = _time.perf_counter()
@@ -903,12 +1092,96 @@ def accumulate(
             "volumes_s": round(t_read, 3),
             "integrate_s": round(t_loop, 3),
         },
-        source_files=[s.path or s.name for s in scans],
+        source_files=[(s.meta.path or s.meta.name) for s in sources if s.meta is not None],
     )
     if collector is not None:
         result.basin_series = collector.finish(result)
     rep(100, "QPE ready")
     return result
+
+
+def accumulate(
+    readers: Sequence[Any],
+    config: hqpe.QpeConfig | dict | None = None,
+    *,
+    resolution_m: float = 1000.0,
+    extent: tuple[float, float, float, float] | None = None,
+    max_range_km: float = 230.0,
+    start: Any = None,
+    end: Any = None,
+    composite: str = "weighted",
+    advect: bool = True,
+    tile_km: float | None = None,
+    step_s: float = 60.0,
+    max_gap_s: float = 1200.0,
+    hold_edges_s: float = 0.0,
+    n_sweeps: int | None = None,
+    max_elev_deg: float = DEFAULT_MAX_ELEV_DEG,
+    basins: Any = None,
+    progress: ProgressFn | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> QpeResult:
+    """Accumulate rainfall from volumes of one or several radars.
+
+    Parameters
+    ----------
+    readers : sequence
+        File paths (opened one at a time and closed again, so a long series needs memory for
+        one volume), opened volumes (``engine.reader.RadarReader`` or anything with ``datatree``
+        and ``get_sweep_dataset``) or ``xarray.DataTree`` objects. With one volume per radar and
+        no ``start``/``end`` the result is an instantaneous composite: the accumulation is 0 mm
+        over 0 s, read ``result.rate_last``.
+    config : QpeConfig or dict
+        Estimator options (relation, band, freezing level ...), see
+        :class:`engine.hydro.qpe.QpeConfig`.
+    resolution_m, extent, max_range_km
+        The grid (cell size, west/south/east/north box in degrees, default: all radars). Without
+        ``extent`` every path is opened once more to read the radar site before the grid is
+        made; give ``extent`` for a long series of files to decode each file only once.
+    start, end
+        Period (ISO 8601 UTC). Default: first to last scan. Time outside the scans is not
+        extrapolated: it counts as missing (``valid_fraction``).
+    composite : {"weighted", "best"}
+        How radars are combined, see :func:`engine.hydro.grid.composite`.
+    advect : bool
+        Advection-corrected interpolation between scans (else linear in time).
+    step_s : float
+        Spacing of the integration nodes; every scan time is a node as well.
+    max_gap_s : float
+        Longest gap between two scans of a radar that is bridged by interpolation.
+    hold_edges_s : float
+        Hold the first (last) scan of a radar for up to this many seconds before (after) it, so a
+        period that starts or ends on the hour is covered although the scans start 20 s later.
+        A stated assumption (the rate stays constant for those seconds); 0 = off, the time is
+        missing.
+    basins : engine.hydro.basins.BasinSet, optional
+        Collect the basin-average series while accumulating.
+    """
+    store = FieldStore(0)
+    try:
+        return _accumulate(
+            store,
+            readers,
+            config,
+            resolution_m=resolution_m,
+            extent=extent,
+            max_range_km=max_range_km,
+            start=start,
+            end=end,
+            composite=composite,
+            advect=advect,
+            tile_km=tile_km,
+            step_s=step_s,
+            max_gap_s=max_gap_s,
+            hold_edges_s=hold_edges_s,
+            n_sweeps=n_sweeps,
+            max_elev_deg=max_elev_deg,
+            basins=basins,
+            progress=progress,
+            cancel=cancel,
+        )
+    finally:
+        store.close()
 
 
 def _unique_names(names: Sequence[str]) -> list[str]:
