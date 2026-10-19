@@ -436,7 +436,7 @@ def _prepare_volume(
     qc_rhohv: float | None,
 ) -> _Volume:
     """In-memory radarx-ready tree of one open volume with ``variable`` under its own name."""
-    from engine.reader import sorted_sweep_names
+    from engine.reader import mask_below_threshold, sorted_sweep_names
 
     tree = getattr(reader, "datatree", None)
     if tree is None:
@@ -448,7 +448,7 @@ def _prepare_volume(
     nodes: dict[str, xr.Dataset] = {}
     max_range = 0.0
     for i, _ in enumerate(names):
-        ds = reader.get_sweep_dataset(i)
+        ds = reader.get_sweep_dataset(i, mask=False)  # mask just the moments used (below)
         if "azimuth" not in ds.coords or "range" not in ds.coords:
             continue
         mode = str(np.asarray(ds["sweep_mode"].values).ravel()[0]) if "sweep_mode" in ds else ""
@@ -462,7 +462,7 @@ def _prepare_volume(
             found = _find_name(ds, aux)
             if found and found not in wanted:
                 wanted.append(found)
-        sub = ds[wanted]
+        sub = mask_below_threshold(ds[wanted])
         for extra in ("sweep_fixed_angle",):
             if extra in ds.variables:
                 sub = sub.assign({extra: ds[extra]}) if extra not in sub else sub
@@ -481,7 +481,7 @@ def _prepare_volume(
     if not nodes:
         raise MosaicError(f"'{variable}' is not in any sweep of file {index + 1}")
     first = next(iter(nodes.values()))
-    lat, lon, alt = _site(tree, reader.get_sweep_dataset(0))
+    lat, lon, alt = _site(tree, reader.get_sweep_dataset(0, mask=False))
     nodes["/"] = xr.Dataset(
         coords={
             "latitude": np.float64(lat),

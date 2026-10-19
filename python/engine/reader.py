@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 import threading
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -110,9 +111,19 @@ def mask_variable(v: xr.DataArray) -> xr.DataArray:
     return v.where(~bad, other=np.nan).assign_attrs(v.attrs)
 
 
-def mask_below_threshold(ds: xr.Dataset) -> xr.Dataset:
-    """:func:`mask_variable` applied to every 2-D data variable of *ds*."""
-    masked = {name: mask_variable(v) for name, v in ds.data_vars.items() if v.ndim >= 2}
+def mask_below_threshold(ds: xr.Dataset, only: Iterable[str] | None = None) -> xr.Dataset:
+    """:func:`mask_variable` applied to every 2-D data variable of *ds*.
+
+    With ``only`` just those variables are masked (and, for a lazily-read file, decoded): the
+    others are returned untouched. Masking decodes and copies a whole array, so a caller that
+    reads one moment out of five should say which.
+    """
+    names = None if only is None else set(only)
+    masked = {
+        name: mask_variable(v)
+        for name, v in ds.data_vars.items()
+        if v.ndim >= 2 and (names is None or name in names)
+    }
     changed = {k: m for k, m in masked.items() if m is not ds[k]}
     return ds.assign(changed) if changed else ds
 
@@ -995,12 +1006,15 @@ class RadarReader:
         assert self._dtree is not None
         return self._build_schema(self._dtree, self._format)
 
-    def get_sweep_dataset(self, sweep: int, *, mask: bool = True) -> xr.Dataset:
+    def get_sweep_dataset(
+        self, sweep: int, *, mask: bool = True, only: Iterable[str] | None = None
+    ) -> xr.Dataset:
         """Return the full ``xr.Dataset`` of one sweep (all variables and coords).
 
         With ``mask=True`` (default) the reserved "no echo" / "range folded" codes of
         integer-encoded moments are NaN (see :func:`mask_variable`). This builds new arrays, so
-        ask for ``mask=False`` when only metadata or one variable is needed.
+        ask for ``mask=False`` when only metadata or one variable is needed, or pass
+        ``only=[names]`` to mask (and decode) just those moments.
 
         Placeholder sweeps of an ARCO scan are loaded on demand (once, thread-safe)
         and the real dataset is returned.  Non-ARCO sweeps return the node's dataset
@@ -1020,7 +1034,7 @@ class RadarReader:
         ds = nodes[sweep].to_dataset()
         if _is_placeholder(ds) and self._format == "nexrad_arco":
             ds = self._load_arco_sweep(int(sweep))
-        return mask_below_threshold(ds) if mask else ds
+        return mask_below_threshold(ds, only) if mask else ds
 
     def get_sweep_data(self, sweep: int, variable: str) -> xr.DataArray:
         """Return the DataArray for a specific sweep index and variable.
