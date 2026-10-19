@@ -126,7 +126,7 @@
   function legendGradient(l: { vmin: number; vmax: number; legend: [number, string][] }): string {
     const span = l.vmax - l.vmin || 1;
     const stops = [...(l.legend ?? [])].sort((a, b) => a[0] - b[0]);
-    if (stops.length === 0) return 'linear-gradient(90deg, #333, #ddd)';
+    if (stops.length === 0) return 'linear-gradient(90deg, var(--c-surface-3), var(--c-text-dim))';
     return `linear-gradient(90deg, ${stops.map(([v, c]) => `${c} ${Math.max(0, Math.min(100, ((v - l.vmin) / span) * 100)).toFixed(1)}%`).join(', ')})`;
   }
 
