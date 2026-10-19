@@ -525,6 +525,21 @@ def stage_modules(rd, repeat: int) -> None:
 
         measure("module", f"module {mod} (sweep 0)", fn, repeat=repeat)
 
+    # The same work as the app's "all sweeps" runs and QC recipes (derived variables).
+    from engine import api
+
+    vol = api.Volume(rd)
+    for label, call in (
+        ("module radarx_hid, all sweeps", lambda: vol.run("radarx_hid", all_sweeps=True)),
+        (
+            "QC recipe 'Reflectivity QC', all sweeps",
+            lambda: vol.pipeline("Reflectivity QC", all_sweeps=True),
+        ),
+        ("QC recipe 'dual-pol', all sweeps", lambda: vol.pipeline("dual-pol", all_sweeps=True)),
+    ):
+        measure("module", label, call, repeat=min(repeat, 2), prep=lambda: vol.drop_derived())
+    vol.drop_derived()
+
 
 def stage_mosaic(readers: list, repeat: int) -> None:
     from engine import mosaic
