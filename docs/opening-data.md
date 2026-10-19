@@ -1,0 +1,49 @@
+# Opening data
+
+## Ways to open a file
+
+- **Open** button (or `Ctrl/⌘ + O`): pick one or several files. There is no file-type filter, because NEXRAD
+  Level II files usually have no extension.
+- **Drag and drop** a file onto the window.
+- **Open With** from the file manager: right-click a radar file → *Open With → xradar-desktop*, or double-click it
+  once the app is the default for that type. This works for NetCDF/CfRadial, HDF5/ODIM, gzip files, numbered
+  copies such as `file.nc.1` and, on macOS, for files with no extension.
+- **Cloud**: the *Cloud data* panel opens the latest NEXRAD Level II scan of a station from the public AWS archive,
+  browses the archive by date, or opens ARCO / icechunk data.
+
+```{image} images/ui/welcome.png
+:alt: The empty window
+:width: 90%
+:align: center
+```
+
+The format is detected from the file contents (NEXRAD Level II, ODIM H5, CfRadial 1 and 2, IRIS/Sigmet, Rainbow,
+Furuno, IMD, UF, ...), so the name does not matter: `KTLX20130520_201643_V06`, `volume.nc.3` and
+`KTLX20130520_201643_V06.gz` all open the same way.
+
+## Several files and several radars
+
+Every open file gets a tab. The files of several radars can be combined into a mosaic ({doc}`MOSAIC`) or a wind
+analysis ({doc}`MULTIDOPPLER`) from the panels of the same name.
+
+## Cloud data
+
+```{image} images/ui/cloud-panel.png
+:alt: The cloud data panel
+:width: 40%
+:align: right
+```
+
+*Real-time* opens the newest scan of the chosen station; *Archive* lists scans by date; *ARCO* opens analysis-ready
+cloud-optimised volumes; *Network* opens the scans of every radar of a region at once, ready for a mosaic. Files
+are read from the public `unidata-nexrad-level2` bucket, so no account is needed.
+
+## Looking inside a file
+
+*Table View* shows the values of a sweep as a table; *Metadata* lists the whole data tree with its attributes:
+
+```{image} images/ui/metadata.png
+:alt: The metadata dialog
+:width: 90%
+:align: center
+```

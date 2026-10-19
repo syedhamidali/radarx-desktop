@@ -34,6 +34,17 @@ usage
 
 ```{toctree}
 :maxdepth: 2
+:caption: Using the app
+
+opening-data
+viewing
+using-modules
+export
+settings
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: User guide
 
 VARMAP

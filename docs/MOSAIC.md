@@ -5,6 +5,22 @@ heavy lifting is done by [radarx](https://github.com/syedhamidali/radarx) (`grid
 `merge_radars`, `network_bias`), whose compiled kernels run multithreaded. Needs
 `pip install "radarx>=0.5.1"` (Python 3.12+).
 
+```{image} images/ui/mosaic-view.png
+:alt: Composite reflectivity of four radars around Mayfield, Kentucky
+:width: 100%
+```
+
+A composite-reflectivity mosaic of four radars (KHPX, KNQA, KPAH, KVWX) at 02:04 UTC on 11 December 2021, the
+night of the Mayfield tornado. Cells that no radar measured an echo in are left empty, so the storms stand out and
+each radar's range ring stays visible. The panel on the right sets the radars, the product, the resolution and the
+merge:
+
+```{image} images/ui/mosaic-panel.png
+:alt: The mosaic panel
+:width: 30%
+```
+
+
 ## Use it
 1. **Open the radars.** Either open files normally (they appear in the Mosaic panel), or use
    **Cloud Data → Network**: pick a centre station, radius, radar count and time and it opens

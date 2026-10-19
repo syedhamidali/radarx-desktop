@@ -6,6 +6,17 @@ scan the same weather. The retrieval is done by [radarx](https://github.com/syed
 `multi_doppler_input` (which uses `grid_radars`, the same gridder as the mosaic). Needs
 `pip install radarx` (Python 3.12+).
 
+```{image} images/ui/wind-panel.png
+:alt: The wind panel
+:width: 30%
+:align: right
+```
+
+The *Wind* panel lists the open radars, sets the analysis grid (spacing, top height, maximum range), the method
+(analytic or variational), the minimum crossing angle and the background wind, and runs the retrieval. It needs
+the files of at least two radars that scan the same weather.
+
+
 ## Use it
 1. **Open the radars.** Open the files of two or more radars (or fetch them from Cloud Data). Their
    radial velocity must be **dealiased**; run a dealiasing module first if the velocities fold.
