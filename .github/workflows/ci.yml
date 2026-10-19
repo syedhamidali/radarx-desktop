@@ -76,12 +76,14 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
+          # Codecov requires an upload token (repository secret CODECOV_TOKEN)
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: syedhamidali/xradar-desktop
           files: python/coverage.xml
           flags: python-${{ runner.os }}
           name: python-${{ runner.os }}
+          # do not fail the build while the secret is not set yet (forks and PRs from forks have none)
           fail_ci_if_error: false
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
   # ---------------------------------------------------------------
   # Frontend: svelte-check + TypeScript
