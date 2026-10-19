@@ -98,6 +98,12 @@
   let quickDpi = 300;
   let showRings = true;
   let showTitle = true;
+  /** Own title for the figure (empty = the automatic one). Placeholders: {variable} {sweep} {elevation} {time} {radar}. */
+  const TITLE_KEY = 'xradar.export.title.v1';
+  let exportTitle = (() => {
+    try { return localStorage.getItem(TITLE_KEY) ?? ''; } catch { return ''; }
+  })();
+  $: try { localStorage.setItem(TITLE_KEY, exportTitle); } catch { /* storage unavailable */ }
   let darkBackground = false;
 
   // Data export: write module results (cleaned fields, …) next to the measured moments.
@@ -267,6 +273,7 @@
     return {
       show_rings: showRings,
       show_title: showTitle,
+      ...(showTitle && exportTitle.trim() ? { title: exportTitle.trim() } : {}),
       show_colorbar: true,
       dark_background: darkBackground,
     };
@@ -413,6 +420,17 @@
             <input type="checkbox" bind:checked={darkBackground} disabled={!canExport} />
             Dark BG
           </label>
+        </div>
+        <div class="field">
+          <label for="export-title">Title</label>
+          <input
+            id="export-title"
+            type="text"
+            bind:value={exportTitle}
+            disabled={!canExport || !showTitle}
+            placeholder="Automatic - or write your own"
+            title="Placeholders: {'{variable}'} {'{sweep}'} {'{elevation}'} {'{time}'} {'{radar}'} (filled in for every figure of a batch)"
+          />
         </div>
       </div>
     </div>
