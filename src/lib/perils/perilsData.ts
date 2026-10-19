@@ -103,6 +103,42 @@ export interface TornadoRec {
   [k: string]: unknown;
 }
 
+export interface VortexStep {
+  t: number;
+  radar: string | null;
+  vrot_ms: number | null;
+  diameter_km: number | null;
+  omega: number | null;
+  period_s: number | null;
+  sense: string | null;
+  effective_resolution_m: number | null;
+  tornado_resolved: boolean;
+  verdict?: string | null;
+  debris_voxels_flag2?: number | null;
+}
+
+export interface VortexData {
+  class?: string;
+  survey_scale_estimate?: {
+    wind_range_ms: [number, number];
+    damage_width_m: number;
+    angular_velocity_s1_range?: [number, number];
+    rotation_period_s_range: [number, number];
+    class?: string;
+    [k: string]: unknown;
+  } | null;
+  summary: {
+    n_steps: number;
+    vrot_ms_min_median_max: [number, number, number] | null;
+    couplet_diameter_km_min_median_max: [number, number, number] | null;
+    omega_s1_median_cyclonic: number | null;
+    cyclonic_steps: number;
+    tornado_resolved_any: boolean;
+  };
+  steps: VortexStep[];
+  note?: string;
+}
+
 export interface RotationTrack {
   id?: string;
   radar?: string;
@@ -159,6 +195,10 @@ export interface PerilsData {
   environment: Record<string, unknown> | null;
   tornadoes: TornadoRec[];
   rotation: RotationTrack[];
+  /** Column-maximum reflectivity of each observed step (8-bit codes, the volume's code book): the plan-view inset. */
+  colmax?: ({ bin: string; nx: number; ny: number } | null)[];
+  /** The radar couplet at the surveyed tornado (the parent circulation) and the survey-scale spin estimate; null without the file. */
+  vortex?: VortexData | null;
   mrms: (MrmsMeta | null)[];
   surface?: (unknown | null)[];
   hail: ({ n: number; p: number[][] } | null)[];
@@ -331,6 +371,48 @@ export function balloonAt(snd: SoundingRec, t: number): [number, number, number]
   if (!d || d.length < 2 || t < d[0][0] || t > d[d.length - 1][0]) return null;
   const ts = d.map((q) => q[0]);
   return [lerpAt(ts, d.map((q) => q[1]), t), lerpAt(ts, d.map((q) => q[2]), t), lerpAt(ts, d.map((q) => q[3]), t)];
+}
+
+/** Fade times of a radiosonde that has reached the top of its track, in clip seconds. */
+export const BALLOON_FADE_S = 1.5;
+export const BALLOON_TRAIL_FADE_S = 3.5;
+
+export interface BalloonFlight {
+  /** Position (km) at the data time, or at the last point of the track once it has ended. */
+  x: number;
+  y: number;
+  z: number;
+  ended: boolean;
+  /** Opacity of the balloon and of its trail (1 in flight, fading to 0 after the last point of the track). */
+  bodyAlpha: number;
+  trailAlpha: number;
+  /** The track points up to now. */
+  trail: [number, number, number][];
+}
+
+/**
+ * The radiosonde of `snd` at data time `td`: null before the first point of its track (it appears at its real launch
+ * time) and after its trail has faded; in flight it is at the measured position; after the last point of the track (the
+ * burst, or where the data end) it stays there while it fades within BALLOON_FADE_S clip seconds and the trail within
+ * BALLOON_TRAIL_FADE_S (`speedup` = data seconds per clip second). Nothing is extrapolated. Soundings without a track
+ * or without a profile are never shown.
+ */
+export function balloonFlight(snd: SoundingRec, td: number, speedup: number): BalloonFlight | null {
+  const d = snd.drift;
+  if (!d || d.length < 2 || !snd.levels) return null;
+  const sp = Math.max(1, speedup);
+  const t0 = d[0][0];
+  const t1 = d[d.length - 1][0];
+  if (td < t0 || td > t1 + BALLOON_TRAIL_FADE_S * sp) return null;
+  const tt = Math.min(td, t1);
+  const pos = balloonAt(snd, tt) ?? [d[d.length - 1][1], d[d.length - 1][2], d[d.length - 1][3]];
+  const ended = td > t1;
+  return {
+    x: pos[0], y: pos[1], z: pos[2], ended,
+    bodyAlpha: ended ? Math.max(0, 1 - (td - t1) / (BALLOON_FADE_S * sp)) : 1,
+    trailAlpha: ended ? Math.max(0, 1 - (td - t1) / (BALLOON_TRAIL_FADE_S * sp)) : 1,
+    trail: d.filter((q) => q[0] <= tt).map((q) => [q[1], q[2], q[3]] as [number, number, number]),
+  };
 }
 
 /**

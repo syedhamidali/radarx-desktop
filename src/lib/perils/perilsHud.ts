@@ -13,6 +13,7 @@
 import {
   type PerilsData, type ProvKind, type Station, type Readout, clockUtc, fmtOffset, compass16,
 } from './perilsData.ts';
+import type { ParentCirculation } from './perilsVortex.ts';
 import { PROV, chip, drawText, fit, measure, panel, provColour, rgba, ui } from './perilsStyle.ts';
 import { wrapText } from './perilsCaptions.ts';
 import { tempColour } from './perilsSurface.ts';
@@ -21,13 +22,19 @@ import { COLORMAP_DATA } from '../utils/colormaps';
 export interface TornadoCard {
   rating: string;
   active: boolean;
-  /** Seconds since the survey start / until the end (data time). */
-  vrotMs: number | null;
-  radar: string | null;
-  resolutionM: number | null;
-  debris: boolean | null;
   widthM: number | null;
+  /** The surveyed position between begin and end is a straight line (INTERPOLATED). */
   interpolated: boolean;
+  /** What the radars measured: the parent circulation (the couplet), never the tornado itself. */
+  parent: ParentCirculation | null;
+  /** Estimated spin of the funnel from the survey: wind range (m/s), period range (s), the animated period (s). */
+  windRangeMs: [number, number] | null;
+  periodRangeS: [number, number] | null;
+  periodS: number | null;
+  /** Debris-signature cells (flag 2) near the vortex at the observed step nearest in time: weak evidence only. */
+  debris: boolean | null;
+  /** Finest effective resolution of the radars (m). */
+  resolutionM: number | null;
 }
 
 export interface HudModel {
@@ -59,6 +66,8 @@ export interface HudModel {
   /** What the colours on the ground mean (only the layers that are visible and have data). */
   groundKey: { temp: [number, number] | null; mrms: boolean; swath: boolean };
   vexag: number;
+  /** 0..1: the immersive grade of the tornado shot. */
+  immersion: number;
 }
 
 function line(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number, y1: number, w: number, col: string): void {
@@ -113,7 +122,8 @@ export function drawTopLeft(ctx: CanvasRenderingContext2D, u: number, m: HudMode
   drawText(ctx, `${clockUtc(m.data.time0, m.td)} UTC`, x, y, u, { size: 54, weight: 700, mono: true });
   y += 28 * u;
   const date = new Date(new Date(m.data.time0).getTime() + m.td * 1000);
-  drawText(ctx, `${date.toUTCString().slice(5, 16)} · time-lapse ×${m.speedup.toFixed(1)}`, x, y, u, { size: 18, weight: 500, color: rgba(U.dim, 1) });
+  const realTime = m.speedup <= 1.3;
+  drawText(ctx, `${date.toUTCString().slice(5, 16)} · ${realTime ? `REAL TIME ×${m.speedup.toFixed(1)} (not time-lapse)` : `time-lapse ×${m.speedup.toFixed(1)}`}`, x, y, u, { size: 18, weight: realTime ? 700 : 500, color: realTime ? rgba(U.caution, 1) : rgba(U.dim, 1) });
   y += 14 * u;
   // status
   const stepsT = m.data.steps.map((s) => s.t_s);
@@ -131,12 +141,12 @@ export function drawTopLeft(ctx: CanvasRenderingContext2D, u: number, m: HudMode
 }
 
 /** Flash counter and a small time series of the real LMA flashes. */
-export function drawLmaPanel(ctx: CanvasRenderingContext2D, W: number, u: number, m: HudModel, a: number): number {
-  if (a <= 0.02) return 0;
+export function drawLmaPanel(ctx: CanvasRenderingContext2D, W: number, u: number, m: HudModel, a: number, y0 = 28 * u): number {
+  if (a <= 0.02) return y0;
   const w = 330 * u;
   const h = 128 * u;
   const x = W - 34 * u - w;
-  const y = 28 * u;
+  const y = y0;
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
@@ -240,17 +250,29 @@ export function drawStationCard(ctx: CanvasRenderingContext2D, H: number, u: num
   ctx.restore();
 }
 
-/** The tornado card: rating, rotation, debris signature, the radar and its resolution. */
+/**
+ * The tornado card (wide shots): what the survey says, what the radars measured (the parent circulation) and that the
+ * tornado itself is unresolved, the debris evidence (weak) and the estimated spin of the stylised funnel.
+ */
 export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: HudModel, a: number, y: number): number {
   const t = m.tornado;
   if (a <= 0.02 || !t || !t.active) return 0;
-  const w = 372 * u;
+  const w = 392 * u;
+  const par = t.parent;
   const rows: [string, string, ProvKind][] = [
-    ['survey', `${t.rating}${t.widthM ? ` · path width ${Math.round(t.widthM)} m` : ''}`, 'observed'],
-    ['rotation', t.vrotMs != null ? `Vrot ${t.vrotMs.toFixed(0)} m/s${t.radar ? ` · ${t.radar}` : ''}${t.resolutionM ? ` · ${Math.round(t.resolutionM)} m resolution` : ''}` : 'no radar rotation track at this time', 'retrieved'],
-    ['debris signature', t.debris == null ? 'not assessed' : t.debris ? 'yes (low RhoHV, high Z)' : 'no', 'retrieved'],
+    ['survey', `${t.rating}${t.widthM ? ` · damage width ${Math.round(t.widthM)} m` : ''}`, 'observed'],
+    [
+      'radar: parent circulation',
+      par && par.medianVrotMs != null
+        ? `Vrot ${par.medianVrotMs.toFixed(0)} m/s${par.vrotRange ? ` (${par.vrotRange[0].toFixed(0)}-${par.vrotRange[1].toFixed(0)})` : ''}, couplet ${par.medianDiameterKm?.toFixed(1) ?? '–'} km`
+        : 'no radar couplet at this time',
+      'retrieved',
+    ],
+    ['tornado vortex', `unresolved: ${t.widthM ? `${Math.round(t.widthM)} m` : 'narrow'} wide, grid ${t.resolutionM ? Math.round(t.resolutionM) : 500} m`, 'retrieved'],
+    ['debris signature', t.debris == null ? 'not assessed' : t.debris ? 'possible (weak evidence)' : 'none flagged', 'retrieved'],
+    ['funnel spin', t.periodRangeS ? `one turn per ${t.periodRangeS[0].toFixed(0)}-${t.periodRangeS[1].toFixed(0)} s: an estimate` : 'not estimated', 'stylised'],
   ];
-  const h = (50 + rows.length * 38) * u;
+  const h = (46 + rows.length * 38) * u;
   const x = 34 * u;
   ctx.save();
   ctx.globalAlpha = a;
@@ -258,9 +280,9 @@ export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: Hud
   drawText(ctx, `${t.rating} tornado`, x + 14 * u, y + 32 * u, u, { size: 22, weight: 700, color: rgba([255, 120, 110], 1), halo: 0 });
   if (t.interpolated) chip(ctx, 'interpolated', x + w - 14 * u - 150 * u, y + 30 * u, u, 'POSITION INTERPOLATED', 11);
   rows.forEach(([k, v, kind], i) => {
-    const yy = y + (62 + i * 38) * u;
+    const yy = y + (58 + i * 38) * u;
     drawText(ctx, k, x + 14 * u, yy, u, { size: 12, weight: 500, color: rgba(ui().muted, 1), halo: 0 });
-    drawText(ctx, v, x + 14 * u, yy + 17 * u, u, { size: 15, weight: 600, halo: 0 });
+    drawText(ctx, fit(ctx, v, w - 44 * u, u, { size: 15, weight: 600 }), x + 14 * u, yy + 17 * u, u, { size: 15, weight: 600, halo: 0 });
     ctx.fillStyle = rgba(provColour(kind), 1);
     ctx.beginPath();
     ctx.arc(x + w - 18 * u, yy + 10 * u, 4 * u, 0, Math.PI * 2);
@@ -268,6 +290,49 @@ export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: Hud
   });
   ctx.restore();
   return h;
+}
+
+/**
+ * The one lower third of the immersive tornado shot: what the viewer sees, how it is paced and what is measured. It
+ * fades down (not out) after a few seconds so that the view is left alone, while the honesty line stays.
+ */
+export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, u: number, m: HudModel, a: number): void {
+  const t = m.tornado;
+  if (a <= 0.02 || !t || !t.active) return;
+  const par = t.parent;
+  const real = m.speedup <= 1.3;
+  const lines = [
+    t.periodRangeS
+      ? `Funnel: one turn per ${t.periodS ? t.periodS.toFixed(0) : t.periodRangeS[0].toFixed(0)} s, counter-clockwise from above. ESTIMATED from the survey (${t.rating} wind ${t.windRangeMs ? `${t.windRangeMs[0].toFixed(0)}-${t.windRangeMs[1].toFixed(0)} m/s` : ''}, ${t.widthM ? Math.round(t.widthM) : '–'} m wide).`
+      : 'Funnel: spin not estimated.',
+    `Radar measured only the parent circulation${par && par.medianVrotMs != null ? `: Vrot ${par.medianVrotMs.toFixed(0)} m/s, couplet ${par.medianDiameterKm?.toFixed(1)} km` : ''}; the tornado is unresolved (grid ${t.resolutionM ? Math.round(t.resolutionM) : 500} m).`,
+    `Position from the survey (straight line, INTERPOLATED)${t.debris ? '; possible debris signature (weak evidence)' : ''}. Funnel and debris: STYLISED.`,
+  ];
+  const w = 860 * u;
+  const h = (54 + lines.length * 20) * u;
+  const x = 34 * u;
+  const y = H - 172 * u - h;
+  ctx.save();
+  ctx.globalAlpha = a;
+  panel(ctx, x, y, w, h, u, 0.62);
+  drawText(ctx, `${t.rating} tornado`, x + 14 * u, y + 30 * u, u, { size: 21, weight: 700, color: rgba([255, 120, 110], 1), halo: 0 });
+  let cx = x + 14 * u + measure(ctx, `${t.rating} tornado`, u, { size: 21, weight: 700 }) + 14 * u;
+  cx += chip(ctx, 'stylised', cx, y + 28 * u, u, 'STYLISED FUNNEL', 11) + 8 * u;
+  if (real) {
+    ctx.fillStyle = rgba(ui().caution, 0.95);
+    const label = `REAL TIME ×${m.speedup.toFixed(1)}`;
+    const lw = measure(ctx, label, u, { size: 12, weight: 800, mono: true }) + 16 * u;
+    ctx.beginPath();
+    ctx.roundRect(cx, y + 14 * u, lw, 22 * u, 11 * u);
+    ctx.fill();
+    drawText(ctx, label, cx + 8 * u, y + 30 * u, u, { size: 12, weight: 800, mono: true, color: 'rgba(14,16,24,1)', halo: 0 });
+  } else {
+    drawText(ctx, `time-lapse ×${m.speedup.toFixed(1)}`, cx, y + 30 * u, u, { size: 13, weight: 600, color: rgba(ui().dim, 1), halo: 0 });
+  }
+  lines.forEach((ln, i) => {
+    drawText(ctx, fit(ctx, ln, w - 28 * u, u, { size: 13, weight: 500 }), x + 14 * u, y + (56 + i * 20) * u, u, { size: 13, weight: 500, halo: 0, color: rgba(ui().text, 0.95) });
+  });
+  ctx.restore();
 }
 
 /** The caption strip: the feature in view (data-derived label) and the science caption of the latest event. */

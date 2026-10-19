@@ -2,10 +2,10 @@
  * The rotation of the tornado in the PERiLS movie: the numbers (from the data) and the particle vortex that is
  * animated with them. Same formulas as tools/perils_movie/render/vortex.py (tested to agree).
  *
- * What is observed and what is not (the merged grid is 500 m and the MRMS rotation tracks are 1 km products, so the
- * tornado itself, a few hundred metres wide, is NOT resolved; only the mesocyclone-scale couplet around it is):
- *  - RETRIEVED, radar: Vrot and azimuthal shear AS of the rotation tracks near the tornado. Solid-body mesocyclone:
- *    angular rate AS, radius Vrot / AS, cyclonic when AS > 0.
+ * What is observed and what is not (the merged grid is 500 m and the tornado is 366 m wide: it is NOT resolved by any
+ * radar; only the parent circulation around it is):
+ *  - RETRIEVED, radar (context/vortex_kinematics.json): the couplet of the parent circulation, Vrot 8-15 m/s (median 11),
+ *    about 1.8 km across, mostly cyclonic, one turn per about 8 minutes.
  *  - OBSERVED, survey: path width (the funnel and the debris ring are as wide as half of it) and the rating, whose
  *    damage-based wind range is the only measure of the tornado-scale wind speed the data have.
  *  - ASSUMED, STYLISED: the tangential speed at the radius is the middle of that range; omega = Vt / r, period
@@ -17,7 +17,7 @@
  */
 import type { SceneEnv } from './perilsScene.ts';
 import { pj } from './perilsScene.ts';
-import { type RotationTrack, type TornadoRec, tornadoAt } from './perilsData.ts';
+import { type TornadoRec, type VortexData, type VortexStep, tornadoAt } from './perilsData.ts';
 import { drawText, measure, rgba, ui } from './perilsStyle.ts';
 
 const MPH = 0.44704;
@@ -32,76 +32,90 @@ export function efRangeMs(rating: string | undefined | null): [number, number] |
   return r ? [r[0] * MPH, r[1] * MPH] : null;
 }
 
+export interface ParentCirculation {
+  /** The couplet of the best radar at the step nearest in time: the parent circulation, wider than the tornado. */
+  vrotMs: number | null;
+  diameterKm: number | null;
+  sense: string | null;
+  radar: string | null;
+  resolutionM: number | null;
+  /** Medians over the steps (cyclonic ones for omega). */
+  medianVrotMs: number | null;
+  medianDiameterKm: number | null;
+  medianOmega: number | null;
+  vrotRange: [number, number] | null;
+  cyclonicSteps: number;
+  nSteps: number;
+}
+
 export interface VortexParams {
   radiusM: number;
+  /** Tangential speed at the radius used for the spin of the funnel (ESTIMATE from the survey, not measured). */
   vtMs: number;
   /** rad/s, counter-clockwise seen from above. */
   omega: number;
   periodS: number;
   vtBasis: string;
   radiusBasis: string;
-  vrotRadarMs: number | null;
-  azShear: number | null;
-  mesoRadiusM: number | null;
-  mesoOmega: number | null;
-  mesoPeriodS: number | null;
   rating: string;
-  windRangeMph: [number, number] | null;
+  windRangeMs: [number, number] | null;
+  periodRangeS: [number, number] | null;
+  /** What the radars actually measured (the parent circulation), or null without the kinematics file. */
+  parent: ParentCirculation | null;
+  /** Always false in this data: the tornado is narrower than twice the effective resolution of every radar. */
+  tornadoResolved: boolean;
 }
 
-/** The strongest rotation-track point within `nearKm` of (x, y) and `winS` of `td`. */
-export function rotationNear(tracks: RotationTrack[], td: number, x: number, y: number, nearKm = 6, winS = 90):
-  { vrot: number; as: number | null; x: number; y: number } | null {
-  let best: { vrot: number; as: number | null; x: number; y: number } | null = null;
-  for (const tr of tracks ?? []) {
-    let q: RotationTrack['points'][number] | null = null;
-    let bd = winS;
-    for (const p of tr.points ?? []) {
-      const d = Math.abs(p.t - td);
-      if (d <= bd) {
-        bd = d;
-        q = p;
-      }
-    }
-    if (!q || typeof q.vrot_ms !== 'number') continue;
-    if (Math.hypot(q.x - x, q.y - y) > nearKm) continue;
-    if (!best || q.vrot_ms > best.vrot) best = { vrot: q.vrot_ms, as: typeof q.as === 'number' ? q.as : null, x: q.x, y: q.y };
-  }
+function nearestStep(v: VortexData | null | undefined, td: number): VortexStep | null {
+  if (!v || !v.steps?.length) return null;
+  let best = v.steps[0];
+  for (const s of v.steps) if (Math.abs(s.t - td) < Math.abs(best.t - td)) best = s;
   return best;
 }
 
-export function vortexParams(tor: TornadoRec, tracks: RotationTrack[], td: number, x: number, y: number): VortexParams | null {
-  const width = tor.width_m;
+export function parentCirculation(v: VortexData | null | undefined, td: number): ParentCirculation | null {
+  const st = nearestStep(v, td);
+  if (!v || !st) return null;
+  const sm = v.summary;
+  return {
+    vrotMs: st.vrot_ms, diameterKm: st.diameter_km, sense: st.sense, radar: st.radar, resolutionM: st.effective_resolution_m,
+    medianVrotMs: sm.vrot_ms_min_median_max?.[1] ?? null, medianDiameterKm: sm.couplet_diameter_km_min_median_max?.[1] ?? null,
+    medianOmega: sm.omega_s1_median_cyclonic, vrotRange: sm.vrot_ms_min_median_max ? [sm.vrot_ms_min_median_max[0], sm.vrot_ms_min_median_max[2]] : null,
+    cyclonicSteps: sm.cyclonic_steps, nSteps: sm.n_steps,
+  };
+}
+
+/**
+ * The spin of the funnel and the numbers on the card. The tangential speed is the middle of the survey's wind range
+ * (the data's `survey_scale_estimate`, else the EF range of the rating), the radius half the surveyed damage width.
+ */
+export function vortexParams(tor: TornadoRec, vortex: VortexData | null | undefined, td: number): VortexParams | null {
+  const est = vortex?.survey_scale_estimate ?? null;
+  const width = est?.damage_width_m ?? tor.width_m;
   const radiusM = width ? Math.min(800, Math.max(30, 0.5 * width)) : 75;
-  const obs = rotationNear(tracks, td, x, y);
-  const rng = efRangeMs(tor.rating);
-  let vt: number;
-  let basis: string;
-  if (rng) {
-    vt = 0.5 * (rng[0] + rng[1]);
-    basis = `middle of the ${tor.rating} damage-based wind range (${(rng[0] / MPH).toFixed(0)}-${(rng[1] / MPH).toFixed(0)} mph): an assumption, not a measurement`;
-  } else if (obs) {
-    vt = obs.vrot;
-    basis = 'radar Vrot of the nearest rotation track (1 km scale, a lower bound)';
-  } else return null;
-  const as = obs?.as && obs.as > 0 ? obs.as : null;
+  const rng: [number, number] | null = est?.wind_range_ms ?? efRangeMs(tor.rating);
+  if (!rng) return null;
+  const vt = 0.5 * (rng[0] + rng[1]);
   return {
     radiusM, vtMs: vt, omega: vt / radiusM, periodS: (2 * Math.PI * radiusM) / vt,
-    vtBasis: basis,
-    radiusBasis: width ? 'half the surveyed path width (an upper bound of the core radius)' : 'assumed 75 m (the survey gives no width)',
-    vrotRadarMs: obs ? obs.vrot : null,
-    azShear: as,
-    mesoRadiusM: as && obs ? obs.vrot / as : null,
-    mesoOmega: as,
-    mesoPeriodS: as ? (2 * Math.PI) / as : null,
+    vtBasis: `middle of the ${tor.rating ?? 'survey'} damage-based wind range (${rng[0].toFixed(0)}-${rng[1].toFixed(0)} m/s): an estimate, not a measurement`,
+    radiusBasis: width ? 'half the surveyed damage width' : 'assumed 75 m (the survey gives no width)',
     rating: tor.rating ?? 'tornado',
-    windRangeMph: rng ? [rng[0] / MPH, rng[1] / MPH] : null,
+    windRangeMs: rng,
+    periodRangeS: est?.rotation_period_s_range ?? null,
+    parent: parentCirculation(vortex, td),
+    tornadoResolved: false,
   };
 }
 
 /** Angular rate (rad/s) of a Rankine vortex at radius `r` (same unit as `R`): rigid inside the core, v = Vt R / r outside. */
 export function rankineOmega(omega: number, R: number, r: number): number {
   return r <= R ? omega : (omega * R * R) / (r * r);
+}
+
+function smooth01(x: number): number {
+  const c = Math.max(0, Math.min(1, x));
+  return c * c * (3 - 2 * c);
 }
 
 /** Deterministic hash to [0, 1). */
@@ -121,7 +135,7 @@ export function azimuthAt(phase0: number, omega: number, td: number): number {
 }
 
 /** The rotation indicator: ring radius in units of the core radius, and the azimuth of its arrowhead. */
-export const RING_FACTOR = 3.4;
+export const RING_FACTOR = 1.25;
 export const INDICATOR_PHASE0 = 0.6;
 export const INDICATOR_COLOUR: [number, number, number] = [0, 255, 230];
 
@@ -147,8 +161,8 @@ export interface TornadoRenderer {
   draw(e: SceneEnv, a: number, f: VortexFrame): void;
 }
 
-/** Everything the funnel needs about its seeds is derived from indices, so a frame is a pure function of the data time. */
-interface Sprite { d: number; x: number; y: number; s: number; kind: 0 | 1 | 2; a: number }
+/** One thing to draw: a soft disc (`seg` unset) or a line segment; all sorted far to near. */
+interface Item { d: number; x: number; y: number; s: number; kind: 0 | 1 | 2 | 3; a: number; seg?: { x2: number; y2: number; w: number; col: string }; quad?: { p: number[]; col: string } }
 
 function softDisc(rgb: [number, number, number]): HTMLCanvasElement | null {
   if (typeof document === 'undefined') return null;
@@ -182,7 +196,9 @@ export const FUNNEL_DEFAULTS: FunnelOptions = { cloudBaseKm: 1.0, updraftMs: 12,
 export class ParticleTornado implements TornadoRenderer {
   private opts: FunnelOptions;
   private sprites: (HTMLCanvasElement | null)[] | null = null;
-  private buf: Sprite[] = [];
+  private buf: Item[] = [];
+  private quads: Item[] = [];
+  private fx: HTMLCanvasElement | null = null;
 
   constructor(opts: Partial<FunnelOptions> = {}) {
     this.opts = { ...FUNNEL_DEFAULTS, ...opts };
@@ -199,41 +215,67 @@ export class ParticleTornado implements TornadoRenderer {
     const R = f.params.radiusM / 1000;
     const td = e.td;
     const o = this.opts;
-    if (!this.sprites) this.sprites = [softDisc([214, 218, 226]), softDisc([84, 68, 54]), softDisc([150, 132, 108])];
+    if (!this.sprites) this.sprites = [softDisc([176, 182, 192]), softDisc([70, 56, 44]), softDisc([140, 122, 98]), softDisc([74, 82, 96])];
     const base = pj(cam, f.x, f.y, 0, e.ve);
     if (!base || base[0] < -1500 || base[0] > cam.w + 1500) return;
     const pxKm = (d: number) => cam.w / 2 / (d * cam.tanX);
     const out = this.buf;
     out.length = 0;
-    const push = (x: number, y: number, z: number, sizeKm: number, kind: 0 | 1 | 2, alpha: number) => {
+    const quads = this.quads;
+    quads.length = 0;
+    const disc = (x: number, y: number, z: number, sizeKm: number, kind: 0 | 1 | 2 | 3, alpha: number) => {
       const p = pj(cam, x, y, z, e.ve);
-      if (!p) return;
-      out.push({ d: p[2], x: p[0], y: p[1], s: Math.max(1.2 * u, sizeKm * pxKm(p[2])), kind, a: alpha });
+      if (!p || p[2] < 0.04) return; // nothing is drawn within 40 m of the lens
+      out.push({ d: p[2], x: p[0], y: p[1], s: Math.min(90 * u, Math.max(1.2 * u, sizeKm * pxKm(p[2]))), kind, a: alpha });
     };
     const H = o.cloudBaseKm;
-    // condensation funnel: spiral arms that turn rigidly with omega (the pattern's twist lags aloft)
-    for (let k = 0; k < o.arms; k++) {
-      const M = 46;
-      for (let j = 0; j < M; j++) {
-        const fr = (j + 0.5) / M;
-        const jit = hash01(k * 97 + j, 1);
-        const rr = ParticleTornado.funnelRadius(R, fr) * (0.86 + 0.28 * jit);
-        const phi = azimuthAt((2 * Math.PI * k) / o.arms - 2.3 * fr + 0.4 * jit, f.params.omega, td);
-        push(f.x + rr * Math.cos(phi), f.y + rr * Math.sin(phi), fr * H, ParticleTornado.funnelRadius(R, fr) * (0.34 + 0.3 * hash01(k * 97 + j, 2)), 0, 0.17);
+    // condensation funnel: a surface of revolution whose texture (spiral streaks and billows) is fixed in the rotating
+    // frame, so that it turns with omega (phase = azimuth - omega * td); the far side is drawn too, dimmer
+    const NA = 96;
+    const NZ = 56;
+    const verts: ([number, number, number] | null)[] = new Array((NZ + 1) * (NA + 1));
+    const meander = (fr: number) => 0.28 * R * Math.pow(fr, 1.3) * Math.sin(td * 0.31 + fr * 3.1);
+    for (let jz = 0; jz <= NZ; jz++) {
+      const fr = jz / NZ;
+      const rf = ParticleTornado.funnelRadius(R, fr);
+      const cx = f.x + meander(fr);
+      const cy = f.y + 0.6 * meander(fr + 0.5);
+      for (let ia = 0; ia <= NA; ia++) {
+        const phi = (2 * Math.PI * ia) / NA;
+        verts[jz * (NA + 1) + ia] = pj(cam, cx + rf * Math.cos(phi), cy + rf * Math.sin(phi), fr * H, e.ve);
       }
     }
-    // the body of the funnel (a few hundred sprites inside it; they turn with the same omega)
-    for (let i = 0; i < 380; i++) {
-      const fr = Math.pow(hash01(i, 3), 0.8);
-      const rr = ParticleTornado.funnelRadius(R, fr) * Math.sqrt(hash01(i, 4)) * 0.95;
-      const phi = azimuthAt(2 * Math.PI * hash01(i, 5), f.params.omega, td);
-      push(f.x + rr * Math.cos(phi), f.y + rr * Math.sin(phi), fr * H, ParticleTornado.funnelRadius(R, fr) * 0.42, 0, 0.075);
+    const ex = cam.eye[0];
+    const ey = cam.eye[1];
+    for (let jz = 0; jz < NZ; jz++) {
+      const fm = (jz + 0.5) / NZ;
+      const rf = ParticleTornado.funnelRadius(R, fm);
+      const cx = f.x + meander(fm);
+      const cy = f.y + 0.6 * meander(fm + 0.5);
+      const top = 1 - smooth01((fm - 0.86) / 0.14);
+      for (let ia = 0; ia < NA; ia++) {
+        const a0 = verts[jz * (NA + 1) + ia];
+        const a1 = verts[jz * (NA + 1) + ia + 1];
+        const b0 = verts[(jz + 1) * (NA + 1) + ia];
+        const b1 = verts[(jz + 1) * (NA + 1) + ia + 1];
+        if (!a0 || !a1 || !b0 || !b1 || a0[2] < 0.04 || b0[2] < 0.04) continue;
+        const phim = (2 * Math.PI * (ia + 0.5)) / NA;
+        const dx = ex - (cx + rf * Math.cos(phim));
+        const dy = ey - (cy + rf * Math.sin(phim));
+        const cosT = (Math.cos(phim) * dx + Math.sin(phim) * dy) / (Math.hypot(dx, dy) || 1);
+        const front = cosT > 0;
+        const rot = phim - f.params.omega * td;
+        const tex = 0.5 + 0.22 * Math.sin(4 * rot + 7 * fm) + 0.16 * Math.sin(9 * rot - 11 * fm + 1.3) + 0.1 * Math.sin(15 * rot + 23 * fm);
+        const L = Math.max(0, Math.min(1, 0.12 + 0.84 * tex * (0.55 + 0.45 * fm))) * (front ? 1 : 0.6);
+        const col = `rgb(${Math.round(58 + 160 * L)},${Math.round(64 + 160 * L)},${Math.round(76 + 158 * L)})`;
+        const alpha = (front ? 0.62 * Math.pow(Math.abs(cosT), 0.85) : 0.26) * top;
+        quads.push({ d: 0.25 * (a0[2] + a1[2] + b0[2] + b1[2]), x: 0, y: 0, s: 0, kind: 0, a: alpha, quad: { p: [a0[0], a0[1], a1[0], a1[1], b1[0], b1[1], b0[0], b0[1]], col } });
+      }
     }
-    // debris ring: Rankine angular rate, lifted and recycled by the assumed updraft
-    const streaks: { a: [number, number]; b: [number, number]; w: number; al: number; light: boolean }[] = [];
+    // debris: Rankine angular rate, lifted and recycled by the assumed updraft; hard specks with a blur of 1/12 s, a few dust puffs
     const lift = (o.updraftMs / 1000) * td; // km risen by data time td
-    for (let i = 0; i < 260; i++) {
-      const r = R * (0.5 + 2.2 * Math.pow(hash01(i, 6), 1.5));
+    for (let i = 0; i < 520; i++) {
+      const r = R * (0.5 + 1.5 * Math.pow(hash01(i, 6), 1.5));
       const top = 0.07 + 0.3 * Math.exp(-r / (1.8 * R)) + 0.05 * hash01(i, 7);
       const z = (hash01(i, 8) * top + lift) % top;
       const w = rankineOmega(f.params.omega, R, r);
@@ -241,38 +283,78 @@ export class ParticleTornado implements TornadoRenderer {
       const x = f.x + r * Math.cos(phi);
       const y = f.y + r * Math.sin(phi);
       const light = hash01(i, 10) > 0.6;
-      push(x, y, z, 0.018 + 0.03 * hash01(i, 11) + 0.01 * (r / R), light ? 2 : 1, light ? 0.45 : 0.55);
-      // a short arc back along the motion: 0.35 s of data time
       const pa = pj(cam, x, y, z, e.ve);
-      const phiB = phi - w * 0.35;
-      const pb = pj(cam, f.x + r * Math.cos(phiB), f.y + r * Math.sin(phiB), z, e.ve);
-      if (pa && pb) streaks.push({ a: [pa[0], pa[1]], b: [pb[0], pb[1]], w: Math.max(1, 0.012 * pxKm(pa[2])), al: light ? 0.5 : 0.4, light });
+      const pb = pj(cam, f.x + r * Math.cos(phi - w * 0.085), f.y + r * Math.sin(phi - w * 0.085), z, e.ve);
+      if (pa && pb && pa[2] > 0.04) {
+        out.push({
+          d: pa[2], x: pa[0], y: pa[1], s: 0, kind: 1, a: light ? 0.85 : 0.8,
+          seg: { x2: pb[0], y2: pb[1], w: Math.min(2.6 * u, Math.max(1.0 * u, 0.0012 * pxKm(pa[2]))), col: light ? 'rgb(206,190,162)' : 'rgb(46,38,32)' },
+        });
+      }
+      if (i % 9 === 0) disc(x, y, z, 0.012 + 0.012 * hash01(i, 11), light ? 2 : 1, 0.14);
     }
     // dust skirt at the ground
-    for (let i = 0; i < 70; i++) {
-      const r = R * (1.2 + 2.2 * hash01(i, 12));
+    for (let i = 0; i < 60; i++) {
+      const r = R * (1.1 + 1.8 * hash01(i, 12));
       const phi = azimuthAt(2 * Math.PI * hash01(i, 13), rankineOmega(f.params.omega, R, r), td);
-      push(f.x + r * Math.cos(phi), f.y + r * Math.sin(phi), 0.012 + 0.05 * hash01(i, 14), R * (0.9 + 1.2 * hash01(i, 15)), 2, 0.1);
+      disc(f.x + r * Math.cos(phi), f.y + r * Math.sin(phi), 0.012 + 0.05 * hash01(i, 14), R * (0.8 + 1.0 * hash01(i, 15)), 2, 0.09);
     }
+    const dC = base[2];
+    const paint = (c2: CanvasRenderingContext2D, items: Item[]) => {
+      c2.lineCap = 'round';
+      for (const it of items) {
+        c2.globalAlpha = it.a;
+        if (it.quad) {
+          const q = it.quad.p;
+          c2.fillStyle = it.quad.col;
+          c2.strokeStyle = it.quad.col;
+          c2.lineWidth = 0.8;
+          c2.beginPath();
+          c2.moveTo(q[0], q[1]);
+          c2.lineTo(q[2], q[3]);
+          c2.lineTo(q[4], q[5]);
+          c2.lineTo(q[6], q[7]);
+          c2.closePath();
+          c2.fill();
+          c2.stroke();
+        } else if (it.seg) {
+          c2.strokeStyle = it.seg.col;
+          c2.lineWidth = it.seg.w;
+          c2.beginPath();
+          c2.moveTo(it.x, it.y);
+          c2.lineTo(it.seg.x2, it.seg.y2);
+          c2.stroke();
+        } else {
+          const img = this.sprites![it.kind];
+          if (img) c2.drawImage(img, it.x - it.s, it.y - it.s, 2 * it.s, 2 * it.s);
+        }
+      }
+    };
     out.sort((p, q) => q.d - p.d); // far to near
+    const backN = out.findIndex((it) => it.d <= dC);
+    const back = backN < 0 ? out : out.slice(0, backN);
+    const front = backN < 0 ? [] : out.slice(backN);
+    quads.sort((p, q) => q.d - p.d);
+    if (!this.fx || this.fx.width !== cam.w || this.fx.height !== cam.h) {
+      this.fx = document.createElement('canvas');
+      this.fx.width = cam.w;
+      this.fx.height = cam.h;
+    }
+    const fc = this.fx.getContext('2d')!;
+    fc.setTransform(1, 0, 0, 1, 0, 0);
+    fc.clearRect(0, 0, cam.w, cam.h);
+    paint(fc, quads);
     ctx.save();
     ctx.globalAlpha = a;
-    for (const sp of out) {
-      const img = this.sprites[sp.kind];
-      if (!img) continue;
-      ctx.globalAlpha = a * sp.a;
-      ctx.drawImage(img, sp.x - sp.s, sp.y - sp.s, 2 * sp.s, 2 * sp.s);
-    }
-    ctx.lineCap = 'round';
-    for (const s of streaks) {
-      ctx.globalAlpha = a * s.al;
-      ctx.strokeStyle = s.light ? 'rgb(196,178,150)' : 'rgb(58,46,38)';
-      ctx.lineWidth = s.w;
-      ctx.beginPath();
-      ctx.moveTo(s.a[0], s.a[1]);
-      ctx.lineTo(s.b[0], s.b[1]);
-      ctx.stroke();
-    }
+    ctx.save();
+    ctx.scale(1, 1);
+    paint(ctx, back.map((it) => ({ ...it, a: it.a * a })));
+    ctx.restore();
+    ctx.globalAlpha = a;
+    ctx.filter = `blur(${(2.2 * u).toFixed(1)}px)`;
+    ctx.drawImage(this.fx, 0, 0);
+    ctx.filter = 'none';
+    paint(ctx, front.map((it) => ({ ...it, a: it.a * a })));
     ctx.restore();
     this.drawIndicator(e, a, f, R);
   }
@@ -305,22 +387,30 @@ export class ParticleTornado implements TornadoRenderer {
         pen = true;
       }
       ctx.strokeStyle = pass === 0 ? 'rgba(4,8,16,0.55)' : 'rgba(225,240,255,0.85)';
-      ctx.lineWidth = (pass === 0 ? 4.2 : 1.8) * u;
+      ctx.lineWidth = (pass === 0 ? 5.2 : 2.4) * u;
       ctx.stroke();
     }
-    // arrowhead: a triangle in the ground plane at the azimuth, pointing in the direction of rotation (counter-clockwise)
-    const tip = pj(cam, f.x + rr * Math.cos(az + 0.16), f.y + rr * Math.sin(az + 0.16), 0.012, e.ve);
-    const b1 = pj(cam, f.x + (rr * 1.07) * Math.cos(az - 0.04), f.y + (rr * 1.07) * Math.sin(az - 0.04), 0.012, e.ve);
-    const b2 = pj(cam, f.x + (rr * 0.93) * Math.cos(az - 0.04), f.y + (rr * 0.93) * Math.sin(az - 0.04), 0.012, e.ve);
-    if (tip && b1 && b2) {
+    // arrowhead: a triangle of fixed size on the screen along the ring's tangent at the azimuth, pointing the way it turns (counter-clockwise)
+    const p0 = pj(cam, f.x + rr * Math.cos(az), f.y + rr * Math.sin(az), 0.012, e.ve);
+    const p1 = pj(cam, f.x + rr * Math.cos(az + 0.04), f.y + rr * Math.sin(az + 0.04), 0.012, e.ve);
+    if (p0 && p1) {
+      const dx = p1[0] - p0[0];
+      const dy = p1[1] - p0[1];
+      const L = Math.hypot(dx, dy) || 1;
+      const ux = dx / L;
+      const uy = dy / L;
+      const S = 17 * u;
       ctx.globalAlpha = a;
       ctx.beginPath();
-      ctx.moveTo(tip[0], tip[1]);
-      ctx.lineTo(b1[0], b1[1]);
-      ctx.lineTo(b2[0], b2[1]);
+      ctx.moveTo(p0[0] + ux * S, p0[1] + uy * S);
+      ctx.lineTo(p0[0] - ux * S * 0.6 - uy * S * 0.62, p0[1] - uy * S * 0.6 + ux * S * 0.62);
+      ctx.lineTo(p0[0] - ux * S * 0.6 + uy * S * 0.62, p0[1] - uy * S * 0.6 - ux * S * 0.62);
       ctx.closePath();
       ctx.fillStyle = `rgb(${INDICATOR_COLOUR[0]},${INDICATOR_COLOUR[1]},${INDICATOR_COLOUR[2]})`;
       ctx.fill();
+      ctx.strokeStyle = 'rgba(4,8,16,0.7)';
+      ctx.lineWidth = 1.5 * u;
+      ctx.stroke();
     }
     ctx.restore();
     if (f.immersion < 0.5) {
@@ -328,9 +418,9 @@ export class ParticleTornado implements TornadoRenderer {
       if (top && top[0] > 0 && top[0] < cam.w) {
         ctx.save();
         ctx.globalAlpha = a * (1 - f.immersion * 2);
-        const txt = `STYLISED FUNNEL · turns ${f.params.periodS.toFixed(0)} s per revolution (counter-clockwise from above)`;
+        const txt = `stylised funnel · ${f.params.periodS.toFixed(0)} s per turn`;
         const w = measure(ctx, txt, u, { size: 14, weight: 600 });
-        drawText(ctx, txt, Math.max(12 * u, Math.min(top[0] - w / 2, cam.w - 12 * u - w)), Math.max(24 * u, top[1] - 12 * u), u, { size: 14, weight: 600, color: rgba(ui().text, 0.95) });
+        drawText(ctx, txt, Math.max(12 * u, Math.min(top[0] - w / 2, cam.w - 430 * u - w)), Math.max(24 * u, top[1] - 12 * u), u, { size: 14, weight: 600, color: rgba(ui().text, 0.95) });
         ctx.restore();
       }
     }
@@ -338,22 +428,21 @@ export class ParticleTornado implements TornadoRenderer {
 }
 
 /**
- * The mesocyclone-scale rotation the radar does resolve (RETRIEVED): tracers on a ring of radius Vrot / AS around the
- * strongest nearby rotation track point, turning at the observed azimuthal shear (so slowly: minutes per turn).
+ * The parent circulation the radars do resolve (RETRIEVED, 500 m grid): tracers on a ring of the median couplet
+ * radius around the surveyed position, turning at the median angular velocity of the cyclonic steps (about
+ * 8 minutes per turn: slow, as measured). Not the tornado: that is unresolved.
  */
-export function drawMesoRotation(e: SceneEnv, a: number, f: VortexFrame, label: boolean): void {
-  const p = f.params;
-  if (a <= 0.02 || !p.mesoRadiusM || !p.mesoOmega || p.vrotRadarMs == null) return;
-  const near = rotationNear(e.data.rotation, e.td, f.x, f.y);
-  if (!near) return;
+export function drawParentCirculation(e: SceneEnv, a: number, f: VortexFrame, label: boolean): void {
+  const par = f.params.parent;
+  if (a <= 0.02 || !par || !par.medianDiameterKm || !par.medianOmega) return;
   const { ctx, cam, u } = e;
-  const R = Math.min(2.5, p.mesoRadiusM / 1000);
+  const R = Math.min(2.5, par.medianDiameterKm / 2);
   ctx.save();
   ctx.globalAlpha = a;
   for (let i = 0; i < 36; i++) {
-    const phi = azimuthAt((2 * Math.PI * i) / 36, p.mesoOmega, e.td);
-    const z = 0.35 + 1.1 * hash01(i, 21);
-    const q = pj(cam, near.x + R * Math.cos(phi), near.y + R * Math.sin(phi), z, e.ve);
+    const phi = azimuthAt((2 * Math.PI * i) / 36, par.medianOmega, e.td);
+    const z = 0.3 + 0.9 * hash01(i, 21);
+    const q = pj(cam, f.x + R * Math.cos(phi), f.y + R * Math.sin(phi), z, e.ve);
     if (!q) continue;
     ctx.beginPath();
     ctx.arc(q[0], q[1], Math.max(1.4 * u, 0.05 * (cam.w / 2 / (q[2] * cam.tanX))), 0, Math.PI * 2);
@@ -361,20 +450,21 @@ export function drawMesoRotation(e: SceneEnv, a: number, f: VortexFrame, label: 
     ctx.fill();
   }
   if (label) {
-    const t = pj(cam, near.x, near.y, 1.9, e.ve);
+    const t = pj(cam, f.x, f.y, 1.6, e.ve);
     if (t && t[0] > 0 && t[0] < cam.w && t[1] > 0 && t[1] < cam.h) {
-      drawText(ctx, `mesocyclone-scale rotation (radar): Vrot ${p.vrotRadarMs.toFixed(0)} m/s, ${p.azShear?.toFixed(3)} s⁻¹, radius ${(p.mesoRadiusM / 1000).toFixed(1)} km, one turn per ${((p.mesoPeriodS ?? 0) / 60).toFixed(1)} min`, t[0] + 10 * u, t[1], u, { size: 13, weight: 600, color: 'rgba(255,235,90,1)' });
+      const v = par.medianVrotMs != null ? `Vrot ${par.medianVrotMs.toFixed(0)} m/s` : 'Vrot –';
+      drawText(ctx, `parent circulation (radar): ${v}, ${par.medianDiameterKm.toFixed(1)} km wide`, t[0] + 10 * u, t[1], u, { size: 13, weight: 600, color: 'rgba(255,235,90,1)' });
     }
   }
   ctx.restore();
 }
 
 /** The vortex frame for the first tornado with a survey at data time `td`, or null. */
-export function vortexFrame(tornadoes: TornadoRec[], tracks: RotationTrack[], td: number, immersion: number): VortexFrame | null {
+export function vortexFrame(tornadoes: TornadoRec[], vortex: VortexData | null | undefined, td: number, immersion: number): VortexFrame | null {
   for (const tor of tornadoes) {
     const cur = tornadoAt(tor, td);
     if (!cur) continue;
-    const params = vortexParams(tor, tracks, td, cur.x, cur.y);
+    const params = vortexParams(tor, vortex, td);
     if (params) return { params, x: cur.x, y: cur.y, immersion };
   }
   return null;

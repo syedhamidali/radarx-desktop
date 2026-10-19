@@ -8,7 +8,7 @@
 export type LayerId =
   | 'radars' | 'stations' | 'lma' | 'hail' | 'rotation' | 'tornadoTrack' | 'funnel' | 'zdr' | 'convStrat' | 'balloon'
   | 'mrms' | 'isotherms' | 'flow' | 'wsurface' | 'captions' | 'skewt' | 'envPanel' | 'stripCharts' | 'timeHeight' | 'lmaPanel' | 'stationCard'
-  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks';
+  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks' | 'immersion' | 'tornadoCard' | 'minimap';
 
 const SHOTS = ['establishing', 'flyby', 'tornado', 'window', 'rise', 'topdown'] as const;
 type ShotName = (typeof SHOTS)[number];
@@ -16,30 +16,36 @@ type ShotName = (typeof SHOTS)[number];
 /** Opacity [0..1] per layer for the shots in order: establishing, flyby, tornado, window, rise, topdown. */
 export const LAYER_TABLE: Record<LayerId, number[]> = {
   radars: [1, 0.55, 0.0, 0.35, 0.6, 1],
-  stations: [0.7, 0.9, 0.6, 1, 0.7, 1],
+  stations: [0.7, 0.9, 0.0, 1, 0.7, 1],
   lma: [1, 1, 1, 1, 1, 1],
-  hail: [0.35, 1, 1, 0.7, 0.5, 0.8],
-  rotation: [0.5, 0.9, 1, 0.4, 0.5, 0.8],
-  tornadoTrack: [1, 1, 1, 0.5, 0.8, 1],
+  hail: [0.35, 1, 0.3, 0.7, 0.5, 0.8],
+  rotation: [0.5, 0.9, 0.0, 0.4, 0.5, 0.8],
+  tornadoTrack: [1, 1, 0.0, 0.5, 0.8, 1],
   funnel: [0, 0.6, 1, 0.5, 0.5, 0],
-  zdr: [0.3, 0.8, 0.7, 0.3, 0.3, 0.5],
+  zdr: [0.3, 0.8, 0.0, 0.3, 0.3, 0.5],
   convStrat: [0.5, 0, 0, 0, 0.2, 1],
-  balloon: [0.9, 0.5, 0.2, 0.9, 0.3, 0.5],
+  balloon: [1, 1, 0.0, 1, 0.8, 0.8],
   mrms: [1, 0.8, 0.5, 0.8, 1, 1],
-  isotherms: [0.6, 0.6, 0.5, 0.0, 0.5, 0],
-  flow: [0, 0.3, 1, 0.5, 0.5, 0],
+  isotherms: [0.6, 0.6, 0.0, 0.0, 0.5, 0],
+  flow: [0, 0.3, 0.0, 0.5, 0.5, 0],
   wsurface: [0, 0, 0, 0, 0, 0],
-  captions: [1, 1, 1, 1, 1, 1],
+  captions: [1, 1, 0.0, 1, 1, 1],
   skewt: [0.95, 0, 0, 0, 0.9, 0],
-  envPanel: [1, 0, 0, 0, 0.8, 0.6],
+  envPanel: [0, 0, 0, 0, 0, 0.6],
   stripCharts: [0, 0.4, 0, 1, 0.3, 0],
   timeHeight: [0, 0, 0, 1, 0.3, 0],
-  lmaPanel: [1, 1, 0.9, 0.9, 1, 1],
-  stationCard: [0.3, 0.8, 0.5, 1, 0.5, 0.3],
+  lmaPanel: [1, 1, 0.0, 0.9, 1, 1],
+  stationCard: [0, 0.8, 0.0, 1, 0, 0.3],
   modelCloud: [0.5, 0, 0, 0, 0.3, 0.5],
-  surfaceModels: [0.7, 0.3, 0.2, 0.3, 0.5, 0.8],
+  surfaceModels: [0.7, 0.3, 0.0, 0.3, 0.5, 0.8],
   dsd: [0, 0, 0, 1, 0.3, 0],
   rainStreaks: [0, 0, 0, 1, 0, 0],
+  /** Not a drawn layer: the immersive grade of the tornado shot (labels, arrows and cards out; one lower third). */
+  immersion: [0, 0, 1, 0, 0, 0],
+  /** The tornado card of the wide shots (the immersive shot has its own lower third). */
+  tornadoCard: [0, 1, 0, 0.7, 0, 0.7],
+  /** The plan-view inset: in every shot, small and faint in the immersive one. */
+  minimap: [1, 1, 0.6, 1, 1, 1],
 };
 
 export function smoothstep(x: number): number {

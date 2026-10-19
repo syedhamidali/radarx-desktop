@@ -10,7 +10,7 @@
  */
 import type { OverlayCam } from './clipExtras';
 import {
-  type PerilsData, type RotationTrack, type TornadoRec, balloonAt, heightOfTemp, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
+  type PerilsData, type RotationTrack, type TornadoRec, balloonAt, balloonFlight, heightOfTemp, rotationAt, stationReadout, stationXY, tornadoAt, clockUtc,
 } from './perilsData.ts';
 import { type RGB, drawText, measure, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR } from './perilsStyle.ts';
 import { recentHail } from './perilsInsets.ts';
@@ -32,6 +32,8 @@ export interface SceneEnv {
   sounding: PerilsData['soundings'][number] | null;
   /** Index of the observed step nearest in time. */
   nearStep: number;
+  /** Data seconds per clip second at this frame. */
+  speedup: number;
 }
 
 /** Project a scene point (km, height km un-exaggerated) with a near plane of 20 m: [px, py, depth km] or null. */
@@ -277,72 +279,6 @@ export function drawTornadoTrack(e: SceneEnv, a: number): void {
   }
 }
 
-/**
- * The condensation funnel and debris cloud, STYLISED: drawn only while a surveyed tornado is active
- * (inside the surveyed time span), at the surveyed position, as wide at the ground as the survey's
- * path width and with the debris ball twice that. The shape is a generic cone; the survey gives
- * where, when and how wide, nothing else. Cloud base height: `cloudBaseKm`.
- */
-export function drawFunnel(e: SceneEnv, a: number, cloudBaseKm: number): void {
-  if (a <= 0.02) return;
-  const { ctx, cam, u } = e;
-  for (const tor of e.data.tornadoes) {
-    const cur = tornadoAt(tor, e.td);
-    if (!cur) continue;
-    const wKm = Math.max(0.05, (tor.width_m ?? 150) / 1000);
-    const N = 14;
-    const pts: { l: [number, number]; r: [number, number]; z: number }[] = [];
-    const base = pj(cam, cur.x, cur.y, 0, e.ve);
-    if (!onScreen(base, cam.w, cam.h, 400)) continue;
-    const right = cam.right;
-    for (let i = 0; i <= N; i++) {
-      const f = i / N;
-      const z = f * cloudBaseKm;
-      // narrow rope near the ground, flaring toward the cloud base, with a slow deterministic wobble
-      const rad = wKm * (0.35 + 1.4 * Math.pow(f, 2.2) * 2.6) * 0.5;
-      const sway = 0.05 * wKm * Math.sin(e.tc * 3 + f * 5) * f;
-      const cxk = cur.x + sway;
-      const pl = pj(cam, cxk - right[0] * rad, cur.y - right[1] * rad, z, e.ve);
-      const pr = pj(cam, cxk + right[0] * rad, cur.y + right[1] * rad, z, e.ve);
-      if (!pl || !pr) {
-        pts.length = 0;
-        break;
-      }
-      pts.push({ l: [pl[0], pl[1]], r: [pr[0], pr[1]], z });
-    }
-    if (pts.length < 3) continue;
-    ctx.save();
-    ctx.globalAlpha = a;
-    ctx.beginPath();
-    ctx.moveTo(pts[0].l[0], pts[0].l[1]);
-    for (const q of pts) ctx.lineTo(q.l[0], q.l[1]);
-    for (let i = pts.length - 1; i >= 0; i--) ctx.lineTo(pts[i].r[0], pts[i].r[1]);
-    ctx.closePath();
-    const g = ctx.createLinearGradient(0, pts[0].l[1], 0, pts[pts.length - 1].l[1]);
-    g.addColorStop(0, 'rgba(70,64,58,0.88)');
-    g.addColorStop(0.45, 'rgba(150,152,158,0.8)');
-    g.addColorStop(1, 'rgba(205,210,218,0.6)');
-    ctx.fillStyle = g;
-    ctx.fill();
-    // debris ball at the foot: twice the width of the damage path
-    const bp = pj(cam, cur.x, cur.y, 0.04, e.ve);
-    if (bp) {
-      const rpx = Math.max(3 * u, wKm * pxPerKm(cam, bp[2]));
-      const gb = ctx.createRadialGradient(bp[0], bp[1] - rpx * 0.3, 0, bp[0], bp[1] - rpx * 0.3, rpx * 1.8);
-      gb.addColorStop(0, 'rgba(40,34,30,0.85)');
-      gb.addColorStop(1, 'rgba(40,34,30,0)');
-      ctx.fillStyle = gb;
-      ctx.beginPath();
-      ctx.ellipse(bp[0], bp[1] - rpx * 0.3, rpx * 1.8, rpx * 1.1, 0, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    const top = pts[pts.length - 1];
-    chip(ctx, 'stylised', top.r[0] + 14 * u, top.r[1] - 6 * u, u, 'STYLISED FUNNEL', 12);
-    drawText(ctx, 'position and width from the survey', top.r[0] + 14 * u, top.r[1] + 14 * u, u, { size: 13, color: rgba(ui().dim, 1) });
-    ctx.restore();
-  }
-}
-
 // ─── radar evidence ─────────────────────────────────────────────────────────
 
 /**
@@ -394,15 +330,15 @@ export function drawRotation(e: SceneEnv, a: number): void {
     }
     ctx.restore();
   }
-  // only the three strongest are named, so that a line of mesovortices does not turn into a wall of text
+  // only the strongest is named, so that a line of mesovortices does not turn into a wall of text
   now.sort((x, y) => ((y.cur.vrot_ms as number) ?? 0) - ((x.cur.vrot_ms as number) ?? 0));
   ctx.save();
   ctx.globalAlpha = a;
-  for (const { tr, cur } of now.slice(0, 3)) {
+  for (const { tr, cur } of now.slice(0, 1)) {
     const t = pj(cam, cur.x, cur.y, 1.6, e.ve);
     if (!onScreen(t, cam.w, cam.h)) continue;
-    const v = typeof cur.vrot_ms === 'number' ? cur.vrot_ms : 0;
-    drawText(ctx, `rotation ${v.toFixed(0)} m/s${tr.radar ? ` · ${tr.radar}` : ''}`, t[0] + 10 * u, t[1], u, { size: 15, color: rgba(ROTATION_COLOUR, 1) });
+    const sh = typeof cur.as === 'number' ? cur.as : null;
+    drawText(ctx, sh != null ? `vortex candidate · shear ${sh.toFixed(3)} s⁻¹` : 'vortex candidate', t[0] + 10 * u, t[1], u, { size: 15, color: rgba(ROTATION_COLOUR, 1) });
   }
   ctx.restore();
 }
@@ -435,7 +371,7 @@ export function drawTds(e: SceneEnv, a: number): void {
   if (n > 3) {
     ctx.save();
     ctx.globalAlpha = a;
-    drawText(ctx, 'debris signature (radar)', cx / n + 14 * u, cy / n - 12 * u, u, { size: 15, color: rgba(TDS_COLOUR, 1) });
+    drawText(ctx, 'possible debris (weak evidence)', cx / n + 14 * u, cy / n - 12 * u, u, { size: 15, color: rgba(TDS_COLOUR, 1) });
     ctx.restore();
   }
 }
@@ -443,9 +379,9 @@ export function drawTds(e: SceneEnv, a: number): void {
 // ─── hail, ZDR columns ──────────────────────────────────────────────────────
 
 /**
- * Hail cores from the radar's hydrometeor classification (RETRIEVED): the cells classified as hail,
- * drawn as warm sprites, with short vertical streaks falling beneath a subset of them (the streaks are
- * STYLISED: they show where hail is falling from, not drop trajectories).
+ * Hail cells of the radar's hydrometeor classification (RETRIEVED, weak to moderate evidence: no hail particle of 8 mm
+ * or more was measured at the surface, so this is a classification, not observed hail): the cells drawn as warm sprites
+ * and one label. No falling streaks and no sizes are drawn.
  */
 export function drawHail(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
@@ -455,13 +391,13 @@ export function drawHail(e: SceneEnv, a: number): void {
   ctx.save();
   ctx.globalAlpha = a;
   ctx.globalCompositeOperation = 'lighter';
-  const phase = (e.tc * 1.7) % 1;
   // at most ~900 points are drawn (an even stride through the cells), small and soft
   const stride = Math.max(1, Math.ceil(h.p.length / 900));
-  let k = 0;
-  for (let n = 0; n < h.p.length; n += stride) {
-    const q = h.p[n];
-    k++;
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (let i = 0; i < h.p.length; i += stride) {
+    const q = h.p[i];
     const p = pj(cam, q[0], q[1], q[2], e.ve);
     if (!onScreen(p, cam.w, cam.h)) continue;
     const r = Math.min(2.4 * u, Math.max(1.2 * u, 0.06 * pxPerKm(cam, p[2])));
@@ -469,23 +405,17 @@ export function drawHail(e: SceneEnv, a: number): void {
     ctx.beginPath();
     ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
     ctx.fill();
-    if (k % 6 === 0 && q[2] > 0.5) {
-      // a streak below the core, sliding down the column with the clip clock
-      const f = (phase + (k % 7) / 7) % 1;
-      const z0 = q[2] * (1 - f * 0.9);
-      const a0 = pj(cam, q[0], q[1], z0, e.ve);
-      const a1 = pj(cam, q[0], q[1], Math.max(0.02, z0 - 0.7), e.ve);
-      if (a0 && a1) {
-        ctx.strokeStyle = rgba([255, 240, 220], 0.45 * (1 - f));
-        ctx.lineWidth = 1.3 * u;
-        ctx.beginPath();
-        ctx.moveTo(a0[0], a0[1]);
-        ctx.lineTo(a1[0], a1[1]);
-        ctx.stroke();
-      }
-    }
+    sx += p[0];
+    sy += p[1];
+    n++;
   }
   ctx.restore();
+  if (n > 20) {
+    ctx.save();
+    ctx.globalAlpha = a;
+    drawText(ctx, 'hail class (weak evidence)', sx / n + 12 * u, sy / n - 10 * u, u, { size: 14, color: rgba(HAIL_COLOUR, 1) });
+    ctx.restore();
+  }
 }
 
 /** ZDR columns (RETRIEVED): a thin cyan line from the ground to the column's top (the updraft lofting liquid drops above the melting level). */
@@ -655,86 +585,41 @@ export function drawColdPool(e: SceneEnv, a: number, segs: number[][]): void {
 // ─── soundings ──────────────────────────────────────────────────────────────
 
 /**
- * Sounding sites with the balloon's real drift track (OBSERVED) and a column at the site with tick
- * marks at the freezing level and the -10 and -20 C levels of that sounding.
+ * The radiosondes in flight, nothing attached to them (no names, times or read-outs): a small balloon at its real
+ * GPS position (OBSERVED position, STYLISED glyph) climbing along its measured track from its real launch time, with a
+ * faint thin trail behind it. At the last point of its track (where the data end: the burst or the loss of the signal)
+ * the balloon fades out within about 1.5 s of clip time and the trail about 3.5 s later. Nothing is extrapolated:
+ * before the first point of the track and after the fade there is nothing; only soundings with a track AND a profile.
  */
 export function drawBalloons(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;
   const { ctx, cam, u } = e;
-  // one sounding in full: the one the Skew-T shows (nearest in time and place); the others are small dots
-  const nearest = e.sounding;
-  for (const s of e.data.soundings) {
+  for (const snd of e.data.soundings) {
+    const b = balloonFlight(snd, e.td, e.speedup);
+    if (!b) continue;
+    const past = b.trail.map((q) => pj(cam, q[0], q[1], q[2], e.ve));
+    const now = pj(cam, b.x, b.y, b.z, e.ve);
+    past.push(now);
     ctx.save();
-    ctx.globalAlpha = a;
-    const base = pj(cam, s.x, s.y, 0, e.ve);
-    if (s !== nearest) {
-      if (onScreen(base, cam.w, cam.h, 20)) {
-        ctx.beginPath();
-        ctx.arc(base[0], base[1], 3.2 * u, 0, Math.PI * 2);
-        ctx.fillStyle = rgba(provColour('observed'), 0.55);
-        ctx.fill();
-      }
-      const bb = balloonAt(s, e.td);
-      const pb = bb ? pj(cam, bb[0], bb[1], bb[2], e.ve) : null;
-      if (pb) {
-        ctx.beginPath();
-        ctx.arc(pb[0], pb[1], 5 * u, 0, Math.PI * 2);
-        ctx.fillStyle = rgba([255, 255, 255], 1);
-        ctx.fill();
-      }
-      ctx.restore();
-      continue;
-    }
-    if (onScreen(base, cam.w, cam.h, 100)) {
-      const top = pj(cam, s.x, s.y, 12, e.ve);
-      if (top) {
-        ctx.strokeStyle = rgba(provColour('observed'), 0.5);
-        ctx.lineWidth = 1.5 * u;
-        ctx.setLineDash([4 * u, 4 * u]);
-        ctx.beginPath();
-        ctx.moveTo(base[0], base[1]);
-        ctx.lineTo(top[0], top[1]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-      for (const [tC, name] of [[0, '0 °C'], [-10, '-10 °C'], [-20, '-20 °C']] as const) {
-        const hm = heightOfTemp(s.levels, tC);
-        if (hm == null) continue;
-        const hk = hm / 1000;
-        const p = pj(cam, s.x, s.y, hk, e.ve);
-        if (!p) continue;
-        ctx.strokeStyle = rgba(provColour('observed'), 0.95);
-        ctx.lineWidth = 2.2 * u;
-        ctx.beginPath();
-        ctx.moveTo(p[0] - 9 * u, p[1]);
-        ctx.lineTo(p[0] + 9 * u, p[1]);
-        ctx.stroke();
-        drawText(ctx, `${name} ${hk.toFixed(1)} km`, p[0] + 13 * u, p[1] + 5 * u, u, { size: 13, color: rgba(provColour('observed'), 1) });
-      }
-      drawText(ctx, `${s.site} sounding · launch ${clockUtc(e.data.time0, s.launch)} UTC`, base[0] + 10 * u, base[1] + 18 * u, u, { size: 14, color: rgba(provColour('observed'), 1) });
-    }
-    // the balloon track: ascended part solid, the rest faint
-    if (s.drift.length > 1) {
-      const past = s.drift.filter((q) => q[0] <= e.td).map((q) => pj(cam, q[1], q[2], q[3], e.ve));
-      const all = s.drift.map((q) => pj(cam, q[1], q[2], q[3], e.ve));
-      polyline(ctx, all);
-      ctx.strokeStyle = rgba(provColour('observed'), 0.3);
-      ctx.lineWidth = 1.6 * u;
-      ctx.stroke();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (past.length > 1 && b.trailAlpha > 0.02) {
+      ctx.globalAlpha = a * 0.32 * b.trailAlpha;
       polyline(ctx, past);
-      ctx.strokeStyle = rgba(provColour('observed'), 0.9);
-      ctx.lineWidth = 2.4 * u;
+      ctx.strokeStyle = 'rgb(235,240,250)';
+      ctx.lineWidth = 1.1 * u;
       ctx.stroke();
-      const b = balloonAt(s, e.td);
-      if (b) {
-        const p = pj(cam, b[0], b[1], b[2], e.ve);
-        if (p) {
-          ctx.beginPath();
-          ctx.arc(p[0], p[1], 6 * u, 0, Math.PI * 2);
-          ctx.fillStyle = rgba([255, 255, 255], 1);
-          ctx.fill();
-        }
-      }
+    }
+    if (now && b.bodyAlpha > 0.02 && onScreen(now, cam.w, cam.h, 20)) {
+      const r = Math.min(13 * u, Math.max(2.6 * u, 0.006 * pxPerKm(cam, now[2])));
+      ctx.globalAlpha = a * b.bodyAlpha;
+      ctx.beginPath();
+      ctx.arc(now[0], now[1], r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgb(240,244,252)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(8,12,22,0.7)';
+      ctx.lineWidth = Math.max(0.8, 0.9 * u);
+      ctx.stroke();
     }
     ctx.restore();
   }

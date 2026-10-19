@@ -18,11 +18,14 @@ import { LayerVis, crossfade, type LayerId } from './perilsLayers';
 import { GroundComposer, contourSegments, type PixelFn } from './perilsGround';
 import { decodeSurface, sampleGrid, blendFields, tempColour, coldPoolLevel, swathUpTo, type SurfaceMeta } from './perilsSurface';
 import { compileFlashes, flashFrame, flashesInWindow, lightFrom, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
-import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawFunnel, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
+import { stationXY, balloonFlight } from './perilsData';
+import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
 import { drawStripCharts, drawDsdInset, drawTimeHeight, drawRainStreaks } from './perilsInsets';
-import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
+import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawTornadoLowerThird, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
 import { activeCaption, captionAlpha, captionOf, scheduleCaptions, type ScheduledCaption, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
+import { drawMinimap, hfovFromTan, type MinimapState } from './perilsMinimap';
+import { ParticleTornado, drawParentCirculation, vortexFrame, type TornadoRenderer, type VortexFrame } from './perilsVortex';
 import { provColour } from './perilsStyle';
 import { fmtOffset, clockUtc } from './perilsData';
 
@@ -38,6 +41,8 @@ export interface PerilsOptions {
   cloudBaseKm?: number;
   /** Fov of the first-person camera, degrees. */
   fov?: number;
+  /** The tornado drawn in the scene (default: the particle funnel); a physically based tornado implements the same interface. */
+  tornado?: TornadoRenderer;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -56,6 +61,9 @@ export class PerilsExtras implements ClipExtras {
   private ground: GroundComposer | null = null;
   private mrmsCodes: (Uint8Array | null)[] = [];
   private azCodes: (Uint8Array | null)[] = [];
+  private colmaxCodes: (Uint8Array | null)[] = [];
+  private colmaxCv: (HTMLCanvasElement | null)[] = [];
+  private baseImg: ImageBitmap | null = null;
   private swathCache = new Map<number, Uint8Array | null>();
   private surf: (Record<string, Float32Array> | null)[] = [];
   private tRange: [number, number] = [10, 30];
@@ -75,6 +83,9 @@ export class PerilsExtras implements ClipExtras {
   private insetUnmount: (() => void) | null = null;
   private pending: Promise<void> | null = null;
   private lastNearest: string | null = null;
+  private tornado: TornadoRenderer;
+  private hudCtx: CanvasRenderingContext2D | null = null;
+  private vfCache: { td: number; imm: number; vf: VortexFrame | null } | null = null;
   groundMissing = true;
   rainStreaks = 0;
   lmaDrawn = 0;
@@ -86,6 +97,7 @@ export class PerilsExtras implements ClipExtras {
     this.base = base;
     this.opts = opts;
     this.vis = new LayerVis(director.tl.shots);
+    this.tornado = opts.tornado ?? new ParticleTornado({ cloudBaseKm: opts.cloudBaseKm });
     for (const [k, v] of Object.entries(opts.layers ?? {})) this.vis.set(k as LayerId, v);
     this.lma = { ...LMA_DEFAULTS, ...(opts.lma ?? {}) };
     this.events = ((data.science as ScienceEvent[] | undefined) ?? []).slice().sort((a, b) => a.t_s - b.t_s);
@@ -132,7 +144,18 @@ export class PerilsExtras implements ClipExtras {
    */
   look(t: number): Record<string, number> | null {
     const c = crossfade(this.director.tl.shots, [24, 30, 36, 30, 28, 24], t);
-    return { lowDbzCutoff: Math.round(c) };
+    // the tornado shot: a darker, denser, rain-wrapped wall cloud, nearer haze, more rain streaks, a little more vignette and grain
+    const im = this.vis.at('immersion', t);
+    const q = (v: number, step: number) => Math.round(v / step) * step;
+    return {
+      lowDbzCutoff: Math.round(c - 6 * im),
+      densityScale: q(1.5 + 0.9 * im, 0.1),
+      exposure: q(1.25 - 0.35 * im, 0.05),
+      rainStreaks: q(0.25 + 0.5 * im, 0.05),
+      hazeDistanceKm: q(20 * im, 1),
+      vignette: q(0.2 + 0.2 * im, 0.05),
+      grain: q(0.02 + 0.015 * im, 0.005),
+    };
   }
 
   async prepare(api: ClipApi): Promise<void> {
@@ -153,6 +176,7 @@ export class PerilsExtras implements ClipExtras {
     const spec = { size: g?.size ?? 2048, half, cx: g?.cx ?? 0, cy: g?.cy ?? 0 };
     if (!img) img = await this.gridImage(spec.size, spec.half, spec.cx, spec.cy);
     this.ground = new GroundComposer(spec, img);
+    this.baseImg = img;
     // MRMS composites (small 8-bit fields)
     this.mrmsCodes = await Promise.all(
       this.data.mrms.map(async (m) => {
@@ -161,6 +185,15 @@ export class PerilsExtras implements ClipExtras {
         return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
       }),
     );
+    // the plan-view inset: the column maximum of each step
+    this.colmaxCodes = await Promise.all(
+      (this.data.colmax ?? []).map(async (m) => {
+        if (!m) return null;
+        const r = await fetch(`${this.base}/${m.bin}`);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      }),
+    );
+    this.colmaxCv = this.colmaxCodes.map(() => null);
     // MRMS azimuthal shear (the rotation swath) and the surface analysis
     this.azCodes = await Promise.all(
       this.data.mrms.map(async (m) => {
@@ -326,9 +359,11 @@ export class PerilsExtras implements ClipExtras {
   drawScene(ctx: CanvasRenderingContext2D, cam: OverlayCam, info: FrameInfo): void {
     const u = cam.h / 1080;
     this.lastTanX = cam.tanX;
+    // the camera of this frame as the scene saw it (a measurement hook: tools/perils_movie/render/measure_rotation.py)
+    if (typeof window !== 'undefined') (window as unknown as Record<string, unknown>).__xrPerilsCam = { eye: [...cam.eye], fwd: [...cam.fwd], right: [...cam.right], up: [...cam.up], tanX: cam.tanX, tanY: cam.tanY, w: cam.w, h: cam.h };
     const centre = this.stormCentre(info.td);
     const env: SceneEnv = {
-      ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, sounding: this.pair?.pre ?? null, nearStep: this.nearStep(info.td),
+      ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, sounding: this.pair?.pre ?? null, nearStep: this.nearStep(info.td), speedup: this.director.speedup(info.t),
     };
     const v = (id: LayerId) => this.vis.at(id, info.t);
     // the right-hand inset column is the HUD's: scene labels do not run through it
@@ -356,9 +391,22 @@ export class PerilsExtras implements ClipExtras {
     drawTds(env, v('rotation'));
     drawRotation(env, v('rotation'));
     drawStations(env, v('stations'));
-    drawFunnel(env, v('funnel'), this.opts.cloudBaseKm ?? 1.0);
+    const imm = v('immersion');
+    const vf = this.vortex(info.td, imm);
+    if (vf) {
+      drawParentCirculation(env, v('rotation'), vf, imm < 0.5);
+      this.tornado.draw(env, v('funnel'), vf);
+    }
     ctx.restore();
     this.lmaDrawn = drawLma(ctx, cam, this.lmaNow, projRaw, info.vexag, this.opts.lmaColourBy ?? this.lma.colourBy, 1);
+  }
+
+  /** The vortex of the surveyed tornado at data time `td` (null outside its life), cached per frame. */
+  private vortex(td: number, imm: number): VortexFrame | null {
+    if (this.vfCache && this.vfCache.td === td && this.vfCache.imm === imm) return this.vfCache.vf;
+    const vf = vortexFrame(this.data.tornadoes, this.data.vortex, td, imm);
+    this.vfCache = { td, imm, vf };
+    return vf;
   }
 
   private interp(tr: { t: number; x: number; y: number }[], t: number, k: 'x' | 'y'): number {
@@ -390,27 +438,21 @@ export class PerilsExtras implements ClipExtras {
       const ts = (s.t_s as number[] | undefined) ?? [];
       station = { st, ro: stationReadout(st, td), spark: ts.length > 1 ? { t: ts, v: (s.rain_rate_mmh as (number | null)[]) ?? [] } : null };
     }
-    // tornado card
+    // tornado card: the survey, what the radars measured (the parent circulation) and the estimated spin of the funnel
     let tornado: HudModel['tornado'] = null;
     const tor = d.tornadoes[0];
     if (tor) {
       const cur = tornadoAt(tor, td);
-      let vrot: number | null = null;
-      let radar: string | null = null;
-      let res: number | null = null;
-      let tds: boolean | null = null;
-      for (const tr of d.rotation) {
-        const p = rotationAt(tr, td, 90);
-        if (p && (vrot === null || (typeof p.vrot_ms === 'number' && p.vrot_ms > vrot))) {
-          vrot = typeof p.vrot_ms === 'number' ? p.vrot_ms : vrot;
-          radar = tr.radar ?? null;
-          res = tr.resolution_m ?? null;
-          if (typeof p.tds === 'boolean') tds = p.tds;
-        }
-      }
+      const vf = this.vortex(td, 0);
       const tdsPts = d.tds[this.nearStep(td)];
-      if (tds === null && tdsPts) tds = tdsPts.length > 0;
-      tornado = { rating: tor.rating ?? 'Tornado', active: !!cur, vrotMs: vrot, radar, resolutionM: res, debris: tds, widthM: tor.width_m ?? null, interpolated: !!cur && cur.interpolated };
+      const debris = tdsPts ? tdsPts.some((q) => q[3] >= 2) : null;
+      const vs = d.vortex?.steps ?? [];
+      const res = vs.length ? Math.min(...vs.map((q) => q.effective_resolution_m ?? 1e9)) : null;
+      tornado = {
+        rating: tor.rating ?? 'Tornado', active: !!cur, widthM: tor.width_m ?? null, interpolated: !!cur && cur.interpolated,
+        parent: vf?.params.parent ?? null, windRangeMs: vf?.params.windRangeMs ?? null, periodRangeS: vf?.params.periodRangeS ?? null, periodS: vf?.params.periodS ?? null,
+        debris, resolutionM: res != null && res < 1e9 ? res : null,
+      };
     }
     // caption: the science event on screen, else the feature in view
     const sc = activeCaption(this.sched, info.t);
@@ -418,8 +460,8 @@ export class PerilsExtras implements ClipExtras {
     if (sc) caption = { ...captionOf(sc.ev), alpha: captionAlpha(info.t, sc.t0, sc.hold) };
     const nowFlash = this.lmaNow.active;
     let sees = '';
-    if (tornado?.active) sees = `${tornado.rating} tornado on the ground (surveyed path)${tornado.vrotMs != null ? ` · radar rotation ${tornado.vrotMs.toFixed(0)} m/s` : ''}`;
-    else if ((d.hail[this.nearStep(td)]?.n ?? 0) > 200 && this.vis.at('hail', info.t) > 0.5) sees = 'Hail core (radar hydrometeor classification)';
+    if (tornado?.active) sees = `${tornado.rating} tornado on the ground (surveyed path)${tornado.parent?.medianVrotMs != null ? ` · radar: parent circulation Vrot ${tornado.parent.medianVrotMs.toFixed(0)} m/s` : ''}`;
+    else if ((d.hail[this.nearStep(td)]?.n ?? 0) > 200 && this.vis.at('hail', info.t) > 0.5) sees = 'Radar hail class (weak evidence, not measured hail)';
     else if (nowFlash > 0) sees = `Lightning: ${nowFlash} flash${nowFlash > 1 ? 'es' : ''} mapped now`;
     else sees = '';
     const sources = d.sources ?? [];
@@ -432,7 +474,7 @@ export class PerilsExtras implements ClipExtras {
       flash: { perMin: flashesInWindow(this.firstTimes, td, 60), series, binS, total: this.firstTimes.length, nowIdx: Math.min(series.length - 1, Math.floor(td / binS)) },
       station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: this.envPanel(td),
       legendKinds: ['observed', 'model', 'analysis', 'retrieved', 'interpolated', 'stylised'], credits, shots: this.director.tl.shots, layersOn: [], vexag: info.vexag,
-      groundKey: {
+      immersion: this.vis.at('immersion', info.t), groundKey: {
         temp: highUp && this.surf.some(Boolean) && this.vis.at('surfaceModels', info.t) > 0.12 ? this.tRange : null,
         mrms: highUp && this.mrmsCodes.some(Boolean) && this.vis.at('mrms', info.t) > 0.12,
         swath: highUp && this.azCodes.some(Boolean) && this.vis.at('rotation', info.t) > 0.12,
@@ -486,12 +528,20 @@ export class PerilsExtras implements ClipExtras {
   drawHud(ctx: CanvasRenderingContext2D, W: number, H: number, info: FrameInfo): void {
     const u = H / 1080;
     const m = this.model(info, W, H);
+    const imm = m.immersion;
+    ctx.save();
+    ctx.globalAlpha = 1 - imm;
+    this.hudCtx = ctx;
     drawCompass(ctx, W, u, info.yawDeg, this.lastTanX);
+    ctx.restore();
+    ctx.save();
+    ctx.globalAlpha = 1 - 0.5 * imm;
     drawTopLeft(ctx, u, m);
-    let y = 28 * u;
-    y = drawLmaPanel(ctx, W, u, m, m.vis('lmaPanel'));
+    ctx.restore();
+    const mm = this.minimap(info, W, H, u, m);
+    let y = mm.next;
+    y = drawLmaPanel(ctx, W, u, m, m.vis('lmaPanel'), y);
     y = drawEnvPanel(ctx, W, u, y, m.env, m.vis('envPanel'));
-    const yEnv = y;
     const win = this.data.steps[this.data.steps.length - 1].t_s;
     const ix = W - 34 * u - 330 * u;
     if (m.station) {
@@ -513,25 +563,117 @@ export class PerilsExtras implements ClipExtras {
       this.rainStreaks = drawRainStreaks(ctx, W, H, u, ro.rain, ro.dm, info.t, m.vis('rainStreaks'));
     }
     drawStationCard(ctx, H, u, m, m.vis('stationCard'));
-    const cardH = drawTornadoCard(ctx, u, m, 1, 280 * u);
+    const cardH = drawTornadoCard(ctx, u, m, m.vis('tornadoCard'), 280 * u);
     drawGroundKey(ctx, u, m, 280 * u + (cardH ? cardH + 10 * u : 0), m.vis('captions'));
     drawCaption(ctx, W, H, u, m);
+    // the one lower third of the immersive shot: in with the shot, and down to a quarter after its first seconds
+    const tShot = this.director.tl.shots.find((q) => q.name === 'tornado');
+    const calm = tShot ? Math.max(0, Math.min(1, (info.t - (tShot.t0 + 9)) / 5)) : 0;
+    drawTornadoLowerThird(ctx, H, u, m, imm * (1 - 0.72 * calm * calm * (3 - 2 * calm)));
+    ctx.save();
+    ctx.globalAlpha = 1 - 0.45 * imm;
     drawTimeline(ctx, W, H, u, m);
     drawLegend(ctx, W, H, u, m);
+    ctx.restore();
     drawEndCard(ctx, W, H, u, m, info.t, this.director.duration);
-    this.updateInset(info, yEnv, m.vis('skewt'));
+    this.updateInset(info, 430 * u, m.vis('skewt'), u);
+  }
+
+  // ── plan-view inset ───────────────────────────────────────────────────────
+
+  /** The column-maximum image of step `k` (north up, one pixel per grid cell, the NWS reflectivity colours), cached. */
+  private colmaxImage(k: number): HTMLCanvasElement | null {
+    if (k < 0 || k >= this.colmaxCodes.length) return null;
+    const hit = this.colmaxCv[k];
+    if (hit) return hit;
+    const codes = this.colmaxCodes[k];
+    const meta = this.data.colmax?.[k];
+    if (!codes || !meta || typeof document === 'undefined') return null;
+    const { nx, ny } = meta;
+    const cv = document.createElement('canvas');
+    cv.width = nx;
+    cv.height = ny;
+    const c2 = cv.getContext('2d')!;
+    const img = c2.createImageData(nx, ny);
+    const { vmin, vmax } = this.api.g0;
+    for (let j = 0; j < ny; j++) {
+      const row = (ny - 1 - j) * nx;
+      for (let i = 0; i < nx; i++) {
+        const c = codes[j * nx + i];
+        if (c === 0) continue;
+        const dbz = vmin + ((c - 1) / 254) * (vmax - vmin);
+        if (dbz < 8) continue;
+        const li = Math.max(0, Math.min(255, Math.round(((dbz - vmin) / (vmax - vmin)) * 255)));
+        const o = (row + i) * 4;
+        img.data[o] = this.lut[li * 3];
+        img.data[o + 1] = this.lut[li * 3 + 1];
+        img.data[o + 2] = this.lut[li * 3 + 2];
+        img.data[o + 3] = Math.round(235 * Math.min(1, (dbz - 8) / 24));
+      }
+    }
+    c2.putImageData(img, 0, 0);
+    this.colmaxCv[k] = cv;
+    return cv;
+  }
+
+  /** Draw the plan-view inset; returns the y below it (for the panels under it). */
+  private minimap(info: FrameInfo, W: number, H: number, u: number, m: HudModel): { next: number } {
+    const ctx = this.hudCtx!;
+    const shots = this.director.tl.shots;
+    const t = info.t;
+    const a = m.vis('minimap') * (1 - endCardAlpha(t, this.director.duration));
+    const size = 360 * u * crossfade(shots, [1, 1, 0.62, 0.86, 1, 1.18], t);
+    const mapY = 60 * u;
+    const next = mapY + size + 44 * u;
+    const g = this.data.grid;
+    if (a <= 0.02 || !(this.data.colmax ?? []).some(Boolean) || !this.api) return { next: 28 * u };
+    const stepT = this.data.steps.map((q) => q.t_s);
+    const w = interpWeights(stepT, info.td);
+    const centre = this.stormCentre(info.td);
+    const camW = crossfade(shots, [0, 0.25, 1, 1, 0.2, 0], t);
+    const half = crossfade(shots, [62, 48, 3.2, 12, 42, 75], t);
+    const mo = this.data.motion[Math.min(w.k, this.data.motion.length - 1)];
+    const obs = m.observed >= 0;
+    const tor = this.data.tornadoes.find((q) => q.path.length > 1) ?? null;
+    const curT = tor ? tornadoAt(tor, info.td) : null;
+    const balloons: MinimapState['balloons'] = [];
+    for (const snd of this.data.soundings) {
+      const f = balloonFlight(snd, info.td, this.director.speedup(t));
+      if (f) balloons.push({ x: f.x, y: f.y, trail: f.trail.map((q) => [q[0], q[1]] as [number, number]), a: f.bodyAlpha });
+    }
+    const st: MinimapState = {
+      x: W - 34 * u - size, y: mapY, size, u, alpha: a,
+      cx: centre[0] + (info.eye[0] - centre[0]) * camW, cy: centre[1] + (info.eye[1] - centre[1]) * camW, half,
+      echo: { a: this.colmaxImage(w.k), b: this.colmaxImage(w.k + 1), s: w.s, x0: g.x0, y0: g.y0, dx: g.dx, nx: g.nx, ny: g.ny },
+      base: this.baseImg && this.ground ? { img: this.baseImg, cx: this.ground.spec.cx, cy: this.ground.spec.cy, half: this.ground.spec.half } : null,
+      camera: { x: info.eye[0], y: info.eye[1], yawDeg: info.yawDeg, hfovDeg: hfovFromTan(this.lastTanX) },
+      storm: { x: centre[0], y: centre[1], motionMs: mo ? [mo.u_ms, mo.v_ms] : [0, 0] },
+      radars: this.data.radars.map((r) => ({ name: r.name, x: r.x, y: r.y })),
+      stations: this.data.stations.map((s0) => {
+        const p = stationXY(s0, info.td);
+        return { x: p[0], y: p[1], near: s0.id === this.lastNearest };
+      }),
+      tornado: tor ? { path: tor.path.map((q) => [q.x, q.y] as [number, number]), cur: curT ? [curT.x, curT.y] : null } : null,
+      flashes: this.lmaNow.sprites.map((q) => ({ x: q.x, y: q.y, b: q.bright })),
+      balloons,
+      tag: obs ? { kind: 'observed', text: 'OBSERVED VOLUME' } : { kind: 'interpolated', text: 'INTERPOLATED' },
+      clock: clockUtc(this.data.time0, info.td),
+      title: 'Where the camera is',
+    };
+    drawMinimap(ctx, st);
+    return { next };
   }
 
   // ── Skew-T inset (a real Svelte component, in the page) ───────────────────
 
   private mountInset(): void {
     const el = document.createElement('div');
-    el.style.cssText = 'position:fixed;right:34px;top:200px;z-index:3;opacity:0;pointer-events:none;';
+    el.style.cssText = 'position:fixed;left:34px;top:430px;transform-origin:top left;z-index:3;opacity:0;pointer-events:none;';
     document.body.appendChild(el);
     this.insetEl = el;
   }
 
-  private updateInset(info: FrameInfo, top: number, alpha: number): void {
+  private updateInset(info: FrameInfo, top: number, alpha: number, u = 1): void {
     const el = this.insetEl;
     if (!el) return;
     const near = this.pair ? { snd: this.pair.pre, offsetS: this.pair.pre.launch - info.td } : nearestSounding(this.data.soundings.filter((s) => s.levels), info.td, this.stormCentre(info.td));
@@ -540,6 +682,8 @@ export class PerilsExtras implements ClipExtras {
       return;
     }
     el.style.top = `${Math.round(top)}px`;
+    el.style.left = `${Math.round(34 * u)}px`;
+    el.style.transform = `scale(${(0.93 * u).toFixed(3)})`;
     el.style.opacity = String(alpha);
     const snd = near.snd;
     if (this.insetId !== snd.id) {
