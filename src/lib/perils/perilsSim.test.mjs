@@ -34,11 +34,11 @@ test('the simulation belongs to the tornado shot; the particle funnel to the wid
 
 test('the simulation is on in real time and in a modest time-lapse, and fades out as the data clock speeds up', () => {
   assert.equal(simSpeedWeight(1), 1);
-  assert.equal(simSpeedWeight(6), 1);
-  assert.equal(simSpeedWeight(30), 0);
-  assert.equal(simSpeedWeight(43), 0);
+  assert.equal(simSpeedWeight(10), 1);
+  assert.equal(simSpeedWeight(60), 0);
+  assert.ok(simSpeedWeight(43) > 0.2 && simSpeedWeight(43) < 0.35);
   let prev = 1;
-  for (let s = 6; s <= 30; s += 0.5) {
+  for (let s = 10; s <= 60; s += 0.5) {
     const w = simSpeedWeight(s);
     assert.ok(w <= prev + 1e-12 && w >= 0);
     prev = w;

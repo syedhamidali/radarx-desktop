@@ -58,7 +58,7 @@ export function simDistanceWeight(distKm: number, near = 1.8, far = 4.5): number
 
 /**
  * The simulation runs near real time only (its swirl is physical at one data second per clip second): its opacity goes to
- * zero as the data clock speeds up, from x6 (full) to x30 (none): the time-lapse stretches between the real-time angles show the simulation at the speed of the data clock (a fast hyperlapse of it) up to x6 and fade it into the radar-echo scene beyond.
+ * zero as the data clock speeds up, from x10 (full) to x60 (none): the time-lapse stretches between the real-time angles show the simulation at the speed of the data clock (a hyperlapse of it) and fade it into the radar-echo scene only at the fastest (x43 at most in the film: a quarter of it is left).
  */
 /**
  * Extinction of the simulation's rain relative to the physical value, from the camera's distance to the tornado (km): 1 inside 0.55 km,
@@ -69,7 +69,7 @@ export function simRainGain(distKm: number, near = 0.55, far = 1.2, floor = 0.12
   return 1 - (1 - floor) * smooth((distKm - near) / (far - near));
 }
 
-export function simSpeedWeight(speedup: number, from = 6, to = 30): number {
+export function simSpeedWeight(speedup: number, from = 10, to = 60): number {
   return 1 - smooth((speedup - from) / (to - from));
 }
 

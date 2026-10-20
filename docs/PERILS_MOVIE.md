@@ -145,7 +145,7 @@ What the data say, and what the picture adds (`perilsVortex.ts`, `perilsTornadoS
   at 12 % of the physical value from 1.2 km and beyond, rising to 100 % inside 0.55 km (`simRainGain`: a display choice, so that a
   funnel can be seen through 50 dBZ of rain; the pattern of the rain is the radar's). The page draws the simulation on its own canvas over
   the echo render with an opacity that is the layer weight times the camera's nearness to the tornado in 3-D (full inside 1.8 km,
-  none beyond 4.5 km) times the speed of the data clock (full to x6, none from x30: in the time-lapse stretches the simulation runs
+  none beyond 4.5 km) times the speed of the data clock (full to x10, none at x60, a quarter left at the film's fastest x43: in the time-lapse stretches the simulation runs
   at the data clock, a hyperlapse of it, and fades into the echo scene at the fastest). The simulation's scene fades in over the 8 s
   before the surveyed begin time, so there is no pop at touchdown. The particle funnel is drawn only far from the tornado.
 * **Real time**: the angles close to the tornado run at exactly one data second per clip second (the swirl of the simulation is
