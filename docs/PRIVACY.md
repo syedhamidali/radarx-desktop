@@ -24,9 +24,26 @@ from (app, terminal, Python or engine), a random install id, the radarx version 
 *Account > Activity* lists the last 100 events your account has sent. Activity cannot be switched off while you use an
 account, because it is the reason for the account being required; the list above is all of it.
 
+**Reports you choose to send.** *Report an issue* (in the app) and the form on the radarx website send a report **only
+when you press send**. A report holds what you typed (kind, title, description), the radarx version and the name of
+your system (for example "macOS arm (desktop)"), and: for a report from the app, your account id (so we know who wrote
+it; we may answer to your account's e-mail address); for a report from the website, the e-mail address you chose to
+give, if any. **Diagnostics are optional and off by default**: when you tick the box the report also carries the last
+warnings and errors the engine gave the app in that session (at most 200 lines, never on disk). Before they are shown or
+sent, folder paths, the names of data files, e-mail addresses, IP addresses, keys and tokens, and your user and machine
+name when known are removed or masked, and the dialog shows the complete message first (the scrubbing is pattern based
+and not perfect, which is why you see it). Radar files and locations are never part of it. A report is read by the
+project owner (database dashboard and an e-mail notification, sent through Resend or Mailjet); if the owner enables a
+copy to a **private** GitHub repository, the report text (not your e-mail address or the diagnostics) is copied there too.
+Reports are kept for **24 months**, then deleted. You can ask for a report to be deleted by writing to the project owner.
+If you delete your account the reports you sent **stay but are no longer linked to you**. The website form is protected by
+Cloudflare Turnstile (it receives what the widget sends, under Cloudflare's own notice) and by a rate limit that keeps
+only a **salted hash** of your IP address, per hour, for three days; your IP address itself is never stored by radarx.
+Details: {doc}`REPORTING`.
+
 **What we do not collect.** Radar files and their contents, **file names or paths**, locations you look at
-(coordinates or place names), radar site identifiers, results, anything you type, or the content of your work. They
-stay on your computer. (The public web version necessarily receives the files you upload to process them; it keeps
+(coordinates or place names), radar site identifiers, results, anything you type (apart from a report you choose to
+send, above), or the content of your work. They stay on your computer. (The public web version necessarily receives the files you upload to process them; it keeps
 them only for your session and deletes them when it ends, see the web documentation.)
 
 **Why.** To let you sign in on several computers, keep what you choose to sync, understand which communities use
@@ -36,16 +53,22 @@ account. We do not sell personal data and we do not show your data to other user
 **How long.** Activity events are kept for up to one year; the owner removes older ones periodically. Account data
 is kept until you delete the account. *(The owner must schedule the clean-up; see the account documentation.)*
 
-**Who processes it.** Supabase (database and sign-in, region Mumbai) and, if you choose them, Google, Apple or
-Facebook as sign-in providers. Sharing a picture or movie opens the social network yourself; radarx sends them
+**Who processes it.** Supabase (database, sign-in and the report function, region Mumbai); Resend and Mailjet (sending
+sign-up codes and the report notification to the owner); Cloudflare (Turnstile on the website's report form); and, if you
+choose them, Google, Apple or Facebook as sign-in providers. Sharing a picture or movie opens the social network yourself; radarx sends them
 nothing.
 
 **Your rights.** Open *Account* and edit your details, remove computers, or delete the account: the account and every
-row above, **including the activity**, are removed. For anything else, write to the project owner (see the
+row above, **including the activity**, are removed (reports you sent are kept without a link to you, see above; ask for
+them to be deleted if you want them gone). For anything else, write to the project owner (see the
 repository).
 
 **Offline.** After you have signed in, radarx works for up to 30 days without contacting the server. Activity events
 are then kept on your computer (at most 500 small events) and sent when the connection returns.
+
+The report section was added after version 2026-10-21 without changing the version number: it describes an optional action you
+start yourself, and no data is collected without it. (Whether a new version, which asks everyone to accept again, is wanted
+is the owner's decision.)
 
 Version 2026-10-21 (previous version 2026-10, which said nothing about activity: everyone is asked to accept again).
 The rules above were tightened after that version was drafted (fixed word lists, no free text in the version or system

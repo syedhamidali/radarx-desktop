@@ -23,6 +23,7 @@ import { trackEngine } from './engineIdentity';
 import { findRequestForReply, isForOtherFile } from './sweepMatch';
 import { AUTH_DISABLED } from '../auth/config';
 import { tidyServerError } from './errorText';
+import { recordEngineMessage } from './engineLog';
 
 type MessageHandler = (data: any) => void;
 
@@ -808,6 +809,7 @@ class WebSocketManager {
 
       case 'error': {
         const text: string = typeof msg.message === 'string' ? msg.message : 'Unknown error from server';
+        recordEngineMessage('error', text); // in memory only; offered as optional diagnostics in "Report an issue"
         // Errors that answer a queued sweep request fail that request (the viewer reacts to
         // `sweep_request_failed`); "variable not in this sweep" is expected on split-cut volumes
         // and stays silent.
@@ -850,6 +852,7 @@ class WebSocketManager {
       case 'warning': {
         // Non-fatal notice from the engine (e.g. memory budget exceeded): the request succeeded.
         const text: string = typeof msg.message === 'string' ? msg.message : 'Warning from engine';
+        recordEngineMessage('warning', text);
         console.warn('[WS] Engine warning:', text);
         addToast('warning', text, 12000);
         break;
