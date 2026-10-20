@@ -17,5 +17,6 @@ from __future__ import annotations
 from engine import api as api
 from engine.api import *  # noqa: F403 - re-export of the documented API
 from engine.api import __all__  # noqa: F401
+from engine.provenance import software_version as _software_version
 
-__version__ = "0.1.0"
+__version__ = _software_version()

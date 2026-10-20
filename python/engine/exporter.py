@@ -178,9 +178,13 @@ def _extract_datetime(datatree: xr.DataTree, sweep_ds: xr.Dataset) -> str:
     try:
         if "time" in sweep_ds.coords:
             t = np.atleast_1d(sweep_ds.coords["time"].values)
-            if t.size > 0 and np.issubdtype(t.dtype, np.datetime64) and not np.isnat(t[0]):
-                t0 = np.datetime_as_string(t[0], unit="s")
-                return str(t0).replace("T", " ")
+            if t.size > 0 and np.issubdtype(t.dtype, np.datetime64):
+                # the earliest ray: the rays are in azimuth order, so t[0] is the ray at the
+                # lowest azimuth, up to one rotation after the start of the sweep
+                valid = t[~np.isnat(t)]
+                if valid.size:
+                    t0 = np.datetime_as_string(valid.min(), unit="s")
+                    return str(t0).replace("T", " ")
     except (TypeError, ValueError):
         pass
     # Try root attributes

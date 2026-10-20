@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -688,3 +689,13 @@ async def test_websocket_data_check_unknown_file_is_an_error(served):
     h = _make_handler()
     await _send(h, type="data_check", file_id="nope")
     assert any(m["type"] == "error" for m in h._sent)
+
+
+def test_radar_band_with_a_missing_frequency_does_not_warn() -> None:
+    """xradar's CfRadial2 reader adds ``frequency = [NaN]`` when the file has none."""
+    ds = xr.Dataset({"frequency": ("frequency", np.array([np.nan], dtype="float32"))})
+    tree = xr.DataTree.from_dict({"/": xr.Dataset(), "/sweep_0": ds})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        band, how = quality.radar_band(tree, ds, "cfradial2")
+    assert band is None and how == "not stated in the file"

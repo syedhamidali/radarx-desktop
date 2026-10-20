@@ -107,6 +107,12 @@ class TestFiles:
         with pytest.raises(AnimatePlanError, match="cannot read the time"):
             plan.parse_time("yesterday")
 
+    def test_parse_time_returns_utc_for_a_stated_offset(self):
+        """The result is labelled UTC (``...Z``) wherever it is written: the offset must be applied."""
+        t = plan.parse_time("2021-12-11T07:30:00+05:30")
+        assert t == T0 and t.utcoffset() == timedelta(0) and t.hour == 2
+        assert plan.parse_time("2021-12-10T21:00:00-0500") == T0
+
 
 class TestMetaCache:
     def test_a_file_is_opened_once_and_the_answer_is_remembered(self, tmp_path):

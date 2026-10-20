@@ -6,10 +6,11 @@ import os
 import tempfile
 from pathlib import Path
 
+import numpy as np
 import pytest
 import xarray as xr
 
-from engine.exporter import RadarExporter
+from engine.exporter import RadarExporter, _extract_datetime
 from tests import radar_data
 
 # ---------------------------------------------------------------------------
@@ -362,6 +363,19 @@ class TestGeometryHelpers:
 
         ds = xr.Dataset(coords={"time": ("azimuth", np.arange(3.0))})
         assert _extract_datetime(xr.DataTree(), ds) == ""
+
+    def test_datetime_is_the_earliest_ray_not_the_first_in_azimuth_order(self) -> None:
+        t = np.datetime64("2024-05-01T12:00:00", "ns") + np.array(
+            [30, 5, 0, 12, 40]
+        ) * np.timedelta64(1, "s")
+        t[0] = np.datetime64("NaT")  # the first ray has no time at all
+        ds = xr.Dataset(coords={"time": ("azimuth", t)})
+        assert _extract_datetime(xr.DataTree(), ds) == "2024-05-01 12:00:00"
+        t2 = np.datetime64("2024-05-01T12:00:30", "ns") + np.array([0, -25, -30]) * np.timedelta64(
+            1, "s"
+        )
+        ds2 = xr.Dataset(coords={"time": ("azimuth", t2)})
+        assert _extract_datetime(xr.DataTree(), ds2) == "2024-05-01 12:00:00"  # was ...:30
 
     def test_extreme_options_are_clamped(self) -> None:
         from engine.exporter import _opt_float

@@ -1085,3 +1085,15 @@ def test_main_does_not_leak_log_filters(capsys, tmp_path) -> None:
     saved = logging.lastResort.filters[:]
     run_cli(capsys, "info", "-i", str(f))
     assert logging.lastResort.filters == saved  # nothing leaks out of main()
+
+
+def test_version_is_the_one_stamped_into_files(capsys) -> None:
+    """``xrd --version`` and ``xrd.__version__`` follow the app version, not a stale constant."""
+    import xrd
+    from engine import provenance
+
+    version = provenance.software_version()
+    assert version != "0.1.0"  # the old hard-coded fallback
+    code, out, _ = run_cli(capsys, "--version")
+    assert code == 0 and out.strip() == f"xrd {version}"
+    assert xrd.__version__ == version

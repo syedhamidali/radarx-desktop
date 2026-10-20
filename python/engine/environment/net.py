@@ -225,6 +225,10 @@ class HttpClient:
                 raise
             except urllib.error.HTTPError as exc:
                 last_error = exc
+                # The error owns the open response (a socket); `last_error` and the exception
+                # chain would keep it until the retries are over. Only code, reason and headers
+                # are used below.
+                exc.close()
                 if exc.code not in RETRY_STATUS:
                     raise FetchFailed(f"{exc.code} {exc.reason}: {url}") from exc
                 retry_after = self._retry_after(exc.headers)
