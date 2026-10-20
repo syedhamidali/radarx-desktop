@@ -511,3 +511,15 @@ def test_errors_never_print_secrets(gate_on):
     with pytest.raises(tokens.TokenInvalid) as err:
         tokens.verify_access_token(token[:-4] + "AAAA", now=gate_on.now)
     assert token not in str(err.value) and token not in repr(err.value)
+
+
+def test_python_and_frontend_share_the_public_values():
+    """One project URL, key and 30-day rule on every surface (src/lib/auth/config.ts)."""
+    from pathlib import Path
+
+    ts = (Path(__file__).resolve().parents[2] / "src/lib/auth/config.ts").read_text()
+    assert f"'{config.DEFAULT_PROJECT_URL}'" in ts
+    assert f"'{config.DEFAULT_PUBLISHABLE_KEY}'" in ts
+    assert f"OFFLINE_GRACE_DAYS = {config.OFFLINE_GRACE_DAYS};" in ts
+    assert config.DEFAULT_PUBLISHABLE_KEY.startswith("sb_publishable_")  # never a secret key
+    assert "service_role" not in ts and "sb_secret" not in ts
