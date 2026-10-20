@@ -2,6 +2,7 @@
   import { auth, signUp, signIn, signInWith, confirmCode, resendCode, resetPassword, completeReset, saveProfile, abortOAuth, signOut, USE_CASES, profileIncomplete, TERMS_VERSION } from '../stores/auth';
   import { OAUTH_PROVIDERS, OFFLINE_GRACE_DAYS } from '../auth/config';
   import { looksLikeEmail, passwordProblem } from '../auth/gate';
+  import { TERMS_URL, PRIVACY_URL } from '../utils/brand';
   import LogoMark from './LogoMark.svelte';
   import RadarSweep from './RadarSweep.svelte';
 
@@ -86,7 +87,6 @@
     }
   }
 
-  const REPO = 'https://github.com/syedhamidali/xradar-desktop/blob/main';
 </script>
 
 <div class="gate" role="main">
@@ -198,9 +198,9 @@
             <input type="checkbox" bind:checked={agree} />
             <span>
               I accept the
-              <button type="button" class="linkish" onclick={() => link(`${REPO}/LICENSE`)}>licence</button>
+              <button type="button" class="linkish" onclick={() => link(TERMS_URL)}>licence</button>
               and the
-              <button type="button" class="linkish" onclick={() => link(`${REPO}/docs/PRIVACY.md`)}>privacy notice</button>
+              <button type="button" class="linkish" onclick={() => link(PRIVACY_URL)}>privacy notice</button>
               <span class="ver">(v{TERMS_VERSION})</span>
             </span>
           </label>

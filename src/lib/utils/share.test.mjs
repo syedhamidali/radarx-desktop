@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { shareKind, composeUrl, defaultCaption, isAllowedShareUrl, instagramAdvice } from './share.ts';
+import { shareKind, composeUrl, defaultCaption, isAllowedShareUrl, instagramAdvice, SHARE_URL } from './share.ts';
 
 test('which saved files can be shared', () => {
   assert.equal(shareKind('/a/b/storm.PNG'), 'image');
@@ -29,4 +29,10 @@ test('captions and Instagram advice depend on the kind', () => {
   assert.match(defaultCaption('image'), /image/);
   assert.match(instagramAdvice('video'), /9:16/);
   assert.match(instagramAdvice('image'), /4:5/);
+});
+test('the shared project link is the website, never a code host', () => {
+  assert.equal(SHARE_URL, 'https://radarx.labshope.com');
+  const x = new URL(composeUrl('x', 'hi'));
+  assert.equal(x.searchParams.get('url'), SHARE_URL);
+  assert.ok(!composeUrl('bluesky', 'hi').includes('github'));
 });

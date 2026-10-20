@@ -12,8 +12,11 @@ use serde_json::Value;
 /// development or fork build never tries to update itself.
 pub const PUBKEY_PLACEHOLDER: &str = "UPDATER_PUBLIC_KEY_NOT_CONFIGURED";
 
-/// Tail of the GitHub endpoint, replaced by the release-page path to build the "releases" link.
-const MANIFEST_TAIL: &str = "/releases/latest/download/latest.json";
+/// The page the app offers when it cannot install an update itself (a .deb / .rpm install, a copy
+/// running from a disk image) and for "what is new": the website's download section. An explicit
+/// constant on purpose: it does not depend on where the update manifest is hosted. If the website
+/// moves, change this and `DOWNLOAD_PAGE_URL` in `src/lib/utils/brand.ts` (docs/UPDATES.md lists both).
+pub const RELEASES_PAGE: &str = "https://radarx.labshope.com/#download";
 
 #[derive(Debug, PartialEq)]
 pub enum Configured {
@@ -40,20 +43,12 @@ pub fn configuration(plugin_config: Option<&Value>) -> Configured {
     Configured::Yes
 }
 
-/// `https://github.com/o/r/releases/latest/download/latest.json` -> `https://github.com/o/r/releases/latest`.
-/// Only https endpoints that follow the GitHub layout give a link; anything else gives None.
-pub fn releases_page(endpoint: &str) -> Option<String> {
-    let base = endpoint.strip_suffix(MANIFEST_TAIL)?;
-    base.starts_with("https://")
-        .then(|| format!("{base}/releases/latest"))
-}
-
 /// Can this installation replace itself?
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallMode {
     /// "auto": the app can download, verify and install the update itself.
-    /// "manual": it can only tell the user a new version exists (and link to the release page).
+    /// "manual": it can only tell the user a new version exists (and link to the download page).
     pub mode: &'static str,
     /// Why it is manual / what the user should do.
     pub note: Option<String>,
@@ -75,7 +70,7 @@ pub fn install_mode(exe: &std::path::Path, appimage: bool) -> InstallMode {
     if !appimage {
         return InstallMode::manual(
             "This copy was installed from a .deb or .rpm package, which cannot update itself. \
-             Install the new package from the release page.",
+             Install the new package from the download page.",
         );
     }
     #[cfg(target_os = "macos")]
@@ -99,7 +94,7 @@ pub struct UpdaterStatus {
     pub reason: Option<String>,
     pub current_version: String,
     pub install: InstallMode,
-    /// Where to read about / download releases by hand (derived from the endpoint).
+    /// Where to read about / download releases by hand (always the website's download section).
     pub releases_url: Option<String>,
     /// Operating system ("macos", "windows", "linux").
     pub os: &'static str,
@@ -120,10 +115,6 @@ pub fn status(
         Configured::Yes => (true, None),
         Configured::No(why) => (false, Some(why.to_string())),
     };
-    let releases_url = plugin_config
-        .and_then(|c| c.get("endpoints"))
-        .and_then(Value::as_array)
-        .and_then(|e| e.iter().filter_map(Value::as_str).find_map(releases_page));
     let install = install_mode(exe, appimage);
     let check_target = (cfg!(target_os = "linux") && !appimage).then_some("windows-x86_64");
     UpdaterStatus {
@@ -131,7 +122,7 @@ pub fn status(
         reason,
         current_version: current_version.to_string(),
         install,
-        releases_url,
+        releases_url: Some(RELEASES_PAGE.to_string()),
         os: std::env::consts::OS,
         check_target,
     }
@@ -146,7 +137,7 @@ mod tests {
     fn good() -> Value {
         json!({
             "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFCQ0Q=",
-            "endpoints": ["https://github.com/o/r/releases/latest/download/latest.json"],
+            "endpoints": ["https://downloads.labshope.com/radarx/latest.json"],
         })
     }
 
@@ -172,18 +163,46 @@ mod tests {
         assert_eq!(configuration(Some(&good())), Configured::Yes);
     }
 
+    /// `plugins.updater` exactly as shipped in tauri.conf.json.
+    fn shipped() -> Value {
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        conf["plugins"]["updater"].clone()
+    }
+
     #[test]
-    fn releases_page_follows_the_endpoint_so_a_rename_is_one_edit() {
-        assert_eq!(
-            releases_page("https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json"),
-            Some("https://github.com/syedhamidali/radarx-desktop/releases/latest".into())
+    fn the_shipped_endpoints_are_the_downloads_host_first_then_the_temporary_github_fallback() {
+        let cfg = shipped();
+        let list: Vec<&str> = cfg["endpoints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.as_str().unwrap())
+            .collect();
+        assert_eq!(list[0], "https://downloads.labshope.com/radarx/latest.json");
+        // The fallback only works while the repository is public; docs/UPDATES.md says how to drop it.
+        assert!(
+            list.len() <= 2,
+            "only the downloads host and the one temporary fallback: {list:?}"
         );
-        assert_eq!(
-            releases_page("https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json"),
-            Some("https://github.com/syedhamidali/radarx-desktop/releases/latest".into())
-        );
-        assert_eq!(releases_page("http://127.0.0.1:8000/latest.json"), None);
-        assert_eq!(releases_page("http://x/releases/latest/download/latest.json"), None);
+        if let Some(second) = list.get(1) {
+            assert!(second.starts_with("https://github.com/") && second.ends_with("/latest.json"));
+        }
+        assert!(list.iter().all(|u| u.starts_with("https://")), "{list:?}");
+        // The shipped public key is a real one (never the placeholder) so the updater is on.
+        assert_eq!(configuration(Some(&cfg)), Configured::Yes);
+    }
+
+    #[test]
+    fn the_releases_page_is_the_website_download_section() {
+        assert_eq!(RELEASES_PAGE, "https://radarx.labshope.com/#download");
+        assert!(!RELEASES_PAGE.contains("github"));
+    }
+
+    #[test]
+    fn several_endpoints_are_configured_when_any_is_non_empty() {
+        let mut c = good();
+        c["endpoints"] = json!(["", "https://downloads.labshope.com/radarx/latest.json"]);
+        assert_eq!(configuration(Some(&c)), Configured::Yes);
     }
 
     #[test]
@@ -191,9 +210,11 @@ mod tests {
         let s = status(Some(&good()), "1.2.3", Path::new("/Applications/x.app/Contents/MacOS/x"), false);
         assert!(s.configured && s.reason.is_none());
         assert_eq!(s.current_version, "1.2.3");
-        assert_eq!(s.releases_url.as_deref(), Some("https://github.com/o/r/releases/latest"));
+        assert_eq!(s.releases_url.as_deref(), Some(RELEASES_PAGE));
         let off = status(None, "1.2.3", Path::new("/x"), false);
         assert!(!off.configured && off.reason.is_some());
+        // the download page is offered even when updating is switched off
+        assert_eq!(off.releases_url.as_deref(), Some(RELEASES_PAGE));
     }
 
     #[cfg(target_os = "macos")]

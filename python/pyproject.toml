@@ -4,7 +4,7 @@ version = "0.3.0"
 description = "Python sidecar engine for radarx-desktop"
 requires-python = ">=3.10"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
-authors = [{ name = "Hamid Ali Syed" }]
+authors = [{ name = "Radarx Desktop by LabShope Technologies" }]
 dependencies = [
     "xradar>=0.12,<1.0",
     "xarray>=2026.4,<2027.0",

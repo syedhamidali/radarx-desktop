@@ -29,7 +29,7 @@ from typing import Any
 from engine.environment.errors import FetchCancelled, FetchFailed, OfflineError
 
 RETRY_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
-HOME_PAGE = "https://github.com/syedhamidali/radarx-desktop"
+HOME_PAGE = "https://radarx.labshope.com"
 CHUNK = 256 * 1024
 
 Progress = Callable[[int, int | None], None]
