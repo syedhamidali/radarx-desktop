@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack, tick } from 'svelte';
   import PpiOnlyNotice from './lib/components/PpiOnlyNotice.svelte';
-  import { source3d } from './lib/stores/volume3d';
+  import { source3d } from './lib/stores/source3d';
   import DataInspector from './lib/components/DataInspector.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
   import WorkspaceSwitcher from './lib/components/WorkspaceSwitcher.svelte';
@@ -16,7 +16,7 @@
   import UpdateChip from './lib/components/UpdateChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
-  import UpdateDialog from './lib/components/UpdateDialog.svelte';
+  import { updater } from './lib/stores/updater';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
@@ -59,6 +59,7 @@
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
 
+  const updateDialog = lazy(() => import('./lib/components/UpdateDialog.svelte'));
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
   const totalSweeps = $derived($radarData.sweeps.length);
@@ -144,6 +145,9 @@
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
   $effect(() => { whenIdle(() => envDialog.load()); });
   let isDragOver = $state(false);
+  // Not needed for the first paint: fetched when idle (so its fade-in plays), or at once if it is asked for.
+  $effect(() => { whenIdle(() => updateDialog.load()); });
+  $effect(() => { if ($updater.dialogOpen) updateDialog.load(); });
   let isPlaying = $state(false);
   let animSpeed = $state(1000);
   let leftSidebarWidth = $state(300);
@@ -1090,7 +1094,7 @@
   </footer>
 
   <ToastContainer />
-  <UpdateDialog />
+  {#if updateDialog.component}<updateDialog.component />{/if}
   {#if $dataCheckOpen && dataCheckPanel.component}<dataCheckPanel.component onshowpanel={showPanel} />{/if}
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {

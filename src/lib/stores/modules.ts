@@ -21,6 +21,7 @@ import { getDefaultCmap, type SweepDataEntry } from '../utils/ppiRenderer';
 import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './radarData';
 import { activeFileId, getActiveFile } from './fileManager';
 import { addToast } from './toasts';
+import { registerJobSource } from './jobSources';
 import {
   cleanCategories,
   parseColor,
@@ -218,6 +219,7 @@ export const moduleResults = writable<Record<string, ModuleResult>>({});
 
 /** Module ids currently running. */
 export const runningModules = writable<Record<string, boolean>>({});
+registerJobSource('modules', derived(runningModules, (r) => Object.values(r).filter(Boolean).length));
 
 /** Module ids whose current run covers all sweeps (a subset of runningModules). */
 export const runningVolume = writable<Record<string, boolean>>({});
