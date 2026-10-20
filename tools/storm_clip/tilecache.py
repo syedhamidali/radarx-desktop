@@ -1,4 +1,4 @@
-"""The tile proxy now lives in the engine (``engine/animate_tiles.py``, shared with ``xrd animate``)."""
+"""The tile proxy now lives in the engine (``engine/animate_tiles.py``, shared with ``rxd animate``)."""
 
 import sys
 from pathlib import Path

@@ -1,4 +1,4 @@
-"""Camera of ``xrd animate``: keyframes, easing, presets, the follow-the-storm target, camera files.
+"""Camera of ``rxd animate``: keyframes, easing, presets, the follow-the-storm target, camera files.
 
 The renderer (``src/lib/utils/stormClip.ts``) turns a list of camera keys into the picture; this
 module is the same maths in Python so that a camera file can be checked, described and tested

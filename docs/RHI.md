@@ -79,7 +79,7 @@ NPOL and the pseudo-RHI cut from a NEXRAD volume:
   Volume, 3D cross-section, modules, mosaics, wind retrieval and storm cells refuse an RHI sweep with a message
   instead of a wrong answer.
 * **Table view** lists elevation instead of azimuth in the first column; **Metadata** and data export are unchanged.
-* **Figure export** (`render_publication_figure`, also behind `xrd plot`) draws an RHI as a range-height plot with
+* **Figure export** (`render_publication_figure`, also behind `rxd plot`) draws an RHI as a range-height plot with
   `pcolormesh`, the same cleaning (`rhi_clean`: `None` = defaults, `False` = raw, or a dict with `sqi`, `snr`, `rhohv`,
   `despeckle`, `mask`) and axes (`rhi_view`: `{"height_max": 25, "full": False}`). The caption is part of the figure.
   Exports show the cleaned gates as measured: smoothing is a drawing step of the viewer only.

@@ -29,7 +29,7 @@ Not measured: Linux and Windows installer sizes (needs those OSes; the release w
 
 ### Python dependencies (`python/pyproject.toml`)
 
-Method: grep of every import in `engine/`, `modules/`, `server.py`, `xrd/`; the dependency tree of a clean environment
+Method: grep of every import in `engine/`, `modules/`, `server.py`, `rxd/`; the dependency tree of a clean environment
 (`uv pip tree`); the full test suite in an environment without the packages; the frozen engine driven against a real NEXRAD
 volume.
 

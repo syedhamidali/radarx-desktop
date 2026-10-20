@@ -35,18 +35,20 @@ arrow = ["pyarrow>=15.0,<30.0"]
 cfcheck = ["cfchecker>=4.1", "cfunits>=3.3"]
 # Building the self-contained engine shipped inside the installers (python/packaging/).
 bundle = ["pyinstaller>=6.16"]
-# `xrd animate` (docs/ANIMATE.md): Playwright drives the system Chrome that draws the frames, PyAV
+# `rxd animate` (docs/ANIMATE.md): Playwright drives the system Chrome that draws the frames, PyAV
 # encodes the MP4. Neither is needed to import or use the rest of the engine; without PyAV the
 # frames are still written as PNG files.
 video = ["playwright>=1.40,<2.0", "av>=12.0,<20.0"]
 # Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
 radarx = ["radarx>=0.5.1; python_version >= '3.12'"]
 
-# Command line: `xrd info FILE`, `xrd run radarx_hid FILE --all-sweeps` ... (docs/CLI.md).
+# Command line: `rxd info FILE`, `rxd run radarx_hid FILE --all-sweeps` ... (docs/CLI.md).
 # Also `python -m engine`. engine.cli imports the heavy engine lazily and is never imported by
 # the sidecar server.
 [project.scripts]
-xrd = "engine.cli:main"
+rxd = "engine.cli:main"
+# Deprecated: the command was called `xrd` before; it still works (same program, plus a note in a terminal).
+xrd = "engine.cli:main_xrd"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -59,5 +61,5 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 # python/modules/ holds drop-in plugin files loaded by path, not an importable package.
-# xrd/ is the short import alias of engine.api (`import xrd`).
-include = ["engine*", "xrd*"]
+# rxd/ is the short import alias of engine.api (`import rxd`); xrd/ is its deprecated former name.
+include = ["engine*", "rxd*", "xrd*"]

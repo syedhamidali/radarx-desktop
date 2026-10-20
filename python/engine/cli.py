@@ -1,19 +1,19 @@
-"""``xrd``: the command line of radarx-desktop.
+"""``rxd``: the command line of radarx-desktop.
 
 Everything the desktop app does is available here without the GUI, on top of the same engine
 (:mod:`engine.api`). The commands follow the order a scientist works in::
 
-    Look      xrd info -i FILE            what is in a radar file
-              xrd plot -i FILE            a PPI picture of one variable
-    Clean     xrd pipeline RECIPE -i FILE QC recipes (list | show | run | script)
-    Analyse   xrd run MODULE -i FILE      an algorithm, one sweep or all sweeps
-              xrd modules                 list | show the algorithms
-              xrd cells -i FILE [FILE..]  storm cells / tracks
-    Combine   xrd mosaic -i F1 F2 ...     several radars on one map
-              xrd winds -i F1 F2 ...      multi-Doppler winds
-    Save      xrd export -i FILE -o OUT   NetCDF / Zarr / CSV / image
-    Help      xrd examples                a guided tour of copy-paste commands
-              xrd completion bash|zsh|fish
+    Look      rxd info -i FILE            what is in a radar file
+              rxd plot -i FILE            a PPI picture of one variable
+    Clean     rxd pipeline RECIPE -i FILE QC recipes (list | show | run | script)
+    Analyse   rxd run MODULE -i FILE      an algorithm, one sweep or all sweeps
+              rxd modules                 list | show the algorithms
+              rxd cells -i FILE [FILE..]  storm cells / tracks
+    Combine   rxd mosaic -i F1 F2 ...     several radars on one map
+              rxd winds -i F1 F2 ...      multi-Doppler winds
+    Save      rxd export -i FILE -o OUT   NetCDF / Zarr / CSV / image
+    Help      rxd examples                a guided tour of copy-paste commands
+              rxd completion bash|zsh|fish
 
 and every command uses the same options::
 
@@ -32,7 +32,7 @@ missing or unreadable; 4 an optional Python package is missing (the message says
 it); 70 an unexpected internal error (re-run with ``-vv`` for the traceback); 130 interrupted.
 
 This module imports only the standard library at start-up; the engine is imported by the
-command that needs it, so ``xrd --help`` is instant and the sidecar server never loads it.
+command that needs it, so ``rxd --help`` is instant and the sidecar server never loads it.
 """
 
 # ruff: noqa: E501
@@ -60,7 +60,7 @@ EXIT_DEPENDENCY = 4
 EXIT_INTERNAL = 70
 EXIT_INTERRUPTED = 130
 
-PROG = "xrd"
+PROG = "rxd"
 SAMPLE = "KTLX20130520_201643_V06.gz"
 
 #: Files with these suffixes are never taken for radar volumes when a folder is expanded.
@@ -388,9 +388,9 @@ GROUPS = (
 
 
 def overview() -> str:
-    """The short, friendly text printed by plain ``xrd``."""
+    """The short, friendly text printed by plain ``rxd``."""
     lines = [
-        bold("xrd") + " - radar data from the command line (radarx-desktop, no GUI needed)",
+        bold("rxd") + " - radar data from the command line (radarx-desktop, no GUI needed)",
         "",
     ]
     for title, items in GROUPS:
@@ -399,19 +399,19 @@ def overview() -> str:
     lines += [
         "",
         "Try these (replace the file name with yours):",
-        f"  xrd info -i {SAMPLE}                      what is in the file",
-        f"  xrd plot -i {SAMPLE}                      reflectivity picture -> PNG",
-        f"  xrd run radarx_hid -i {SAMPLE}            hydrometeor classes of the lowest suitable sweep",
+        f"  rxd info -i {SAMPLE}                      what is in the file",
+        f"  rxd plot -i {SAMPLE}                      reflectivity picture -> PNG",
+        f"  rxd run radarx_hid -i {SAMPLE}            hydrometeor classes of the lowest suitable sweep",
         "",
-        "Every command takes  -i INPUT  -o OUTPUT  -p FIGURE  (see 'xrd COMMAND --help').",
-        "More: xrd examples      a tour of what you can do",
-        "      xrd modules       the algorithms        xrd pipeline list   the QC recipes",
+        "Every command takes  -i INPUT  -o OUTPUT  -p FIGURE  (see 'rxd COMMAND --help').",
+        "More: rxd examples      a tour of what you can do",
+        "      rxd modules       the algorithms        rxd pipeline list   the QC recipes",
     ]
     return "\n".join(lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """The ``xrd`` argument parser (also used by the tests, the completion script and the docs)."""
+    """The ``rxd`` argument parser (also used by the tests, the completion script and the docs)."""
     common = _common_options()
     listing = []
     for title, items in GROUPS:
@@ -419,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
             listing.append(f"  {title if i == 0 else '':<8}{name:<12}{text}")
     parser = _Parser(
         prog=PROG,
-        usage="xrd [--version] COMMAND [options]",
+        usage="rxd [--version] COMMAND [options]",
         formatter_class=_Formatter,
         allow_abbrev=False,
         description=(
@@ -436,13 +436,13 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "examples:\n"
-            f"  xrd info -i {SAMPLE}\n"
-            f"  xrd plot -i {SAMPLE} -V velocity -p vel.png\n"
-            f"  xrd run radarx_hid -i {SAMPLE} --all-sweeps -o results\n"
-            "  xrd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 -o mosaic.nc -p map.png -v\n"
+            f"  rxd info -i {SAMPLE}\n"
+            f"  rxd plot -i {SAMPLE} -V velocity -p vel.png\n"
+            f"  rxd run radarx_hid -i {SAMPLE} --all-sweeps -o results\n"
+            "  rxd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 -o mosaic.nc -p map.png -v\n"
             "\n"
             "exit codes: 0 ok, 1 processing failed, 2 wrong usage, 3 input file problem,\n"
-            "4 missing Python package, 70 internal error.   'xrd examples' shows more."
+            "4 missing Python package, 70 internal error.   'rxd examples' shows more."
         ),
     )
     parser.add_argument("--version", action="store_true", help="print the version and exit")
@@ -465,10 +465,10 @@ def build_parser() -> argparse.ArgumentParser:
         "info",
         "Show format, radar, time, sweeps, variables and Nyquist velocity of radar files.",
         "examples:\n"
-        f"  xrd info -i {SAMPLE}\n"
-        "  xrd info -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --json\n"
-        "  xrd info -i 'mayfield/*/*_V06'\n"
-        "  xrd info -i mayfield/KHPX\n",
+        f"  rxd info -i {SAMPLE}\n"
+        "  rxd info -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --json\n"
+        "  rxd info -i 'mayfield/*/*_V06'\n"
+        "  rxd info -i mayfield/KHPX\n",
     )
     _add_input(p)
     p.set_defaults(func=cmd_info)
@@ -482,13 +482,13 @@ def build_parser() -> argparse.ArgumentParser:
         "code 0 even when problems are found. See docs/DATA_CHECK.md for every check and threshold.\n"
         "\n"
         "examples:\n"
-        f"  xrd check -i {SAMPLE}\n"
-        f"  xrd check -i {SAMPLE} --fix-plan\n"
-        f"  xrd check -i {SAMPLE} --fix-plan -o recipe.json\n"
-        "  xrd check -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --json\n",
+        f"  rxd check -i {SAMPLE}\n"
+        f"  rxd check -i {SAMPLE} --fix-plan\n"
+        f"  rxd check -i {SAMPLE} --fix-plan -o recipe.json\n"
+        "  rxd check -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --json\n",
     )
     _add_input(p)
-    _add_output(p, "with --fix-plan: write the suggested recipe(s) as JSON for 'xrd pipeline'")
+    _add_output(p, "with --fix-plan: write the suggested recipe(s) as JSON for 'rxd pipeline'")
     p.add_argument(
         "--fix-plan",
         action="store_true",
@@ -501,9 +501,9 @@ def build_parser() -> argparse.ArgumentParser:
         "plot",
         "Draw a PPI of one variable with the publication renderer (PNG, SVG or PDF).",
         "examples:\n"
-        f"  xrd plot -i {SAMPLE}\n"
-        f"  xrd plot -i {SAMPLE} -V velocity -p vel.png --theme dark\n"
-        f"  xrd plot -i {SAMPLE} -V DBZH -s 2 --dpi 300 -p figure.pdf\n"
+        f"  rxd plot -i {SAMPLE}\n"
+        f"  rxd plot -i {SAMPLE} -V velocity -p vel.png --theme dark\n"
+        f"  rxd plot -i {SAMPLE} -V DBZH -s 2 --dpi 300 -p figure.pdf\n"
         "\n"
         "Without -p the picture is named after the file (KTLX..._DBZH_sweep0.png) and written to\n"
         "the current directory. Without -s the lowest sweep that has the variable is used.\n"
@@ -531,13 +531,13 @@ def build_parser() -> argparse.ArgumentParser:
         "a unique part of the name is enough. Name the recipe first, quote it if it has spaces.\n"
         "\n"
         "examples:\n"
-        "  xrd pipeline list\n"
-        '  xrd pipeline show "Reflectivity QC"\n'
-        f'  xrd pipeline "Doppler velocity" -i {SAMPLE} --target VRADH -p before_after.png\n'
-        f'  xrd pipeline run "Reflectivity QC" -i {SAMPLE} -o qc.nc\n'
-        f'  xrd pipeline "Reflectivity QC" -i {SAMPLE} -P snr_gate.min_snr=5 -P gap_fill=off\n'
-        '  xrd pipeline script "Reflectivity QC"\n'
-        '  xrd pipeline script "Reflectivity QC" --api\n'
+        "  rxd pipeline list\n"
+        '  rxd pipeline show "Reflectivity QC"\n'
+        f'  rxd pipeline "Doppler velocity" -i {SAMPLE} --target VRADH -p before_after.png\n'
+        f'  rxd pipeline run "Reflectivity QC" -i {SAMPLE} -o qc.nc\n'
+        f'  rxd pipeline "Reflectivity QC" -i {SAMPLE} -P snr_gate.min_snr=5 -P gap_fill=off\n'
+        '  rxd pipeline script "Reflectivity QC"\n'
+        '  rxd pipeline script "Reflectivity QC" --api\n'
         "\n"
         "All sweeps are processed unless -s N is given. The result is one derived variable; without\n"
         "-o it is saved as <file>_<recipe>.nc in the current directory (otherwise it would be lost\n"
@@ -573,24 +573,24 @@ def build_parser() -> argparse.ArgumentParser:
         "run",
         "Run an algorithm on a file: one sweep (-s N) or all sweeps (--all-sweeps). Same as 'modules run'.",
         "examples:\n"
-        f"  xrd run storm_detection -i {SAMPLE} -P threshold_dbz=40\n"
-        f"  xrd run radarx_hid -i {SAMPLE} -p hid.png\n"
-        f"  xrd run radarx_shear -i {SAMPLE} -s 1 -o shear.nc\n"
-        f"  xrd run radarx_hid -i {SAMPLE} --all-sweeps -o results -v\n"
-        f"  xrd run storm_detection -i {SAMPLE} -o cells.csv\n"
+        f"  rxd run storm_detection -i {SAMPLE} -P threshold_dbz=40\n"
+        f"  rxd run radarx_hid -i {SAMPLE} -p hid.png\n"
+        f"  rxd run radarx_shear -i {SAMPLE} -s 1 -o shear.nc\n"
+        f"  rxd run radarx_hid -i {SAMPLE} --all-sweeps -o results -v\n"
+        f"  rxd run storm_detection -i {SAMPLE} -o cells.csv\n"
         "\n"
-        "Name the module first (list them with 'xrd modules'). Without -s the lowest sweep that has\n"
+        "Name the module first (list them with 'rxd modules'). Without -s the lowest sweep that has\n"
         "every field the module needs is used and printed (velocity is on sweep 1 of a NEXRAD\n"
         "volume). -o is a file (.json summary, .csv table, .nc fields, .png figure) or a folder (json,\n"
         "csv and nc; choose with -f json,csv,nc,png). With --all-sweeps the .nc is the whole volume\n"
         "plus the derived variable, and without -o it is saved as <file>_<module>_all.nc. -p draws\n"
         "the first field.",
     )
-    p.add_argument("module", nargs="?", metavar="MODULE", help="module id (see 'xrd modules')")
+    p.add_argument("module", nargs="?", metavar="MODULE", help="module id (see 'rxd modules')")
     p.add_argument("-m", "--module", dest="module_opt", metavar="MODULE", help=argparse.SUPPRESS)
     _add_input(p, "radar file")
     _add_sweep(p, all_sweeps=True)
-    _add_param(p, "module parameter (repeatable); names: 'xrd modules show MODULE'")
+    _add_param(p, "module parameter (repeatable); names: 'rxd modules show MODULE'")
     _add_output(p, "result file or folder (see below)")
     _add_plot(p, "also write a PPI figure of the first field")
     _add_format(p, "comma-separated json,csv,nc,png (for a folder; default json,csv,nc)")
@@ -611,11 +611,11 @@ def build_parser() -> argparse.ArgumentParser:
         "modules",
         "List the algorithms ('modules list'), describe one ('modules show ID') or run one ('modules run').",
         "examples:\n"
-        "  xrd modules\n"
-        "  xrd modules list --category Dual-pol\n"
-        "  xrd modules --json\n"
-        "  xrd modules show radarx_hid\n"
-        f"  xrd modules run radarx_hid -i {SAMPLE}\n",
+        "  rxd modules\n"
+        "  rxd modules list --category Dual-pol\n"
+        "  rxd modules --json\n"
+        "  rxd modules show radarx_hid\n"
+        f"  rxd modules run radarx_hid -i {SAMPLE}\n",
     )
     p.add_argument("--category", metavar="C", help="only this category (e.g. QC, Dual-pol)")
     p.add_argument(
@@ -630,11 +630,11 @@ def build_parser() -> argparse.ArgumentParser:
         "cells",
         "Find storm cells in one file, or track them through several files of one radar.",
         "examples:\n"
-        f"  xrd cells -i {SAMPLE} --threshold-dbz 40 -o cells.csv\n"
-        f"  xrd cells -i {SAMPLE} -p cells.png\n"
-        "  xrd cells -i KHPX20211211_015357_V06 KHPX20211211_015930_V06 KHPX20211211_020457_V06 \\\n"
+        f"  rxd cells -i {SAMPLE} --threshold-dbz 40 -o cells.csv\n"
+        f"  rxd cells -i {SAMPLE} -p cells.png\n"
+        "  rxd cells -i KHPX20211211_015357_V06 KHPX20211211_015930_V06 KHPX20211211_020457_V06 \\\n"
         "      -o cells.csv --tracks tracks.csv -p tracks.png\n"
-        "  xrd cells -i 'mayfield/KHPX/*_V06' -p tracks.png\n"
+        "  rxd cells -i 'mayfield/KHPX/*_V06' -p tracks.png\n"
         "\n"
         "-o: .csv (cell table), .json or .png; several files are tracked in time order.",
     )
@@ -657,10 +657,10 @@ def build_parser() -> argparse.ArgumentParser:
         "sounding",
         "Read a radiosonde file and print its thermodynamic and wind parameters, labelled.",
         "examples:\n"
-        "  xrd sounding -i KJAN_2022033000.txt\n"
-        "  xrd sounding -i BMX_20220330_00Z.csv --wind-units kt -v\n"
-        "  xrd sounding -i sonde.csv --json\n"
-        "  xrd sounding -i sonde.csv -o profile.csv\n"
+        "  rxd sounding -i KJAN_2022033000.txt\n"
+        "  rxd sounding -i BMX_20220330_00Z.csv --wind-units kt -v\n"
+        "  rxd sounding -i sonde.csv --json\n"
+        "  rxd sounding -i sonde.csv -o profile.csv\n"
         "\n"
         "Reads University of Wyoming text lists and CSV, SPC / SHARPpy text, IEM JSON, IGRA2 and any\n"
         "CSV whose header names the columns (units in the header are honoured). Every number says\n"
@@ -689,11 +689,11 @@ def build_parser() -> argparse.ArgumentParser:
         "mosaic",
         "Merge several radars onto one map grid (needs the radarx package).",
         "examples:\n"
-        "  xrd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06\n"
-        "  xrd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 -o mosaic.nc -p map.png -v\n"
-        "  xrd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 KPAH20211211_015335_V06 -o mosaic.png\n"
-        "  xrd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --product cappi --height-m 2000 -o cappi.nc\n"
-        "  xrd mosaic -i 'mayfield/*/*_015*_V06' -o m.nc -o m.png -P range_scale_km=60\n"
+        "  rxd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06\n"
+        "  rxd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 -o mosaic.nc -p map.png -v\n"
+        "  rxd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 KPAH20211211_015335_V06 -o mosaic.png\n"
+        "  rxd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --product cappi --height-m 2000 -o cappi.nc\n"
+        "  rxd mosaic -i 'mayfield/*/*_015*_V06' -o m.nc -o m.png -P range_scale_km=60\n"
         "\n"
         "The map box, grid and weights are chosen from the radars and printed. Without -o the\n"
         "mosaic is saved as mosaic_<product>_<variable>_<time>.nc plus a map figure (.png).\n"
@@ -734,10 +734,10 @@ def build_parser() -> argparse.ArgumentParser:
         "winds",
         "Retrieve 3-D winds from two or more radars (multi-Doppler; needs the radarx package).",
         "examples:\n"
-        "  xrd winds -i KHPX20211211_015357_V06 KNQA20211211_015018_V06\n"
-        "  xrd winds -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 KPAH20211211_015335_V06 \\\n"
+        "  rxd winds -i KHPX20211211_015357_V06 KNQA20211211_015018_V06\n"
+        "  rxd winds -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 KPAH20211211_015335_V06 \\\n"
         "      --method variational -o winds.nc -p winds.png --level-km 4.5 -v\n"
-        "  xrd winds -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --extent 80 \\\n"
+        "  rxd winds -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 --extent 80 \\\n"
         "      --origin 36.5,-88.0 --dz-m 500 -P min_crossing_angle=25 -o winds.nc\n"
         "\n"
         "Origin, box and grid are chosen from the radar positions and printed. Without -o the\n"
@@ -781,11 +781,11 @@ def build_parser() -> argparse.ArgumentParser:
         "export",
         "Write a volume (or one sweep / variable) as NetCDF, CfRadial2, Zarr, CSV or an image.",
         "examples:\n"
-        f"  xrd export -i {SAMPLE} -o ktlx.nc\n"
-        f"  xrd export -i {SAMPLE} -o dbz.csv -V DBZH -s 0\n"
-        f"  xrd export -i {SAMPLE} -o ktlx.zarr\n"
-        f"  xrd export -i {SAMPLE} -f cfradial2 -o ktlx_cf2.nc\n"
-        f'  xrd export -i {SAMPLE} -o qc.nc --pipeline "Reflectivity QC" \\\n'
+        f"  rxd export -i {SAMPLE} -o ktlx.nc\n"
+        f"  rxd export -i {SAMPLE} -o dbz.csv -V DBZH -s 0\n"
+        f"  rxd export -i {SAMPLE} -o ktlx.zarr\n"
+        f"  rxd export -i {SAMPLE} -f cfradial2 -o ktlx_cf2.nc\n"
+        f'  rxd export -i {SAMPLE} -o qc.nc --pipeline "Reflectivity QC" \\\n'
         "      --run radarx_hid --include-derived\n"
         "\n"
         "The format follows the -o extension (.nc netcdf, .zarr, .csv, .png, .svg, .pdf); use -f\n"
@@ -824,8 +824,8 @@ def build_parser() -> argparse.ArgumentParser:
     # -- examples / completion -----------------------------------------------------------
     p = command(
         "examples",
-        "Print a guided tour of copy-paste commands ('xrd examples TOPIC' for one part).",
-        "topics: " + ", ".join(TOPICS) + "\nexample:\n  xrd examples mosaic\n",
+        "Print a guided tour of copy-paste commands ('rxd examples TOPIC' for one part).",
+        "topics: " + ", ".join(TOPICS) + "\nexample:\n  rxd examples mosaic\n",
     )
     p.add_argument("topic", nargs="?", metavar="TOPIC", help="one of: " + ", ".join(TOPICS))
     p.set_defaults(func=cmd_examples)
@@ -834,9 +834,9 @@ def build_parser() -> argparse.ArgumentParser:
         "completion",
         "Print a tab-completion script for bash, zsh or fish.",
         "examples:\n"
-        "  xrd completion bash > ~/.local/share/bash-completion/completions/xrd\n"
-        "  source <(xrd completion zsh)\n"
-        "  xrd completion fish > ~/.config/fish/completions/xrd.fish\n",
+        "  rxd completion bash > ~/.local/share/bash-completion/completions/rxd\n"
+        "  source <(rxd completion zsh)\n"
+        "  rxd completion fish > ~/.config/fish/completions/rxd.fish\n",
     )
     p.add_argument("shell", choices=["bash", "zsh", "fish"], help="your shell")
     p.set_defaults(func=cmd_completion)
@@ -912,7 +912,7 @@ def expand_inputs(items: Sequence[str]) -> list[str]:
             if not matches:
                 raise XrdInputError(
                     f"The pattern {raw!r} matches no files (checked from {os.getcwd()}). "
-                    "Quote the pattern so that xrd, not the shell, expands it."
+                    "Quote the pattern so that rxd, not the shell, expands it."
                 )
             out += [m for m in matches if os.path.isfile(m)]
         else:
@@ -929,14 +929,14 @@ def _inputs(args: argparse.Namespace, *, minimum: int = 1, maximum: int | None =
         need = "at least two radar files" if minimum > 1 else "a radar file"
         example = "-i FILE1 FILE2 [FILE3 ...]" if minimum > 1 else f"-i {SAMPLE}"
         raise UsageError(
-            f"{cmd} needs {need}: give them with -i (for example: xrd {cmd} {example})"
+            f"{cmd} needs {need}: give them with -i (for example: rxd {cmd} {example})"
             + (f" - only {len(files)} given" if files else "")
         )
     if maximum is not None and len(files) > maximum:
         raise UsageError(
             f"{cmd} takes {'one input file' if maximum == 1 else f'at most {maximum} files'}; "
             f"got {len(files)}: {' '.join(files[:4])}{' ...' if len(files) > 4 else ''}. "
-            f"Run it once per file, or use 'xrd {cmd} --help'."
+            f"Run it once per file, or use 'rxd {cmd} --help'."
         )
     return files
 
@@ -1147,19 +1147,19 @@ def cmd_modules(args: argparse.Namespace, out: Out) -> int:
 
     if args.action == "show":
         if not args.module_id:
-            raise UsageError("'modules show' needs a module id, e.g. xrd modules show radarx_hid")
+            raise UsageError("'modules show' needs a module id, e.g. rxd modules show radarx_hid")
         info = api.module(args.module_id)
         if out.json:
             out.emit_json(dict(info))
         else:
             out.result(api.format_module(info))
             out.result(
-                f"\nRun it:  xrd run {info['id']} -i FILE"
+                f"\nRun it:  rxd run {info['id']} -i FILE"
                 + (" --all-sweeps" if info["per_sweep"] else "")
             )
         return EXIT_OK
     if args.module_id:
-        raise UsageError("unexpected argument; use 'xrd modules show ID' to describe a module")
+        raise UsageError("unexpected argument; use 'rxd modules show ID' to describe a module")
     listing = api.modules(args.category, available_only=args.available)
     if out.json:
         out.emit_json({"modules": list(listing), "errors": _load_errors()})
@@ -1176,7 +1176,7 @@ def cmd_modules(args: argparse.Namespace, out: Out) -> int:
     ]
     out.result(_table(("id", "category", "scope", "requires", "title"), rows))
     out.result(
-        f"\n{len(rows)} module(s).  Describe one: xrd modules show ID     Run one: xrd run ID -i FILE"
+        f"\n{len(rows)} module(s).  Describe one: rxd modules show ID     Run one: rxd run ID -i FILE"
     )
     for err in _load_errors():
         out.warn(f"module file {err['file']} could not be loaded: {err['error']}")
@@ -1199,7 +1199,7 @@ def cmd_run(args: argparse.Namespace, out: Out) -> int:
 
     module = args.module_opt or args.module
     if not module:
-        raise UsageError("run needs a module: xrd run MODULE -i FILE (list them with: xrd modules)")
+        raise UsageError("run needs a module: rxd run MODULE -i FILE (list them with: rxd modules)")
     path = _inputs(args, maximum=1)[0]
     spec = api.find_module(module)
     params = api.check_params(spec, _split_kv(args.param, "-P"))
@@ -1315,7 +1315,7 @@ def cmd_pipeline(args: argparse.Namespace, out: Out) -> int:
         words = [args.recipe_opt, *words]
     if not words:
         raise UsageError(
-            "pipeline needs a RECIPE: xrd pipeline RECIPE -i FILE   (see them with: xrd pipeline list)"
+            "pipeline needs a RECIPE: rxd pipeline RECIPE -i FILE   (see them with: rxd pipeline list)"
         )
     action = words[0] if words[0] in ("list", "show", "run", "script") else "run"
     if action != "run" or words[0] == "run":
@@ -1325,7 +1325,7 @@ def cmd_pipeline(args: argparse.Namespace, out: Out) -> int:
     if action in ("show", "script"):
         if len(words) != 1:
             raise UsageError(
-                f"usage: xrd pipeline {action} RECIPE" + (" [--api]" if action == "script" else "")
+                f"usage: rxd pipeline {action} RECIPE" + (" [--api]" if action == "script" else "")
             )
         if action == "show":
             return _pipeline_show(api, words[0], out)
@@ -1335,7 +1335,7 @@ def cmd_pipeline(args: argparse.Namespace, out: Out) -> int:
             print(api.recipe_script(words[0]), end="")
         return EXIT_OK
     if not words:
-        raise UsageError("pipeline run needs a RECIPE: xrd pipeline run RECIPE -i FILE")
+        raise UsageError("pipeline run needs a RECIPE: rxd pipeline run RECIPE -i FILE")
     args.extra = [*words[1:], *args.extra]  # RECIPE FILE: the bare words after the recipe
     path = _inputs(args, maximum=1)[0]
     formats = _formats(args.format, ("nc", "json", "png"))
@@ -1385,7 +1385,7 @@ def _pipeline_list(api: Any, out: Out) -> int:
     ]
     out.result(_table(("recipe", "target", "kind", "steps"), rows))
     out.result(
-        "\nSteps of one recipe: xrd pipeline show RECIPE     Apply: xrd pipeline RECIPE -i FILE"
+        "\nSteps of one recipe: rxd pipeline show RECIPE     Apply: rxd pipeline RECIPE -i FILE"
     )
     return EXIT_OK
 
@@ -1412,7 +1412,7 @@ def _pipeline_show(api: Any, name: str, out: Out) -> int:
         )
     out.result(_table(("#", "step", "state", "title", "settings"), rows))
     out.result(
-        f"\nChange a setting: -P STEP.PARAMETER=VALUE (or -P STEP=off)     Apply: xrd pipeline {shlex.quote(rec.name)} -i FILE"
+        f"\nChange a setting: -P STEP.PARAMETER=VALUE (or -P STEP=off)     Apply: rxd pipeline {shlex.quote(rec.name)} -i FILE"
     )
     return EXIT_OK
 
@@ -1905,58 +1905,58 @@ def cmd_export(args: argparse.Namespace, out: Out) -> int:
 _TOUR: dict[str, str] = {
     "look": f"""\
 # LOOK - what is in the file, and a first picture
-xrd info -i {SAMPLE}
-xrd check -i {SAMPLE} --fix-plan
-xrd plot -i {SAMPLE}
-xrd plot -i {SAMPLE} -V velocity -p velocity.png --theme dark
-xrd info -i mayfield/KHPX mayfield/KNQA --json""",
+rxd info -i {SAMPLE}
+rxd check -i {SAMPLE} --fix-plan
+rxd plot -i {SAMPLE}
+rxd plot -i {SAMPLE} -V velocity -p velocity.png --theme dark
+rxd info -i mayfield/KHPX mayfield/KNQA --json""",
     "clean": f"""\
 # CLEAN - QC recipes (clutter, biological echo, dealiasing, speckle)
-xrd pipeline list
-xrd pipeline show "Doppler velocity"
-xrd pipeline "Doppler velocity" -i {SAMPLE} --target VRADH -p before_after.png
-xrd pipeline "Reflectivity QC" -i {SAMPLE} -P snr_gate.min_snr=5 -P gap_fill=off -o qc.nc""",
+rxd pipeline list
+rxd pipeline show "Doppler velocity"
+rxd pipeline "Doppler velocity" -i {SAMPLE} --target VRADH -p before_after.png
+rxd pipeline "Reflectivity QC" -i {SAMPLE} -P snr_gate.min_snr=5 -P gap_fill=off -o qc.nc""",
     "analyse": f"""\
 # ANALYSE - algorithms, storm cells
-xrd modules
-xrd modules show radarx_hid
-xrd run radarx_hid -i {SAMPLE} -p hid.png
-xrd run radarx_hid -i {SAMPLE} --all-sweeps -o results
-xrd run storm_detection -i {SAMPLE} -P threshold_dbz=40 -o cells.csv
-xrd cells -i {SAMPLE} -p cells.png
-xrd cells -i 'mayfield/KHPX/*_V06' -o cells.csv --tracks tracks.csv -p tracks.png
-xrd sounding -i BMX_20220330_00Z.csv --wind-units kt""",
+rxd modules
+rxd modules show radarx_hid
+rxd run radarx_hid -i {SAMPLE} -p hid.png
+rxd run radarx_hid -i {SAMPLE} --all-sweeps -o results
+rxd run storm_detection -i {SAMPLE} -P threshold_dbz=40 -o cells.csv
+rxd cells -i {SAMPLE} -p cells.png
+rxd cells -i 'mayfield/KHPX/*_V06' -o cells.csv --tracks tracks.csv -p tracks.png
+rxd sounding -i BMX_20220330_00Z.csv --wind-units kt""",
     "combine": """\
 # COMBINE - several radars of one time (needs radarx)
-xrd mosaic -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 KPAH20211211_015935_V06 KVWX20211211_015522_V06
-xrd mosaic -i 'mayfield/*/*_0159*_V06' -o mosaic.nc -p map.png
-xrd winds -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 --extent 80 -o winds.nc -p winds.png --level-km 3""",
+rxd mosaic -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 KPAH20211211_015935_V06 KVWX20211211_015522_V06
+rxd mosaic -i 'mayfield/*/*_0159*_V06' -o mosaic.nc -p map.png
+rxd winds -i KHPX20211211_015930_V06 KNQA20211211_015611_V06 --extent 80 -o winds.nc -p winds.png --level-km 3""",
     "animate": """\
 # ANIMATE - a storm-centred 3D animation of many volumes (needs radarx; --no-render needs nothing else)
-xrd animate -i 'mayfield/*/*_V06' --no-render
-xrd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
-xrd animate -i mayfield -p still.png --still-at 12""",
+rxd animate -i 'mayfield/*/*_V06' --no-render
+rxd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
+rxd animate -i mayfield -p still.png --still-at 12""",
     "hydrology": """\
 # HYDROLOGY - rain rate, accumulation with uncertainty, gauges, basins (needs radarx)
-xrd qpe --list-relations
-xrd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
-xrd qpe -i 'mayfield/*/*_V06' --relation tropical --composite best -o network.nc
-xrd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked -o adjusted.nc
-xrd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png""",
+rxd qpe --list-relations
+rxd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
+rxd qpe -i 'mayfield/*/*_V06' --relation tropical --composite best -o network.nc
+rxd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked -o adjusted.nc
+rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images
-xrd export -i {SAMPLE} -o ktlx.nc
-xrd export -i {SAMPLE} -o ktlx.zarr
-xrd export -i {SAMPLE} -o dbz.csv -V DBZH -s 0
-xrd export -i {SAMPLE} -o qc.nc --pipeline "Reflectivity QC" --run radarx_hid --include-derived""",
+rxd export -i {SAMPLE} -o ktlx.nc
+rxd export -i {SAMPLE} -o ktlx.zarr
+rxd export -i {SAMPLE} -o dbz.csv -V DBZH -s 0
+rxd export -i {SAMPLE} -o qc.nc --pipeline "Reflectivity QC" --run radarx_hid --include-derived""",
     "reproduce": f"""\
 # REPRODUCE - keep an analysis in a file, print the command that was run
-xrd run radarx_hid -i {SAMPLE} --print-command
-xrd --config run.toml
-ls mayfield/KHPX/*_V06 | xrd info -i -""",
+rxd run radarx_hid -i {SAMPLE} --print-command
+rxd --config run.toml
+ls mayfield/KHPX/*_V06 | rxd info -i -""",
 }
 TOPICS = tuple(_TOUR)
-#: ``xrd examples mosaic`` works too: a command name selects its topic.
+#: ``rxd examples mosaic`` works too: a command name selects its topic.
 TOPIC_ALIASES = {
     "info": "look",
     "check": "look",
@@ -1976,7 +1976,7 @@ TOPIC_ALIASES = {
 }
 
 CONFIG_EXAMPLE = f"""\
-# run.toml - the same names as the long options; run it with:  xrd --config run.toml
+# run.toml - the same names as the long options; run it with:  rxd --config run.toml
 command = "run"
 module = "radarx_hid"
 input = ["{SAMPLE}"]
@@ -2000,21 +2000,21 @@ def cmd_examples(args: argparse.Namespace, out: Out) -> int:
     parts = [_TOUR[topic]] if topic else list(_TOUR.values())
     text = "\n\n".join(parts)
     if not topic or topic == "reproduce":
-        text += "\n\n# run.toml for 'xrd --config run.toml':\n" + "\n".join(
+        text += "\n\n# run.toml for 'rxd --config run.toml':\n" + "\n".join(
             ("#   " + ln).rstrip() for ln in CONFIG_EXAMPLE.splitlines()
         )
     out.result(text)
     if not topic:
-        out.result("\nOne topic only: xrd examples " + "|".join(TOPICS))
+        out.result("\nOne topic only: rxd examples " + "|".join(TOPICS))
     return EXIT_OK
 
 
 def tour_commands() -> list[list[str]]:
-    """The ``xrd ...`` lines of the guided tour as argv lists (used by the tests)."""
+    """The ``rxd ...`` lines of the guided tour as argv lists (used by the tests)."""
     found = []
     for text in _TOUR.values():
         for line in text.splitlines():
-            if line.startswith("xrd "):
+            if line.startswith("rxd "):
                 found.append(shlex.split(line.split(" | ")[0])[1:])
     return found
 
@@ -2059,12 +2059,12 @@ def completion_script(shell: str) -> str:
     }
     if shell == "fish":
         lines = [
-            "# xrd completion for fish: xrd completion fish > ~/.config/fish/completions/xrd.fish"
+            "# rxd completion for fish: rxd completion fish > ~/.config/fish/completions/rxd.fish"
         ]
-        lines.append("complete -c xrd -f")
+        lines.append("complete -c rxd -f")
         for name in COMMANDS:
             d = descs.get(name, "").replace("'", "")
-            lines.append(f"complete -c xrd -n __fish_use_subcommand -a {name} -d '{d}'")
+            lines.append(f"complete -c rxd -n __fish_use_subcommand -a {name} -d '{d}'")
         for name, flags in opts.items():
             for flag in flags:
                 kind = "-s" if re.fullmatch(r"-[A-Za-z]", flag) else "-l"
@@ -2075,11 +2075,11 @@ def completion_script(shell: str) -> str:
                 elif flag in ("--input", "-i", "--output", "-o", "--plot", "-p", "--config"):
                     extra = " -r -F"
                 lines.append(
-                    f"complete -c xrd -n '__fish_seen_subcommand_from {name}' {kind} {short}{extra}"
+                    f"complete -c rxd -n '__fish_seen_subcommand_from {name}' {kind} {short}{extra}"
                 )
         for name, words in positional.items():
             lines.append(
-                f"complete -c xrd -n '__fish_seen_subcommand_from {name}' -a '{' '.join(words)}'"
+                f"complete -c rxd -n '__fish_seen_subcommand_from {name}' -a '{' '.join(words)}'"
             )
         return "\n".join(lines) + "\n"
     case_opts = "\n".join(f'    {n}) opts="{" ".join(f)}" ;;' for n, f in opts.items())
@@ -2089,9 +2089,9 @@ def completion_script(shell: str) -> str:
     )
     case_pos = "\n".join(f'    {n}) words="{" ".join(w)}" ;;' for n, w in positional.items())
     script = f"""\
-# xrd completion for bash/zsh. Install:
-#   bash: xrd completion bash > ~/.local/share/bash-completion/completions/xrd
-#   zsh:  source <(xrd completion zsh)      (needs: autoload -U compinit && compinit)
+# rxd completion for bash/zsh. Install:
+#   bash: rxd completion bash > ~/.local/share/bash-completion/completions/rxd
+#   zsh:  source <(rxd completion zsh)      (needs: autoload -U compinit && compinit)
 _xrd() {{
   local cur prev cmd opts words
   COMPREPLY=()
@@ -2130,9 +2130,9 @@ _xrd() {{
     if shell == "zsh":
         return (
             script
-            + "autoload -U +X bashcompinit && bashcompinit\ncomplete -o default -F _xrd xrd\n"
+            + "autoload -U +X bashcompinit && bashcompinit\ncomplete -o default -F _xrd rxd\n"
         )
-    return script + "complete -o default -F _xrd xrd\n"
+    return script + "complete -o default -F _xrd rxd\n"
 
 
 def _completion_names() -> tuple[list[str], list[str]]:
@@ -2270,20 +2270,10 @@ def prepare_argv(argv: Sequence[str]) -> list[str]:
 
 
 def _version() -> str:
-    try:
-        from importlib.metadata import PackageNotFoundError, version
+    """The app version, the same one that is stamped into every file (``provenance``)."""
+    from engine import provenance
 
-        for name in (
-            "radarx-desktop-engine",
-            "xradar-desktop-engine",
-        ):  # the old name: older installs
-            try:
-                return version(name)
-            except PackageNotFoundError:
-                continue
-        return "0.1.0"
-    except Exception:
-        return "0.1.0"
+    return provenance.software_version()
 
 
 class _NoTraceback:
@@ -2313,8 +2303,22 @@ def _long_options(parser: argparse.ArgumentParser, command: str) -> list[str]:
     return [o for a in sub._actions for o in a.option_strings if o.startswith("--")]
 
 
+XRD_NOTE = "note: 'xrd' is now called 'rxd'. 'xrd' still works for now and will be removed in a future release."
+
+
+def main_xrd(argv: Sequence[str] | None = None) -> int:
+    """Entry point of the deprecated ``xrd`` command: the same program as ``rxd``.
+
+    A one-line note goes to stderr, and only when stderr is a terminal, so scripts and pipes that still
+    call ``xrd`` keep working with unchanged output.
+    """
+    if sys.stderr.isatty():
+        print(XRD_NOTE, file=sys.stderr)
+    return main(argv)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point of ``xrd``. Returns the exit code (0 ok, 1 failed, 2 usage, 3 input, 4 package, 70 bug)."""
+    """Entry point of ``rxd``. Returns the exit code (0 ok, 1 failed, 2 usage, 3 input, 4 package, 70 bug)."""
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     try:
@@ -2383,7 +2387,7 @@ def _equivalent_command(args: argparse.Namespace, out: Out) -> str:
 def _execute(args: argparse.Namespace) -> int:
     out = Out(args)
     _quiet_libraries(out.verbose)
-    from engine import api  # lazy: keeps `xrd --help` instant
+    from engine import api  # lazy: keeps `rxd --help` instant
 
     user_errors = api.user_errors()
     debug = out.verbose >= 2

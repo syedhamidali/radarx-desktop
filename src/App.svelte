@@ -14,6 +14,7 @@
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
   import UpdateChip from './lib/components/UpdateChip.svelte';
+  import AccountChip from './lib/components/AccountChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import { updater } from './lib/stores/updater';
@@ -60,6 +61,8 @@
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
   const updateDialog = lazy(() => import('./lib/components/UpdateDialog.svelte'));
+  // "Share" offer after an image or movie is saved.
+  const shareHost = lazy(() => import('./lib/components/ShareHost.svelte'));
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -148,6 +151,7 @@
   // Not needed for the first paint: fetched when idle (so its fade-in plays), or at once if it is asked for.
   $effect(() => { whenIdle(() => updateDialog.load()); });
   $effect(() => { if ($updater.dialogOpen) updateDialog.load(); });
+  $effect(() => { whenIdle(() => shareHost.load()); });
   let isDragOver = $state(false);
   let isPlaying = $state(false);
   let animSpeed = $state(1000);
@@ -879,9 +883,9 @@
 
   <header class="toolbar">
     <div class="toolbar-left">
-      <div class="app-title" title="xradar {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
+      <div class="app-title" title="Radarx {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
         <LogoMark size={28} animate={$connectionStatus === 'connecting'} />
-        <span class="title-word"><span class="title-x">X</span>RADAR</span>
+        <span class="title-word">RADAR<span class="title-x">X</span></span>
         <span class="title-desktop">{$webUi ? 'web' : 'desktop'}</span>
       </div>
       <WorkspaceSwitcher on:switch={handleWorkspaceSwitch} />
@@ -1105,6 +1109,7 @@
     </div>
     <DataCheckChip />
     <UpdateChip />
+    <AccountChip />
     <OperationsTray />
     <div class="statusbar-right">
       <span class="hud-label sb-key">FILES</span><span class="mono sb-val">{pad2($openFiles.length)}</span>
@@ -1148,6 +1153,7 @@
   {#if aboutDialog.component}<aboutDialog.component bind:visible={aboutDialogVisible} />{/if}
   {#if crossDialog.component}<crossDialog.component />{/if}
   {#if envDialog.component}<envDialog.component />{/if}
+  {#if shareHost.component}<shareHost.component />{/if}
   {#if settingsOpen && settingsDialog.component}
     <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}

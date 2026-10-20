@@ -8,7 +8,7 @@ Modules (import them explicitly; nothing heavy is imported here):
 ``gauges``      gauge files, quality control, bias adjustment, validation metrics
 ``basins``      basin polygons, exact area-weighted statistics, basin series, return-period hook
 ``products``    CF NetCDF, map PNG, figure and tables with provenance (RETRIEVED / ADJUSTED)
-``cli``         the ``xrd qpe`` and ``xrd basin`` commands
+``cli``         the ``rxd qpe`` and ``rxd basin`` commands
 ``ws``          the WebSocket messages of the QPE panel
 
 See ``docs/HYDROLOGY.md`` for the equations, the references and the limits.

@@ -583,7 +583,7 @@ def _wind_factor(unit: str, base: str, override: str | None, notes: list[str]) -
     if not u:
         notes.append(
             "The wind speed has no unit in the file: m/s is assumed. If it is in knots (as in "
-            "Wyoming and SPC files) pass wind_units='kt' (xrd sounding --wind-units kt)."
+            "Wyoming and SPC files) pass wind_units='kt' (rxd sounding --wind-units kt)."
         )
         return 1.0
     if u not in _WIND_UNITS:
@@ -1331,7 +1331,7 @@ def synthetic_provenance() -> layer_provenance.LayerProvenance:
 
 
 def analyse(snd: Sounding) -> dict[str, Any]:
-    """Everything the Skew-T panel and ``xrd sounding`` show for *snd*."""
+    """Everything the Skew-T panel and ``rxd sounding`` show for *snd*."""
     result = snd.to_dict()
     if snd.fmt == "synthetic":
         result["provenance"] = synthetic_provenance().to_dict()
@@ -1343,12 +1343,12 @@ def analyse(snd: Sounding) -> dict[str, Any]:
 def analyse_file(
     path: str | Path, fmt: str = "auto", wind_units: str | None = None
 ) -> dict[str, Any]:
-    """Read a sounding file and compute everything the Skew-T panel and ``xrd sounding`` show."""
+    """Read a sounding file and compute everything the Skew-T panel and ``rxd sounding`` show."""
     return analyse(read_sounding_file(path, fmt, wind_units))
 
 
 def summary_lines(diag: Mapping[str, Any]) -> list[str]:
-    """Plain-text lines of the main numbers (the ``xrd sounding`` table)."""
+    """Plain-text lines of the main numbers (the ``rxd sounding`` table)."""
     lines: list[str] = []
     st = diag.get("surface") or {}
     lines.append(

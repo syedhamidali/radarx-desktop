@@ -133,7 +133,7 @@ export interface ClipSettings {
   light?: LightKind;
   /** Show the sound labels (the audio itself is rendered by `renderAudio`). */
   audio?: boolean;
-  /** Credit line at the bottom (default: NEXRAD Level II). `xrd animate` names the radars it was given. */
+  /** Credit line at the bottom (default: NEXRAD Level II). `rxd animate` names the radars it was given. */
   radarCredit?: string;
   /** A frame counts as "observed" when its data time is within this many seconds of a real volume (default 6). */
   observedTolS?: number;
@@ -306,7 +306,7 @@ export class StormClip {
   /**
    * Resolve the look of `settings` (preset, look file, explicit keys) without loading anything: returns
    * the keys that differ from the defaults, or throws the look error that names the key and the nearest
-   * known one. `xrd animate` calls it first, so a typo fails before any gridding.
+   * known one. `rxd animate` calls it first, so a typo fails before any gridding.
    */
   checkLook(settings: Partial<ClipSettings>): Record<string, unknown> {
     const saved = this.settings;

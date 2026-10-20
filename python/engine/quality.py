@@ -357,6 +357,13 @@ class _Sweep:
 # ---------------------------------------------------------------------------
 
 
+def _finite_mean(raw: Any) -> float:
+    """``np.nanmean`` that gives NaN, not a RuntimeWarning, when every value is missing."""
+    a = np.asarray(raw, dtype=float)
+    a = a[~np.isnan(a)]
+    return float(a.mean()) if a.size else float("nan")
+
+
 def radar_band(tree: xr.DataTree, ds: xr.Dataset | None, fmt: str | None) -> tuple[str | None, str]:
     """``("S"|"C"|"X"|None, how)`` from the file's frequency / wavelength, else the format."""
     freq = None
@@ -367,7 +374,7 @@ def radar_band(tree: xr.DataTree, ds: xr.Dataset | None, fmt: str | None) -> tup
                 if key in src:
                     try:
                         raw = src[key].values if hasattr(src[key], "values") else src[key]
-                        val = float(np.nanmean(np.asarray(raw, dtype=float)))
+                        val = _finite_mean(raw)
                     except (TypeError, ValueError):
                         continue
                     if math.isfinite(val) and val > 0:
@@ -382,7 +389,7 @@ def radar_band(tree: xr.DataTree, ds: xr.Dataset | None, fmt: str | None) -> tup
                 if key in src:
                     try:
                         raw = src[key].values if hasattr(src[key], "values") else src[key]
-                        w = float(np.nanmean(np.asarray(raw, dtype=float)))
+                        w = _finite_mean(raw)
                     except (TypeError, ValueError):
                         continue
                     if math.isfinite(w) and w > 0:
@@ -2394,7 +2401,7 @@ def check_volume(vol: Any, *, budget_s: float = BUDGET_S) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Plain-text report (xrd check)
+# Plain-text report (rxd check)
 # ---------------------------------------------------------------------------
 
 
@@ -2493,16 +2500,16 @@ def fix_plan_lines(rep: dict[str, Any], recipe_files: dict[str, str] | None = No
     rec = rep["recommendation"]
     if not rec["recipes"] and not rec["advice"]:
         return ["  Fix plan: nothing to fix. No notice or warning needs a pipeline step."]
-    out = ["  Fix plan (run these yourself; each is a normal xrd command):"]
+    out = ["  Fix plan (run these yourself; each is a normal rxd command):"]
     file = rep.get("file") or "FILE"
     for item in rec["recipes"]:
         r = item["recipe"]
         path = (recipe_files or {}).get(item["role"])
         out.append(f"    {r['name']} ({', '.join(s['step_id'] for s in r['steps'])})")
         if path:
-            out.append(f"      xrd pipeline {path} -i {file}")
+            out.append(f"      rxd pipeline {path} -i {file}")
         else:
-            out.append(f"      save it:  xrd check -i {file} --fix-plan -o recipe.json")
-            out.append(f"      run it:   xrd pipeline recipe_{item['role']}.json -i {file}")
+            out.append(f"      save it:  rxd check -i {file} --fix-plan -o recipe.json")
+            out.append(f"      run it:   rxd pipeline recipe_{item['role']}.json -i {file}")
     out.extend(f"    {a['id']}: {a['text']}" for a in rec["advice"])
     return out

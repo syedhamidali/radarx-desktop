@@ -33,7 +33,7 @@ cell (best beam: lowest unblocked), and each basin polygon is intersected EXACTL
 a cell's weight is the area of the polygon inside it times the true cell area (not a pixel count). \
 Mean = sum(w R) / sum(w) over cells with an estimate; coverage is the share of the basin area with \
 an estimate. This is the instantaneous rate of one volume: for rainfall depth over a period use \
-`xrd basin` (several volumes, advection-corrected)."""
+`rxd basin` (several volumes, advection-corrected)."""
 
 
 @module(
@@ -42,7 +42,7 @@ an estimate. This is the instantaneous rate of one volume: for rainfall depth ov
     description=(
         "Area-weighted mean, maximum and area above thresholds of the rain rate of this volume "
         "over basin polygons from a GeoJSON / shapefile / GeoPackage file. Draws the basins on "
-        "the PPI. For depth over a period use `xrd basin`."
+        "the PPI. For depth over a period use `rxd basin`."
     ),
     category="Hydrology",
     requires=["DBZH"],

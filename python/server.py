@@ -592,6 +592,18 @@ def _origin_allowed(ws: ServerConnection) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _read_uncached(da: Any) -> np.ndarray:
+    """The values of *da* without the open tree keeping them.
+
+    ``.values`` of a lazily read variable stores the array in the variable, which the tree
+    shares: one metadata request kept the whole file in memory (+530 MB for a 37 MB NetCDF
+    file) and the memory budget did not see it. A full slice reads through a new wrapper.
+    """
+    if da.ndim == 0:
+        return np.asarray(da.values)
+    return np.asarray(da.variable[(slice(None),) * da.ndim].values)
+
+
 def _natural_key(name: str) -> list[Any]:
     """Sort key so ``sweep_2`` comes before ``sweep_10``."""
     return [int(t) if t.isdigit() else t for t in re.split(r"(\d+)", str(name))]
@@ -3113,7 +3125,7 @@ class ConnectionHandler(EnvironmentMessages):
                 # Compute stats for numeric coords
                 if coord.dtype.kind in ("f", "i", "u") and coord.size > 0:
                     try:
-                        vals = coord.values
+                        vals = _read_uncached(coord)
                         valid = vals[np.isfinite(vals)] if vals.dtype.kind == "f" else vals
                         if len(valid) > 0:
                             child["min"] = round(float(np.min(valid)), 6)
@@ -3140,7 +3152,7 @@ class ConnectionHandler(EnvironmentMessages):
                 # Stats for float variables
                 if da.dtype.kind == "f" and da.ndim >= 1 and da.size > 0:
                     try:
-                        vals = da.values
+                        vals = _read_uncached(da)
                         valid = vals[np.isfinite(vals)]
                         if len(valid) > 0:
                             child["min"] = round(float(np.min(valid)), 4)

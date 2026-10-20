@@ -19,14 +19,18 @@ const hosts = (list) => list.filter((x) => /^https:\/\//.test(x));
 const vite = readFileSync(join(root, 'vite.config.ts'), 'utf8');
 const tileHosts = [...vite.slice(vite.indexOf('const TILE_HOSTS'), vite.indexOf('].join', vite.indexOf('const TILE_HOSTS'))).matchAll(/"(https:\/\/[^"]+)"/g)].map((m) => m[1]);
 
+// the account server: a variable in the web policy (a build can override it), a literal in the desktop one
+const accountHost = /const DEFAULT_SUPABASE_URL = "(https:\/\/[^"]+)"/.exec(vite)?.[1];
+
 test('the web CSP lists the tile hosts of the desktop CSP in connect-src and img-src', () => {
   assert.ok(tileHosts.length >= 4, 'TILE_HOSTS not found in vite.config.ts');
-  // the tile servers of the desktop policy (the map providers, the satellite and the elevation hosts)
+  assert.ok(accountHost, 'DEFAULT_SUPABASE_URL not found in vite.config.ts');
+  // the hosts of the desktop policy: the tile servers (map providers, satellite, elevation) and the account server
   const desktopTiles = hosts(directive(tauriCsp, 'connect-src'));
-  assert.deepEqual(desktopTiles.filter((h) => !tileHosts.includes(h)), []);
+  assert.deepEqual(desktopTiles.filter((h) => !tileHosts.includes(h) && h !== accountHost), []);
   const desktopImg = hosts(directive(tauriCsp, 'img-src')).filter((h) => /tile|eox|amazonaws/.test(h) && !/mapbox/.test(h));
   assert.deepEqual(desktopImg.filter((h) => !tileHosts.includes(h)), []);
   // and both web directives use the shared list
-  assert.match(vite, /connect-src 'self' \$\{engine\} \$\{TILE_HOSTS\}/);
+  assert.match(vite, /connect-src 'self' \$\{engine\} \$\{supabaseUrl\} \$\{TILE_HOSTS\}/);
   assert.match(vite, /img-src [^`]*\$\{TILE_HOSTS\}/);
 });

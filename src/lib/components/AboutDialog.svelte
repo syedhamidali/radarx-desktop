@@ -50,11 +50,11 @@
       <!-- Logo area: the mark over a slow scope -->
       <div class="about-logo">
         <div class="logo-scope"><RadarSweep size={132} period={8} rings={2} labels={false} hub={false} /></div>
-        <div class="logo-icon"><LogoMark size={68} title="xradar" /></div>
+        <div class="logo-icon"><LogoMark size={68} title="Radarx" /></div>
       </div>
 
       <div class="about-name">
-        <span class="name-x">X</span>RADAR
+        RADAR<span class="name-x">X</span>
       </div>
       <div class="about-sub">{$webUi ? 'web' : 'desktop'} &middot; radar research workstation</div>
 
