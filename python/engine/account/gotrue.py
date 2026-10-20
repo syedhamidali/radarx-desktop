@@ -41,15 +41,29 @@ def password_login(email: str, password: str) -> dict[str, Any]:
     return _session(out)
 
 
-def refresh(refresh_token: str) -> dict[str, Any]:
+def refresh(refresh_token: str, *, timeout: float = config.HTTP_TIMEOUT_S) -> dict[str, Any]:
     """Exchange a refresh token for a new session (the old refresh token is spent)."""
     out = http.request_json(
         "POST",
         f"{config.project_url()}/auth/v1/token?grant_type=refresh_token",
         headers=_headers(),
         body={"refresh_token": refresh_token},
+        timeout=timeout,
     )
     return _session(out)
+
+
+def settings(*, timeout: float = 2.0) -> Any:
+    """GET the public auth settings: a small request that only a working server answers properly."""
+    out = http.request_json(
+        "GET",
+        f"{config.project_url()}/auth/v1/settings",
+        headers={"apikey": config.publishable_key()},
+        timeout=timeout,
+    )
+    if not isinstance(out, dict):
+        raise AccountServerError(0, "bad_response", "the account server sent something unexpected")
+    return out
 
 
 def logout(access_token: str) -> None:

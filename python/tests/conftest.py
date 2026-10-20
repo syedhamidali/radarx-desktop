@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -217,3 +218,17 @@ def gate_on(monkeypatch, tmp_path):
     activity.set_background(True)
     tokens.reset_cache()
     core.reset_runtime_state()
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_account_threads():
+    """The activity sender thread and the server's recorder pool must not outlive a test: a process
+    that
+    later forks (subprocess.Popen) while such threads run can crash on macOS (segfault in fork)."""
+    yield
+    from engine.account import activity
+
+    activity.stop_sender()
+    server = sys.modules.get("server")
+    if server is not None:
+        server.shutdown_activity_pool()

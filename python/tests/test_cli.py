@@ -816,6 +816,7 @@ def _python(*args: str, **kw) -> subprocess.CompletedProcess:
         text=True,
         env=env,
         timeout=180,
+        close_fds=False,  # no fork: see tests/account_helpers.run_python (pyproj's atfork handler)
         **kw,
     )
 

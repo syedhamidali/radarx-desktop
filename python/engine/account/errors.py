@@ -40,6 +40,21 @@ def _days() -> int:
     return OFFLINE_GRACE_DAYS
 
 
+#: GoTrue error codes that mean "this refresh token / session / user is finished", as opposed to a
+#: proxy, portal or outage answering with some other status.
+REFUSAL_CODES = frozenset(
+    {
+        "invalid_grant",
+        "refresh_token_not_found",
+        "refresh_token_already_used",
+        "session_not_found",
+        "session_expired",
+        "user_not_found",
+        "user_banned",
+    }
+)
+
+
 class AccountServerError(Exception):
     """The account server answered with an error (``status``: HTTP status, 0 = unreachable)."""
 
@@ -51,4 +66,11 @@ class AccountServerError(Exception):
 
     @property
     def unreachable(self) -> bool:
-        return self.status == 0 or self.status >= 500 or self.status == 429
+        """Not a definite answer from the account server: no connection, a server error, rate
+        limiting, or anything a proxy or captive portal may say (403, 404, 407, 408 ...)."""
+        return not self.definite_refusal
+
+    @property
+    def definite_refusal(self) -> bool:
+        """The server itself said the refresh token or session is no good (GoTrue's own codes)."""
+        return self.status in (400, 401, 403) and self.code.lower() in REFUSAL_CODES

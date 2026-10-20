@@ -129,9 +129,28 @@ GATE_OPEN_MESSAGES = frozenset({"ping", "get_web_info"}) | AUTH_MESSAGES
 
 #: One worker thread for the activity log: events keep their order (a sign-out is sent after what
 #: came before it) and the log never competes with the work threads or blocks the event loop.
-_ACTIVITY_POOL = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1, thread_name_prefix="radarx-rec"
-)
+_activity_pool_lock = threading.Lock()
+_activity_pool_obj: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _activity_pool() -> concurrent.futures.ThreadPoolExecutor:
+    """Created on first use; :func:`shutdown_activity_pool` joins it (tests, forking)."""
+    global _activity_pool_obj
+    with _activity_pool_lock:
+        if _activity_pool_obj is None:
+            _activity_pool_obj = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="radarx-rec"
+            )
+        return _activity_pool_obj
+
+
+def shutdown_activity_pool() -> None:
+    global _activity_pool_obj
+    with _activity_pool_lock:
+        pool, _activity_pool_obj = _activity_pool_obj, None
+    if pool is not None:
+        pool.shutdown(wait=True)
+
 
 # The request being handled by the current task (for the activity log's details).
 _CURRENT_REQUEST: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -861,6 +880,14 @@ class ConnectionHandler(EnvironmentMessages):
             return False
         if account.bypassed:
             return True
+        if (
+            self.session is not None
+            and account_core.now() > account.expires_at + account_config.LEEWAY_S
+        ):
+            # the web service is always online: an access token past its expiry is not enough; the
+            # browser renews it (Supabase) and presents the new one with auth_session
+            self._why_refused = "expired"
+            return False
         # The offline rule (docs/ACCOUNTS.md): 30 days from when the server last vouched.
         if (
             account_core.now() - account.issued_at
@@ -897,9 +924,11 @@ class ConnectionHandler(EnvironmentMessages):
         if msg_type == "auth_signout":
             if self.account is not None and not self.account.bypassed:
                 self._record("sign_out")
-                await loop.run_in_executor(_ACTIVITY_POOL, account_activity.flush, 2.0)
-                if self.session is None:
-                    await loop.run_in_executor(None, account_core.end_presented_session)
+                await loop.run_in_executor(_activity_pool(), account_activity.flush, 2.0)
+            if self.session is None and self._gate_active():
+                # the app signed out: the shared file goes whether or not this connection was ever
+                # authorised (a sign-out must not depend on the engine having accepted the account)
+                await loop.run_in_executor(None, account_core.end_presented_session)
             self.account = None
             self._access_token = None
             self._why_refused = "no_session"
@@ -907,7 +936,7 @@ class ConnectionHandler(EnvironmentMessages):
             return
         # auth_session
         if not self._gate_active():
-            self.account = account_core.require_account()  # the bypass account
+            self.account = account_core.bypass_account()  # nothing to verify: no gate here
             await self.send({"type": "auth_ok", "bypass": True})
             return
         token = msg.get("access_token")
@@ -966,10 +995,12 @@ class ConnectionHandler(EnvironmentMessages):
                 "device": re.sub(r"[^A-Za-z0-9]", "", str(self.session.id))[:40] or None,
                 "os_name": "Web",
             }
+        else:  # desktop: only while the shared session file is still this connection's account
+            web_extra = {"uid": account.user_id}
         surface = "engine" if event == "error" else "app"
         with contextlib.suppress(RuntimeError):  # no running loop (shutting down)
             asyncio.get_running_loop().run_in_executor(
-                _ACTIVITY_POOL,
+                _activity_pool(),
                 functools.partial(
                     account_activity.record, event, surface=surface, **web_extra, **detail
                 ),

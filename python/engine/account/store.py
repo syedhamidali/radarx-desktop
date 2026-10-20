@@ -30,6 +30,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -108,7 +109,7 @@ class _FileLock:
         self._fh: Any = None
 
     def __enter__(self) -> _FileLock:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        _make_private_dir(self.path.parent)
         self._fh = open(self.path, "a+b")
         deadline = time.monotonic() + self.timeout
         while True:
@@ -151,11 +152,33 @@ class _FileLock:
             self._fh = None
 
 
+def _make_private_dir(directory: Path) -> None:
+    """Create ``directory`` (mode 0700). A folder that already exists is left as it is: it may be
+    one the user chose with RADARX_CONFIG_DIR and shares with other things."""
+    if directory.exists():
+        return
+    directory.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        os.chmod(directory, 0o700)
+
+
+def _replace(tmp: str, path: Path) -> None:
+    """``os.replace`` that retries a few times: on Windows another program (a virus scanner, a
+    second radarx process reading the file) can hold it for a moment and the rename fails with
+    PermissionError."""
+    for attempt in range(6):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 5 or os.name != "nt":
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
 def write_private(path: Path, text: str) -> None:
     """Write ``text`` to ``path`` atomically, mode 0600 (temp file + rename in the same folder)."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(OSError):
-        os.chmod(path.parent, 0o700)
+    _make_private_dir(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -163,7 +186,7 @@ def write_private(path: Path, text: str) -> None:
             fh.flush()
             with contextlib.suppress(OSError):
                 os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        _replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
@@ -182,8 +205,21 @@ class SessionStore:
     def load(self) -> StoredSession | None:
         """The stored session, or None when absent or unreadable (never raises)."""
         try:
-            return StoredSession.from_json(json.loads(self.path.read_text(encoding="utf-8")))
-        except (OSError, ValueError):
+            return self.load_strict()
+        except OSError:
+            return None
+
+    def load_strict(self) -> StoredSession | None:
+        """Like :meth:`load`, but a file that exists and cannot be read (permissions, a folder in
+        its place, a failing disk) raises ``OSError`` instead of looking like "not signed in".
+        Absent or corrupt content is None."""
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        try:
+            return StoredSession.from_json(json.loads(text))
+        except ValueError:
             return None
 
     # -- writing ---------------------------------------------------------------------------
@@ -235,13 +271,21 @@ class SessionStore:
             pass
 
 
+_DEVICE_ID = re.compile(r"[A-Za-z0-9]{8,80}")
+
+
+def valid_device_id(value: str) -> bool:
+    """ASCII letters and digits only (what the database accepts), 8 to 80 of them."""
+    return bool(_DEVICE_ID.fullmatch(value))
+
+
 def device_id(directory: Path | None = None) -> str:
     """A random id of this install (kept across sign-outs). Carries no personal data."""
     directory = directory or config_dir()
     path = directory / "device_id"
     with contextlib.suppress(OSError):
         text = path.read_text(encoding="utf-8").strip()
-        if 8 <= len(text) <= 80 and text.isalnum():
+        if valid_device_id(text):
             return text
     new = uuid.uuid4().hex
     with contextlib.suppress(OSError):
@@ -251,7 +295,7 @@ def device_id(directory: Path | None = None) -> str:
 
 def set_device_id(value: str, directory: Path | None = None) -> None:
     """Adopt the id the desktop app uses for this install (so both show as one computer)."""
-    if not (8 <= len(value) <= 80 and value.isalnum()):
+    if not valid_device_id(value):
         return
     directory = directory or config_dir()
     with contextlib.suppress(OSError):

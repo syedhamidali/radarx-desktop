@@ -5,15 +5,14 @@
 * Checked: signature, issuer, audience, required claims, role, not anonymous. Expiry is *reported*
   (``Claims.expired``) and not enforced here, because the offline rule (docs/ACCOUNTS.md) decides
   what an expired token is still good for.
-* Keys: the JWKS document of the project, cached in the user config folder, with a built-in copy of
-  the public key. A token whose ``kid`` is unknown triggers at most one fetch per five minutes.
+* Keys: the project's public key is built in; a token with another ``kid`` triggers a live fetch of
+  the project's JWKS (in memory only, at most every five minutes, never a file in the user's folder:
+  that is data the user controls).
   The PyJWT / cryptography imports are lazy so ``import rxd`` and ``rxd --help`` stay instant.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
 import threading
 import time
 from dataclasses import dataclass
@@ -22,7 +21,6 @@ from typing import Any
 from engine.account import config, http
 from engine.account.errors import AccountServerError
 from engine.account.jwks_seed import SEED_JWKS, SEED_URL
-from engine.account.store import config_dir, write_private
 
 ALLOWED_ALGS = ("ES256", "RS256")
 JWKS_REFETCH_MIN_S = 300.0
@@ -62,10 +60,6 @@ class Claims:
 # -- key documents ----------------------------------------------------------------------------
 
 
-def _cache_path():
-    return config_dir() / "jwks.json"
-
-
 def _valid_jwks(doc: Any) -> bool:
     return (
         isinstance(doc, dict)
@@ -74,21 +68,15 @@ def _valid_jwks(doc: Any) -> bool:
     )
 
 
-def _load_cached(url: str) -> dict[str, Any] | None:
-    try:
-        data = json.loads(_cache_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if isinstance(data, dict) and data.get("url") == url and _valid_jwks(data.get("jwks")):
-        return data["jwks"]
-    return None
-
-
 def current_jwks(*, refetch: bool = False, now: float | None = None) -> dict[str, Any]:
-    """The key document to verify with: memory, then disk cache, then the built-in public copy.
+    """The keys to verify with: the built-in public key first, then keys fetched this run.
 
-    ``refetch=True`` (an unknown ``kid``) downloads the project's document first, at most once per
-    five minutes. A failed download is silent: the cached / built-in document is used.
+    Nothing is read from or written to disk: a file in the user's folder is data the user controls,
+    and a token verified against such a file would prove nothing. A token whose ``kid`` is not in
+    the built-in document triggers (``refetch=True``) one live HTTPS download of the project's
+    document, kept in memory for this process and tried at most every five minutes; with no
+    network the unknown key is simply refused. (A key rotation therefore needs one online run or
+    an app update.)
     """
     url = config.jwks_url()
     now = time.time() if now is None else now
@@ -98,19 +86,20 @@ def current_jwks(*, refetch: bool = False, now: float | None = None) -> dict[str
         if refetch and now - _memory["tried_at"] >= JWKS_REFETCH_MIN_S:
             _memory["tried_at"] = now
             try:
-                doc = http.request_json("GET", url, headers={"apikey": config.publishable_key()})
+                doc = http.request_json(
+                    "GET", url, headers={"apikey": config.publishable_key()}, timeout=5.0
+                )
                 if _valid_jwks(doc) and doc["keys"]:
                     _memory.update(jwks=doc, fetched_at=now)
-                    with contextlib.suppress(OSError):
-                        write_private(
-                            _cache_path(),
-                            json.dumps({"url": url, "fetched_at": now, "jwks": doc}),
-                        )
             except AccountServerError:
                 pass
-        if _memory["jwks"] is None:
-            _memory["jwks"] = _load_cached(url) or (SEED_JWKS if url == SEED_URL else {"keys": []})
-        return _memory["jwks"]
+        keys: list[dict[str, Any]] = []
+        if url == SEED_URL:
+            keys += list(SEED_JWKS["keys"])
+        if _memory["jwks"] is not None:
+            seen = {k.get("kid") for k in keys}
+            keys += [k for k in _memory["jwks"]["keys"] if k.get("kid") not in seen]
+        return {"keys": keys}
 
 
 def reset_cache() -> None:
@@ -124,7 +113,7 @@ def _find_key(jwt_mod: Any, kid: str | None, alg: str, now: float):
         doc = current_jwks(refetch=attempt == 1, now=now)
         try:
             keyset = jwt_mod.PyJWKSet.from_dict(doc)
-        except Exception:
+        except Exception:  # a malformed document is "no key"
             keyset = None
         if keyset is not None:
             for key in keyset.keys:

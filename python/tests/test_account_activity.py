@@ -226,12 +226,13 @@ def test_record_never_raises_and_never_blocks_a_command(signed_in, monkeypatch):
 
 def test_the_queue_is_capped_and_drops_the_oldest(signed_in, monkeypatch):
     monkeypatch.setattr(activity, "MAX_EVENTS_PER_HOUR", 10_000)
+    words = sorted(activity.KNOWN_COMMANDS)
     for i in range(activity.QUEUE_MAX_EVENTS + 120):
-        activity.record("command", command=f"c{i}")
+        activity.record("command", command=words[i % len(words)])
     rows = queued()
     assert len(rows) == activity.QUEUE_MAX_EVENTS
-    assert rows[-1]["detail"]["command"] == f"c{activity.QUEUE_MAX_EVENTS + 119}"
-    assert rows[0]["detail"]["command"] == "c120"  # the oldest 120 are gone
+    assert rows[-1]["detail"]["command"] == words[(activity.QUEUE_MAX_EVENTS + 119) % len(words)]
+    assert rows[0]["detail"]["command"] == words[120 % len(words)]  # the oldest 120 are gone
     path = SessionStore().directory / "activity-queue.jsonl"
     assert path.stat().st_size <= activity.QUEUE_MAX_BYTES
 
@@ -292,9 +293,9 @@ def test_events_of_another_account_are_never_sent_under_this_one(signed_in):
     path = SessionStore().directory / "activity-queue.jsonl"
     foreign = {**activity.build_event("command", "cli", command="info"), "uid": "someone-else"}
     path.write_text(json.dumps(foreign) + "\n")
-    activity.record("command", surface="cli", command="mine")
+    activity.record("command", surface="cli", command="export")
     assert activity.flush(2.0) == 1
-    assert [r["detail"]["command"] for r in signed_in.activity_rows] == ["mine"]
+    assert [r["detail"]["command"] for r in signed_in.activity_rows] == ["export"]
     assert queued() == []
 
 
@@ -550,4 +551,4 @@ async def _drain():
 
     import server
 
-    await asyncio.get_running_loop().run_in_executor(server._ACTIVITY_POOL, lambda: None)
+    await asyncio.get_running_loop().run_in_executor(server._activity_pool(), lambda: None)

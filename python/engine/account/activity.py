@@ -57,6 +57,8 @@ SURFACES = ("app", "cli", "api", "engine")
 #: backslash can appear, so a path, a URL or an e-mail address cannot get through.
 _VALUE = re.compile(r"^[A-Za-z0-9_ +\-]{1,64}$")
 
+_VERSION = re.compile(r"[0-9]{1,4}(\.[0-9A-Za-z+_-]{1,12}){0,3}")
+
 QUEUE_MAX_EVENTS = 500
 QUEUE_MAX_BYTES = 200_000
 BATCH_SIZE = 100
@@ -68,12 +70,13 @@ MAX_EVENTS_PER_HOUR = 400
 _surface: contextvars.ContextVar[str] = contextvars.ContextVar("radarx_surface", default="api")
 
 _lock = threading.Lock()
-_recent: deque[float] = deque()
+_recent: dict[str, deque[float]] = {}
 _memory_only: list[dict[str, Any]] = []  # events of the web service: never written to disk
 _thread: threading.Thread | None = None
 _background = True
 _atexit_done = False
 _wake = threading.Event()
+_stop = threading.Event()
 
 
 # -- vocabulary ---------------------------------------------------------------------------------
@@ -102,15 +105,75 @@ def format_family(label: Any) -> str:
     return _FAMILIES.get(str(label or "").strip().lower(), "Other")
 
 
+# Fixed vocabularies. A value that is not in the list for its key is recorded as "other": a
+# plug-in's class name, a product a user invented or a command typed wrongly must never identify a
+# person, a project or a place, and a plain-word check alone (the database's) cannot tell
+# "radarx_hid" from "acme_client_storm_project".
+
+#: ``rxd`` command names (a test checks that this equals ``engine.cli.COMMANDS``).
+KNOWN_COMMANDS = frozenset(
+    {
+        "login", "logout", "whoami", "info", "check", "plot", "pipeline", "run", "modules", "cells",
+        "sounding", "mosaic", "winds", "animate", "qpe", "basin", "export", "examples",
+        "completion",
+    }
+)  # fmt: skip
+#: ``format`` values: the format families of ``file_opened`` and the export formats.
+KNOWN_FORMATS = frozenset(set(_FAMILIES.values()) | {"Other"}) | frozenset(
+    {"netcdf", "cfradial2", "zarr", "csv", "png", "svg", "pdf", "gif", "mp4", "json", "geojson"}
+)
+#: ``type`` values: mosaic products, wind methods, animation outputs.
+KNOWN_TYPES = frozenset(
+    {"cappi", "composite", "echo_top", "analytic", "variational", "mp4", "gif", "png", "frames"}
+)
+#: ``class`` values: the exception classes radarx itself and the Python standard library raise.
+KNOWN_ERROR_CLASSES = frozenset(
+    {
+        "XrdError", "XrdArgumentError", "XrdInputError", "XrdDependencyError", "ModuleError",
+        "ModuleTimeoutError", "MosaicError", "MultiDopplerError", "QpeError", "GaugeError",
+        "SoundingError", "EnvironmentDataError", "OfflineError", "ApprovalRequired", "WebError",
+        "VarMapError", "DerivedError", "AnimatePlanError", "AnimateConfigError", "UsageError",
+        "ValueError", "KeyError", "TypeError", "IndexError", "AttributeError", "OSError",
+        "FileNotFoundError", "PermissionError", "MemoryError", "RuntimeError", "ImportError",
+        "ModuleNotFoundError", "TimeoutError", "ConnectionError", "UnknownFileError",
+        "NotImplementedError", "ZeroDivisionError", "OverflowError", "AssertionError",
+        "UnicodeDecodeError", "EOFError", "RecursionError", "StopIteration", "AccountRequired",
+    }
+)  # fmt: skip
+
+_VOCABULARY: dict[str, frozenset[str]] = {
+    "command": KNOWN_COMMANDS,
+    "format": KNOWN_FORMATS,
+    "type": KNOWN_TYPES,
+    "class": KNOWN_ERROR_CLASSES,
+}
+
+
+def _builtin_module_ids() -> frozenset[str]:
+    """Ids of the algorithms that ship with radarx (their source file is in ``python/modules``)."""
+    from engine import plugins
+
+    try:
+        plugins.discover_modules()
+    except Exception:
+        return frozenset()
+    return frozenset(
+        mid for mid, spec in plugins.MODULES.items() if _is_builtin_source(spec.source)
+    )
+
+
+def _is_builtin_source(source: Any) -> bool:
+    try:
+        builtin = Path(__file__).resolve().parents[2] / "modules"
+        return Path(str(source)).resolve().parent == builtin
+    except OSError:
+        return False
+
+
 def module_label(module_id: str, source: Any = None) -> str:
     """A built-in algorithm's id, or ``custom`` for a user's plug-in (any name is possible)."""
-    if source is not None:
-        try:
-            builtin = Path(__file__).resolve().parents[2] / "modules"
-            if Path(str(source)).resolve().parent != builtin:
-                return "custom"
-        except OSError:
-            return "custom"
+    if source is not None and not _is_builtin_source(source):
+        return "custom"
     return str(module_id)
 
 
@@ -122,12 +185,22 @@ def clean_value(value: Any) -> str | None:
 
 
 def clean_detail(event: str, detail: Mapping[str, Any]) -> dict[str, str]:
-    """Keep only the allow-listed keys of ``event`` whose values are plain short words."""
+    """Keep only the allow-listed keys of ``event``. A value must be a plain short word AND a known
+    word for its key (a command, a format, a product, an error class, a built-in algorithm);
+    anything else is recorded as ``other`` (algorithms: ``custom``)."""
     allowed = EVENTS.get(event, ())
     out: dict[str, str] = {}
     for key in allowed:
+        if key not in detail:
+            continue
         value = clean_value(detail.get(key))
-        if value is not None:
+        if value is None:
+            continue  # not even a plain word (a path, a name with a dot ...): dropped
+        if key == "module":
+            out[key] = value if value == "custom" or value in _builtin_module_ids() else "custom"
+        elif key in _VOCABULARY:
+            out[key] = value if value in _VOCABULARY[key] else "other"
+        else:
             out[key] = value
     return out
 
@@ -196,7 +269,8 @@ def app_version() -> str:
             value = version("radarx-desktop-engine")
         except Exception:
             value = "unknown"
-    return value[:40]
+    # never free text (the database checks the same shape): a version number, or "unknown"
+    return value if _VERSION.fullmatch(value) or value == "unknown" else "unknown"
 
 
 def build_event(
@@ -224,13 +298,19 @@ def build_event(
     }
 
 
-def _allowed_now() -> bool:
+def _allowed_now(who: str) -> bool:
+    """At most ``MAX_EVENTS_PER_HOUR`` events per rolling hour for each ``who`` (one local user, or
+    one web visitor: a noisy visitor must not silence the others)."""
     wall = time.monotonic()
-    while _recent and wall - _recent[0] > 3600:
-        _recent.popleft()
-    if len(_recent) >= MAX_EVENTS_PER_HOUR:
+    recent = _recent.setdefault(who, deque())
+    while recent and wall - recent[0] > 3600:
+        recent.popleft()
+    if len(recent) >= MAX_EVENTS_PER_HOUR:
         return False
-    _recent.append(wall)
+    recent.append(wall)
+    if len(_recent) > 2000:  # forget visitors that have gone
+        for key in [k for k, q in _recent.items() if not q or wall - q[-1] > 3600]:
+            _recent.pop(key, None)
     return True
 
 
@@ -246,6 +326,7 @@ def record(
     token: str | None = None,
     device: str | None = None,
     os_name: str | None = None,
+    uid: str | None = None,
     **detail: Any,
 ) -> None:
     """Queue one activity event. Never raises, never blocks on the network, a no-op when no account
@@ -253,7 +334,10 @@ def record(
 
     ``token`` (the web service only) keeps the event in memory and sends it with that user's access
     token; it is never written to disk, and ``device`` / ``os_name`` replace the values that would
-    otherwise describe the server instead of the visitor.
+    otherwise describe the server instead of the visitor. ``uid`` (the desktop engine) is the
+    account
+    of the connection that caused the event: it is recorded only while the shared session file still
+    belongs to that same account, so an event is never attributed to someone else.
     """
     try:
         if config.auth_disabled():
@@ -262,27 +346,32 @@ def record(
         if row is None:
             return
         with _lock:
-            if not _allowed_now():
+            if not _allowed_now(device or "local"):
                 return
         if token is not None:
             with _lock:
                 _memory_only.append({"row": row, "token": token})
                 del _memory_only[:-QUEUE_MAX_EVENTS]
         else:
-            uid = _signed_in_user()
-            if uid is None:
+            current = _signed_in_user()
+            if current is None or (uid is not None and uid != current):
                 return
-            _append_to_queue({**row, "uid": uid})
+            _append_to_queue({**row, "uid": current})
         _ensure_sender()
     except Exception:
         return
 
 
 def record_error(
-    exc: BaseException, *, surface: str | None = None, token: str | None = None
+    exc: BaseException,
+    *,
+    surface: str | None = None,
+    token: str | None = None,
+    **extra: Any,
 ) -> None:
-    """Record that an error happened: only the exception CLASS name (a message may name files)."""
-    record("error", surface=surface, token=token, **{"class": type(exc).__name__})
+    """Record that an error happened: only the exception CLASS name, and only a known one (a
+    plug-in's own class name could identify a person or a project; a message may name files)."""
+    record("error", surface=surface, token=token, **extra, **{"class": type(exc).__name__})
 
 
 def _append_to_queue(line: dict[str, Any]) -> None:
@@ -320,12 +409,12 @@ def queued_count() -> int:
 # -- sending ------------------------------------------------------------------------------------
 
 
-def _file_session_token() -> tuple[str, str] | None:
+def _file_session_token(net_timeout: float | None = None) -> tuple[str, str] | None:
     """(access token, user id) of the shared session if it is usable right now, else None."""
     from engine.account import core  # local import: core imports this module lazily too
 
     try:
-        account = core.check_stored_session(SessionStore())
+        account = core.check_stored_session(SessionStore(), net_timeout=net_timeout)
     except Exception:
         return None
     stored = SessionStore().load()
@@ -334,8 +423,9 @@ def _file_session_token() -> tuple[str, str] | None:
     return stored.access_token, stored.user_id
 
 
-def _post(rows: list[dict[str, Any]], access_token: str) -> str:
-    """Send one batch. Returns "sent", "drop" (the server refused it for good) or "retry"."""
+def _post(rows: list[dict[str, Any]], access_token: str, timeout: float = 8.0) -> str:
+    """Send one batch. Returns "sent", "drop" (the server refused it for good) or "retry"
+    (the network, an outage, rate limiting or an expired token: try again later)."""
     try:
         http.request_json(
             "POST",
@@ -346,12 +436,36 @@ def _post(rows: list[dict[str, Any]], access_token: str) -> str:
                 "Prefer": "return=minimal",
             },
             body=rows,
+            timeout=timeout,
         )
         return "sent"
     except AccountServerError as exc:
         if exc.status in (400, 403, 404, 409, 413, 422):
-            return "drop"  # a batch the database refuses would be refused forever
+            return "drop"  # the database refuses (some of) this batch
         return "retry"
+
+
+def _post_split(
+    items: list[tuple[str, dict[str, Any]]], token: str, deadline: float
+) -> tuple[int, list[tuple[str, dict[str, Any]]]]:
+    """Send ``items`` (queue line, row); when the database refuses the batch (a 4xx rejects the
+    whole
+    statement for one bad row) split it and send the halves, so only the offending rows are lost.
+    Returns the number sent and the items to retry later (network trouble, or no time left)."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0.05:
+        return 0, items
+    outcome = _post([row for _, row in items], token, timeout=min(remaining, 8.0))
+    if outcome == "sent":
+        return len(items), []
+    if outcome == "retry":
+        return 0, items
+    if len(items) == 1:  # refused for good: this row is the bad one
+        return 0, []
+    mid = len(items) // 2
+    sent_a, later_a = _post_split(items[:mid], token, deadline)
+    sent_b, later_b = _post_split(items[mid:], token, deadline)
+    return sent_a + sent_b, later_a + later_b
 
 
 def _to_wire(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -363,14 +477,16 @@ def _to_wire(row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def flush(timeout: float = 5.0) -> int:
-    """Send what is queued (bounded by ``timeout`` seconds). Returns the number of events sent."""
+    """Send what is queued, never taking (much) longer than ``timeout`` seconds in total: every
+    network step is limited by what is left, so a server that accepts the connection and never
+    answers cannot hold a command back. Returns the number of events sent."""
     deadline = time.monotonic() + max(0.1, timeout)
     sent = 0
     try:
         sent += _flush_memory(deadline)
         if config.auth_disabled():
             return sent
-        auth = _file_session_token()
+        auth = _file_session_token(net_timeout=max(0.0, deadline - time.monotonic()))
         if auth is None:
             return sent
         token, uid = auth
@@ -378,12 +494,12 @@ def flush(timeout: float = 5.0) -> int:
             claimed = _claim(uid)
             if not claimed:
                 break
-            outcome = _post([_to_wire(json.loads(x)) for x in claimed], token)
-            if outcome == "retry":
-                _requeue(claimed)
+            items = [(ln, _to_wire(json.loads(ln))) for ln in claimed]
+            done, later = _post_split(items, token, deadline)
+            sent += done
+            if later:
+                _requeue([ln for ln, _ in later])
                 break
-            if outcome == "sent":
-                sent += len(claimed)
     except Exception:
         pass
     return sent
@@ -427,23 +543,40 @@ def _flush_memory(deadline: float) -> int:
     for token, rows in by_token.items():
         for i in range(0, len(rows), BATCH_SIZE):
             chunk = rows[i : i + BATCH_SIZE]
-            if time.monotonic() >= deadline:
-                outcome = "retry"
-            else:
-                outcome = _post([_to_wire(r) for r in chunk], token)
+            remaining = deadline - time.monotonic()
+            outcome = (
+                "retry"
+                if remaining <= 0.05
+                else _post([_to_wire(r) for r in chunk], token, timeout=min(remaining, 8.0))
+            )
             if outcome == "sent":
                 sent += len(chunk)
-            elif outcome == "retry":
+            elif outcome == "retry" and not _visitor_token_expired(token):
                 with _lock:
                     _memory_only[:0] = [{"row": r, "token": token} for r in chunk]
                     del _memory_only[:-QUEUE_MAX_EVENTS]
+            # "drop", or an expired visitor token (nobody will ever present a fresher one for this
+            # buffer): the rows are discarded
     return sent
 
 
+def _visitor_token_expired(token: str) -> bool:
+    """A web visitor's access token past its expiry can never be used again by this buffer."""
+    try:
+        import jwt
+
+        exp = jwt.decode(token, options={"verify_signature": False}).get("exp")
+        return isinstance(exp, (int, float)) and time.time() > float(exp) + 60
+    except Exception:
+        return False
+
+
 def _sender() -> None:
-    while True:
+    while not _stop.is_set():
         _wake.wait(FLUSH_INTERVAL_S)
         _wake.clear()
+        if _stop.is_set():
+            return
         try:
             if queued_count():
                 flush(timeout=10.0)
@@ -460,8 +593,20 @@ def _ensure_sender() -> None:
             _atexit_done = True
             atexit.register(_flush_at_exit)
         if _thread is None or not _thread.is_alive():
+            _stop.clear()
             _thread = threading.Thread(target=_sender, name="radarx-activity", daemon=True)
             _thread.start()
+
+
+def stop_sender(timeout: float = 5.0) -> None:
+    """Stop and join the background sender (tests, and any process that is about to fork)."""
+    global _thread
+    with _lock:
+        thread, _thread = _thread, None
+    _stop.set()
+    _wake.set()
+    if thread is not None and thread.is_alive():
+        thread.join(timeout)
 
 
 def _flush_at_exit() -> None:

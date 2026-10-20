@@ -38,6 +38,13 @@ REFRESH_MARGIN_S = 120.0
 NETWORK_RETRY_S = 60.0
 #: How long one successful check is reused inside a process (the API calls it on every function).
 CACHE_TTL_S = 30.0
+#: Network limits (seconds, in total) of the calls a command may make while checking the account.
+REFRESH_TIMEOUT_S = 5.0
+PROBE_TIMEOUT_S = 2.0
+#: A token issued this recently (by the server's clock) agrees with the local clock closely
+#: enough to
+#: reset the "latest clock reading" mark (see check_stored_session).
+FRESH_TOKEN_S = 600.0
 
 
 def now() -> float:
@@ -140,12 +147,14 @@ def _store_new_session(
 
 
 def _refresh_stored(
-    store: SessionStore, seen: StoredSession, at: float, wall: float
+    store: SessionStore, seen: StoredSession, at: float, wall: float, timeout: float
 ) -> tuple[StoredSession, tokens.Claims, bool] | None:
     """Refresh a ``rxd login`` session under the file lock. None = the server was unreachable.
 
-    Raises ``AccountRequired('revoked')`` when the server refuses the refresh token (and removes
-    the useless file).
+    Raises ``AccountRequired('revoked')`` only when the server itself says the refresh token is
+    finished (GoTrue's own error codes); a proxy, portal or outage answering anything else is
+    "unreachable" and keeps the session. The rotated tokens are saved BEFORE the new access token
+    is verified, so a verification problem can never throw away the only valid refresh token.
     """
     global _net_down_until
     if time.monotonic() < _net_down_until:
@@ -164,14 +173,25 @@ def _refresh_stored(
             if not seen.refresh_token:
                 return None
             try:
-                session = gotrue.refresh(seen.refresh_token)
+                session = gotrue.refresh(seen.refresh_token, timeout=timeout)
             except AccountServerError as exc:
-                if exc.unreachable:
-                    _net_down_until = time.monotonic() + NETWORK_RETRY_S
-                    return None
-                store._unlink()
-                raise AccountRequired("revoked") from exc
-            # the server just vouched for the account: the clock reading is trusted again
+                if exc.definite_refusal:
+                    store._unlink()
+                    raise AccountRequired("revoked") from exc
+                _net_down_until = time.monotonic() + NETWORK_RETRY_S
+                return None
+            # the server just vouched for the account: save the rotated tokens first ...
+            provisional = StoredSession(
+                access_token=session["access_token"],
+                refresh_token=session["refresh_token"],
+                user_id=current.user_id,
+                email=current.email,
+                source="cli",
+                issued_at=current.issued_at,
+                high_water=current.high_water,
+            )
+            store._write(provisional)
+            # ... then check them
             claims = _verify(session["access_token"], wall)
             stored = StoredSession(
                 access_token=session["access_token"],
@@ -191,12 +211,40 @@ def _refresh_stored(
         return again, _verify(again.access_token, at), False
 
 
+def server_reachable(timeout: float = PROBE_TIMEOUT_S) -> bool:
+    """True only when the account server answers a small public request properly. A proxy or captive
+    portal (an error page, HTML, 403 ...) and an outage count as "not reachable"."""
+    global _net_down_until
+    if time.monotonic() < _net_down_until:
+        return False
+    try:
+        gotrue.settings(timeout=timeout)
+        return True
+    except AccountServerError:
+        _net_down_until = time.monotonic() + NETWORK_RETRY_S
+        return False
+
+
 def check_stored_session(
-    store: SessionStore | None = None, *, allow_network: bool = True
+    store: SessionStore | None = None,
+    *,
+    allow_network: bool = True,
+    net_timeout: float | None = None,
 ) -> Account:
-    """Decide whether the stored session is good. Raises :class:`AccountRequired`."""
+    """Decide whether the stored session is good. Raises :class:`AccountRequired`.
+
+    ``net_timeout`` caps every network call this check may make (a command that is about to exit
+    must not wait for a server that never answers).
+    """
     store = store or SessionStore()
-    stored = store.load()
+    try:
+        stored = store.load_strict()
+    except OSError as exc:
+        raise AccountRequired(
+            "unavailable",
+            f"The saved sign-in file ({store.path}) cannot be read: {type(exc).__name__}. "
+            "Check its permissions, or remove it and sign in again.",
+        ) from exc
     if stored is None:
         raise AccountRequired("no_session")
     wall = now()
@@ -206,14 +254,28 @@ def check_stored_session(
     if claims.sub != stored.user_id and stored.user_id:
         raise AccountRequired("invalid")
     source = stored.source
+    refresh_limit = (
+        REFRESH_TIMEOUT_S if net_timeout is None else min(net_timeout, REFRESH_TIMEOUT_S)
+    )
+    probe_limit = PROBE_TIMEOUT_S if net_timeout is None else min(net_timeout, PROBE_TIMEOUT_S)
+    network = allow_network and (net_timeout is None or net_timeout >= 0.2)
 
-    needs_refresh = claims.expired(at) or claims.exp - at < REFRESH_MARGIN_S
-    if needs_refresh and allow_network and source == "cli" and stored.refresh_token:
-        refreshed = _refresh_stored(store, stored, at, wall)
+    can_refresh = source == "cli" and bool(stored.refresh_token)
+    near_end = claims.expired(at) or claims.exp - at < REFRESH_MARGIN_S
+    if near_end and network and can_refresh:
+        refreshed = _refresh_stored(store, stored, at, wall, refresh_limit)
         if refreshed is not None:
             stored, claims, vouched = refreshed
             if vouched:
                 at = wall  # the server just vouched for the account: trust the clock again
+    elif claims.expired(at) and network and not can_refresh and server_reachable(probe_limit):
+        # Nobody here can renew this token (the app owns its own sign-in) and the server IS
+        # reachable: the 30-day offline allowance is for when it is not.
+        raise AccountRequired(
+            "expired",
+            "Your sign-in has expired. Open the radarx-desktop app (it renews its own sign-in) "
+            "or sign in again.",
+        )
     if not claims.expired(at):
         return _account_from(claims, source, at)
     if _within_grace(claims, at):
@@ -246,6 +308,12 @@ def require_account() -> Account:
     with _state_lock:
         _cache.update(path=key, until=time.monotonic() + ttl, account=account)
     return account
+
+
+def bypass_account() -> Account:
+    """The account of a connection that needs none (the development bypass, or a web service whose
+    operator switched the gate off with ``RADARX_WEB_REQUIRE_ACCOUNT=0``)."""
+    return _BYPASS
 
 
 def current_account() -> Account | None:
@@ -303,24 +371,43 @@ def verify_presented_token(
 
     With ``persist`` (the desktop engine, one user per machine) a newer token is written to the
     shared file as an ``app`` session (access token only, no refresh token) so ``rxd`` and the
-    activity recorder see the same sign-in. The web service never persists: it serves many users.
+    activity recorder see the same sign-in; an expired token is accepted inside the offline
+    allowance (the app is offline on a ship). The web service (``persist=False``) serves many
+    users from a server that is always online: it accepts only a token that has not expired, and
+    never persists anything.
     """
     store = store or SessionStore()
     wall = now()
     stored = store.load() if persist else None
-    at = max(wall, stored.high_water) if stored else wall
-    claims = _verify(access_token, at)
+    claims = _verify(access_token, wall)
+    reset_mark = False
+    if stored is not None:
+        # A token issued just now (by the server's clock) that is newer than the one on file is
+        # proof of the current time: it clears a latest-reading mark that a wrong clock pushed
+        # into the future, which would otherwise refuse every valid token.
+        previous = _safe_iat(stored.access_token)
+        reset_mark = abs(claims.iat - wall) <= FRESH_TOKEN_S and (
+            previous is None or claims.iat > previous
+        )
+    at = wall if (stored is None or reset_mark) else max(wall, stored.high_water)
     account = _account_from(claims, "app", at)
-    if account.stale and not _within_grace(claims, at):
-        raise AccountRequired("offline_expired")
+    if account.stale:
+        if not persist:
+            raise AccountRequired("expired")
+        if not _within_grace(claims, at):
+            raise AccountRequired("offline_expired")
     if persist:
-        _persist_presented(store, access_token, claims, wall)
+        _persist_presented(store, access_token, claims, wall, reset_mark)
         reset_runtime_state()
     return account
 
 
 def _persist_presented(
-    store: SessionStore, access_token: str, claims: tokens.Claims, wall: float
+    store: SessionStore,
+    access_token: str,
+    claims: tokens.Claims,
+    wall: float,
+    reset_mark: bool = False,
 ) -> None:
     def change(cur: StoredSession | None) -> StoredSession | None:
         if cur is not None and cur.user_id == claims.sub and cur.access_token != access_token:
@@ -334,7 +421,7 @@ def _persist_presented(
             email=claims.email,
             source="app",
             issued_at=min(claims.iat, wall),
-            high_water=max(wall, cur.high_water if cur else 0.0),
+            high_water=wall if reset_mark else max(wall, cur.high_water if cur else 0.0),
         )
 
     with contextlib.suppress(OSError, TimeoutError):  # the connection stays authorised in memory

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -15,6 +14,7 @@ import pytest
 from engine import cli
 from engine.account import core
 from engine.account.store import SessionStore
+from tests.account_helpers import run_python
 
 PYTHON_DIR = Path(__file__).resolve().parents[1]
 
@@ -217,22 +217,10 @@ def test_real_process_exit_code_without_session(tmp_path):
         "RADARX_CONFIG_DIR": str(tmp_path / "cfg"),
     }
     for module in ("engine", "rxd"):
-        proc = subprocess.run(
-            [sys.executable, "-W", "ignore", "-m", module, "modules"],
-            capture_output=True,
-            text=True,
-            env=env,
-            timeout=120,
-        )
+        proc = run_python(["-W", "ignore", "-m", module, "modules"], env=env)
         assert proc.returncode == 5, proc.stderr
         assert "rxd login" in proc.stderr
-    ok = subprocess.run(
-        [sys.executable, "-W", "ignore", "-m", "engine", "--help"],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=120,
-    )
+    ok = run_python(["-W", "ignore", "-m", "engine", "--help"], env=env)
     assert ok.returncode == 0 and "exit codes" in ok.stdout
 
 
@@ -244,11 +232,5 @@ def test_bypass_variable_lets_the_cli_run_for_developers(tmp_path):
         "RADARX_CONFIG_DIR": str(tmp_path / "cfg"),
         "RADARX_AUTH_DISABLED": "1",
     }
-    proc = subprocess.run(
-        [sys.executable, "-W", "ignore", "-m", "engine", "modules", "--json"],
-        capture_output=True,
-        text=True,
-        env=env,
-        timeout=120,
-    )
+    proc = run_python(["-W", "ignore", "-m", "engine", "modules", "--json"], env=env)
     assert proc.returncode == 0, proc.stderr

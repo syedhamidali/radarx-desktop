@@ -16,9 +16,9 @@ import jwt
 import pytest
 
 from engine.account import config, core, tokens
-from engine.account.errors import AccountRequired
+from engine.account.errors import AccountRequired, AccountServerError
 from engine.account.store import SessionStore, StoredSession
-from tests.account_helpers import TEST_ISS, KeyPair
+from tests.account_helpers import TEST_ISS, KeyPair, spawn_python
 
 DAY = 86_400.0
 
@@ -166,23 +166,71 @@ def test_garbage_is_rejected_without_crashing(gate_on):
             tokens.verify_access_token(junk, now=gate_on.now)
 
 
-def test_unknown_key_triggers_one_fetch_and_is_cached_on_disk(gate_on):
+def test_unknown_key_triggers_one_live_fetch_kept_in_memory_only(gate_on):
     gate_on.calls.clear()
     tokens.verify_access_token(gate_on.keys.token(), now=gate_on.now)
     assert sum(1 for _, path in gate_on.calls if path.endswith("jwks.json")) == 1
     tokens.verify_access_token(gate_on.keys.token(), now=gate_on.now)
-    assert (
-        sum(1 for _, path in gate_on.calls if path.endswith("jwks.json")) == 1
-    )  # cached in memory
-    tokens.reset_cache()
+    assert sum(1 for _, path in gate_on.calls if path.endswith("jwks.json")) == 1  # in memory
+    tokens.reset_cache()  # a new process: nothing was kept on disk, so it asks again
     gate_on.calls.clear()
-    tokens.verify_access_token(
-        gate_on.keys.token(), now=gate_on.now
-    )  # a new process: from the disk cache
-    assert not any(path.endswith("jwks.json") for _, path in gate_on.calls)
-    cache = json.loads((tokens.config_dir() / "jwks.json").read_text())
-    assert cache["jwks"]["keys"][0]["kid"] == gate_on.keys.kid
-    assert "d" not in cache["jwks"]["keys"][0]  # a public key only
+    tokens.verify_access_token(gate_on.keys.token(), now=gate_on.now)
+    assert sum(1 for _, path in gate_on.calls if path.endswith("jwks.json")) == 1
+    assert not (SessionStore().directory / "jwks.json").exists()
+
+
+def test_a_planted_key_file_in_the_users_folder_is_never_trusted(gate_on, monkeypatch):
+    """Regression (review finding 2): a user could mint their own session with data files only, by
+    writing their own public key to jwks.json and a token signed with the matching private key."""
+    import time as _time
+
+    mine = KeyPair(kid="my-own-key")
+    folder = SessionStore().directory
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "jwks.json").write_text(
+        json.dumps({"url": config.jwks_url(), "fetched_at": _time.time(), "jwks": mine.jwks})
+    )
+    forged = mine.token()
+    tokens.reset_cache()
+    with pytest.raises(
+        tokens.TokenInvalid
+    ) as err:  # the live document (the real key) has no such kid
+        tokens.verify_access_token(forged, now=gate_on.now)
+    assert err.value.detail == "unknown_key"
+    # offline too: an unknown key is simply refused
+    gate_on.mode = "unreachable"
+    monkeypatch.setattr(
+        "engine.account.http.request_json",
+        lambda *a, **k: (_ for _ in ()).throw(AccountServerError(0, "unreachable")),
+    )
+    tokens.reset_cache()
+    with pytest.raises(tokens.TokenInvalid):
+        tokens.verify_access_token(forged, now=gate_on.now)
+    # and as a whole session through the gate
+    SessionStore().save(
+        StoredSession(
+            access_token=forged,
+            user_id="11111111-2222-3333-4444-555555555555",
+            email="x@example.test",
+            source="app",
+            issued_at=gate_on.now,
+            high_water=gate_on.now,
+        )
+    )
+    core.reset_runtime_state()
+    with pytest.raises(AccountRequired) as gate_err:
+        core.require_account()
+    assert gate_err.value.reason == "invalid"
+
+
+def test_the_built_in_key_is_trusted_first_even_if_the_live_document_lacks_it(gate_on, monkeypatch):
+    """The seed key stays valid; a fetched document only ADDS keys (it cannot replace it)."""
+    from engine.account.jwks_seed import SEED_JWKS, SEED_URL
+
+    monkeypatch.setenv("RADARX_SUPABASE_URL", SEED_URL.split("/auth/v1")[0])
+    tokens.reset_cache()
+    doc = tokens.current_jwks()
+    assert [k["kid"] for k in doc["keys"]] == [k["kid"] for k in SEED_JWKS["keys"]]
 
 
 def test_key_rotation_fetches_the_new_document_but_not_more_than_every_five_minutes(gate_on):
@@ -383,17 +431,60 @@ def test_app_sessions_hold_no_refresh_token_and_are_never_refreshed_by_python(ga
     data = json.loads(SessionStore().path.read_text())
     assert data["source"] == "app" and data["refresh_token"] is None
     gate_on.now += 2 * 3600  # expired; the app is not running to renew it
+    gate_on.mode = "unreachable"  # (and there is no network)
     core.reset_runtime_state()
     gate_on.calls.clear()
-    account = core.require_account()  # inside the offline grace: accepted, flagged stale
+    account = core.require_account()  # inside the offline allowance: accepted, flagged stale
     assert account.stale is True
     assert not any(
         "grant_type" in path for _, path in gate_on.calls
-    )  # no rotation of the app's chain
+    )  # the app's chain is never rotated
     gate_on.now += 31 * DAY
     core.reset_runtime_state()
     with pytest.raises(AccountRequired):
         core.require_account()
+
+
+def test_an_expired_app_session_is_not_honoured_while_the_server_is_reachable(gate_on):
+    """Regression (review finding 3b): an expired app token used to be accepted for 30 days even
+    when the account server answered (an account could be deleted meanwhile)."""
+    sign_in(gate_on, via="app")
+    gate_on.mode = "ok"  # the server answers
+    gate_on.now += 20 * DAY  # the app has not been opened for 20 days
+    core.reset_runtime_state()
+    gate_on.calls.clear()
+    with pytest.raises(AccountRequired) as err:
+        core.require_account()
+    assert err.value.reason == "expired"
+    assert "app" in str(err.value) and "sign in again" in str(err.value)
+    assert any(path.endswith("/auth/v1/settings") for _, path in gate_on.calls)  # the probe
+    assert not any("grant_type" in path for _, path in gate_on.calls)
+    # the same session works offline inside the allowance, counted from the token's iat
+    gate_on.mode = "unreachable"
+    core.reset_runtime_state()
+    assert core.require_account().grace_days_left == 10
+    gate_on.now += 11 * DAY
+    core.reset_runtime_state()
+    with pytest.raises(AccountRequired) as late:
+        core.require_account()
+    assert late.value.reason == "offline_expired"
+
+
+def test_the_reachability_probe_is_short_and_a_portal_does_not_count_as_reachable(
+    gate_on, monkeypatch
+):
+    sign_in(gate_on, via="app")
+    gate_on.now += 2 * 3600
+    seen = {}
+
+    def portal(method, url, **kw):  # a captive portal answers HTML, which is not JSON
+        seen["timeout"] = kw.get("timeout")
+        raise AccountServerError(0, "bad_response", "html")
+
+    monkeypatch.setattr("engine.account.http.request_json", portal)
+    core.reset_runtime_state()
+    assert core.require_account().stale is True  # treated as offline
+    assert seen["timeout"] <= 2.0
 
 
 def test_a_newer_app_token_replaces_the_file_and_an_older_one_does_not(gate_on):
@@ -462,8 +553,6 @@ def test_concurrent_updates_do_not_lose_writes(gate_on):
 
 def test_concurrent_processes_do_not_corrupt_the_file(gate_on, tmp_path):
     """Two real processes writing the same file at once (an app engine and a command line)."""
-    import subprocess
-
     sign_in(gate_on)
     code = (
         "import sys\n"
@@ -475,10 +564,13 @@ def test_concurrent_processes_do_not_corrupt_the_file(gate_on, tmp_path):
         "        return cur\n"
         "    s.update(ch)\n"
     )
-    env = {**os.environ, "RADARX_CONFIG_DIR": os.environ["RADARX_CONFIG_DIR"]}
+    env = {
+        **os.environ,
+        "RADARX_CONFIG_DIR": os.environ["RADARX_CONFIG_DIR"],
+        "PYTHONPATH": os.path.dirname(os.path.dirname(__file__)),
+    }
     base = SessionStore().load().high_water
-    cwd = os.path.dirname(os.path.dirname(__file__))
-    procs = [subprocess.Popen([sys.executable, "-c", code], env=env, cwd=cwd) for _ in range(4)]
+    procs = [spawn_python(["-c", code], env=env) for _ in range(4)]
     assert all(p.wait(timeout=120) == 0 for p in procs)
     assert SessionStore().load().high_water == base + 100
 
