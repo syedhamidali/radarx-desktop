@@ -25,6 +25,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJENDdFRTE3MzBDMzczQTcKUldTbmM4TXdGKzVITGNHektkdEVCcXVnZVF5SFpTT3pYVnJ2NE50akgxckhFcWhIYkE3WTBoUGsK",
       "endpoints": [
+        "https://downloads.labshope.com/radarx/latest.json",
         "https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json"
       ]
     }
@@ -149,6 +150,7 @@
     ],
     "license": "PolyForm-Noncommercial-1.0.0",
     "licenseFile": "../LICENSE",
-    "copyright": "Copyright (c) 2024-2026 Hamid Ali Syed"
+    "publisher": "Radarx Desktop by LabShope Technologies",
+    "copyright": "Copyright (c) 2024-2026 Radarx Desktop by LabShope Technologies"
   }
 }
