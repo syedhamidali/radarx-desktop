@@ -33,6 +33,7 @@ REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / "python"))
 sys.path.insert(0, str(HERE))
 
+import atten
 import bundle
 import context
 import events
@@ -40,6 +41,7 @@ import lma
 import merge
 import pgrid
 import profiles
+import refl
 import soundings
 import stations
 import tornadoes
@@ -70,6 +72,7 @@ STAGES = [
     "profiles",
     "events",
     "manifest",
+    "refl_v2",
 ]
 ORIGIN = (33.575864857, -88.54851899)  # lat, lon of the grids
 
@@ -359,6 +362,167 @@ def stage_volumes(c: Ctx) -> None:
 # ---------------------------------------------------------------------------
 # lightning, stations, tornadoes, context, profiles
 # ---------------------------------------------------------------------------
+
+
+def refl_switches(a: argparse.Namespace) -> refl.Switches:
+    off = set(a.refl_off or [])
+    return refl.Switches(
+        clean="clean" not in off,
+        attenuation="attenuation" not in off,
+        calibration="calibration" not in off,
+        advection="advection" not in off,
+        core_blend="core" not in off,
+        use_owner_corrected="owner" not in off,
+    )
+
+
+CALIB_STEPS = (2, 5, 8, 11, 14)
+
+
+def stage_refl_v2(c: Ctx) -> None:
+    """Reflectivity merge v2 -> ``volumes_v2/step_NNNN.npz`` and ``manifest_v2.json`` (the v1 files are not touched).
+
+    See ``refl.py`` and docs/PERILS_BUNDLE.md ("Reflectivity merge v2"). Steps: calibration pre-pass against KGWX on
+    5 steps (``_work/refl_calib.json``), then for every step clean, attenuation-correct, calibrate, advect and blend the
+    radars, recompute everything that depends on the reflectivity, and write the volume.
+    """
+    sw = refl_switches(c.a)
+    man1 = json.loads((c.out / "manifest.json").read_text())
+    motion = window_motion(c)
+    mot = (motion["u_ms"], motion["v_ms"])
+    root = c.data / "GRID"
+    qc = pgrid.QCConfig.off() if c.a.no_qc else pgrid.QCConfig()
+    z_km = volumes.Z_M / 1000.0
+    x = volumes.X_KM
+    assert c.env is not None
+    vdir = c.out / "volumes_v2"
+    vdir.mkdir(parents=True, exist_ok=True)
+
+    def files_of(step: dict[str, Any]):
+        return {r: next((root / r).glob(fn)) for r, fn in step["files"].items()}
+
+    cal_p = c.work / "refl_calib.json"
+    if cal_p.exists() and not c.a.force:
+        calib = json.loads(cal_p.read_text())
+    else:
+        per_step: dict[str, list[dict[str, Any]]] = {}
+        for si in CALIB_STEPS:
+            s = man1["steps"][si]
+            ps = {
+                r: refl.prepare_radar(
+                    f, r, qc, x, x, z_km, c.proj, s["offsets_s"][r], mot, sw, raw_only=True
+                )
+                for r, f in files_of(s).items()
+            }
+            for r, p in ps.items():
+                if r == "KGWX":
+                    continue
+                per_step.setdefault(r, []).append(
+                    refl.offset_vs_reference(p, ps["KGWX"].dbz, ps["KGWX"].roi, x, x, z_km)
+                )
+            c.log(f"  calibration pre-pass step {si}")
+        calib = refl.estimate_calibration(per_step)
+        bundle.write_json(cal_p, bundle.clean_nan(calib), indent=1)
+    c.log(
+        "refl v2 calibration: "
+        + json.dumps({r: (v.get("offset_db"), v.get("applied")) for r, v in calib.items()})
+    )
+    for s in man1["steps"]:
+        i = s["index"]
+        out_p = vdir / f"step_{i:04d}.npz"
+        meta_p = c.work / f"v2_step_{i:04d}.json"
+        if out_p.exists() and meta_p.exists() and not c.a.force:
+            continue
+        t0 = time.time()
+        ps = [
+            refl.prepare_radar(f, r, qc, x, x, z_km, c.proj, s["offsets_s"][r], mot, sw, calib)
+            for r, f in files_of(s).items()
+        ]
+        m2 = refl.merge_refl(ps, ALL_RADARS, x, x, z_km, sw)
+        v1 = dict(np.load(c.out / s["volume"]))
+        arrays, summ = refl.rederive(v1, m2, c.env)
+        size = volumes.save_step(out_p, arrays, s["time"])
+        meta = {
+            "index": i,
+            "time": s["time"],
+            "volume_v2": f"volumes_v2/step_{i:04d}.npz",
+            "volume_v2_bytes": size,
+            "diagnostics_v2": summ,
+            "radars_prepared": {
+                p.radar: {
+                    "offset_s": p.offset_s,
+                    "calibration_applied_db": p.calib_db,
+                    "calibration_unc_db": p.calib_unc_db,
+                    "excluded_from_blend": p.excluded,
+                    **p.log,
+                }
+                for p in ps
+            },
+            "voxels_v1": s["diagnostics"]["voxels_with_echo"],
+        }
+        bundle.write_json(meta_p, bundle.clean_nan(meta), indent=1)
+        del arrays, m2, ps
+        c.log(
+            f"  v2 step {i:02d} done in {time.time() - t0:.0f}s ({summ['voxels_with_echo']} voxels with echo, v1 {s['diagnostics']['voxels_with_echo']})"
+        )
+    # manifest_v2
+    man2 = json.loads(json.dumps(man1))
+    att_stats: dict[str, list[Any]] = {}
+    clean_tot: dict[str, dict[str, int]] = {}
+    for s in man2["steps"]:
+        meta = json.loads((c.work / f"v2_step_{s['index']:04d}.json").read_text())
+        s["volume_v1"] = s["volume"]
+        s["volume"] = meta["volume_v2"]
+        s["volume_bytes"] = meta["volume_v2_bytes"]
+        d = dict(s.get("diagnostics") or {})
+        d.update(meta["diagnostics_v2"])
+        s["diagnostics"] = d
+        s["radars_prepared"] = meta["radars_prepared"]
+        for r, info in meta["radars_prepared"].items():
+            a_ = info.get("attenuation") or {}
+            if a_.get("applied"):
+                att_stats.setdefault(r, []).append(a_)
+            for k, v in (info.get("clean") or {}).items():
+                clean_tot.setdefault(r, {}).setdefault(k, 0)
+                clean_tot[r][k] += int(v)
+    man2["spec_version"] = "1.2"
+    man2["reflectivity_v2"] = {
+        "switches": sw.as_dict(),
+        "volumes": "volumes_v2/step_NNNN.npz (the v1 files in volumes/ are unchanged)",
+        "new_arrays": {
+            "dbz_unc": "float16 (nz, ny, nx), dB, 1 sigma of the merged reflectivity (calibration, attenuation correction, smoothing, spread between radars); NaN without echo",
+            "quality": "uint8 0..100 = 100 exp(-dbz_unc / 4 dB)",
+            "dbz_src": "uint8 1-based index into manifest.radars of the radar with the largest weight in the voxel",
+            "atten_corr_db": "float16, weighted mean attenuation correction (dB) included in dbz",
+        },
+        "changed": "dbz, nradars, and everything computed from dbz (cmax, echotop*, vil, shi, mesh_mm, posh_pct, zdr_column_km, conv_strat, bwer, tds, top_truncated); vel, zdr, kdp, rho, hid, vel_src, pol_src are the v1 values masked where v2 has no echo; rotation unchanged",
+        "calibration": calib,
+        "attenuation_summary_median_over_steps": {
+            r: {
+                k: round(float(np.median([a_[k] for a_ in v if a_.get(k) is not None])), 3)
+                for k in (
+                    "correction_db_median",
+                    "correction_db_p90",
+                    "fraction_at_cap",
+                    "fraction_low_kdp_coverage",
+                )
+            }
+            for r, v in att_stats.items()
+        },
+        "owner_corrected_reflectivity": refl.OWNER_CORRECTED,
+        "cleaning_counts_total": clean_tot,
+        "constants": {
+            "attenuation_alpha_dB_per_km_per_degkm_oneway": atten.ALPHA,
+            "attenuation_cap_db": atten.CAP_DB,
+            "band_reliability": refl.BAND_RELIABILITY,
+            "core_db": sw.core_db,
+            "lowest_elevation_assumed_deg": refl.LOWEST_ELEV_DEG,
+            "advection_min_offset_s": sw.adv_min_s,
+        },
+    }
+    bundle.write_json(c.out / "manifest_v2.json", bundle.clean_nan(man2), indent=1)
+    c.log("refl v2: manifest_v2.json written")
+    write_readme(c, json.loads((c.out / "manifest.json").read_text()))
 
 
 def stage_arc(c: Ctx) -> None:
@@ -1265,6 +1429,20 @@ def write_readme(c: Ctx, man: dict[str, Any]) -> None:
     n_vol = len(list((out / "volumes").glob("step_*.npz"))) if (out / "volumes").exists() else 0
     n_wind = len(list((out / "winds").glob("step_*.npz"))) if (out / "winds").exists() else 0
     size = sum(f.stat().st_size for f in out.rglob("*") if f.is_file() and "_work" not in f.parts)
+    n_v2 = (
+        len(list((out / "volumes_v2").glob("step_*.npz"))) if (out / "volumes_v2").exists() else 0
+    )
+    if n_v2 and (out / "manifest_v2.json").exists():
+        v2 = (
+            f"**READY** - {n_v2} files in `volumes_v2/`, described by `manifest_v2.json` (spec_version 1.2). "
+            "Same arrays and names as `volumes/` plus `dbz_unc`, `quality`, `dbz_src`, `atten_corr_db`; `dbz`, `nradars` and the "
+            "products computed from `dbz` are recomputed. To switch the renderer, read `manifest_v2.json` instead of "
+            "`manifest.json` (its `steps[i].volume` points to `volumes_v2/`, `steps[i].volume_v1` to the old file); "
+            "`volumes/` and `manifest.json` are unchanged. Method, switches, numbers and limits: `reflectivity_v2` block "
+            "of the manifest and the section 'Reflectivity merge v2' of `docs/PERILS_BUNDLE.md`."
+        )
+    else:
+        v2 = "not built yet (`build_bundle.py --stages refl_v2`)."
     text = f"""# PERiLS IOP2 data bundle (SPEC v1.1) - status
 
 Written by `tools/perils_movie/build_bundle.py` (branch `feat/perils-data`). `docs/PERILS_BUNDLE.md` in the
@@ -1275,6 +1453,7 @@ Window: **{man["window"]["start"]} to {man["window"]["end"]}** ({man["window"]["
 
 - {ex("manifest.json")} manifest.json ({len(man["steps"])} steps)
 - {ex("volumes/step_0000.npz")} volumes/step_NNNN.npz ({n_vol} files): merged dbz, vel, zdr, kdp, rho, nradars + rotation, tds, hid, 2-D diagnostics
+- {ex("volumes_v2/step_0000.npz")} volumes_v2/step_NNNN.npz + manifest_v2.json (reflectivity merge v2, calibrated, attenuation corrected, advected, quality weighted): {v2}
 - {ex("winds/step_0000.npz")} winds/step_NNNN.npz ({n_wind} files): u, v, w, vorticity, divergence (1 km grid)
 - {ex("lma/flashes.json")} lma/flashes.json
 - {ex("stations/stations.json")} stations/stations.json (+ *_dsd.npz, hail_events.json)
@@ -1335,6 +1514,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-zdr-cal", action="store_true", help="do not correct ZDR biases")
     ap.add_argument("--no-winds", action="store_true", help="skip the multi-Doppler synthesis")
     ap.add_argument("--wind-iterations", type=int, default=300)
+    ap.add_argument(
+        "--refl-off",
+        nargs="+",
+        choices=["clean", "attenuation", "calibration", "advection", "core", "owner"],
+        default=None,
+        help="switch off steps of the reflectivity merge v2 (stage refl_v2)",
+    )
     a = ap.parse_args(argv)
     c = Ctx(a)
     data = c.data.resolve()
@@ -1354,12 +1540,13 @@ def main(argv: list[str] | None = None) -> int:
         "tornadoes": stage_tornadoes,
         "context": stage_context,
         "profiles": stage_profiles,
+        "refl_v2": stage_refl_v2,
         "events": stage_events,
         "manifest": stage_manifest,
     }
     # the soundings stage always runs (the environment profile is needed by the volumes)
     stages = list(a.stages)
-    if any(s in stages for s in ("volumes", "manifest")) and "soundings" not in stages:
+    if any(s in stages for s in ("volumes", "refl_v2", "manifest")) and "soundings" not in stages:
         stages.insert(0, "soundings")
     failed = []
     for s in STAGES:
