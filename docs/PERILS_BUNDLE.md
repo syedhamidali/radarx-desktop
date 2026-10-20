@@ -24,6 +24,8 @@ bundle/
   README.md                  progress board for the other agents
   manifest.json              SPEC v1 manifest (+ qc, merge method, HID legend, sources, deviations)
   volumes/step_NNNN.npz      merged 3-D radar volume + rotation / debris / hydrometeor class / 2-D diagnostics
+  volumes_v2/step_NNNN.npz   the same with the reflectivity merge v2 (section 17) + dbz_unc, quality, dbz_src, atten_corr_db
+  manifest_v2.json           manifest of the v2 volumes (spec_version 1.2, `reflectivity_v2` block); manifest.json and volumes/ are unchanged
   winds/step_NNNN.npz        multi-Doppler u, v, w, vorticity, divergence, storm-relative wind (1 km grid)
   lma/flashes.json           lightning sources grouped into flashes
   stations/stations.json     surface stations and disdrometers; stations/<id>_dsd.npz; stations/hail_events.json
@@ -36,6 +38,7 @@ bundle/
   context/kgwx_polar_local_HHMMSS.npz   native KGWX gates (VEL, REF, RHO, ZDR) within 4 km of the surveyed tornado
   context/tobac_track.json   the data owner's tobac track of the echo (independent motion)
   context/environment.json   sounding diagnostics through time + StickNet medians
+  context/reflectivity_v2_verification.json   numbers of section 17 (radar pairs, vs KGWX, MRMS, PIPS, before / after)
   profiles/mrr_RaDAPS.npz, rwp_RaDAPS.npz   Micro Rain Radar and 915 MHz wind profiler
   science_events.json        data-derived events with numbers (captions the renderer may show)
 ```
@@ -64,11 +67,12 @@ Everything of SPEC v1 is there under the same names. Deviations and additions (a
 8. `lma/flashes.json` keeps SPEC v1 (`t_start_s`, `t_end_s`, `centroid` [lat, lon, alt m], `n_sources`, `sources` [t_s, lat, lon, alt m, power dBW]) and adds `params`, `files`,
    `sources_per_minute_in_box`, `stations`, `class`, `instrument`.
 9. `environment` (manifest) is `context/environment.json`: **there is no model or reanalysis time series**: WRF / MPAS output is not on disk and ERA5 covers another region (section 12).
+10. `volumes_v2/` and `manifest_v2.json` (spec_version 1.2) hold the same arrays under the same names with a better reflectivity (section 17) and four additional arrays: `dbz_unc` (float16, dB), `quality` (uint8 0 to 100), `dbz_src` (uint8, 1-based index into `radars`), `atten_corr_db` (float16). `volumes/` is kept for comparison.
 
 ## 3. Merged radar volume
 
 **Time steps.** A step is every 60 s from 01:04:00 to 01:20:00 (17). Every radar contributes the volume whose **mid-time** (start plus half the volume duration, from the file attributes) is nearest to the step, if it is within
-**190 s** (half of the 6.2 min WSR-88D cycle); the signed offset is stored. The merged volumes are *not* advected to the step time: they are observations at slightly different times (offsets in the table of section 11).
+**190 s** (half of the 6.2 min WSR-88D cycle); the signed offset is stored. The merged volumes of `volumes/` are *not* advected to the step time: they are observations at slightly different times (offsets in the table of section 11); `volumes_v2/` advects the volumes that are more than 60 s away (section 17).
 
 **Merge** (`tools/perils_movie/merge.py`):
 - *reflectivity*: mean **in linear Z** of the radars with a valid value in the voxel, weights `band_weight / ROI^2` (ROI = Py-ART's radius of influence in km, at least 0.5; a smaller radius means gates closer to the voxel); X band has weight 0.5 because it is
@@ -201,7 +205,7 @@ Time offsets of the volumes to the steps (|s| mean, max): COW1 38, 87; DOW7 32, 
 
 **Radar vs the PIPS disdrometers** (lowest valid level 250 m ASL; reflectivity from the owner's QC'd DSD): the radar is 4.2 to 5.3 dB lower (PIPS1A -4.2, 1B -5.2, 2A -4.6, 3B -5.3), correlation of the 17 step values 0.13 to 0.60; the radar rain rate from `Z = 300 R^1.4` is 3 to 4 mm/h against 6.5 to 8.4 mm/h at the disdrometers. It is a first-order check of the
 mosaic in stratiform rain 250 m above the ground (the disdrometer is at 2 m; the radar sample is smoothed over 0.5 to 3.5 km); X-band attenuation is not the cause here (light rain), so the radars (merged by their
-radius-of-influence weights) are probably biased low or the lowest 250 m evaporate (not investigated).
+radius-of-influence weights) are probably biased low or the lowest 250 m evaporate. **Investigated in section 17**: most of the gap is the S-band radar itself (KGWX is 1.2 to 4.3 dB below the same disdrometers in the owner's own series); the v1 mosaic was additionally pulled down by the UAH radar (-19 dB) and the attenuated C / X radars.
 
 **Lightning** (![flashes over the reflectivity](images/perils-flashes.png)): 244 675 sources in 3 236 flashes (at least 2 sources) in 16 min; 13 400 to 18 000 sources and 135 to 260 flashes per minute; median flash 41 sources; median source height 8.2 km ASL. 367 flashes started within 15 km of the surveyed tornado during its life (31 per minute).
 
@@ -249,7 +253,7 @@ No bow echo or mesovortex search was made (the 500 m grid and a 16 min window do
 ## 15. Honest limits
 
 - The tornado vortex (400 m wide) is not resolved by 500 m gridded data with a radius of influence of up to 3.5 km; what the bundle shows is low-level shear and a debris-like flag at the grid's scale.
-- The merged volume is a mosaic of observations up to 190 s apart; the radars are not calibrated against each other (X-band attenuation is not corrected, ZDR is bias-corrected by an estimate).
+- The merged volume is a mosaic of observations up to 190 s apart; in `volumes/` the radars are not calibrated against each other and X-band attenuation is not corrected (ZDR is bias-corrected by an estimate); `volumes_v2/` calibrates the reflectivity against KGWX and corrects the attenuation, with the limits of section 17.
 - The temperature profile for the hail products and the ZDR column is the 00 UTC BMX sounding (balloon about 23:15 UTC, 150 km east), not the storm environment at the time; most in-window sondes end at 4 to 6 km.
 - The retrieved winds did not converge fully and `w` carries gridding artefacts; the vorticity is at 1 km.
 - The size-sorting leading edge (00:15 to 00:40) is outside the window; the window has the trailing rain.
@@ -267,3 +271,141 @@ v["hid"], man["hid_legend"]["codes"]                 # hydrometeor class and its
 w = np.load(b + man["steps"][8]["winds"])            # u, v, w, vorticity ... on (41, 181, 181); w["x_km"], w["y_km"], w["z_km"]
 flashes = json.load(open(b + "lma/flashes.json"))    # sources [t_s, lat, lon, alt_m, power_dBW]
 ```
+
+## 17. Reflectivity merge v2
+
+Request: "make its reflectivity better first from all the radars and matchable". The v1 merge (section 3) averaged the radars with resolution weights and no
+calibration or attenuation correction. This section says how well the radars agreed, what was corrected and with which switch, and how well they agree now. Code:
+`tools/perils_movie/{atten,refl,reflcheck,verify_refl}.py`, stage `refl_v2` of `build_bundle.py` (about 5 min), output `volumes_v2/` + `manifest_v2.json`
+(`volumes/` is untouched). Numbers come from `verify_refl.py` (`context/reflectivity_v2_verification.json`) at the steps 01:08, 01:11, 01:14, 01:17, 01:20.
+
+```
+python/.venv/bin/python tools/perils_movie/build_bundle.py --stages refl_v2 [--force] [--refl-off clean|attenuation|calibration|advection|core|owner ...]
+python/.venv/bin/python tools/perils_movie/verify_refl.py --out /tmp/refl_verify --into-bundle
+```
+
+### 17.1 How the radars disagreed, and how they agree now
+
+Comparison on the common grid: same cell, 0.5 to 3 km ASL, both radars above 15 dBZ, both with a radius of influence <= 3 km; median of (row - column) in dB, robust scatter (half the 16th to 84th percentile range) in dB, over the 5 steps. **Before** = the fields the v1 merge used (QC only). **After** = cleaned, attenuation-corrected, calibrated, advected, with the voxels flagged at the attenuation cap or without KDP coverage left out (so the "after" statistics are for the cells where the correction is believed, which are fewer).
+
+| pair | before: median / scatter | after: median / scatter | cells after |
+| --- | --- | --- | --- |
+| COW1 - DOW7 | +5.2 / 4.7 | +1.7 / 3.6 | 493 k |
+| COW1 - KGWX | -3.3 / 5.5 | -1.5 / 4.6 | 872 k |
+| COW1 - NOXP | +7.8 / 6.6 | -2.0 / 6.2 | 74 k |
+| COW1 - SMART-R 2 | -5.6 / 6.3 | -1.8 / 6.3 | 569 k |
+| DOW7 - KGWX | -5.8 / 6.0 | -2.0 / 3.8 | 481 k |
+| DOW7 - NOXP | +3.9 / 7.5 | -4.7 / 5.7 | 61 k |
+| DOW7 - SMART-R 2 | -9.1 / 7.3 | -4.4 / 6.5 | 381 k |
+| KGWX - NOXP | +10.6 / 6.8 | 0.0 / 7.6 | 82 k |
+| KGWX - SMART-R 2 | -2.1 / 5.2 | -0.3 / 5.3 | 710 k |
+| NOXP - SMART-R 2 | -13.8 / 7.7 | -1.9 / 8.8 | 82 k |
+| UAH - any (5 pairs) | -13 to -21 | -14 to -17 (UAH is left out of the blend) | |
+
+![median bias of every radar pair, before and after](images/perils-refl-pair-bias.png)
+
+Each radar against KGWX by ground range from the radar (median dB, before -> after): COW1 0 -> -0.6 (0-20 km), -0.9 -> -0.6 (20-40), -2.7 -> -1.1 (40-60), -5.1 -> -2.7 (60-90);
+DOW7 0 -> +0.6, -2.4 -> -0.7, -6.3 -> -2.4, -10.8 -> -4.6; NOXP -8.2 -> -0.5, -6.2 -> +2.4, -10.4 -> -4.5, -13.3 -> -17.9 (the last bin: attenuation shadow behind heavy rain); SMART-R 2 +1.3 -> -1.1, +1.0 -> -0.7, +1.9 -> +0.2, +3.1 -> +1.3; UAH about -19 -> -16 at every range (a flat offset: UAH's own `CREF` is range-consistent but 16 dB low, section 17.3).
+The v1 pattern is what attenuation does: the bias grows with range for the C and X radars (DOW7 -10.8 dB at 60 to 90 km), NOXP is low everywhere (X band, heavy rain), UAH is 19 dB low, and SMART-R 2 (owner-corrected) is slightly high. The scatter of 5 to 7 dB between radars is mostly **not** calibration: it is different beams, resolutions (0.1 to 3 km), volume times and heights
+for a pattern that changes in a minute; it is not reduced much by any correction here (correlations of single cells between two radars are 0.0 to 0.7).
+
+**Merged field**: v1 vs KGWX median -1.04 dB, scatter 2.6, rms 3.5, correlation 0.76; **v2 vs KGWX +0.51 dB, scatter 1.5, rms 2.2, correlation 0.91**. Against **MRMS** merged base reflectivity (500 m grid sampled from the 0.01 degree grid, lowest valid level 0.25 to 1.5 km, both above 15 dBZ, 5 steps):
+
+| field | median bias | std of the difference | rms | correlation | correlation / std after a 2.5 km smoothing of both |
+| --- | --- | --- | --- | --- | --- |
+| merged v1 | +0.07 dB | 4.05 | 4.06 | 0.63 | 0.67 / 3.79 |
+| merged v2 | +1.81 dB | 3.74 | 4.17 | 0.71 | 0.76 / 3.32 |
+| KGWX alone (reference) | +1.35 dB | 2.56 | 2.91 | 0.85 | 0.88 / 2.32 |
+
+The v2 bias against MRMS is **larger** than v1's (+1.8 against +0.1 dB): v2 is tied to KGWX, which is itself 1.4 to 1.9 dB above MRMS; the near-zero v1 bias was a cancellation of a high KGWX with a very low UAH, NOXP and attenuated C band (v1 also had a 10 to 15 dB
+deficit in the core near the tornado, see 17.6). The scatter and the correlation against MRMS improved; the rms did not (4.06 -> 4.17), because of the bias.
+Each radar against MRMS (median bias, before -> after): COW1 -2.9 -> -0.1, DOW7 -10.6 -> -6.6, KGWX +1.4 -> +1.9, NOXP -4.6 -> **+6.2** (not explained: near-range cores sampled at 100 to 200 m against 1 km MRMS and a 30 % uncertain X-band correction are candidates), SMART-R 2 +2.8 -> +1.5, UAH -17.8 -> -15.2.
+
+**Against the PIPS disdrometers** (merged lowest valid level 0.25 to 2 km, 3 x 3 cells, against the 1 min mean of the owner's QC'd `reflectivity_derived_qc`, 9 to 17 steps per station):
+
+| station | disdrometer mean (dBZ) | owner's KGWX at the PIPS | KGWX minus disdrometer | v1 minus disdrometer | v2 minus disdrometer |
+| --- | --- | --- | --- | --- | --- |
+| PIPS1A | 35.9 | 32.2 | -3.7 | -4.2 | -3.0 |
+| PIPS1B | 34.6 | 33.4 | -1.2 | -5.2 | -2.1 |
+| PIPS2A | 36.7 | 33.4 | -3.3 | -4.6 | -4.2 |
+| PIPS3B | 38.0 | 33.6 | -4.3 | -5.3 | -4.8 |
+| mean | | | -3.1 | -4.8 | **-3.5** |
+
+What was investigated, as asked: **(1) calibration**: the owner's own series (`KGWX_at_PIPS`, beam 0.20 to 0.34 km above the ground at the PIPS) has the S-band radar 1.2 to 4.3 dB below the disdrometers, so most of the gap is the *reference* radar against the disdrometer, not the merge. **(2) attenuation**: the rain at the PIPS in the window is light to moderate, so attenuation is not the cause for KGWX; it was part of the cause for the v1 mosaic (C and X radars with weights).
+**(3) beam height and clutter**: the lowest valid level is 0.25 km; clutter removal touches 0.003 % of KGWX's echo, so it is not the cause. **(4) Rayleigh against T-matrix**: the PIPS reflectivity is the Rayleigh reflectivity of the QC'd size distribution (checked: it equals the sum of N D^6 over the bins); a T-matrix reflectivity at S band was **not** computed here; for rain with drops below about 5 mm the Rayleigh and S-band values differ by about 1 dB or less (expectation, not computed).
+**(5) sampling**: a Parsivel samples 54 cm2 for 10 s: the sampling noise of Z in a minute is a few dB; the comparison is a mean over steps (a bias, not a correlation). The step-to-step correlation of radar and disdrometer is -0.4 to 0.7 for both versions (v1 0.60, 0.13, 0.27, 0.51; v2 0.65, -0.43, 0.49, 0.67) and is not interpretable with 9 to 17 values in a 3 dB range.
+v2 moved the radars by +1.3 dB on average toward the disdrometers (it removed the low UAH, NOXP and attenuated radars from the average), and no further: **the radars were not shifted to the disdrometers**, because KGWX is the S-band reference of the calibration and a global absolute offset (about +3 dB) would be a choice made on four point instruments against a volume; it is stated, not applied.
+
+### 17.2 Method and switches
+
+Per radar (`refl.prepare_radar`): clean, then attenuation correction, then calibration offset, then advection. Merge (`refl.merge_refl`): quality-weighted linear-Z blend. Everything is a switch of `refl.Switches` (CLI `--refl-off`), every step is logged in `manifest_v2.json` (`reflectivity_v2` and `steps[].radars_prepared`).
+
+1. **Source variable.** UAH `CREF` and SMART-R 2 `DBZC` (the owners' corrected reflectivity; section 3); the others `REF` (the only reflectivity variable of the COW1, DOW7 and KGWX grids; NOXP's `REF` is labelled "Corrected reflectivity" by the owner). `--refl-off owner` uses `REF` for all.
+2. **Cleaning** (`--refl-off clean`; counts in 17.4): ground clutter (|V| < 1 m/s and RHO < 0.9, below 1.5 km, reflectivity below 45 dBZ), non-meteorological ZDR (< -2 or > 7 dB, below 30 dBZ; **uncalibrated** ZDR is used, which can remove weak echo of a radar with a ZDR bias: 5.5 % of DOW7's echo), low NCP (< 0.3 below 25 dBZ), isolated voxels (<= 2 neighbours of 8, below 30 dBZ). Sidelobe or terrain blockage were not modelled (no terrain or beam-blockage data are used).
+3. **Attenuation** (`--refl-off attenuation`; `atten.py`): specific attenuation `A = alpha * KDP`, two-way path integral along the horizontal ray at the height of each cell in the 0 to 3.5 km layer (held constant above), KDP 0 to 20 deg/km and only where RHO >= 0.9, `alpha` = 0.015 (S), 0.08 (C), 0.28 (X) dB/km per deg/km one way, caps 1 / 6 / 12 dB, uncertainty 30 % of the correction.
+   The coefficients are the literature values for rain as remembered (Bringi et al. 1990; Carey et al. 2000 for C band; Park et al. 2005 and Matrosov 2005 for C and X band): they were **not** checked against the papers and depend on temperature and drop shape (X band by 30 %). C and X band voxels at the cap, or where fewer than half of the echo gates along the ray had a valid KDP, are **flagged** (not trusted, weighted down, left out of the "after" statistics; no flag at S band, where the cap is 1 dB). SMART-R 2 has no usable KDP and UAH / SMART-R 2 reflectivity is the owner's correction: no further correction.
+4. **Calibration** (`--refl-off calibration`; `estimate_calibration`): per radar the median of (radar - KGWX) over five steps (2, 5, 8, 11, 14) in cells within 40 km of the radar, 1 to 3 km ASL, both above 20 dBZ, ROI <= 3 km, correction below 4 dB and unflagged, in cells where KGWX is locally uniform (5 x 5 std <= 3 dB). The constant is applied only if the per-step medians have a standard deviation of at most 1.5 dB, it is at least 0.3 dB, and the difference does not depend on the reflectivity (20 to 30 and 30 to 40 dBZ bins differ by at most 4 dB); the uncertainty is `hypot(max(1 dB, std over steps), 1.5 dB)`; nothing was tuned afterwards.
+   The reference is **KGWX as supplied** (a convention: it is 1.2 to 4.3 dB below the disdrometers, 17.1).
+5. **Advection** (`--refl-off advection`): a volume whose mid-time is more than 60 s from the step is translated along the line motion (10.6 m/s toward 90 degrees, section 13) by motion x offset (up to 184 s = 2 km, KGWX). The merged field is therefore *"merged with advection"* for those volumes (`reflectivity_v2.switches.advection`).
+6. **Merge** (`--refl-off core` leaves the core rule out): weights `w = q_band * q_cal / ROI^2 * q_range * q_beam * q_att * q_ncp` with `q_band` 1.0 / 0.85 / 0.6 for S / C / X, `q_cal` 1 or 0.6 if the calibration uncertainty is above 2.5 dB, `q_range = 1 / (1 + (R / 60 km)^2)`, `q_beam` down-weights voxels below the lowest beam (assumed 0.5 degree, 4/3 earth, scale 0.5 km), `q_att = 1 / (1 + (correction / 4 dB)^2)` (x 0.1 at the cap, x 0.5 without KDP coverage), `q_ncp` 0.6 for NCP < 0.5.
+   The blend is in linear Z over the radars within 6 dB of the **strongest reliable** radar in the voxel ("reliable" = unflagged, correction <= 6 dB, not more than about 0.5 km below the lowest beam, NCP >= 0.3; **independent of the resolution weights**: a first version let the close, high-weight radar decide and left the tornado core 12 to 15 dB low, see 17.6); a C or X value more than 6 dB above a reliable **S-band** value in the same voxel is a suspect (clutter, hail, calibration), not the core, and is left out (a second version without this check let a single high SMART-R 2 value pick the core and the step-to-step variation at the PIPS became anti-correlated).
+   Holes are filled from the next best radar. A radar excluded for non-linearity (UAH) is not in the blend.
+7. **Outputs** (`volumes_v2/step_NNNN.npz`): the v1 arrays with new `dbz` and `nradars`; **`dbz_unc`** (float16 dB, 1 sigma = sqrt(calibration^2 + (0.3 x correction)^2 + (0.4 x ROI km)^2 + spread among the blended radars^2)), **`quality`** (uint8 = 100 exp(-dbz_unc / 4 dB)), **`dbz_src`** (the radar with the largest weight, 1-based index into `radars`: 1 COW1, 2 DOW7, 3 DOW8, 4 KBMX, 5 KGWX, 6 NOXP, 7 SMART-R 2, 8 UAH), **`atten_corr_db`** (weighted mean correction in the voxel).
+   Recomputed from the new `dbz`: `cmax`, `echotop18/30/40_km`, `vil`, `shi`, `mesh_mm`, `posh_pct`, `zdr_column_km`, `conv_strat`, `bwer`, `top_truncated`, `tds`. **Not recomputed, only masked where there is no echo any more:** `vel`, `zdr`, `kdp`, `rho`, `hid`, `vel_src`, `pol_src` (they are v1 values: ZDR and KDP are not recalibrated, `hid` keeps the v1 classification).
+
+### 17.3 Calibration against KGWX
+
+| radar | band | offset (radar - KGWX), dB | std over the 5 steps | per-step medians | applied | uncertainty |
+| --- | --- | --- | --- | --- | --- | --- |
+| COW1 | C | +0.59 | 0.27 | +0.59, +0.79, +0.76, +0.10, +0.29 | yes (-0.59) | 1.8 |
+| DOW7 | X | +1.12 | 0.68 | +1.12, +1.76, +0.06, +0.27, +1.55 | yes (-1.12) | 1.8 |
+| NOXP | X | -2.28 | 0.80 | -3.77, -2.79, -1.31, -2.28, -2.28 | yes (+2.28) | 1.8 |
+| SMART-R 2 | C | +1.32 | 0.66 | +2.27, +2.09, +1.32, +0.57, +0.90 | yes (-1.32) | 1.8 |
+| UAH | X | -14.4 | 0.18 | about -14.5 at every step | **no, excluded from the blend** | |
+
+UAH: the difference is -7.6 dB at 20 to 30 dBZ, -14.3 dB at 30 to 40 and -16.7 dB at 40 to 70 dBZ: a compressed, non-linear response (the owner's `CREF` has a flat range trend but is not a calibration constant away from KGWX); a constant cannot fix it and no non-linear mapping was invented. SMART-R 2 drifts from +2.3 to +0.6 dB over the five steps (std 0.66, inside the 1.5 dB rule).
+The medians by reference level of the other radars are not constant either (for example DOW7 +1.7 dB at 20 to 30 dBZ, -3.9 at 40 to 70; SMART-R 2 +5.0, +1.6, -3.0): binning on the reference itself produces part of that slope (regression to the mean) and attenuation the rest, so a single offset is a compromise, which is why the uncertainty is not below 1.8 dB.
+
+### 17.4 Attenuation and cleaning, in numbers
+
+Attenuation correction, median over the 17 steps (dB): KGWX 0.28 (90th percentile 0.77); COW1 1.7 (p90 5.3, **7.9 % of the echo at the 6 dB cap**, 2.4 % without KDP coverage); DOW7 3.8 (p90 7.2, 0.9 % at the cap); **NOXP 12.0 = the cap (p90 12, 58.3 % of its echo at the cap, 34.2 % without KDP coverage)**: in the heavy rain of the line the X-band correction of NOXP is a lower bound and its voxels are flagged and weighted by 0.1.
+Cleaning, voxels removed over the 17 steps of echo (clutter / ZDR / NCP / isolated): COW1 9 157 / 70 118 / 0 / 4 373 of 44.1 million (0.2 %); DOW7 620 / 1 249 662 / 0 / 58 284 of 22.9 million (5.7 %); KGWX 2 598 / 69 726 / 0 / 9 035 of 75.8 million (0.1 %); NOXP 65 715 / 200 575 / 0 / 16 208 of 28.7 million (1.0 %); SMART-R 2 56 102 / 23 394 / 0 / 17 343 of 18.9 million (0.5 %); UAH 42 689 / 6 232 483 / 624 214 / 159 570 of 14.6 million (50 %, excluded anyway).
+Advection: only KGWX has offsets above 60 s at most steps (up to 184 s); the effect on the pair statistics is small (pooled, KGWX pairs: bias changes <= 0.2 dB, scatter <= 0.2 dB, for example DOW7 - KGWX scatter 4.0 -> 3.8 dB, KGWX - NOXP bias +0.6 -> 0.0 dB), because the 2 km shift is small against the radar resolution and the line moves coherently; it is kept because it is cheap and the offsets are real.
+
+### 17.5 Effect on the merged field (17 steps, v1 -> v2)
+
+Voxels with echo 4.75 -> 4.71 million (-0.7 %); radars per echo voxel 2.5 -> 1.8 (the core rule keeps the radars within 6 dB of the strongest reliable one; UAH is out); median `dbz_unc` 1.9 dB, mean `quality` 60; column maximum 60.2 -> 59.5 dBZ (mean over the steps); VIL maximum 20.6 -> 24.0 kg/m2; MESH maximum 12.7 -> 13.8 mm; POSH maximum 12.6 -> 17.2 %; BWER candidates 64 -> 44 per step; convective area 9 400 -> 12 400 km2 and stratiform 21 800 -> 18 600 km2 (the classification follows the higher mean reflectivity; the thresholds were not changed); the 40 dBZ echo top (9.8 -> 9.9 km mean maximum) and the ZDR column (479 km2, a v1 value) are practically unchanged. The volumes grow from 1.1 to 1.3 GB.
+
+### 17.6 Figures (look at them)
+
+Reflectivity at each radar's lowest valid level (0.25 to 2.5 km ASL; NOXP and COW1 are close, KGWX is at 85 km and its lowest level is extrapolated from about 1.4 km), calibrated and corrected, UAH as supplied (excluded), merged v1, merged v2, the difference v2 - v1 and the merged Doppler velocity (best radar). Star = surveyed tornado position at that time, line = surveyed path.
+
+![01:08](images/perils-refl-plan-0108.png)
+![01:11](images/perils-refl-plan-0111.png)
+![01:14](images/perils-refl-plan-0114.png)
+![01:17](images/perils-refl-plan-0117.png)
+![01:20](images/perils-refl-plan-0120.png)
+
+What the figures show (as looked at): the tornado sits at the **bend and leading edge of the echo band**, not inside a classic hook; at 01:08 SMART-R 2, COW1, KGWX and both merged fields show a curved echo appendage extending from the surveyed position to the south-east (hook-like, 5 to 10 km long); at 01:11 to 01:20 the radars show a band (NOXP, at 5 to 15 km, resolves a narrow 50 to 55 dBZ line with a kink at the star; the C-band radars and KGWX show it broader and weaker) and the merged velocity shows a localised couplet at the star at 01:08 to 01:17 (a red outbound maximum with blue inbound flow to its west at 01:08). v2 keeps what the radars see (the band, the appendage) and agrees with KGWX and MRMS in the core where v1 was 10 to 15 dB low.
+Known defects of the merge visible in the figures: blocks and speckle where the strongest reliable radar changes (the 6 dB rule switches between radars with different resolution; no smoothing was applied, by design); NOXP's X-band shadow (dark, east of the band at 01:11 to 01:20) is flagged and not in the blend; DOW7 covers only the west edge of these panels.
+
+Vertical west-east sections through the surveyed position (reflectivity v1 and v2, the difference, `dbz_unc`, radars per voxel):
+
+![section 01:11](images/perils-refl-xsec-0111.png)
+![section 01:14](images/perils-refl-xsec-0114.png)
+![section 01:17](images/perils-refl-xsec-0117.png)
+
+At 01:14 at the surveyed position (x = 14.0, y = -46.7 km) v1 has 34 to 36 dBZ at 0.5 to 1.5 km, v2 46 to 48 dBZ, KGWX 46 and MRMS 39.5; at the neighbouring core point (13.5, -42) v1 has 31 dBZ at 0.5 km where KGWX has 44 and MRMS 43. The section shows a 45 to 55 dBZ core up to about 3 km in v2 that v1 does not have; the uncertainty is largest (3 to 4 dB) exactly at the core, where the radars disagree most.
+
+### 17.7 Honest limits
+
+- The calibration is relative to KGWX, which is 1.2 to 4.3 dB below the disdrometers: the whole field is, if anything, about 3 dB low in absolute terms against the PIPS; v2 against MRMS is 1.8 dB high. The absolute level is uncertain by that range.
+- The pair medians are within 2 dB for all pairs except DOW7 - NOXP (-4.7) and DOW7 - SMART-R 2 (-4.4), and the UAH pairs (UAH is out): the target "median within 1 to 2 dB" is **met for 8 of the 10 pairs of the five blended radars**. **The scatter is not much reduced** where it matters (KGWX - NOXP 6.8 -> 7.6, NOXP - SMART-R 2 7.7 -> 8.8, COW1 - SMART-R 2 6.3 -> 6.3): the remaining 4 to 8 dB is beam geometry, resolution and timing, not calibration.
+- Cell-to-cell correlation between two radars is 0.0 to 0.7 even after the correction; the correlation of the merged field with KGWX is 0.91 and with MRMS 0.71 (0.76 at 2.5 km).
+- X-band attenuation in heavy rain is **not recovered**: NOXP is at the 12 dB cap in 58 % of its echo and COW1 at the 6 dB cap in 8 %; those voxels are flagged and down-weighted, and the pair statistics leave them out, so the "after" numbers describe the cells where the correction is believed. Where the only radars are attenuated (behind the line, east of the band) the merged field is low and its `dbz_unc` is not a bound on the error. The path integral is along a horizontal ray (a real beam climbs), KDP is missing where RHO < 0.9 (hail, debris), which counts as no attenuation, SMART-R 2 and DOW8 have no usable KDP, and the coefficients are unverified literature values.
+- The "strongest reliable radar" rule biases high by a few tenths of a dB through noise and relies on the S-band radar for the check against high outliers; where KGWX has no reliable data in a voxel there is no such check. A C or X radar that reads more than 6 dB above KGWX is rejected even if it is right (a narrow core missed by KGWX at 85 km).
+- Beam geometry is assumed (0.5 degree lowest tilt for every radar, 4/3 earth, no terrain, no beam-blockage or sidelobe model); the true tilts and volume-scan patterns are not in the grids. The lowest levels of KGWX at 85 km are extrapolated from higher gates.
+- The time offsets are handled by one translation with the line motion (10.6 m/s toward 90 degrees); a cell does not move like the line (the tornado moves differently), so offsets of 100 to 180 s cannot be removed.
+- `vel`, `zdr`, `kdp`, `rho`, `hid` of `volumes_v2/` are the v1 values (masked where no echo is left); ZDR is the bias-corrected v1 estimate; only the reflectivity-based products were recomputed. The hail class (`hid`) and the debris flag (`tds` is recomputed from `dbz` and the v1 `rho`) therefore still use the v1 selection of the best radar.
+- UAH is excluded from the reflectivity blend (non-linear response); UAH velocity is still in the best-radar velocity and in the winds.
+- Only five of the 17 steps were used for the verification, the calibration used five steps, and the PIPS comparison has four stations in light to moderate rain.
