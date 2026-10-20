@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "radarx desktop",
+        "title": "Radarx Desktop",
         "width": 1400,
         "height": 900
       }
