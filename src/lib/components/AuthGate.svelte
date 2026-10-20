@@ -129,7 +129,7 @@
       {:else}
         <h1>{mode === 'signup' ? 'Create your free account' : mode === 'signin' ? 'Welcome back' : mode === 'forgot' ? 'Reset your password' : 'Choose a new password'}</h1>
         {#if mode === 'signup'}
-          <p class="note">One account for every computer you use. Free: open a file and explore in a minute.</p>
+          <p class="note">radarx needs an account to run: in the app, in the terminal (<code>rxd</code>) and in Python. It is free, and one account works on every computer you use.</p>
         {/if}
       {/if}
 
@@ -205,6 +205,10 @@
             </span>
           </label>
           {#if touched && problems.agree}<small class="err">{problems.agree}</small>{/if}
+          <p class="fine">
+            radarx records which <em>features</em> you use (for example "ran an algorithm", "exported a file"), never file names,
+            places, radar sites or your data. You can see every entry in <strong>Account &gt; Activity</strong>.
+          </p>
         {/if}
 
         {#if a.error}<p class="err" role="alert">{a.error}</p>{/if}
@@ -229,7 +233,7 @@
       {/if}
     {/if}
 
-    <p class="fine">Your account stores your name, e-mail, affiliation and the computers you sign in from. Radar files never leave your machine.</p>
+    <p class="fine">Your account stores your name, e-mail, affiliation, the computers you sign in from and a feature-level activity log (never file names, places or data). Radar files never leave your machine.</p>
   </div>
 </div>
 

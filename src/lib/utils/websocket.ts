@@ -21,8 +21,13 @@ import { collectDownloads, triggerDownloads } from './download';
 import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
 import { trackEngine } from './engineIdentity';
 import { findRequestForReply, isForOtherFile } from './sweepMatch';
+import { AUTH_DISABLED } from '../auth/config';
 
 type MessageHandler = (data: any) => void;
+
+/** Messages the engine answers before an account is presented (everything else waits for auth_ok). */
+const AUTH_EXEMPT_TYPES = new Set(['ping', 'get_web_info', 'auth_session', 'auth_signout', 'auth_status']);
+const MAX_HELD_MESSAGES = 500;
 
 /** A gridded module product assembled from a `module_field` binary payload. */
 export interface ModuleFieldEntry {
@@ -130,6 +135,12 @@ class WebSocketManager {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private messageHandlers: Map<string, MessageHandler[]> = new Map();
   private baseDelay = 500; // ms
+  /**
+   * The engine refuses every request until this connection has presented a signed-in account
+   * (`auth_session`, see auth/engineSession.ts). Until it answers `auth_ok`, requests wait here.
+   */
+  private engineAuthorised = false;
+  private heldForAuth: Record<string, any>[] = [];
   private authToken: string | null = null;
   private authTokenPromise: Promise<string | null> | null = null;
   /** Messages submitted while the socket is CONNECTING. */
@@ -202,10 +213,21 @@ class WebSocketManager {
     this.doConnect();
   }
 
+  /** The engine accepted (or no longer accepts) this connection's account; releases held requests. */
+  setEngineAuthorised(ok: boolean): void {
+    this.engineAuthorised = ok;
+    if (ok && this.heldForAuth.length > 0) {
+      const held = this.heldForAuth.splice(0);
+      for (const msg of held) void this.send(msg);
+    }
+  }
+
   /** Drop all per-connection protocol state (called on connect, close, disconnect). */
   private resetConnectionState(): void {
     this.inflight = null;
     this.sendQueue.length = 0;
+    this.heldForAuth.length = 0;
+    this.engineAuthorised = false;
     // Nothing sent on the old connection will be answered any more.
     this.failAllSweepJobs('Connection lost');
     this.orphans.clear();
@@ -801,6 +823,16 @@ class WebSocketManager {
         this.notifyError(text);
         break;
       }
+
+      case 'auth_ok':
+        this.setEngineAuthorised(true);
+        break;
+
+      case 'auth_required':
+        // The engine does not accept this connection's account (yet). The listener in
+        // auth/engineLink.ts decides what to do: renew the token or show the sign-in screen.
+        this.setEngineAuthorised(false);
+        break;
 
       case 'pong': {
         const seen = trackEngine(this.engineId, msg.engine_id);
@@ -1497,6 +1529,12 @@ class WebSocketManager {
     }
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       console.warn('[WS] Cannot send, not connected. Message type:', message.type);
+      return;
+    }
+
+    if (!AUTH_DISABLED && !this.engineAuthorised && !AUTH_EXEMPT_TYPES.has(String(message.type))) {
+      if (this.heldForAuth.length >= MAX_HELD_MESSAGES) this.heldForAuth.shift();
+      this.heldForAuth.push(message);
       return;
     }
 

@@ -4,9 +4,14 @@ import { getClient } from '../auth/client';
 import { signInWithProvider, cancelOAuth } from '../auth/oauth';
 import { AUTH_DISABLED, OFFLINE_GRACE_DAYS, type OAuthProvider } from '../auth/config';
 import { gateState, friendlyAuthError, type GateState } from '../auth/gate';
+import { startEngineLink, engineSignedIn, engineSignedOut, engineTokenRefreshed } from '../auth/engineLink';
 
-/** Version of the terms and privacy notice the user agreed to (bump when they change). */
-export const TERMS_VERSION = '2026-10';
+/**
+ * Version of the terms and privacy notice the user agreed to (bump when they change; everyone is then
+ * asked once more, see profileIncomplete). 2026-10-21: an account is now required to use radarx
+ * everywhere, and the feature-level activity log is disclosed (docs/PRIVACY.md).
+ */
+export const TERMS_VERSION = '2026-10-21';
 
 export const USE_CASES = [
   { id: 'research', label: 'Research' },
@@ -110,10 +115,28 @@ async function loadProfile(): Promise<Profile | null> {
   return (data as Profile | null) ?? null;
 }
 
+/** True from a click on "Sign in" until the session arrives (a silent restore is not a sign-in). */
+let explicitSignIn = false;
+
 /** Called with a verified session: remember it, load the profile, record this device. */
-async function onSignedIn(session: Session): Promise<void> {
+async function onSignedIn(session: Session, how: 'start' | 'event' = 'event'): Promise<void> {
   const now = Date.now();
   writeLocal(VERIFIED_KEY, String(now));
+  // hand the account to the engine (it refuses all work without one); see auth/engineLink.ts
+  try {
+    await startEngineLink({
+      deviceId,
+      onRequired: (_reason, message) => patch({ gate: 'needs-account', error: message, info: null }),
+    });
+  } catch {
+    /* the engine link is retried at the next token refresh; signing in itself succeeded */
+  }
+  if (explicitSignIn) {
+    explicitSignIn = false;
+    engineSignedIn();
+  } else if (how === 'event') {
+    engineTokenRefreshed();
+  }
   patch({ email: session.user.email ?? null, lastVerifiedAt: now, gate: 'open', pendingEmail: null, error: null });
   try {
     patch({ profile: await loadProfile() });
@@ -143,6 +166,7 @@ export async function initAuth(): Promise<void> {
     const sb = await getClient();
     sb.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
+        engineSignedOut();
         patch({ gate: 'needs-account', email: null, profile: null });
       } else if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
         void onSignedIn(session);
@@ -152,7 +176,7 @@ export async function initAuth(): Promise<void> {
     if (data.session && online()) {
       // getUser asks the server, so a deleted or disabled account is noticed
       const { data: u, error } = await sb.auth.getUser();
-      if (!error && u.user) await onSignedIn(data.session);
+      if (!error && u.user) await onSignedIn(data.session, 'start');
       else if (error && /fetch|network/i.test(error.message)) offlineOrReconnect(true);
       else {
         await sb.auth.signOut({ scope: 'local' });
@@ -184,6 +208,7 @@ async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
   try {
     return await work();
   } catch (e: any) {
+    explicitSignIn = false; // a failed attempt is not a sign-in
     patch({ error: friendlyAuthError(e?.message ?? String(e)) });
     return undefined;
   } finally {
@@ -222,6 +247,7 @@ export async function signUp(i: SignUpInput): Promise<void> {
 
 export async function confirmCode(email: string, code: string): Promise<void> {
   await run(async () => {
+    explicitSignIn = true;
     const sb = await getClient();
     const { error } = await sb.auth.verifyOtp({ email, token: code.replace(/\s/g, ''), type: 'signup' });
     if (error) throw error;
@@ -239,6 +265,7 @@ export async function resendCode(email: string): Promise<void> {
 
 export async function signIn(email: string, password: string): Promise<void> {
   await run(async () => {
+    explicitSignIn = true;
     const sb = await getClient();
     const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     if (error) {
@@ -249,10 +276,12 @@ export async function signIn(email: string, password: string): Promise<void> {
 }
 
 export async function signInWith(provider: OAuthProvider): Promise<void> {
+  explicitSignIn = true;
   await run(() => signInWithProvider(provider));
 }
 
 export async function abortOAuth(): Promise<void> {
+  explicitSignIn = false;
   await cancelOAuth();
   patch({ busy: false });
 }
@@ -272,6 +301,7 @@ export async function resetPassword(email: string): Promise<boolean> {
 /** Checks the code from the reset e-mail, then sets the new password (which also signs in). */
 export async function completeReset(email: string, code: string, newPassword: string): Promise<boolean> {
   const ok = await run(async () => {
+    explicitSignIn = true;
     const sb = await getClient();
     const { error } = await sb.auth.verifyOtp({ email: email.trim(), token: code.replace(/\s/g, ''), type: 'recovery' });
     if (error) throw error;
@@ -284,6 +314,7 @@ export async function completeReset(email: string, code: string, newPassword: st
 
 export async function signOut(): Promise<void> {
   await run(async () => {
+    engineSignedOut(); // before the session is gone: the engine records the sign-out and clears the shared file
     const sb = await getClient();
     await sb.auth.signOut();
     patch({ gate: 'needs-account', email: null, profile: null, pendingEmail: null });
@@ -318,6 +349,26 @@ export async function listDevices(): Promise<DeviceRow[]> {
   return (data as DeviceRow[]) ?? [];
 }
 
+export interface ActivityRow {
+  id: number;
+  occurred_at: string;
+  surface: string;
+  event: string;
+  detail: Record<string, string>;
+}
+
+/** The last 100 events this account has sent (the log is readable by its owner only; docs/PRIVACY.md). */
+export async function listActivity(): Promise<ActivityRow[]> {
+  const sb = await getClient();
+  const { data, error } = await sb
+    .from('activity_events')
+    .select('id, occurred_at, surface, event, detail')
+    .order('occurred_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data as ActivityRow[]) ?? [];
+}
+
 export async function removeDevice(id: string): Promise<void> {
   const sb = await getClient();
   await sb.from('devices').delete().eq('id', id);
@@ -328,6 +379,7 @@ export async function deleteAccount(): Promise<boolean> {
     const sb = await getClient();
     const { error } = await sb.rpc('delete_my_account');
     if (error) throw error;
+    engineSignedOut();
     await sb.auth.signOut({ scope: 'local' });
     patch({ gate: 'needs-account', email: null, profile: null, pendingEmail: null });
     return true;
