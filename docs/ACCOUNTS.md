@@ -51,6 +51,7 @@ computation that runs on our servers). The list of ways around it is in
 | `devices` | a random install id, computer name, platform, app version, last seen | the user only |
 | `synced_items` | recipes, workspaces, looks, colour maps the user chose to sync | the user only |
 | `activity_events` | which **features** the account used (no file names, places or data; see below) | the user (insert and read their own); the owner via a service-role-only view |
+| `issue_reports` | a bug, idea or question the account (or a website visitor) chose to send ({doc}`REPORTING`); kept 24 months; unlinked from the account when it is deleted | the user (their own, read only); the owner |
 
 Row-level security is on for every table (see `supabase/migrations/`). The app, the engine and `rxd` hold only
 the **publishable** key; the database password and the service-role key are never in this repository or on a
