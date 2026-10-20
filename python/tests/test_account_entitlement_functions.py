@@ -87,7 +87,9 @@ def test_two_runs_make_two_different_keys(tmp_path):
 
 def test_the_repository_contains_no_private_key():
     """No PEM private key body in any tracked or new file (the key script prints none either)."""
-    git = shutil.which("git")  # a full path: only then can subprocess use posix_spawn (see run_python)
+    git = shutil.which(
+        "git"
+    )  # a full path: only then can subprocess use posix_spawn (see run_python)
     if git is None:
         pytest.skip("git not found")
     listing = subprocess.run(

@@ -31,7 +31,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from engine.account import config, gotrue, pat, tokens
+from engine.account import config, gotrue, pat, tokens, vault
 from engine.account.entitlement import entitlement_allows
 from engine.account.errors import AccountRequired, AccountServerError
 from engine.account.store import SessionStore, StoredSession
@@ -109,6 +109,7 @@ def reset_runtime_state() -> None:
         _net_down_until = 0.0
     with _env_lock:
         _env_state.update(pat=None, token=None, down_until=0.0)
+    _migrated.clear()
     with contextlib.suppress(Exception):  # the shared "server unreachable" note goes too
         SessionStore().clear_network_down()
 
@@ -460,6 +461,9 @@ def server_reachable(timeout: float = PROBE_TIMEOUT_S) -> bool:
         return False
 
 
+_migrated: set[str] = set()
+
+
 def check_stored_session(
     store: SessionStore | None = None,
     *,
@@ -469,12 +473,31 @@ def check_stored_session(
     """Decide whether the stored session is good. Raises :class:`AccountRequired`.
 
     ``net_timeout`` caps every network call this check may make (a command that is about to exit
-    must not wait for a server that never answers).
+    must not wait for a server that never answers). A good session that is still kept in the file
+    moves into the operating system's keychain on first use, if one works (once per process).
     """
     store = store or SessionStore()
+    account = _check_stored_session(store, allow_network, net_timeout)
+    key = str(store.path)
+    if key not in _migrated and vault.mode() == "auto":
+        _migrated.add(key)
+        store.migrate_to_keychain()
+    return account
+
+
+def _check_stored_session(
+    store: SessionStore, allow_network: bool, net_timeout: float | None
+) -> Account:
+    """:func:`check_stored_session` without the move to the keychain."""
     try:
         stored = store.load_strict()
     except OSError as exc:
+        if isinstance(exc, vault.VaultError):
+            raise AccountRequired(
+                "unavailable",
+                f"Your sign-in is kept in the system keychain and it cannot be read now ({exc}). "
+                "Unlock it and try again; the saved sign-in is untouched.",
+            ) from exc
         raise AccountRequired(
             "unavailable",
             f"The saved sign-in file ({store.path}) cannot be read: {type(exc).__name__}. "
@@ -628,21 +651,44 @@ def login_with_token(token: str, store: SessionStore | None = None) -> Account:
     return _account_from(claims, "pat", at, "file")
 
 
+def storage_description(store: SessionStore | None = None) -> tuple[str, str, str]:
+    """``(where, backend, note)`` for the sign-in in use: ``"keychain"`` with the keychain's name,
+    ``"file"`` with the reason the keychain is not used, ``"memory"`` for ``RADARX_TOKEN``, or
+    ``""`` when nobody is signed in."""
+    if pat.from_environment() is not None and not SessionStore().path.exists():
+        return "memory", "", ""
+    try:
+        stored = (store or SessionStore()).load_strict()
+    except OSError:
+        return "keychain", vault.status()[1], ""
+    if stored is None:
+        return "", "", ""
+    if stored.storage == "keychain":
+        return "keychain", vault.status()[1], ""
+    usable, _name, reason = vault.status()
+    # why the keychain is not used right now; when it is usable the session simply has not moved yet
+    return "file", "", reason if not usable else stored.storage_note
+
+
 def logout(store: SessionStore | None = None) -> bool:
     """``rxd logout``: end the session on the server (best effort) and delete the shared file.
 
     Returns True when a session was removed.
     """
     store = store or SessionStore()
-    stored = store.load()
-    if stored is None:
+    try:
+        stored = store.load_strict()
+        unreadable = False
+    except OSError:  # a keychain that is locked: clear() below says so instead of "not signed in"
+        stored, unreadable = None, True
+    if stored is None and not unreadable and not store.path.exists():
         reset_runtime_state()
         return False
     from engine.account import activity  # local import: activity needs this module
 
     activity.record("sign_out", surface="cli")
     activity.flush(timeout=3.0)
-    if stored.source != "pat":  # (a token session has no Supabase session to end)
+    if stored is not None and stored.source != "pat":  # (a token session has no Supabase session)
         with contextlib.suppress(AccountServerError):  # the file goes regardless
             gotrue.logout(stored.access_token)
     store.clear()
@@ -735,5 +781,8 @@ def end_presented_session(store: SessionStore | None = None) -> None:
     store = store or SessionStore()
     stored = store.load()
     if stored is None or stored.source != "pat":
-        store.clear()
+        try:
+            store.clear()
+        except OSError:  # the keychain would not give the entry up: the app's token lives an hour
+            store._unlink_file()
     reset_runtime_state()

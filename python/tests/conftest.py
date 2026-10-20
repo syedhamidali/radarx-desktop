@@ -171,6 +171,16 @@ def _isolated_export_dir(tmp_path_factory, monkeypatch):
 def _isolated_account_dir(tmp_path_factory, monkeypatch):
     """No test may read or write the developer's real session file, key cache or activity queue."""
     monkeypatch.setenv("RADARX_CONFIG_DIR", str(tmp_path_factory.mktemp("radarx-config")))
+    # No test may touch the developer's real keychain: the file is used, and a test that wants a
+    # keychain installs a fake one (tests/keychain_helpers.py)
+    from engine.account import vault
+
+    def real_keychain_refused():
+        raise AssertionError("a test reached for the real system keychain")
+
+    monkeypatch.setenv("RADARX_SECRET_STORE", "file")
+    monkeypatch.setattr(vault, "backend_factory", real_keychain_refused)
+    vault.reset()
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ test): RADARX_CONFIG_DIR, RADARX_SUPABASE_URL (a local mock), RADARX_SUPABASE_KE
 
 ``--broken-flock`` makes ``flock`` do nothing, like a network file system without a lock daemon.
 ``--no-refresh-lock`` removes the renewal lock altogether (the control of the stress test).
+``--file-keychain FILE`` stores the session in a fake keychain shared through that file.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import argparse
 import json
 import threading
 import time
+from pathlib import Path
 
 
 def main() -> None:
@@ -23,11 +25,19 @@ def main() -> None:
     ap.add_argument("--go-at", type=float, required=True)
     ap.add_argument("--broken-flock", action="store_true")
     ap.add_argument("--no-refresh-lock", action="store_true", help="test control: no lock at all")
+    ap.add_argument("--file-keychain", help="use a fake keychain kept in this file (shared)")
     ap.add_argument("--checks", type=int, default=1, help="checks per thread")
     args = ap.parse_args()
 
     from engine.account import core, store, tokens
 
+    if args.file_keychain:
+        from engine.account import vault
+        from tests.keychain_helpers import FileKeychain
+
+        fake = FileKeychain(Path(args.file_keychain))
+        vault.backend_factory = lambda: fake
+        vault.reset()
     if args.broken_flock:
         store._FileLock._try_lock = lambda self: None  # type: ignore[method-assign]
     if args.no_refresh_lock:

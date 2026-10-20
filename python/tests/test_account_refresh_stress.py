@@ -65,7 +65,15 @@ def expire_session(server: RotatingGoTrue, cfg: Path, *, first: bool = False) ->
 
 
 def run_round(
-    server, cfg, *, processes: int, threads: int, broken_flock: bool, extra=(), checks: int = 1
+    server,
+    cfg,
+    *,
+    processes: int,
+    threads: int,
+    broken_flock: bool,
+    extra=(),
+    checks: int = 1,
+    keychain=None,
 ) -> list[str]:
     go_at = time.time() + 2.5
     procs = []
@@ -73,10 +81,14 @@ def run_round(
         cmd = [WORKER, "--threads", str(threads), "--go-at", str(go_at), "--checks", str(checks)]
         if broken_flock:
             cmd.append("--broken-flock")
+        env = child_env(server, cfg)
+        if keychain is not None:
+            cmd += ["--file-keychain", str(keychain)]
+            env["RADARX_SECRET_STORE"] = "auto"
         procs.append(
             spawn_python(
                 [*cmd, *extra],
-                env=child_env(server, cfg),
+                env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -207,3 +219,33 @@ def test_a_herd_of_jobs_with_one_access_token_exchanges_it_once(server, tmp_path
         assert server.exchange_calls == n + 1, (n, server.exchange_calls)
     kept = SessionStore(cfg).load()
     assert kept is not None and kept.pat_token == pat_token and kept.source == "pat"
+
+
+def test_the_renewal_lock_still_serialises_when_the_session_is_in_the_keychain(
+    server, tmp_path, monkeypatch
+):
+    """The tokens live in a (fake, shared) keychain; the lock stays a file, so 8 processes x 4 threads
+    still renew exactly once per expiry, and no token ever lands in the session file."""
+    from engine.account import vault
+    from tests.keychain_helpers import FileKeychain, install
+
+    cfg = tmp_path / "cfg"
+    shared = tmp_path / "keychain.json"
+    install(monkeypatch, FileKeychain(shared))  # the parent seeds it the same way
+    for n in range(2):
+        expire_session(server, cfg, first=n == 0)
+        assert SessionStore(cfg).load().storage == "keychain"
+        outcomes = run_round(
+            server, cfg, processes=8, threads=4, broken_flock=True, checks=2, keychain=shared
+        )
+        assert outcomes == ["ok"] * 64, outcomes
+        assert server.refresh_calls == n + 1
+    assert server.reuse_events == [] and server.revoked == set()
+    final = SessionStore(cfg).load()
+    assert (
+        final.storage == "keychain"
+        and final.refresh_token == "rt-" + next(iter(_families(server))) + f"-{3}"
+    )
+    text = (cfg / "session.json").read_text()
+    assert final.refresh_token not in text and final.access_token not in text
+    vault.reset()

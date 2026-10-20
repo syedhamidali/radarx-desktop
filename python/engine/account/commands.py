@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 import time
 from typing import Any
@@ -189,12 +190,31 @@ def cmd_login(args: argparse.Namespace, out: Any) -> int:
     return _signed_in(account, out)
 
 
+def storage_lines() -> list[str]:
+    """Where the sign-in is kept, in plain words (never silent about the file fallback)."""
+    where, backend, note = core.storage_description()
+    if where == "keychain":
+        return [f"  kept in the {backend or 'system keychain'}; the session file holds no token"]
+    if where == "memory":
+        return [f"  kept in memory only ({pat.ENV_VARIABLE}); nothing is written to disk"]
+    if where == "file":
+        private = (
+            "a private file (readable only by you)"
+            if os.name != "nt"
+            else "a file in your profile folder"
+        )
+        return [f"  kept in {private}" + (f"; the keychain is not used: {note}" if note else "")]
+    return []
+
+
 def _signed_in(account: core.Account, out: Any) -> int:
     activity.record("sign_in", surface="cli")
     if out.json:
         out.emit_json({"signed_in": True, "email": account.email})
     else:
         out.result(f"Signed in as {account.email}.")
+        for line in storage_lines():
+            out.result(line)
     return 0
 
 
@@ -229,11 +249,14 @@ def _login_token(args: argparse.Namespace, out: Any) -> int:
                 "session": "pat",
                 "token_name": account.token_name,
                 "token_expires_at": account.token_expires_at,
+                **_storage_json(),
             }
         )
     else:
         out.result(f"Signed in as {account.email} with the access token '{account.token_name}'.")
         out.result(f"  it expires on {_date(account.token_expires_at)}; rxd logout removes it here")
+        for line in storage_lines():
+            out.result(line)
         out.result("  (revoke it for good in the app: Account > Access tokens)")
     return 0
 
@@ -285,7 +308,15 @@ def cli_usage(message: str) -> Exception:
 
 def cmd_logout(args: argparse.Namespace, out: Any) -> int:
     was_token = (stored := SessionStore().load()) is not None and stored.source == "pat"
-    removed = core.logout()
+    try:
+        removed = core.logout()
+    except OSError as exc:  # the keychain would not give the entry up: nothing was removed
+        print(
+            f"error: the sign-in could not be removed from the system keychain ({exc}). "
+            "It is still there; unlock the keychain and run the command again.",
+            file=sys.stderr,
+        )
+        return 1
     env = pat.from_environment() is not None
     if out.json:
         out.emit_json({"signed_out": removed, "environment_token": env})
@@ -341,6 +372,7 @@ def cmd_whoami(args: argparse.Namespace, out: Any) -> int:
         ),
         "token_valid_until": account.expires_at,
         "offline_grace_days_left": account.grace_days_left,
+        **_storage_json(),
     }
     if out.json:
         out.emit_json(info)
@@ -355,7 +387,14 @@ def cmd_whoami(args: argparse.Namespace, out: Any) -> int:
         out.result(f"  sign-in valid until {when}")
     for line in _renewal_lines(account, _prog()):
         out.result(line)
+    for line in storage_lines():
+        out.result(line)
     return 0
+
+
+def _storage_json() -> dict[str, str]:
+    where, backend, note = core.storage_description()
+    return {"storage": where, "storage_backend": backend, "storage_note": note}
 
 
 def _renewal_lines(account: core.Account, prog: str) -> list[str]:

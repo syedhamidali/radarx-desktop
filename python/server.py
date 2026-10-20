@@ -5170,7 +5170,19 @@ def main() -> None:
     parser.add_argument(
         "--web", action="store_true", help="public web-service mode (same as XRADAR_WEB=1)"
     )
+    parser.add_argument(
+        "--keychain-check",
+        action="store_true",
+        help="print whether the system keychain works here (JSON) and exit",
+    )
     args = parser.parse_args()
+    if args.keychain_check:
+        import json as _json
+
+        from engine.account import vault
+
+        print(_json.dumps(vault.diagnose()))
+        return
     if args.web:
         os.environ["XRADAR_WEB"] = "1"
         web.reload_settings()

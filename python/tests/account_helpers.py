@@ -373,6 +373,7 @@ def run_python(args, *, env, timeout=120, **kw):
 
     kw.setdefault("capture_output", True)
     kw.setdefault("text", True)
+    env = {"RADARX_SECRET_STORE": "file", **env}  # a child process never touches the real keychain
     return subprocess.run([sys.executable, *args], env=env, timeout=timeout, close_fds=False, **kw)
 
 
@@ -381,6 +382,7 @@ def spawn_python(args, *, env, **kw):
     import subprocess
     import sys
 
+    env = {"RADARX_SECRET_STORE": "file", **env}  # a child process never touches the real keychain
     return subprocess.Popen([sys.executable, *args], env=env, close_fds=False, **kw)
 
 

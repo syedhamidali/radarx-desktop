@@ -25,12 +25,16 @@ What is in it (see docs/ACCOUNTS.md):
 ``high_water``    the latest clock reading ever seen with this session; a clock set backwards
                   cannot extend the offline period.
 
-Keychain / Credential Manager storage is a follow-up (docs/ACCOUNTS.md).
+Where the secrets are kept: in the operating system's keychain when there is one that works
+(:mod:`engine.account.vault`; the file then holds only the non-secret fields and
+``"storage": "keychain"``), otherwise in this file with mode 0600, exactly as before. Nothing is
+ever moved to the file without saying so (``rxd whoami`` shows where the sign-in is kept and why).
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import random
@@ -47,7 +51,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from engine.account import vault
+
 APP_FOLDER = "radarx-desktop"
+#: The fields of a session that are secrets (kept in the keychain when there is one).
+SECRET_FIELDS = ("access_token", "refresh_token", "pat_token")
 LOCK_TIMEOUT_S = 10.0
 #: How long a process waits for the right to renew the session (others may be renewing it).
 REFRESH_LOCK_TIMEOUT_S = 20.0
@@ -84,10 +92,17 @@ class StoredSession:
     saved_at: float = 0.0
     version: int = 1
     extra: dict[str, Any] = field(default_factory=dict)
+    #: where the secrets of this session were read from / written to: "file" or "keychain"
+    #: (runtime information, not part of the secret data)
+    storage: str = "file"
+    #: why the keychain is not used, when it is not (shown by ``rxd whoami``)
+    storage_note: str = ""
 
     def to_json(self) -> dict[str, Any]:
         data = asdict(self)
         data.pop("extra", None)
+        data.pop("storage", None)
+        data.pop("storage_note", None)
         return data
 
     @classmethod
@@ -113,6 +128,8 @@ class StoredSession:
                 issued_at=float(data.get("issued_at") or 0.0),
                 high_water=float(data.get("high_water") or 0.0),
                 saved_at=float(data.get("saved_at") or 0.0),
+                storage="keychain" if data.get("storage") == "keychain" else "file",
+                storage_note=str(data.get("storage_note") or "")[:200],
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -377,6 +394,8 @@ class SessionStore:
         self.directory = directory or config_dir()
         self.path = self.directory / "session.json"
         self._lock_path = self.directory / "session.lock"
+        #: what the last keychain write stored (see vault.discard)
+        self._handle: dict[str, Any] | None = None
 
     # -- reading ---------------------------------------------------------------------------
     def load(self) -> StoredSession | None:
@@ -388,16 +407,37 @@ class SessionStore:
 
     def load_strict(self) -> StoredSession | None:
         """Like :meth:`load`, but a file that exists and cannot be read (permissions, a folder in
-        its place, a failing disk) raises ``OSError`` instead of looking like "not signed in".
-        Absent or corrupt content is None."""
+        its place, a failing disk) or a keychain that cannot be read (locked, refused) raises
+        ``OSError`` instead of looking like "not signed in". Absent or corrupt content is None."""
         try:
             text = self.path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
         try:
-            return StoredSession.from_json(json.loads(text))
+            data = json.loads(text)
         except ValueError:
             return None
+        if isinstance(data, dict) and data.get("storage") == "keychain":
+            # the secrets are in the keychain; VaultError (an OSError) means "could not read it"
+            raw = vault.read(self.account)
+            if raw is None:
+                return None  # the keychain no longer has it (reset, another user): not signed in
+            try:
+                kept = json.loads(raw)
+            except ValueError:
+                return None
+            if not isinstance(kept, dict):
+                return None
+            for name in SECRET_FIELDS:
+                if isinstance(kept.get(name), str):
+                    data[name] = kept[name]
+        return StoredSession.from_json(data)
+
+    @property
+    def account(self) -> str:
+        """The name of this session's keychain entry: one per configuration folder."""
+        digest = hashlib.sha256(str(self.directory.resolve()).encode("utf-8")).hexdigest()
+        return f"session-{digest[:16]}"
 
     # -- writing ---------------------------------------------------------------------------
     @contextlib.contextmanager
@@ -435,9 +475,42 @@ class SessionStore:
         with contextlib.suppress(OSError):
             self._netdown_path.unlink()
 
-    def _write(self, session: StoredSession) -> None:
+    def _write(self, session: StoredSession, *, allow_keychain: bool = True) -> None:
+        """Write the session: the secrets to the keychain when one works (then the file holds none
+        of them), otherwise into the 0600 file. A keychain that fails while writing NEVER costs the
+        tokens: they go to the file instead, and ``storage_note`` says why."""
         session.saved_at = time.time()
-        write_private(self.path, json.dumps(session.to_json(), indent=1))
+        data = session.to_json()
+        every = {name: data.get(name) for name in SECRET_FIELDS}  # (None for the ones not set)
+        secret = {name: value for name, value in every.items() if value}
+        for name in SECRET_FIELDS:
+            data.pop(name, None)
+        note = ""
+        where = "file"
+        self._handle = None
+        if vault.mode() == "file":
+            note = "by your choice (RADARX_SECRET_STORE=file)"
+        elif allow_keychain:
+            usable, _name, reason = vault.status()
+            if usable:
+                try:
+                    self._handle = vault.write(self.account, json.dumps(secret))
+                    where = "keychain"
+                except vault.VaultError as exc:
+                    note = f"the keychain could not be written ({exc}); the file is used instead"
+            else:
+                note = reason
+        data["storage"] = where
+        if where == "file":
+            data.update(every)  # exactly the file as it always was (secret keys present)
+            data["storage_note"] = note
+        had_entry = self._storage_marker() == "keychain"
+        write_private(self.path, json.dumps(data, indent=1))
+        session.storage, session.storage_note = where, note
+        if where == "file" and had_entry and vault.mode() == "file":
+            # switched to the file by choice: do not leave a copy in the keychain behind
+            with contextlib.suppress(OSError):
+                vault.delete(self.account, even_if_off=True)
 
     def save(self, session: StoredSession) -> None:
         with self.locked():
@@ -456,18 +529,93 @@ class SessionStore:
             return new
 
     def clear(self) -> None:
+        """Remove the session (file and keychain entry). A keychain entry that cannot be removed
+        raises (the file is kept, so signing out can be tried again)."""
         with self.locked():
-            self._unlink()
+            self._remove_keychain_entry(strict=True)
+            self._unlink_file()
         self.clear_network_down()
 
+    def _remove_keychain_entry(self, *, strict: bool, even_if_off: bool = False) -> None:
+        """Remove this session's keychain entry (if there is a keychain and an entry). With
+        ``strict`` a failure to remove an entry the file points to raises ``VaultError``."""
+        marker = self._storage_marker()
+        if (
+            marker != "keychain"
+            and not even_if_off
+            and not (vault.mode() == "auto" and vault.available())
+        ):
+            return
+        try:
+            vault.delete(self.account, even_if_off=even_if_off)
+        except vault.VaultError:
+            if strict and marker == "keychain":
+                raise
+
+    def _storage_marker(self) -> str:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "file"
+        return (
+            "keychain" if isinstance(data, dict) and data.get("storage") == "keychain" else "file"
+        )
+
     def _unlink(self) -> None:
+        """Remove the session after the server ended it: best effort for the keychain entry."""
+        with contextlib.suppress(OSError):
+            self._remove_keychain_entry(strict=False)
+        self._unlink_file()
+
+    def _unlink_file(self) -> None:
         with contextlib.suppress(OSError):
             self.path.unlink()
 
+    def migrate_to_keychain(self) -> bool:
+        """Move a file session into the keychain, once, and only if the keychain works: write it
+        there, read it back, compare, and only then rewrite the file without the secrets. Any
+        failure leaves the file exactly as it was. Returns True when the session moved."""
+        if vault.mode() != "auto":
+            return False
+        try:
+            with self.locked():
+                current = self.load_strict()
+                if current is None or current.storage != "file" or not vault.available():
+                    return False
+                before = {name: getattr(current, name) for name in SECRET_FIELDS}
+                original = self.path.read_bytes()
+                self._write(current)
+                if current.storage != "keychain":
+                    return False
+                back = self.load_strict()
+                if back is None or {name: getattr(back, name) for name in SECRET_FIELDS} != before:
+                    write_private(self.path, original.decode("utf-8"))  # undo: exactly as it was
+                    if self._handle is not None:
+                        vault.discard(self.account, self._handle)
+                    return False
+                return True
+        except (OSError, TimeoutError):
+            return False
+
+    def peek(self) -> dict[str, Any] | None:
+        """The NON-secret fields of the session file (user id, e-mail, times, ``source``), read
+        without touching the keychain: cheap, never prompts, never fails because it is locked."""
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
     def note_time(self, now: float, *, min_step_s: float = 3600.0) -> None:
         """Remember ``now`` as the latest clock reading (at most about once an hour)."""
-        cur = self.load()
-        if cur is None or now < cur.high_water + min_step_s:
+        seen = self.peek()
+        if seen is None:
+            return
+        try:
+            high_water = float(seen.get("high_water") or 0.0)
+        except (TypeError, ValueError):
+            return
+        if now < high_water + min_step_s:
             return
         try:
             with self.locked():

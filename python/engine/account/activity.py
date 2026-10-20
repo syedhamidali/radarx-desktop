@@ -315,8 +315,9 @@ def _allowed_now(who: str) -> bool:
 
 
 def _signed_in_user() -> str | None:
-    stored = SessionStore().load()
-    return stored.user_id if stored and stored.user_id else None
+    seen = SessionStore().peek()  # the user id is not a secret: no keychain read per event
+    user = seen.get("user_id") if seen else None
+    return user if isinstance(user, str) and user else None
 
 
 def record(
@@ -352,8 +353,9 @@ def record(
             with _lock:
                 _memory_only.append({"row": row, "token": token})
                 del _memory_only[:-QUEUE_MAX_EVENTS]
-        elif pat.from_environment() is not None:
-            # RADARX_TOKEN (CI, a batch job): no session file, so the events stay in memory and are
+        elif pat.from_environment() is not None and uid is None:
+            # RADARX_TOKEN (CI, a batch job; not the desktop engine, which passes ``uid``): no
+            # session file, so the events stay in memory and are
             # sent through the log-activity function with the current entitlement token.
             from engine.account import core
 
