@@ -9,7 +9,9 @@
 --     contents, free text typed by the user. There is no column or key that could hold them.
 --   * A user can INSERT and SELECT their own rows (transparency: the app lists them). Nobody but the
 --     service role can update or delete, and anon can do nothing.
---   * Limits: at most 2000 inserts per user per 24 hours, 200 bytes of detail, clamped timestamps.
+--   * Limits: at most 2000 inserts per user per 24 hours (counted under a per-user advisory lock so
+--     concurrent inserts cannot slip past it), 200 bytes of detail, clamped timestamps; app_version
+--     must look like a version and os is one of five fixed words.
 --   * Retention: purge_old_activity(days). Scheduling it (pg_cron or the dashboard) is left to the
 --     owner; see docs/ACCOUNTS.md.
 --   * Deleting an account removes its rows (on delete cascade).
@@ -45,6 +47,10 @@ declare
   daily_cap constant int := 2000;
   cnt int;
 begin
+  -- One insert at a time per user: without this, two concurrent transactions both count the same rows
+  -- and both pass the daily cap. (Released at the end of the transaction.)
+  perform pg_advisory_xact_lock(hashtextextended('activity:' || coalesce(new.user_id::text, ''), 0));
+
   -- event name -> the detail keys it may carry
   allowed_keys := case new.event
     when 'app_start'   then array[]::text[]
@@ -84,10 +90,12 @@ begin
   if new.device_id !~ '^[A-Za-z0-9]{8,80}$' then
     raise exception 'device_id must be a random token' using errcode = '23514';
   end if;
-  if new.app_version is not null and new.app_version !~ '^[A-Za-z0-9._+ -]{1,40}$' then
+  -- a version number ("0.3.0", "0.3.0-rc1") or "unknown": never free text
+  if new.app_version is not null
+     and new.app_version !~ '^[0-9]{1,4}(\.[0-9A-Za-z+_-]{1,12}){0,3}$' and new.app_version <> 'unknown' then
     raise exception 'app_version is not a version' using errcode = '23514';
   end if;
-  if new.os is not null and new.os !~ '^[A-Za-z0-9 ._-]{1,40}$' then
+  if new.os is not null and new.os not in ('macOS', 'Windows', 'Linux', 'Web', 'Other') then
     raise exception 'os is not an operating-system family' using errcode = '23514';
   end if;
 
