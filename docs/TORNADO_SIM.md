@@ -231,3 +231,20 @@ a readable wall; the clouds above are a smooth deck with little structure; the l
 - Without tiles the ground is invented farmland, not the real land cover.
 - Lightning is positions and times only; the channel is not drawn and the brightness is a model.
 - Frame time is 0.8 to 1.3 s at 1080p on an Apple M1 Pro (79 MB of GPU memory), one frame at a time.
+
+## The film's use of it over a longer span (tornado focus)
+
+`render_movie.py --plan film|clip` runs the scene over the data span of the close angles of the focus (01:07:56 to 01:10:53), not one
+shot, with these additions to the scene (all optional, the earlier behaviour is the default):
+
+- **Echo through time**: `seed.echoSeries` (every observed step of the tornado's life on one grid, written by `make_seed.py
+  --echo-series`) and `seed.echoMotion` (the echo pattern's motion). `echoField.ts` carries the earlier volume forward and the
+  later one back along the motion and blends them in rain-rate space (Marshall-Palmer), so the rain curtains move and change with
+  the radar echo; tested (`echoField.test.mjs`: the blob is one blob in the middle, not two half-strength ones). Verified
+  cell by cell against the volume (the seed's maximum at the same cell, all 15 steps).
+- **Formation time**: `seed.ramp = {form, decay}` (default 25 s and 40 s); the film uses 15 s so that the first angle ends with a
+  visible funnel. The survey gives only the begin and end times; the ramps are modelled.
+- **Jumps of the clock**: a forward jump of more than 20 s restarts the debris pool with a 12 s warm-up before the new time (a pure
+  function of the time), so a time-lapse stretch between two real-time angles costs nothing.
+- **Land size**: `landHalf`, `landSize`, `treeRadius` (the film uses 4.5 km, 2048 px and 3.4 km) so that one landscape holds the
+  chaser (1.7 km from the track) and the damage-path view 4 km along it.
