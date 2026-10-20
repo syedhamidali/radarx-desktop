@@ -137,7 +137,7 @@ def limiter_gain(
     return uniform_filter1d(minimum_filter1d(req, w, mode="nearest"), w, mode="nearest")
 
 
-def master(
+def _master_once(
     layers: dict[str, np.ndarray],
     sr: int,
     target_lufs=-23.0,
@@ -193,4 +193,48 @@ def master(
             "lr_correlation": corr,
         },
     }
+    return y, info, stems
+
+
+def master(
+    layers: dict[str, np.ndarray],
+    sr: int,
+    target_lufs=-23.0,
+    ceiling_db=-1.6,
+    tp_max_db=-1.0,
+    fade_in_s=2.0,
+    fade_out_s=2.5,
+    thunder_peak_dbfs: float | None = -8.0,
+    thunder_gain_db_range=(-12.0, 24.0),
+):
+    """Duck, sum, fade, normalise to the target loudness, limit. Returns (stereo, info, stems).
+
+    The integrated loudness stays at ``target_lufs``, but the thunder is given the headroom: its gain is
+    iterated (the whole mix is re-normalised each time) until the loudest thunder peak sits at
+    ``thunder_peak_dbfs`` in the final mix (None = no such calibration). The gain applied to the thunder
+    layer is in ``info["thunder_calibration"]``."""
+    g = 1.0
+    lo, hi = (10 ** (x / 20.0) for x in thunder_gain_db_range)
+    y = info = stems = None
+    cal = {"target_peak_dbfs": thunder_peak_dbfs, "iterations": 0}
+    for it in range(8):
+        lay = dict(layers)
+        if "thunder" in lay:
+            lay["thunder"] = layers["thunder"] * g
+        y, info, stems = _master_once(
+            lay, sr, target_lufs, ceiling_db, tp_max_db, fade_in_s, fade_out_s
+        )
+        cal["iterations"] = it + 1
+        if thunder_peak_dbfs is None or "thunder" not in layers:
+            break
+        pk = float(20 * np.log10(max(np.abs(stems["thunder"]).max(), 1e-12)))
+        cal["achieved_peak_dbfs"] = pk
+        if pk < -100.0 or abs(thunder_peak_dbfs - pk) < 0.4:
+            break
+        g_new = float(np.clip(g * 10 ** ((thunder_peak_dbfs - pk) / 20.0), lo, hi))
+        if abs(g_new - g) < 1e-6:
+            break
+        g = g_new
+    cal["thunder_gain_db"] = float(20 * np.log10(g))
+    info["thunder_calibration"] = cal
     return y, info, stems

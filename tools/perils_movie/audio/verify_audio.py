@@ -94,7 +94,7 @@ def plots(wav, report, out_dir) -> list[Path]:
     plt.close(fig)
     paths.append(p)
 
-    allf = [r for r in rep["thunder"]["flashes"] if "dist_nearest_m" in r]
+    allf = [r for r in rep["thunder"]["flashes"] if "delay_nearest_clip_s" in r]
     fig, ax = plt.subplots(1, 2, figsize=(13, 5), constrained_layout=True)
     if allf:
         d = np.array([r["dist_nearest_m"] / 1000 for r in allf])

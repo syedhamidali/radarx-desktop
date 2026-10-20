@@ -65,10 +65,12 @@ def wind_cutoff_hz(speed_ms):
     return 160.0 + 38.0 * np.clip(speed_ms, 0.0, 60.0)
 
 
-def tornado_gain(d_m, a_1km=0.25, r0_m=300.0, reach_m=25000.0):
-    """Roar amplitude vs distance: 1/r (minimum range r0), fading to zero at ``reach_m``."""
+def tornado_gain(d_m, a_3km=0.008, r_min_m=1500.0, k_db_per_decade=12.0, reach_m=25000.0):
+    """Roar amplitude vs distance, compressed like the thunder (12 dB per decade instead of 20, no louder than
+    at 1.5 km: a roar next to the tornado would bury every other layer once the mix is normalised), fading to
+    zero at ``reach_m``. Monotonic in the distance."""
     d = np.asarray(d_m, float)
-    a = a_1km * 1000.0 / np.maximum(d, r0_m)
+    a = a_3km * (3000.0 / np.maximum(d, r_min_m)) ** (k_db_per_decade / 20.0)
     return np.where(np.isfinite(d), a * np.clip(1.0 - d / reach_m, 0.0, 1.0) ** 2, 0.0)
 
 
@@ -81,7 +83,7 @@ def tornado_cutoff_hz(d_m):
 # --------------------------------------------------------------------------- ambient + convective
 
 
-def render_ambient(sr: int, n: int, seed: int, level_db: float = -64.0):
+def render_ambient(sr: int, n: int, seed: int, level_db: float = -54.0):
     """A very quiet pre-storm bed: low-passed pink-ish NOISE (clearly synthetic: no insects, no room
     tone, no music)."""
     rng = np.random.default_rng(seed)
