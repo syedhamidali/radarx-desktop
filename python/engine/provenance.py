@@ -26,7 +26,7 @@ import os
 import platform
 import re
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,10 @@ PROVENANCE_SCHEMA = 1
 _LIBRARIES = ("xradar", "xarray", "numpy", "netCDF4", "zarr", "pyproj", "radarx")
 
 _ENV_VERSION = "XRADAR_DESKTOP_VERSION"
+_OFFSET_TIME = re.compile(
+    r"(?P<stamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?"
+    r"(?P<sign>[+-])(?P<oh>\d{2}):?(?P<om>\d{2})"
+)
 _PLACEHOLDERS = {"none", "nan", "null", "n/a", "unknown"}
 
 
@@ -165,6 +169,12 @@ def iso_utc(value: Any) -> str:
             return text.split(".")[0] + "Z"
         if text.endswith("+00:00"):
             return text[: -len("+00:00")].split(".")[0] + "Z"
+        offset = _OFFSET_TIME.fullmatch(text)
+        if offset:  # a local time with its UTC offset: convert, do not pass it off as UTC
+            sign = -1 if offset["sign"] == "-" else 1
+            delta = timedelta(hours=int(offset["oh"]), minutes=int(offset["om"]))
+            local = datetime.strptime(offset["stamp"], "%Y-%m-%dT%H:%M:%S")
+            return utc_stamp((local - sign * delta).replace(tzinfo=timezone.utc))
         return text
     except Exception:
         return ""
@@ -180,13 +190,46 @@ def clean_text(value: Any) -> str:
     return "" if text.lower() in {"none", "nan", "null"} else text
 
 
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s'\"<>]+")
+_URL_PARTS = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)(?:[^/@?#]*@)?([^?#]*)")
+
+
+def _redact_url(match: re.Match[str]) -> str:
+    """A URL as it may be written into a file: no credentials, query or fragment (tokens)."""
+    url = match.group(0)
+    tail = re.search(r"[).,;:\]]+$", url)
+    trailing = tail.group(0) if tail else ""
+    parts = _URL_PARTS.match(url[: len(url) - len(trailing)])
+    if parts is None:
+        return url
+    scheme, rest = parts.groups()
+    if scheme.lower() == "file://":  # a local file: the path rules below
+        return redact_path(rest) + trailing
+    return scheme + rest + trailing
+
+
 def redact_path(text: Any) -> str:
     """*text* without absolute paths: a path becomes its file name, the home folder becomes ``~``.
 
     Used for everything that is written into a file's metadata, so a figure or dataset passed
     on to a colleague does not reveal the user name or folder layout of the machine that made it.
+    A URL (``s3://bucket/key``, ``https://host/file``) is kept, without credentials, query
+    and fragment.
     """
     s = str(text)
+    if _URL.search(s):
+        out, pos = [], 0
+        for m in _URL.finditer(s):
+            out.append(_redact_local_paths(s[pos : m.start()]))
+            out.append(_redact_url(m))
+            pos = m.end()
+        out.append(_redact_local_paths(s[pos:]))
+        return "".join(out)
+    return _redact_local_paths(s)
+
+
+def _redact_local_paths(s: str) -> str:
+    """The file-path part of :func:`redact_path` (no URLs in *s*)."""
     # a lone absolute path (POSIX or Windows) -> its file name
     if re.fullmatch(r"(/|[A-Za-z]:[\\/]|~[\\/]).*", s) and "\n" not in s and " " not in s:
         return re.split(r"[\\/]", s.rstrip("\\/"))[-1]

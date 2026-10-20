@@ -190,3 +190,78 @@ class TestDifferenceNoEcho:
         out = compute_difference(r1, r2, "VRADH", 0)
         diff = np.frombuffer(out["diff_values"], dtype=np.float32)
         assert np.all(diff == 35.0)
+
+
+def _field(az: np.ndarray, rng: np.ndarray) -> np.ndarray:
+    """A field that is smooth in azimuth and range, so that any pair of grids can be compared."""
+    a = np.radians(az)[:, None]
+    return 30.0 + 15.0 * np.sin(2.0 * a) * np.cos(a) + 10.0 * (rng[None, :] / 1e5)
+
+
+def _diff_grid(out: dict) -> np.ndarray:
+    d = np.frombuffer(out["diff_values"], dtype=np.float32).reshape(out["n_az"], out["n_range"])
+    return np.where(d == -9999.0, np.nan, d)
+
+
+class TestDifferenceOfDifferentGrids:
+    """Ray ``i`` of one scan is not ray ``i`` of another: 0.5 and 1 degree, a missing ray."""
+
+    RNG_G = 250.0 * (1 + np.arange(80))
+
+    def _pair(self, az1: np.ndarray, az2: np.ndarray):
+        r1 = _reader(_field(az1, self.RNG_G), az=az1, rng=self.RNG_G)
+        r2 = _reader(_field(az2, self.RNG_G), az=az2, rng=self.RNG_G)
+        return r1, r2
+
+    def test_one_and_half_degree_rays_give_no_difference_of_the_same_field(self) -> None:
+        coarse, fine = np.arange(360) + 0.5, np.arange(720) * 0.5 + 0.25
+        for first, second in ((coarse, fine), (fine, coarse)):
+            r1, r2 = self._pair(first, second)
+            out = compute_difference(r1, r2, "DBZH", 0)
+            assert out["n_az"] == first.size  # on the grid of the first scan, all around
+            assert np.nanmax(np.abs(_diff_grid(out))) < 0.5  # was 17 dB: half a circle vs a circle
+
+    def test_a_missing_ray_does_not_shift_the_rest(self) -> None:
+        full = np.arange(720) * 0.5 + 0.25
+        gap = np.delete(full, 20)
+        r1, r2 = self._pair(full, gap)
+        out = compute_difference(r1, r2, "DBZH", 0)
+        diff = _diff_grid(out)
+        far = diff[100:]  # rays after the gap: index i is still the same direction
+        assert np.nanmax(np.abs(far)) < 0.1  # was 0.17 here, tens of dB at a storm edge
+        assert np.nanmax(np.abs(diff[20])) < 0.5  # the neighbour (0.5 deg) stands in for it
+
+    def test_the_grid_of_the_second_scan_may_start_in_another_place(self) -> None:
+        a = np.arange(360) + 0.5
+        b = (np.arange(360) + 0.5 + 0.4) % 360.0
+        b = np.sort(b)  # the first ray is now at 0.1 degrees
+        r1, r2 = self._pair(a, b)
+        assert np.nanmax(np.abs(_diff_grid(compute_difference(r1, r2, "DBZH", 0)))) < 0.5
+
+    def test_gates_of_different_length_are_matched_by_distance(self) -> None:
+        az = np.arange(360) + 0.5
+        fine, coarse = 250.0 * (1 + np.arange(80)), 500.0 * (1 + np.arange(40)) - 125.0
+        r1 = _reader(_field(az, fine), az=az, rng=fine)
+        r2 = _reader(_field(az, coarse), az=az, rng=coarse)
+        diff = _diff_grid(compute_difference(r1, r2, "DBZH", 0))
+        assert diff.shape == (360, 80) and np.nanmax(np.abs(diff)) < 0.5
+
+    def test_identical_grids_are_not_resampled(self) -> None:
+        a = _const(1.0)
+        a[3, 3] = 7.0
+        out = compute_difference(_reader(a), _reader(_const(4.0)), "DBZH", 0)
+        diff = _diff_grid(out)
+        assert diff[3, 3] == -3.0 and diff[0, 0] == 3.0  # exact values: no interpolation
+
+    def test_accumulation_uses_the_grid_of_the_first_scan(self) -> None:
+        coarse, fine = np.arange(360) + 0.5, np.arange(720) * 0.5 + 0.25
+        readers = {
+            "a": _reader(_field(coarse, self.RNG_G), az=coarse, rng=self.RNG_G),
+            "b": _reader(_field(fine, self.RNG_G), az=fine, rng=self.RNG_G),
+        }
+        out = compute_accumulation(readers, "DBZH", 0, "mean")
+        values = np.array(
+            [[np.nan if v is None else v for v in row] for row in out["values"]], dtype=np.float64
+        )
+        assert values.shape == (360, 80)
+        assert np.nanmax(np.abs(values - _field(coarse, self.RNG_G))) < 0.5
