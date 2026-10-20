@@ -49,6 +49,67 @@ def _synthetic(*_a: Any, **_k: Any) -> xr.DataTree:
     return make_synthetic_datatree(n_azimuth=8, n_range=6)
 
 
+def _time_first_cfradial2(path: Path) -> Path:
+    """A CfRadial2 file whose sweeps run along ``time`` (what xradar's ``to_cfradial2`` writes)."""
+    import numpy as np
+
+    tree = make_synthetic_datatree(n_azimuth=36, n_range=30, elevations=[0.5, 1.5])
+    t0 = np.datetime64("2024-01-01T00:00:00", "ns")
+    for name in list(tree.children):
+        ds = tree[name].to_dataset()
+        ds = ds.assign_coords(time=("azimuth", t0 + np.arange(ds.sizes["azimuth"]) * 50_000_000))
+        tree[name] = xr.DataTree(ds.swap_dims({"azimuth": "time"}))
+    tree.to_netcdf(path)
+    return path
+
+
+class TestCfRadial2FirstDimension:
+    """A time-first CfRadial2 volume gets the xradar model (``azimuth`` dimension) like every format.
+
+    xradar's CfRadial2 reader keeps ``time`` as first dimension unless asked for ``first_dim="auto"``:
+    the sweeps then had no ``azimuth`` dimension and every algorithm failed with ``KeyError: 'azimuth'``.
+    """
+
+    def test_sweeps_run_along_azimuth(self, tmp_path: Path) -> None:
+        reader = RadarReader()
+        assert reader.open_file(str(_time_first_cfradial2(tmp_path / "cf2.nc")))["format"] == (
+            "cfradial2"
+        )
+        ds = reader.get_sweep_dataset(0)
+        assert "azimuth" in ds["DBZH"].dims and "time" not in ds["DBZH"].dims
+        assert ds.sizes["azimuth"] == 36
+
+    def test_a_module_runs_on_it(self, tmp_path: Path) -> None:
+        from engine import api
+
+        vol = api.open(str(_time_first_cfradial2(tmp_path / "cf2.nc")))
+        try:
+            res = vol.run("qc_clean", sweep=0)
+        finally:
+            vol.close()
+        assert res is not None
+
+    def test_xradar_without_the_keyword_still_opens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def old_opener(path: str, **kwargs: Any) -> xr.DataTree:
+            calls.append(kwargs)
+            if kwargs:
+                raise TypeError("open_datatree() got an unexpected keyword argument 'first_dim'")
+            return _synthetic()
+
+        wrapped = reader_mod._azimuth_first(old_opener)
+        assert wrapped("x.nc") is not None
+        assert calls == [{"first_dim": "auto"}, {}]
+
+    def test_other_type_errors_are_not_swallowed(self) -> None:
+        def broken(path: str, **kwargs: Any) -> xr.DataTree:
+            raise TypeError("something else")
+
+        with pytest.raises(TypeError, match="something else"):
+            reader_mod._azimuth_first(broken)("x.nc")
+
+
 class TestFormatTable:
     def test_new_formats_present(self) -> None:
         labels = {label for label, _, _ in _FORMAT_TABLE}

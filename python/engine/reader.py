@@ -11,7 +11,7 @@ import shutil
 import tempfile
 import threading
 import weakref
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -396,15 +396,36 @@ def _get_opener(format_name: str):
     opener = getattr(xd.io, func_name, None)
     if opener is None:
         raise ImportError(f"xradar.io.{func_name} not available in installed xradar version")
-    return opener
+    return _azimuth_first(opener) if format_name == "cfradial2" else opener
 
 
 def _engine_opener(xd: Any, engine: str):
-    def opener(path: str) -> xr.DataTree:
-        return xd.open_datatree(path, engine=engine)
+    def opener(path: str, **kwargs: Any) -> xr.DataTree:
+        return xd.open_datatree(path, engine=engine, **kwargs)
 
     opener.__name__ = f"open_{engine}"
-    return opener
+    return _azimuth_first(opener) if engine == "cfradial2" else opener
+
+
+def _azimuth_first(opener: Callable[..., xr.DataTree]) -> Callable[[str], xr.DataTree]:
+    """A CfRadial2 opener that gives the xradar model (sweeps along ``azimuth``).
+
+    xradar's CfRadial2 reader keeps the file's first dimension, ``time``, unless asked for
+    ``first_dim="auto"`` (every other reader defaults to that). A time-first volume has no
+    ``azimuth`` dimension, so the algorithms, QC and the pipeline failed on it with
+    ``KeyError: 'azimuth'``. An xradar without the keyword keeps its own behaviour.
+    """
+
+    def wrapped(path: str) -> xr.DataTree:
+        try:
+            return opener(path, first_dim="auto")
+        except TypeError as exc:
+            if "first_dim" not in str(exc):
+                raise
+            return opener(path)
+
+    wrapped.__name__ = getattr(opener, "__name__", "open_cfradial2")
+    return wrapped
 
 
 def _discover_format(path: str) -> str | None:
