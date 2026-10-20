@@ -38,7 +38,7 @@
 {#if visible}
   <!-- The toolbar sits inside the viewer canvas: keep its clicks from also adding measurement
        points, starting a pan or resetting the zoom on double-click. -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div class="measure-toolbar" class:has-result={!!activeResult}
        on:click|stopPropagation on:dblclick|stopPropagation
        on:mousedown|stopPropagation on:contextmenu|stopPropagation>

@@ -11,10 +11,7 @@ import type { Update } from '@tauri-apps/plugin-updater';
 import { settings } from '../stores/settings';
 import { updater, type UpdaterState, type UpdaterStatus } from '../stores/updater';
 import { operations } from './requestScheduler';
-import { pipelineBusy } from '../stores/pipeline';
-import { mosaicRun } from '../stores/mosaic';
-import { windRun } from '../stores/wind';
-import { runningModules } from '../stores/modules';
+import { jobCounts } from '../stores/jobSources';
 import { inTauri } from './env';
 import {
   autoCheckDue,
@@ -35,14 +32,14 @@ const RECHECK_EVERY_MS = 60 * 60 * 1000;
 
 /** The pieces of the app that run jobs, folded into one "is anything running" signal. */
 export const jobBusy = derived(
-  [operations, pipelineBusy, mosaicRun, windRun, runningModules],
-  ([$ops, $pipe, $mosaic, $wind, $mods]) =>
+  [operations, jobCounts],
+  ([$ops, $jobs]) =>
     busyState({
       operations: $ops,
-      pipelineBusy: $pipe,
-      mosaicRunning: !!$mosaic.running,
-      windRunning: !!$wind.running,
-      modulesRunning: Object.values($mods).filter(Boolean).length,
+      pipelineBusy: ($jobs.pipeline ?? 0) > 0 ? 'running' : null,
+      mosaicRunning: ($jobs.mosaic ?? 0) > 0,
+      windRunning: ($jobs.wind ?? 0) > 0,
+      modulesRunning: $jobs.modules ?? 0,
     }),
 );
 

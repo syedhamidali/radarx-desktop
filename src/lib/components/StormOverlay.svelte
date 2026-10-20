@@ -135,7 +135,7 @@
     <!-- HTML labels for each cell -->
     {#each cells as cell (cell.id)}
       {@const pos = polarToScreen(cell.centroid_az, cell.centroid_range, scale, translateX, translateY, maxRange, containerWidth, containerHeight)}
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <div
         class="cell-label"
         class:selected={cell.id === selectedId}

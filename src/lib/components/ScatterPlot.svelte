@@ -400,8 +400,12 @@
     <div class="scatter-loading scatter-error" role="alert">{errorText}</div>
   {/if}
 
+  <!-- Pointer-driven plot (zoom, pan, lasso); the numbers are in the point count line below. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <svg
     bind:this={svgEl}
+    role="img"
+    aria-label="Scatter plot of {var1} against {var2}{colorVar ? `, coloured by ${colorVar}` : ''}. Scroll to zoom, drag to pan, double-click to reset."
     {width}
     height={svgH}
     on:wheel={onWheel}

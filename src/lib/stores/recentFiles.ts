@@ -1,5 +1,6 @@
 import { derived } from 'svelte/store';
 import { settings, type RecentFile } from './settings';
+import { basename } from '../utils/env';
 
 const MAX_RECENT = 20;
 
@@ -15,7 +16,7 @@ function createRecentFilesStore() {
         const filtered = s.data.recentFiles.filter((f) => f.path !== path);
         const entry: RecentFile = {
           path,
-          name: name ?? path.split('/').pop() ?? path,
+          name: name ?? basename(path),
           openedAt: Date.now(),
           size,
         };

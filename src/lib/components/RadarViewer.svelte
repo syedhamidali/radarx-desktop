@@ -846,7 +846,7 @@
       {/if}
     </div>
 
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions a11y_no_noninteractive_tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_no_noninteractive_tabindex -->
     <div class="viewer-canvas" class:dragging={isDragging} class:measure-active={measureActive}
          style:display={isRhi ? 'none' : null}
          bind:this={canvasEl}

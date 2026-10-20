@@ -7,6 +7,14 @@ import { codecovVitePlugin } from "@codecov/vite-plugin";
 // Cargo.toml by the release bump), so it cannot go stale.
 const appVersion: string = JSON.parse(readFileSync("./package.json", "utf-8")).version;
 
+/** Map, satellite and elevation tile servers the app loads from (keep in step with tauri.conf.json). */
+const TILE_HOSTS = [
+  "https://tile.openstreetmap.org",
+  "https://*.tile.opentopomap.org",
+  "https://tiles.maps.eox.at",
+  "https://s3.amazonaws.com",
+].join(' ');
+
 /**
  * Web build only (`vite build --mode web`): the desktop app gets its CSP from tauri.conf.json, a
  * static site has no such file, so the equivalent policy is injected as a <meta> tag.
@@ -36,9 +44,12 @@ function webCsp(engineUrl: string | undefined, supabaseUrl: string = DEFAULT_SUP
       const engine = secure ? `wss://${host} https://${host}` : `ws://${host} http://${host}`;
       const csp = [
         "default-src 'self'",
-        `connect-src 'self' ${engine} ${supabaseUrl}`,
-        // Same tile servers as the desktop CSP (the map background loads them as images).
-        "img-src 'self' data: blob: https://api.mapbox.com https://*.tiles.mapbox.com https://tile.openstreetmap.org https://*.tile.opentopomap.org",
+        // Tiles are fetched (CORS) so they can be cached, and decoded as images when fetch is blocked: the
+        // tile hosts are in both lists. Same hosts as the desktop CSP (src-tauri/tauri.conf.json); the
+        // satellite imagery and elevation tiles of the realistic ground were missing here. The account
+        // server (Supabase) is the one other host the page talks to.
+        `connect-src 'self' ${engine} ${supabaseUrl} ${TILE_HOSTS}`,
+        `img-src 'self' data: blob: https://api.mapbox.com https://*.tiles.mapbox.com ${TILE_HOSTS}`,
         "style-src 'self' 'unsafe-inline' https://api.mapbox.com",
         "font-src 'self' data:",
         "script-src 'self' 'unsafe-inline' blob:",

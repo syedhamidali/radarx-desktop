@@ -18,6 +18,7 @@ import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { openFiles, type FileEntry } from './fileManager';
 import { connectionStatus } from './radarData';
 import { addToast } from './toasts';
+import { registerJobSource } from './jobSources';
 import { getMask, isMaskActive, type ValueMask } from './valueMask';
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -245,6 +246,7 @@ export const mosaicRun = writable<MosaicRunState>({
   message: '',
   error: null,
 });
+registerJobSource('mosaic', derived(mosaicRun, (r) => (r.running ? 1 : 0)));
 
 export const mosaicResult = writable<MosaicResult | null>(null);
 

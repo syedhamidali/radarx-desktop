@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy, untrack, tick } from 'svelte';
   import PpiOnlyNotice from './lib/components/PpiOnlyNotice.svelte';
-  import { source3d } from './lib/stores/volume3d';
+  import { source3d } from './lib/stores/source3d';
   import DataInspector from './lib/components/DataInspector.svelte';
   import ToastContainer from './lib/components/ToastContainer.svelte';
   import WorkspaceSwitcher from './lib/components/WorkspaceSwitcher.svelte';
@@ -17,7 +17,8 @@
   import AccountChip from './lib/components/AccountChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
-  import UpdateDialog from './lib/components/UpdateDialog.svelte';
+  import { updater } from './lib/stores/updater';
+  import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
@@ -32,7 +33,7 @@
   import { startUiHealth, stopUiHealth } from './lib/utils/uiHealth';
   import { addToast } from './lib/stores/toasts';
   import { workspaceStore, type WorkspaceConfig } from './lib/stores/workspace';
-  import { isWebMode } from './lib/utils/env';
+  import { isWebMode, basename } from './lib/utils/env';
   import { webUi, engineState, engineStatusMessage } from './lib/stores/webInfo';
   import { uploadFiles } from './lib/utils/upload';
   import { applyThemeMode } from './lib/utils/theme';
@@ -59,6 +60,7 @@
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
+  const updateDialog = lazy(() => import('./lib/components/UpdateDialog.svelte'));
   // "Share" offer after an image or movie is saved.
   const shareHost = lazy(() => import('./lib/components/ShareHost.svelte'));
 
@@ -146,6 +148,9 @@
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
   $effect(() => { whenIdle(() => envDialog.load()); });
+  // Not needed for the first paint: fetched when idle (so its fade-in plays), or at once if it is asked for.
+  $effect(() => { whenIdle(() => updateDialog.load()); });
+  $effect(() => { if ($updater.dialogOpen) updateDialog.load(); });
   $effect(() => { whenIdle(() => shareHost.load()); });
   let isDragOver = $state(false);
   let isPlaying = $state(false);
@@ -179,9 +184,6 @@
   let isResizingRight = false;
   let resizeStartX = 0;
   let resizeStartWidth = 0;
-  const SIDEBAR_MIN = 200;
-  const SIDEBAR_MAX = 500;
-  const SIDEBAR_DEFAULT = 300;
 
   // --- Workspace sync ---
   function applyWorkspace(config: WorkspaceConfig) {
@@ -608,7 +610,7 @@
 
   function beginOpenOp(path: string) {
     if (openOp) { const prev = openOp; openOp = null; cancelOp(prev.id); }
-    const name = path.split('/').pop() ?? path;
+    const name = basename(path);
     const op: OpHandle = beginOp({
       kind: 'open',
       label: `Opening ${name}`,
@@ -670,7 +672,7 @@
 
   /** Request a file open. Returns false when the file is already open (its tab is activated). */
   function sendOpenFile(path: string): boolean {
-    const name = path.split('/').pop() ?? path;
+    const name = basename(path);
     const existing = get(openFiles).find((f) => f.path === path);
     if (existing) {
       // A second reader of the same file would only duplicate its memory and its timeline entry.
@@ -814,10 +816,10 @@
   function onResizeMove(e: MouseEvent) {
     if (isResizingLeft) {
       const delta = e.clientX - resizeStartX;
-      leftSidebarWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, resizeStartWidth + delta));
+      leftSidebarWidth = clampSidebarWidth(resizeStartWidth + delta);
     } else if (isResizingRight) {
       const delta = resizeStartX - e.clientX;
-      rightSidebarWidth = Math.max(SIDEBAR_MIN, Math.min(SIDEBAR_MAX, resizeStartWidth + delta));
+      rightSidebarWidth = clampSidebarWidth(resizeStartWidth + delta);
     }
   }
 
@@ -831,8 +833,22 @@
     syncWorkspace();
   }
 
-  function resetLeftWidth() { leftSidebarWidth = SIDEBAR_DEFAULT; }
-  function resetRightWidth() { rightSidebarWidth = SIDEBAR_DEFAULT; }
+  // A double click is two mouse-downs and mouse-ups first (each one saved the old width), so the
+  // reset has to be saved too, or the next launch comes back with the width that was just reset.
+  function resetLeftWidth() { leftSidebarWidth = SIDEBAR_DEFAULT; syncWorkspace(); }
+  function resetRightWidth() { rightSidebarWidth = SIDEBAR_DEFAULT; syncWorkspace(); }
+
+  /** Keyboard resizing of a sidebar (the handles are focusable separators). */
+  function onResizeKey(side: 'left' | 'right', e: KeyboardEvent) {
+    const cur = side === 'left' ? leftSidebarWidth : rightSidebarWidth;
+    const next = sidebarWidthAfterKey(side, e.key, e.shiftKey, cur);
+    if (next === null) return;
+    e.preventDefault();
+    e.stopPropagation(); // the arrows / Home / End also step through sweeps at app level
+    if (side === 'left') leftSidebarWidth = next;
+    else rightSidebarWidth = next;
+    syncWorkspace();
+  }
 
   function handleWorkspaceSwitch(e: CustomEvent<{ config: WorkspaceConfig }>) {
     applyWorkspace(e.detail.config);
@@ -840,7 +856,7 @@
   }
 </script>
 
-<!-- svelte-ignore a11y-no-static-element-interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="app-layout">
   <input
     type="file"
@@ -989,12 +1005,21 @@
       <DataInspector />
     </aside>
     {#if leftSidebarOpen}
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <!-- A focusable separator is a widget (ARIA window splitter): svelte only knows the static role. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
         class="resize-handle resize-handle-left"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the data inspector"
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={leftSidebarWidth}
+        tabindex="0"
         on:mousedown={startResizeLeft}
         on:dblclick={resetLeftWidth}
-        title="Drag to resize, double-click to reset"
+        on:keydown={(e) => onResizeKey('left', e)}
+        title="Drag to resize, double-click to reset (arrow keys when focused)"
       ></div>
     {/if}
     <div class="viewer-and-timeline">
@@ -1034,12 +1059,21 @@
       {/if}
     </div>
     {#if rightSidebarOpen}
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <!-- A focusable separator is a widget (ARIA window splitter): svelte only knows the static role. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
         class="resize-handle resize-handle-right"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize the tools panel"
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        aria-valuenow={rightSidebarWidth}
+        tabindex="0"
         on:mousedown={startResizeRight}
         on:dblclick={resetRightWidth}
-        title="Drag to resize, double-click to reset"
+        on:keydown={(e) => onResizeKey('right', e)}
+        title="Drag to resize, double-click to reset (arrow keys when focused)"
       ></div>
     {/if}
     <aside
@@ -1067,7 +1101,7 @@
     <div class="statusbar-center">
       {#if filePath}
         <span class="hud-label sb-key">FILE</span>
-        <span class="file-path mono" title={filePath}>{filePath.split('/').pop() ?? filePath}</span>
+        <span class="file-path mono" title={filePath}>{basename(filePath)}</span>
         {#if variableCount > 0}<span class="statusbar-divider">/</span><span class="mono sb-dim">{variableCount} vars</span>{/if}
       {:else}
         <span class="sb-dim">No file loaded. Drag and drop, or {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+O</span>
@@ -1095,7 +1129,7 @@
   </footer>
 
   <ToastContainer />
-  <UpdateDialog />
+  {#if updateDialog.component}<updateDialog.component />{/if}
   {#if $dataCheckOpen && dataCheckPanel.component}<dataCheckPanel.component onshowpanel={showPanel} />{/if}
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
@@ -1328,4 +1362,9 @@
     transition: opacity var(--dur-fast);
   }
   .resize-handle:hover::after { opacity: 0.5; }
+  .resize-handle:focus-visible {
+    outline: none; background: var(--c-accent);
+    box-shadow: 0 0 8px rgba(var(--c-accent-rgb), 0.4);
+  }
+  .resize-handle:focus-visible::after { opacity: 0.5; }
 </style>

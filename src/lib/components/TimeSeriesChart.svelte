@@ -396,7 +396,7 @@
       </div>
 
       <!-- SVG Chart -->
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
         class="ts-svg"
         viewBox="0 0 {width} {height}"

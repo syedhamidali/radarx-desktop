@@ -192,8 +192,7 @@
 <svelte:window on:keydown={handleKeyDown} />
 
 {#if open}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="settings-overlay" on:click={handleOverlayClick}>
     <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings" use:focusTrap={{ initial: '.tab-btn.active' }}>
       <!-- Header -->
@@ -208,8 +207,8 @@
 
       <div class="settings-body">
         <!-- Tab bar -->
-        <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
-          {#each tabs as tab}
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
+          {#each tabs as tab (tab.id)}
             <button
               class="tab-btn"
               role="tab"
@@ -220,7 +219,7 @@
               {tab.label}
             </button>
           {/each}
-        </nav>
+        </div>
 
         <!-- Tab content -->
         <div class="tab-content">
@@ -229,8 +228,8 @@
             <div class="settings-section">
               <h3>Theme</h3>
               <div class="form-row">
-                <label class="form-label">Appearance</label>
-                <div class="btn-group">
+                <span class="form-label" id="st-appearance">Appearance</span>
+                <div class="btn-group" role="group" aria-labelledby="st-appearance">
                   <button
                     class:active={s.theme.mode === 'dark'}
                     on:click={() => setThemeMode('dark')}
@@ -247,8 +246,8 @@
               </div>
 
               <div class="form-row">
-                <label class="form-label">Accent color</label>
-                <div class="accent-row">
+                <span class="form-label" id="st-accent">Accent color</span>
+                <div class="accent-row" role="group" aria-labelledby="st-accent">
                   {#each accentPresets as color}
                     <button
                       class="color-swatch"
@@ -256,6 +255,8 @@
                       style="background: {color}"
                       on:click={() => setAccentColor(color)}
                       title={color}
+                      aria-label="Accent colour {color}"
+                      aria-pressed={s.theme.accentColor === color}
                     ></button>
                   {/each}
                   <input
@@ -264,18 +265,20 @@
                     on:input={(e) => setAccentColor(e.currentTarget.value)}
                     class="color-input"
                     title="Custom color"
+                    aria-label="Custom accent colour"
                   />
                 </div>
               </div>
 
               <div class="form-row">
-                <label class="form-label">Font size</label>
+                <label class="form-label" for="st-font-size">Font size</label>
                 <div class="inline-control">
                   <input
                     type="range"
                     min="11"
                     max="18"
                     step="1"
+                    id="st-font-size"
                     value={s.theme.fontSize}
                     on:input={(e) => setFontSize(parseInt(e.currentTarget.value))}
                     class="range-input"
@@ -290,15 +293,16 @@
                 <h3>Rendering</h3>
               </div>
               <div class="form-row">
-                <label class="form-label">Antialiasing</label>
+                <label class="form-label" for="st-antialias">Antialiasing</label>
                 <label class="toggle-label">
-                  <input type="checkbox" checked={s.rendering.antialias} on:change={toggleAntialias} />
+                  <input id="st-antialias" type="checkbox" checked={s.rendering.antialias} on:change={toggleAntialias} />
                   <span>{s.rendering.antialias ? 'On' : 'Off'}</span>
                 </label>
               </div>
               <div class="form-row">
-                <label class="form-label">Interpolation</label>
+                <label class="form-label" for="st-interp">Interpolation</label>
                 <select
+                  id="st-interp"
                   value={s.rendering.interpolation}
                   on:change={(e) => setInterpolation(e.currentTarget.value as 'nearest' | 'bilinear')}
                 >
@@ -319,9 +323,10 @@
             <div class="settings-section">
               <h3>Map Display</h3>
               <div class="form-row">
-                <label class="form-label">Background color</label>
+                <label class="form-label" for="st-bg">Background color</label>
                 <div class="inline-control">
                   <input
+                    id="st-bg"
                     type="color"
                     value={s.display.bgColor}
                     on:input={(e) => setBgColor(e.currentTarget.value)}
@@ -332,18 +337,19 @@
               </div>
 
               <div class="form-row">
-                <label class="form-label">Range rings</label>
+                <label class="form-label" for="st-rings">Range rings</label>
                 <label class="toggle-label">
-                  <input type="checkbox" checked={s.display.showRangeRings} on:change={toggleRangeRings} />
+                  <input id="st-rings" type="checkbox" checked={s.display.showRangeRings} on:change={toggleRangeRings} />
                   <span>{s.display.showRangeRings ? 'Visible' : 'Hidden'}</span>
                 </label>
               </div>
 
               {#if s.display.showRangeRings}
                 <div class="form-row">
-                  <label class="form-label">Ring color</label>
+                  <label class="form-label" for="st-ring-color">Ring color</label>
                   <div class="inline-control">
                     <input
+                      id="st-ring-color"
                       type="color"
                       value={s.display.rangeRingColor}
                       on:input={(e) => setRangeRingColor(e.currentTarget.value)}
@@ -354,9 +360,9 @@
               {/if}
 
               <div class="form-row">
-                <label class="form-label">Crosshair</label>
+                <label class="form-label" for="st-crosshair">Crosshair</label>
                 <label class="toggle-label">
-                  <input type="checkbox" checked={s.display.showCrosshair} on:change={toggleCrosshair} />
+                  <input id="st-crosshair" type="checkbox" checked={s.display.showCrosshair} on:change={toggleCrosshair} />
                   <span>{s.display.showCrosshair ? 'Visible' : 'Hidden'}</span>
                 </label>
               </div>
@@ -368,8 +374,9 @@
               <div class="cmap-grid">
                 {#each Object.entries(s.display.defaultCmapPerVariable) as [variable, cmap]}
                   <div class="form-row compact">
-                    <label class="form-label mono">{variable}</label>
+                    <label class="form-label mono" for="st-cmap-{variable}">{variable}</label>
                     <input
+                      id="st-cmap-{variable}"
                       type="text"
                       value={cmap}
                       on:change={(e) => {
@@ -403,8 +410,9 @@
             <div class="settings-section">
               <h3>File Handling</h3>
               <div class="form-row">
-                <label class="form-label">Default directory</label>
+                <label class="form-label" for="st-default-dir">Default directory</label>
                 <input
+                  id="st-default-dir"
                   type="text"
                   value={s.data.defaultDirectory}
                   on:change={(e) => setDefaultDirectory(e.currentTarget.value)}
@@ -413,9 +421,9 @@
                 />
               </div>
               <div class="form-row">
-                <label class="form-label">Auto-load last file</label>
+                <label class="form-label" for="st-autoload">Auto-load last file</label>
                 <label class="toggle-label">
-                  <input type="checkbox" checked={s.data.autoLoadLast} on:change={setAutoLoadLast} />
+                  <input id="st-autoload" type="checkbox" checked={s.data.autoLoadLast} on:change={setAutoLoadLast} />
                   <span>{s.data.autoLoadLast ? 'Yes' : 'No'}</span>
                 </label>
               </div>
@@ -446,6 +454,7 @@
                           class="icon-btn-sm"
                           on:click={() => recentFiles.remove(file.path)}
                           title="Remove"
+                          aria-label="Remove {file.name} from recent files"
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                             <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
@@ -475,8 +484,9 @@
             <div class="settings-section">
               <h3>Export Defaults</h3>
               <div class="form-row">
-                <label class="form-label">Format</label>
+                <label class="form-label" for="st-export-format">Format</label>
                 <select
+                  id="st-export-format"
                   value={s.export_.defaultFormat}
                   on:change={(e) => setExportFormat(e.currentTarget.value as 'png' | 'svg' | 'pdf')}
                 >
@@ -487,9 +497,10 @@
               </div>
 
               <div class="form-row">
-                <label class="form-label">DPI</label>
+                <label class="form-label" for="st-export-dpi">DPI</label>
                 <div class="inline-control">
                   <input
+                    id="st-export-dpi"
                     type="number"
                     min="72"
                     max="600"
@@ -502,8 +513,9 @@
               </div>
 
               <div class="form-row">
-                <label class="form-label">Output directory</label>
+                <label class="form-label" for="st-export-dir">Output directory</label>
                 <input
+                  id="st-export-dir"
                   type="text"
                   value={s.export_.outputDirectory}
                   on:change={(e) => setExportDir(e.currentTarget.value)}

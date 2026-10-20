@@ -20,6 +20,7 @@ import { wsManager } from '../utils/websocket';
 import { connectionStatus, selectedSweep } from './radarData';
 import { activeFileId, getActiveFile } from './fileManager';
 import { addToast } from './toasts';
+import { registerJobSource } from './jobSources';
 import {
   moduleResults,
   showFieldOnPpi,
@@ -118,6 +119,7 @@ export const recipesDir = writable<string>('');
 export const previewResult = writable<PreviewState | null>(null);
 export const runResult = writable<PipelineRunResult | null>(null);
 export const pipelineBusy = writable<'preview' | 'run' | null>(null);
+registerJobSource('pipeline', derived(pipelineBusy, (b) => (b ? 1 : 0)));
 export const pipelineView = writable<PipelineView>(null);
 
 let uidCounter = 0;

@@ -738,7 +738,7 @@
     </div>
   </div>
 
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div class="csl-stage" bind:this={stageEl} role="application" tabindex="0" aria-label={ariaLabel}
        onmousemove={onMove} onmouseleave={() => (hover = null)} onmousedown={onDown}
        ondblclick={resetView} onkeydown={onKey}

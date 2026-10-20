@@ -100,6 +100,7 @@
   let unsubOpened: (() => void) | null = null;
   let unsubError: (() => void) | null = null;
   let unsubDrop: (() => void) | null = null;
+  let unsubStationsConn: (() => void) | null = null;
   let unsubWebUi: (() => void) | null = null;
 
   /** Welcome screen (web): switch to the real-time tab and fetch the latest scan. */
@@ -163,13 +164,15 @@
       if (s !== 'connected' && cloudOp) endCloudOp('Connection to the sidecar was lost');
     });
 
-    // Auto-fetch station list once connected
-    const unsubConn = connectionStatus.subscribe((s) => {
-      if (s === 'connected' && stations.length === 0) {
-        loadingStations = true;
-        wsManager.send({ type: 'list_nexrad_stations' });
-        unsubConn();
-      }
+    // Auto-fetch the station list once connected. The first callback runs inside subscribe() when the
+    // engine is already connected (the usual case: this panel loads after the first paint), so the
+    // subscription must not be unsubscribed from inside it: its handle does not exist yet.
+    let stationsRequested = false;
+    unsubStationsConn = connectionStatus.subscribe((s) => {
+      if (stationsRequested || s !== 'connected' || stations.length > 0) return;
+      stationsRequested = true;
+      loadingStations = true;
+      wsManager.send({ type: 'list_nexrad_stations' });
     });
   });
 
@@ -179,6 +182,7 @@
     unsubWebUi?.();
     if (cloudOp) cancelOp(cloudOp.id);
     unsubStations?.();
+    unsubStationsConn?.();
     unsubFiles?.();
     unsubArco?.();
     unsubOpened?.();
@@ -493,10 +497,10 @@
 
     <!-- Station row -->
     <div class="cdp-row">
-      <label class="cdp-label">{mode === 'network' ? 'Centre' : 'Station'}</label>
+      <label class="cdp-label" for="cdp-station">{mode === 'network' ? 'Centre' : 'Station'}</label>
       <div class="cdp-station-row">
         {#if stations.length > 0}
-          <select class="cdp-select" bind:value={selectedStation}>
+          <select id="cdp-station" class="cdp-select" bind:value={selectedStation}>
             {#each stations as s}
               <option value={s.id}>{s.id}{s.arco ? ' ★' : ''}</option>
             {/each}
@@ -527,8 +531,8 @@
     {#if mode === 'archive'}
       <div class="cdp-section">
         <div class="cdp-row">
-          <label class="cdp-label">Date</label>
-          <input type="date" class="cdp-input flex1" bind:value={archiveDate} />
+          <label class="cdp-label" for="cdp-archive-date">Date</label>
+          <input id="cdp-archive-date" type="date" class="cdp-input flex1" bind:value={archiveDate} />
         </div>
         <button class="cdp-btn full" on:click={fetchL2Files} disabled={!isConnected || loadingFiles || !selectedStation}>
           {loadingFiles ? 'Loading…' : 'List Files'}
