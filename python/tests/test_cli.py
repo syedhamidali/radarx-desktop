@@ -1129,7 +1129,10 @@ def test_import_xrd_is_import_rxd_and_warns() -> None:
     )
     assert done.returncode == 0, done.stderr
     assert "warned" in done.stdout
-    same = "import warnings; warnings.simplefilter('ignore'); import rxd, xrd; assert xrd.open is rxd.open and xrd.__all__ == rxd.__all__"
+    same = (
+        "import warnings; warnings.simplefilter('ignore'); import rxd, xrd; "
+        "assert xrd.open is rxd.open and xrd.__all__ == rxd.__all__"
+    )
     done = subprocess.run(
         [sys.executable, "-W", "ignore", "-c", same],
         cwd=PYTHON_DIR,
