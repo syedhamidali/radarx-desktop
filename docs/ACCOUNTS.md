@@ -244,11 +244,29 @@ protection. Everything below is real, including what is not worth fixing:
    supabase config push                                   # applies supabase/config.toml (auth settings)
    ```
 
-2. **Custom SMTP: required before real users sign up.** Supabase's built-in mailer is for testing and sends only a
-   handful of e-mails per hour for the whole project, far too few for sign-up and reset codes. In *Authentication >
-   Emails > SMTP Settings* (or in `supabase/config.toml` `[auth.email.smtp]`, with the password given as `env(...)`)
-   configure a real mail provider and a sender address you own; only then does `[auth.rate_limit] email_sent`
-   apply. `site_url` in `config.toml` is deliberately an https address (the project page): `config push` writes it to
+2. **E-mail sending: required before real users sign up.** Supabase's built-in mailer is for testing and sends only a
+   handful of e-mails per hour for the whole project, far too few for sign-up and reset codes. Radarx sends its
+   account e-mails with **Resend, and with Mailjet when Resend fails**, through Supabase's *Send Email* hook: the function
+   in `supabase/functions/send-auth-email/` (its README has the exact commands). Supabase's own SMTP setting accepts only
+   one provider, which is why the hook is used. While the hook is on, Supabase sends nothing itself and the templates in
+   `supabase/templates/` are not used (the function builds the message; the wording is in `mail.ts`).
+   - **Sending domain: `radarx.labshope.com`.** Mail is sent from an address on that subdomain
+     (`no-reply@radarx.labshope.com`), which must be verified at **both** providers. In Cloudflare DNS that name has no
+     mail records yet and labshope.com has no DMARC record. The exact steps (records, one SPF record per name, a
+     monitoring DMARC policy, and why the website name must be a Worker **Custom Domain** and not a hand-made CNAME) are in
+     the function's README. Do not touch labshope.com's existing SPF record.
+   - **Resend:** create the account, add and verify `radarx.labshope.com` (it shows the DNS records), and create an API
+     key with sending access only.
+   - **Mailjet:** authenticate the same sending domain there. LIMS's existing sender on labshope.com is a different
+     address and domain: leave it alone. Create a **separate** API key pair for Radarx so it can be revoked on its own.
+   - **Secrets:** you type them with `supabase secrets set ...` (the README has the list); never paste them into a chat,
+     a file in git or an issue.
+   - **Simpler alternative with one provider:** *Authentication > Emails > SMTP Settings* with Resend's SMTP
+     (host `smtp.resend.com`, user `resend`, the API key as password). Then there is no fallback.
+   - Not verified here: the function was tested against mock providers only (no Deno on the build machine, no real
+     Resend or Mailjet account, nothing deployed). Send a real test sign-up and read the function's logs
+     (they show the provider that sent it, never the address or the code) before announcing anything.
+   `site_url` in `config.toml` is deliberately an https address (the project page): `config push` writes it to
    the hosted project, and the e-mails carry codes, not links.
 
 3. **E-mail codes.** The app asks for a 6-digit code (a desktop app has no web page to open a link in).
