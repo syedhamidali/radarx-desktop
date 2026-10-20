@@ -7,7 +7,7 @@ import {
 const payload = (type = 'signup', token = '123456', email = 'ada@example.test') => ({
   user: { email }, email_data: { token, email_action_type: type },
 });
-const FROM = 'Radarx <no-reply@labshope.com>';
+const FROM = 'Radarx <no-reply@radarx.labshope.com>';
 const KEY_R = 're_SECRETKEY_1234567890';
 const KEY_M = 'mjkey_ABCDEF';
 const SEC_M = 'mjsecret_UVWXYZ';
@@ -47,8 +47,8 @@ test('unsupported kinds, bad codes and bad recipients are refused, not guessed',
 });
 
 test('the sender is parsed from "Name <addr>" and from a bare address', () => {
-  assert.deepEqual(parseFrom('Radarx <no-reply@labshope.com>'), { name: 'Radarx', email: 'no-reply@labshope.com' });
-  assert.deepEqual(parseFrom('no-reply@labshope.com'), { name: '', email: 'no-reply@labshope.com' });
+  assert.deepEqual(parseFrom('Radarx <no-reply@radarx.labshope.com>'), { name: 'Radarx', email: 'no-reply@radarx.labshope.com' });
+  assert.deepEqual(parseFrom('no-reply@radarx.labshope.com'), { name: '', email: 'no-reply@radarx.labshope.com' });
   assert.throws(() => parseFrom('nonsense'), /MAIL_FROM/);
 });
 
@@ -84,7 +84,7 @@ test('a refusing Resend falls back to Mailjet, with the right request', async ()
   const call = f.calls[1];
   assert.equal(call.init.headers.Authorization, `Basic ${btoa(`${KEY_M}:${SEC_M}`)}`);
   const msg = JSON.parse(call.init.body).Messages[0];
-  assert.deepEqual(msg.From, { Email: 'no-reply@labshope.com', Name: 'Radarx' });
+  assert.deepEqual(msg.From, { Email: 'no-reply@radarx.labshope.com', Name: 'Radarx' });
   assert.deepEqual(msg.To, [{ Email: 'ada@example.test' }]);
   assert.match(msg.TextPart, /123456/);
 });

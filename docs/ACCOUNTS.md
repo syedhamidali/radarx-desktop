@@ -250,11 +250,15 @@ protection. Everything below is real, including what is not worth fixing:
    in `supabase/functions/send-auth-email/` (its README has the exact commands). Supabase's own SMTP setting accepts only
    one provider, which is why the hook is used. While the hook is on, Supabase sends nothing itself and the templates in
    `supabase/templates/` are not used (the function builds the message; the wording is in `mail.ts`).
-   - **Resend:** create the account, add and verify your sending domain (it shows the DNS records to add in Cloudflare;
-     do not edit labshope.com's existing SPF record, a domain may have only one, and it already covers Mailjet and
-     Cloudflare Email Routing), and create an API key with sending access only.
-   - **Mailjet:** the sender `no-reply@labshope.com` is already authorised for LIMS. Create a **separate** API key pair for
-     Radarx so it can be revoked on its own.
+   - **Sending domain: `radarx.labshope.com`.** Mail is sent from an address on that subdomain
+     (`no-reply@radarx.labshope.com`), which must be verified at **both** providers. In Cloudflare DNS that name has no
+     mail records yet and labshope.com has no DMARC record. The exact steps (records, one SPF record per name, a
+     monitoring DMARC policy, and why the website name must be a Worker **Custom Domain** and not a hand-made CNAME) are in
+     the function's README. Do not touch labshope.com's existing SPF record.
+   - **Resend:** create the account, add and verify `radarx.labshope.com` (it shows the DNS records), and create an API
+     key with sending access only.
+   - **Mailjet:** authenticate the same sending domain there. LIMS's existing sender on labshope.com is a different
+     address and domain: leave it alone. Create a **separate** API key pair for Radarx so it can be revoked on its own.
    - **Secrets:** you type them with `supabase secrets set ...` (the README has the list); never paste them into a chat,
      a file in git or an issue.
    - **Simpler alternative with one provider:** *Authentication > Emails > SMTP Settings* with Resend's SMTP
