@@ -265,7 +265,11 @@ def _read(ds, name: str) -> np.ndarray | None:
 
 
 def load_grid(
-    path: str | Path, radar: str, qc: QCConfig | None = None, shift_asl: bool = True
+    path: str | Path,
+    radar: str,
+    qc: QCConfig | None = None,
+    shift_asl: bool = True,
+    ref_var: str | None = None,
 ) -> RadarGrid:
     """One radar's grid with QC. Fields: ``dbz, vel, zdr, rho, kdp`` and ``roi`` (m) where present.
 
@@ -294,6 +298,11 @@ def load_grid(
     if radar == "SMARTR2" and raw.get("DBZC") is not None:
         ref_name = "DBZC"
         notes.append("reflectivity from DBZC (its REF holds unmasked fill values)")
+    if ref_var is not None:
+        if raw.get(ref_var) is None:
+            raise ValueError(f"{path.name}: no field {ref_var}")
+        ref_name = ref_var
+        notes.append(f"reflectivity from {ref_var} (chosen)")
     dbz = raw[ref_name]
     out: dict[str, np.ndarray] = {}
     if dbz is None:
@@ -364,6 +373,8 @@ def load_grid(
             out[n_] = a
     if roi is not None:
         out["roi"] = roi
+    if ncp is not None:
+        out["ncp"] = ncp
     if shift_asl:
         for k in list(out):
             out[k] = shift_to_asl(out[k], origin_alt)

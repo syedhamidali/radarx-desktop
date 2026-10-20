@@ -4,7 +4,7 @@ No real data are needed: every expected value comes from an analytic case (a sol
 wind, an exponential drop size distribution with N(D) = N0 exp(-L D) whose Dm is 4 / L and Nw is N0, a shifted
 blob, hand-computed weights), not from running the code under test.
 """
-# ruff: noqa: N806, E501, RUF012, E731  (radar maths: X, Y, R, T, P are the usual capitals; long assert lines)
+# ruff: noqa: N806, E501, RUF012, E731 (radar maths: X, Y, R, T, P are the usual capitals; long assert lines)
 
 from __future__ import annotations
 
@@ -21,12 +21,15 @@ import pytest
 TOOLS = Path(__file__).resolve().parents[2] / "tools" / "perils_movie"
 sys.path.insert(0, str(TOOLS))
 
+import atten
 import bundle
 import context
 import events
 import hailconv
 import merge
 import pgrid
+import refl
+import reflcheck
 import rotation
 import stations
 import thermo
@@ -922,3 +925,225 @@ class TestMoreStationsAndContext:
         m = r["centroid_motion"]
         assert m["u_ms"] == pytest.approx(7560.0 / 756.0, abs=0.01)
         assert m["v_ms"] == pytest.approx(1.0, abs=0.01)
+
+
+# ---------------------------------------------------------------------------
+# reflectivity merge v2 (synthetic)
+# ---------------------------------------------------------------------------
+
+XK = np.arange(-30.0, 30.001, 0.5)
+ZK = np.array([0.5, 1.0])
+
+
+def test_attenuation_correction_recovers_known_x_band_attenuation():
+    ny = nx = XK.size
+    xx, yy = np.meshgrid(XK, XK)
+    rr = np.hypot(xx, yy)
+    true = 40.0
+    kdp = np.full((ZK.size, ny, nx), 1.0, np.float32)  # 1 deg/km everywhere
+    obs = np.broadcast_to(true - 2.0 * atten.ALPHA["X"] * rr, (ZK.size, ny, nx)).astype(np.float32)
+    rho = np.full_like(kdp, 0.98)
+    out = atten.attenuation_correction(obs, kdp, rho, XK, XK, ZK, (0.0, 0.0), "X")
+    assert out["applied"]
+    sel = (rr > 3.0) & (rr < 18.0)  # below the 12 dB cap (21 km at 0.56 dB/km two-way)
+    err = (out["dbz"][0] - true)[sel]
+    assert abs(float(np.median(err))) < 0.7
+    assert np.percentile(np.abs(err), 95) < 1.5
+    beyond = rr > 24.0
+    assert ((out["flags"][0] & 1) > 0)[beyond].mean() > 0.95  # capped and flagged
+    assert out["corr_db"].max() <= atten.CAP_DB["X"] + 1e-3
+    # S band needs very little, and a radar without KDP is left alone
+    s = atten.attenuation_correction(obs, kdp, rho, XK, XK, ZK, (0.0, 0.0), "S")
+    assert s["corr_db"].max() <= atten.CAP_DB["S"] + 1e-3
+    none = atten.attenuation_correction(obs, None, None, XK, XK, ZK, (0.0, 0.0), "C")
+    assert not none["applied"]
+    assert np.array_equal(none["dbz"], obs)
+
+
+def test_attenuation_ignores_low_rho_kdp():
+    kdp = np.full((ZK.size, XK.size, XK.size), 2.0, np.float32)
+    rho = np.full_like(kdp, 0.5)  # non-meteorological everywhere: KDP not trusted
+    obs = np.full_like(kdp, 30.0)
+    out = atten.attenuation_correction(obs, kdp, rho, XK, XK, ZK, (0.0, 0.0), "C")
+    assert float(out["corr_db"].max()) < 0.1
+    assert ((out["flags"] & 2) > 0).mean() > 0.9  # and the missing KDP is flagged
+
+
+def _synth_ref(shape=(9, 61, 61)):
+    z, y, x = np.meshgrid(
+        np.arange(shape[0]), np.arange(shape[1]), np.arange(shape[2]), indexing="ij"
+    )
+    return (32.0 + 4.0 * np.sin(x / 9.0) * np.cos(y / 11.0) + 0.3 * z).astype(np.float32)
+
+
+def _prep(
+    radar, band, dbz, xk, yk, xy=(0.0, 0.0), corr=0.0, calib_unc=1.8, flags=0, excluded=False
+):
+    return refl.Prepared(
+        radar=radar,
+        band=band,
+        dbz=dbz.astype(np.float32),
+        dbz_raw=dbz.astype(np.float32),
+        roi=np.full(dbz.shape, 500.0, np.float32),
+        corr_db=np.full(dbz.shape, corr, np.float32),
+        flags=np.full(dbz.shape, flags, np.uint8),
+        ncp=None,
+        xy_km=xy,
+        alt_m=100.0,
+        offset_s=0.0,
+        calib_unc_db=calib_unc,
+        excluded=excluded,
+    )
+
+
+def test_offset_vs_reference_recovers_known_offset_and_estimate_is_stable():
+    zk = np.arange(9) * 0.25
+    xk = np.arange(61) * 0.5 - 15.0
+    ref = _synth_ref()
+    rng = np.random.default_rng(3)
+    rois = np.full(ref.shape, 500.0, np.float32)
+    rows = []
+    for _ in range(5):
+        p = _prep("NOXP", "X", ref + 2.5 + rng.normal(0, 1.0, ref.shape), xk, xk)
+        r = refl.offset_vs_reference(p, ref, rois, xk, xk, zk)
+        assert r["n"] > 500
+        assert r["median_db"] == pytest.approx(2.5, abs=0.2)
+        rows.append(r)
+    cal = refl.estimate_calibration({"NOXP": rows})
+    assert cal["NOXP"]["applied"]
+    assert cal["NOXP"]["offset_db"] == pytest.approx(2.5, abs=0.2)
+    assert not cal["NOXP"]["exclude_from_blend"]
+
+
+def test_estimate_calibration_refuses_unstable_small_and_nonlinear():
+    def rows(vals, lev=None):
+        return [{"median_db": v, "n": 1000, "median_by_reference_level": lev or {}} for v in vals]
+
+    cal = refl.estimate_calibration(
+        {
+            "STABLE": rows([-3.1, -2.9, -3.0, -3.2, -2.8]),
+            "NOISY": rows([-6.0, 1.0, -4.0, 3.0, -2.0]),
+            "SMALL": rows([0.1, 0.0, 0.2, 0.1, 0.0]),
+            "FEW": rows([-3.0, -3.0]),
+            "NONLIN": rows([-8.0] * 5, {"ref 20-30 dBZ": -14.0, "ref 30-40 dBZ": -6.0}),
+        }
+    )
+    assert cal["STABLE"]["applied"] and cal["STABLE"]["offset_db"] == pytest.approx(-3.0, abs=0.05)
+    assert not cal["NOISY"]["applied"] and "stable" in cal["NOISY"]["reason"]
+    assert not cal["SMALL"]["applied"]
+    assert not cal["FEW"]["applied"]
+    assert cal["NONLIN"]["exclude_from_blend"] and not cal["NONLIN"]["applied"]
+
+
+def test_pair_stats_recovers_known_bias():
+    zk = np.arange(9) * 0.25
+    a = _synth_ref()
+    b = a - 3.0
+    roi = np.full(a.shape, 500.0, np.float32)
+    xk = np.arange(61) * 0.5 - 15.0
+    st = reflcheck.pair_stats(a, b, zk, xk, xk, (0.0, 0.0), roi, roi)
+    assert st["median_db"] == pytest.approx(3.0, abs=1e-3)
+    assert st["robust_sigma_db"] < 0.01
+    assert st["corr"] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_weights_favour_s_band_short_range_and_small_correction():
+    shape = (3, XK.size, XK.size)
+    z3 = np.array([0.5, 1.0, 1.5])
+    d = np.full(shape, 40.0, np.float32)
+    ws, _ = refl.weights_for(_prep("KGWX", "S", d, XK, XK), XK, XK, z3)
+    wx, _ = refl.weights_for(_prep("NOXP", "X", d, XK, XK), XK, XK, z3)
+    assert (wx[1] < ws[1]).all()  # band reliability
+    j = XK.size // 2
+    assert ws[1, j, j + 4] > ws[1, j, j + 58]  # farther from the radar: lower weight
+    wc, ex = refl.weights_for(_prep("NOXP", "X", d, XK, XK, corr=8.0), XK, XK, z3)
+    assert (wc[1] < wx[1]).all()  # large attenuation correction: lower weight
+    wf, _ = refl.weights_for(_prep("NOXP", "X", d, XK, XK, corr=12.0, flags=1), XK, XK, z3)
+    assert (wf[1] < 0.2 * wc[1]).all()  # at the cap: strongly down-weighted
+    assert float(ex["sigma2"][1, 0, 0]) > 0.0
+
+
+def test_merge_keeps_the_strong_core_fills_holes_and_drops_excluded_radars():
+    shape = (3, 11, 11)
+    x = np.arange(11) * 0.5
+    z3 = np.array([0.5, 1.0, 1.5])
+    a = np.full(shape, 50.0, np.float32)
+    b = np.full(shape, 30.0, np.float32)
+    b[:, :, :3] = np.nan
+    a[:, :, 8:] = np.nan  # hole in A filled by B
+    pa = _prep("KGWX", "S", a, x, x)
+    pb = _prep("COW1", "C", b, x, x, xy=(2.0, 2.0))
+    pu = _prep("UAH", "C", np.full(shape, 70.0, np.float32), x, x, excluded=True)
+    names = ["COW1", "KGWX", "UAH"]
+    sw = refl.Switches()
+    m = refl.merge_refl([pa, pb, pu], names, x, x, z3, sw)
+    assert m["dbz"][1, 5, 5] == pytest.approx(
+        50.0, abs=0.01
+    )  # core: the 30 dBZ radar does not dilute it
+    assert m["nradars"][1, 5, 5] == 1
+    assert m["dbz"][1, 5, 9] == pytest.approx(
+        30.0, abs=0.01
+    )  # hole filled from the next best radar
+    assert m["quality"][1, 5, 5] > 0 and m["quality"][1, 5, 9] > 0
+    assert np.nanmax(m["dbz"]) < 60.0  # the excluded 70 dBZ radar is not in the blend
+    assert set(np.unique(m["dbz_src"][np.isfinite(m["dbz"])])) <= {1, 2}
+    sw2 = refl.Switches(core_blend=False)
+    m2 = refl.merge_refl([pa, pb], names, x, x, z3, sw2)
+    assert (
+        30.0 < m2["dbz"][1, 5, 5] < 50.0
+    )  # without the core rule the radars are averaged in linear Z
+    assert m2["nradars"][1, 5, 5] == 2
+    assert float(m2["dbz_unc"][1, 5, 5]) > float(
+        m["dbz_unc"][1, 5, 5]
+    )  # spread adds to the uncertainty
+
+
+def test_core_anchor_depends_on_quality_not_on_resolution_weight():
+    shape = (3, 11, 11)
+    x = np.arange(11) * 0.5
+    z3 = np.array([0.5, 1.0, 1.5])
+    far_s = _prep("KGWX", "S", np.full(shape, 45.0, np.float32), x, x, xy=(30.0, 30.0))
+    near_c = _prep("SMARTR2", "C", np.full(shape, 25.0, np.float32), x, x, xy=(2.0, 2.0))
+    names = ["KGWX", "SMARTR2"]
+    # the close radar has by far the larger averaging weight, but it reads 20 dB low (a path through heavy rain):
+    # the core of the far, unflagged S-band radar is kept
+    wf, _ = refl.weights_for(far_s, x, x, z3)
+    wn, _ = refl.weights_for(near_c, x, x, z3)
+    assert wn[1, 5, 5] > wf[1, 5, 5]
+    m = refl.merge_refl([far_s, near_c], names, x, x, z3, refl.Switches())
+    assert m["dbz"][1, 5, 5] == pytest.approx(45.0, abs=0.01)
+    assert m["nradars"][1, 5, 5] == 1
+    # a C-band radar more than 6 dB above the S-band radar in the same voxel is a suspect (clutter, hail, calibration),
+    # not the core: here a flagged one at its attenuation cap
+    cap_c = _prep(
+        "COW1", "C", np.full(shape, 60.0, np.float32), x, x, xy=(2.0, 2.0), corr=6.0, flags=1
+    )
+    m2 = refl.merge_refl([far_s, cap_c], ["COW1", "KGWX"], x, x, z3, refl.Switches())
+    assert m2["dbz"][1, 5, 5] == pytest.approx(45.0, abs=0.01)
+    assert m2["nradars"][1, 5, 5] == 1
+    # within 6 dB above the S-band value the finer radar keeps the peak: the result lies between the two
+    hi_c = _prep("COW1", "C", np.full(shape, 49.0, np.float32), x, x, xy=(2.0, 2.0))
+    m3 = refl.merge_refl([far_s, hi_c], ["COW1", "KGWX"], x, x, z3, refl.Switches())
+    assert 45.0 < m3["dbz"][1, 5, 5] < 49.0
+    assert m3["nradars"][1, 5, 5] == 2
+    # without any S-band radar there is no such check and the strongest reliable radar anchors the core
+    only_c = refl.merge_refl([hi_c, near_c], ["COW1", "SMARTR2"], x, x, z3, refl.Switches())
+    assert only_c["dbz"][1, 5, 5] == pytest.approx(49.0, abs=0.01)
+
+
+def test_advection_moves_the_pattern_by_motion_times_offset():
+    a = np.full((1, 41, 61), np.nan, np.float32)
+    a[0, 18:23, 28:33] = 45.0
+
+    def cx(f):
+        _j, i = np.nonzero(np.isfinite(f[0]))
+        return float(i.mean())
+
+    motion = (10.0, 0.0)  # m/s toward the east
+    out = refl._shift(
+        a, 120.0, motion
+    )  # radar scanned 120 s after the step: bring it back 1200 m = 2.4 cells
+    assert cx(a) - cx(out) == pytest.approx(2.4, abs=0.5)
+    back = refl._shift(a, -120.0, motion)
+    assert cx(back) - cx(a) == pytest.approx(2.4, abs=0.5)
+    assert np.array_equal(refl._shift(a, 0.0, motion), a, equal_nan=True)
