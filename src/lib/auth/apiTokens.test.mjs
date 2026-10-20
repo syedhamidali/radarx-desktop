@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   EXPIRY_CHOICES, MAX_ACTIVE_TOKENS, activeCount, cleanTokenName, createProblem, daysLeft, expiresSoon, friendlyTokenError,
-  hintText, nameProblem, parseCreated, parseRows, tokenStatus, DEFAULT_DAYS, MAX_DAYS,
+  hintText, nameProblem, parseCreated, parseRows, tokenStatus, DEFAULT_DAYS, MAX_DAYS, REVOKE_NOTE, ACCOUNT_NOTE,
 } from './apiTokens.ts';
 
 const now = Date.parse('2026-10-20T12:00:00Z');
@@ -91,4 +91,14 @@ test('errors become plain sentences, never the database text', () => {
   assert.match(generic, /Could not reach/);
   assert.ok(!generic.includes('TypeError'));
   assert.match(friendlyTokenError(null), /Could not reach/);
+});
+
+test('the revoke text says the offline allowance and the password rule, as the docs do', () => {
+  assert.match(REVOKE_NOTE, /within the hour/);
+  assert.match(REVOKE_NOTE, /cannot reach the account server/);
+  assert.match(REVOKE_NOTE, /30 days/);
+  assert.match(REVOKE_NOTE, /never past the token's own expiry/);
+  assert.match(ACCOUNT_NOTE, /Changing your password revokes all your tokens/);
+  assert.match(ACCOUNT_NOTE, /Sign out everywhere/);
+  assert.match(friendlyTokenError({ message: 'too many access tokens made or ended in the last 30 days (limit 200)', code: '54000' }), /last 30 days/);
 });

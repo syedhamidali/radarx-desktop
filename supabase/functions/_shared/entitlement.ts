@@ -82,6 +82,35 @@ export async function loadSigningKey(pem: string): Promise<SigningKey> {
   return { privateKey, publicKey, publicJwk, kid: await thumbprint(publicJwk) };
 }
 
+/**
+ * The verifying key from the PUBLIC JWK secret (ENTITLEMENT_PUBLIC_JWK): what log-activity needs, so
+ * that function never has to read the private key. A JWK that carries a private part ("d") is refused:
+ * the wrong secret was pasted, and the mistake should be loud.
+ */
+export async function loadVerifyKey(jwkText: string): Promise<Pick<SigningKey, 'publicKey' | 'publicJwk' | 'kid'>> {
+  let jwk: Record<string, unknown>;
+  try {
+    jwk = JSON.parse(jwkText);
+  } catch {
+    throw new EntitlementError('ENTITLEMENT_PUBLIC_JWK is not JSON');
+  }
+  if (jwk === null || typeof jwk !== 'object') throw new EntitlementError('ENTITLEMENT_PUBLIC_JWK is not a JWK');
+  if ('d' in jwk) throw new EntitlementError('ENTITLEMENT_PUBLIC_JWK contains a private key: set the PUBLIC half only');
+  if (jwk.kty !== 'EC' || jwk.crv !== 'P-256' || typeof jwk.x !== 'string' || typeof jwk.y !== 'string') {
+    throw new EntitlementError('ENTITLEMENT_PUBLIC_JWK is not a P-256 public key');
+  }
+  const publicJwk = { kty: 'EC', crv: 'P-256', x: jwk.x, y: jwk.y } as const;
+  let publicKey: CryptoKey;
+  try {
+    publicKey = await crypto.subtle.importKey('jwk', publicJwk, ECDSA, false, ['verify']);
+  } catch {
+    throw new EntitlementError('ENTITLEMENT_PUBLIC_JWK is not a valid P-256 public key');
+  }
+  const kid = await thumbprint(publicJwk);
+  if (typeof jwk.kid === 'string' && jwk.kid !== kid) throw new EntitlementError('ENTITLEMENT_PUBLIC_JWK has a kid that is not its thumbprint');
+  return { publicKey, publicJwk, kid };
+}
+
 export async function signEntitlement(claims: Record<string, unknown>, key: SigningKey): Promise<string> {
   const header = { alg: 'ES256', typ: 'JWT', kid: key.kid };
   const input =

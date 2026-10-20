@@ -4,8 +4,8 @@
 // deno-lint-ignore-file no-explicit-any
 import { handleLog } from './activity.ts';
 import type { Row } from './activity.ts';
-import { loadSigningKey, verifyEntitlement } from '../_shared/entitlement.ts';
-import type { SigningKey } from '../_shared/entitlement.ts';
+import { loadVerifyKey, verifyEntitlement } from '../_shared/entitlement.ts';
+import { BodyTooLarge, parseJson, readLimitedText } from '../_shared/http.ts';
 
 function reply(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -14,10 +14,11 @@ function reply(status: number, body: unknown, headers: Record<string, string> = 
   });
 }
 
-let keyPromise: Promise<SigningKey> | null = null;
-function signingKey(): Promise<SigningKey> {
-  // only the PUBLIC half is used here, derived from the same secret the exchange function signs with
-  keyPromise ??= loadSigningKey(Deno.env.get('ENTITLEMENT_PRIVATE_KEY') ?? '').catch((e) => {
+type VerifyKey = Awaited<ReturnType<typeof loadVerifyKey>>;
+let keyPromise: Promise<VerifyKey> | null = null;
+function verifyKey(): Promise<VerifyKey> {
+  // Only the PUBLIC half (ENTITLEMENT_PUBLIC_JWK) is read here, never the private key.
+  keyPromise ??= loadVerifyKey(Deno.env.get('ENTITLEMENT_PUBLIC_JWK') ?? '').catch((e) => {
     keyPromise = null;
     throw e;
   });
@@ -27,23 +28,22 @@ function signingKey(): Promise<SigningKey> {
 Deno.serve(async (req: Request) => {
   const url = Deno.env.get('SUPABASE_URL');
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (!url || !serviceKey || !Deno.env.get('ENTITLEMENT_PRIVATE_KEY')) {
+  if (!url || !serviceKey || !Deno.env.get('ENTITLEMENT_PUBLIC_JWK')) {
     console.error(JSON.stringify({ event: 'log_not_configured' }));
     return reply(503, { error: 'unavailable' });
   }
   let body: unknown = null;
   if (req.method === 'POST') {
-    if (Number(req.headers.get('content-length') ?? '0') > 65536) return reply(413, { error: 'too_large' });
     try {
-      const text = await req.text();
-      body = text.length <= 65536 ? JSON.parse(text) : null;
-    } catch {
+      body = parseJson(await readLimitedText(req, 65536)); // the bytes actually read, never the header
+    } catch (e) {
+      if (e instanceof BodyTooLarge) return reply(413, { error: 'too_large' });
       body = null;
     }
   }
   const headers = { apikey: serviceKey, Authorization: `Bearer ${serviceKey}`, 'Content-Type': 'application/json' };
   try {
-    const key = await signingKey();
+    const key = await verifyKey();
     const answer = await handleLog(
       { method: req.method, authorization: req.headers.get('authorization'), body },
       {

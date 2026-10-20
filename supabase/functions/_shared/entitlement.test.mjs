@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPublicKey, createVerify, createHash, generateKeyPairSync } from 'node:crypto';
 import {
-  AUDIENCE, ISSUER, LIFETIME_SECONDS, EntitlementError, b64urlDecode, b64urlEncode, loadSigningKey,
+  AUDIENCE, ISSUER, LIFETIME_SECONDS, EntitlementError, b64urlDecode, b64urlEncode, loadSigningKey, loadVerifyKey,
   pemToPkcs8, sha256Hex, signEntitlement, thumbprint, verifyEntitlement,
 } from './entitlement.ts';
 
@@ -93,4 +93,25 @@ test('helpers', async () => {
   assert.throws(() => b64urlDecode('a+b'), EntitlementError);
   assert.equal(await sha256Hex('abc'), 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
   assert.equal(LIFETIME_SECONDS, 3600);
+});
+
+test('log-activity verifies with the PUBLIC jwk alone, and a private jwk is refused loudly', async () => {
+  const pem = testPem();
+  const key = await loadSigningKey(pem);
+  const publicJson = JSON.stringify({ ...key.publicJwk, kid: key.kid, alg: 'ES256', use: 'sig' });
+  const verifyKey = await loadVerifyKey(publicJson);
+  assert.equal(verifyKey.kid, key.kid);
+  const token = await signEntitlement(claims(), key);
+  assert.equal((await verifyEntitlement(token, verifyKey, NOW + 10)).src, 'pat');
+  // not JSON, not a JWK, a private half, a wrong curve, a wrong kid
+  await assert.rejects(loadVerifyKey('not json'), EntitlementError);
+  await assert.rejects(loadVerifyKey('5'), EntitlementError);
+  await assert.rejects(loadVerifyKey(JSON.stringify({ ...key.publicJwk, d: 'AAAA' })), /private key/);
+  await assert.rejects(loadVerifyKey(JSON.stringify({ ...key.publicJwk, crv: 'P-384' })), EntitlementError);
+  await assert.rejects(loadVerifyKey(JSON.stringify({ ...key.publicJwk, x: 'AAAA' })), EntitlementError);
+  await assert.rejects(loadVerifyKey(JSON.stringify({ ...key.publicJwk, kid: 'forged' })), /thumbprint/);
+  await assert.rejects(loadVerifyKey(''), EntitlementError);
+  // a public key from ANOTHER pair does not verify this token
+  const other = await loadSigningKey(testPem());
+  await assert.rejects(verifyEntitlement(token, await loadVerifyKey(JSON.stringify(other.publicJwk)), NOW + 10), EntitlementError);
 });

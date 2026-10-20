@@ -5,6 +5,7 @@
 // token itself is the credential.
 // deno-lint-ignore-file no-explicit-any
 import { handleExchange } from './exchange.ts';
+import { BodyTooLarge, parseJson, readLimitedText, trustedAddress } from '../_shared/http.ts';
 import { loadSigningKey, signEntitlement } from '../_shared/entitlement.ts';
 import type { SigningKey } from '../_shared/entitlement.ts';
 
@@ -35,15 +36,6 @@ async function rpc(url: string, serviceKey: string, name: string, args: Record<s
   return response.json();
 }
 
-function clientAddress(req: Request): string | null {
-  // cf-connecting-ip is set by the platform's edge and cannot be forged by the caller; without it
-  // the LAST x-forwarded-for entry (the one the platform added) is used.
-  const cf = req.headers.get('cf-connecting-ip');
-  if (cf) return cf.trim();
-  const forwarded = req.headers.get('x-forwarded-for');
-  return forwarded ? forwarded.split(',').pop()!.trim() : null;
-}
-
 Deno.serve(async (req: Request) => {
   const url = Deno.env.get('SUPABASE_URL');
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -53,23 +45,23 @@ Deno.serve(async (req: Request) => {
   }
   let body: unknown = null;
   if (req.method === 'POST') {
-    const length = Number(req.headers.get('content-length') ?? '0');
-    if (length > 2048) return reply(413, { error: 'too_large' });
     try {
-      const text = await req.text();
-      body = text.length <= 2048 ? JSON.parse(text) : null;
-    } catch {
-      body = null; // the logic answers invalid_token for anything without a proper token
+      body = parseJson(await readLimitedText(req, 2048)); // the bytes actually read, never the header
+    } catch (e) {
+      if (e instanceof BodyTooLarge) return reply(413, { error: 'too_large' });
+      body = null; // not text: the logic answers invalid_token for anything without a proper token
     }
   }
   try {
     const key = await signingKey();
     const answer = await handleExchange(
-      { method: req.method, body, clientAddress: clientAddress(req) },
+      { method: req.method, body, clientAddress: trustedAddress(req.headers) },
       {
         lookup: async (hashHex) => (await rpc(url, serviceKey, 'use_api_token', { p_hash: '\\x' + hashHex })) ?? null,
         rateHit: async (bucket, limit, windowSeconds) =>
           (await rpc(url, serviceKey, 'api_token_rate_hit', { p_bucket: bucket, p_limit: limit, p_window_s: windowSeconds })) === true,
+        rateCheck: async (bucket, limit, windowSeconds) =>
+          (await rpc(url, serviceKey, 'api_token_rate_peek', { p_bucket: bucket, p_limit: limit, p_window_s: windowSeconds })) === true,
         sign: (claims) => signEntitlement(claims, key),
         nowSeconds: () => Math.floor(Date.now() / 1000),
         newId: () => crypto.randomUUID(),

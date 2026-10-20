@@ -117,7 +117,7 @@ export function friendlyTokenError(error: unknown): string {
   const text = String(e.message ?? '').toLowerCase();
   if (text.includes('at most 10 active')) return `You already have ${MAX_ACTIVE_TOKENS} active tokens. Revoke one you no longer use first.`;
   if (text.includes('per day')) return 'Too many tokens made today. Try again tomorrow.';
-  if (text.includes('too many access tokens on record')) return 'There are too many old tokens on record. Let some lapse or contact support.';
+  if (text.includes('too many access tokens made or ended')) return 'Too many tokens were made or ended in the last 30 days (limit 200). Try again when older ones have aged out.';
   if (e.code === '28000' || text.includes('sign in')) return 'Sign in again to manage access tokens.';
   if (e.code === '22023') return 'That name or expiry is not allowed.';
   if (e.code === '42883' || e.code === 'PGRST202' || e.code === '42P01' || e.code === 'PGRST205') {
@@ -125,6 +125,18 @@ export function friendlyTokenError(error: unknown): string {
   }
   return 'Could not reach the account server. Check your connection and try again.';
 }
+
+/**
+ * What revoking does and does not do, in plain words (the toast, the confirmation and the docs say the
+ * same): a job that can reach the account server stops within the hour; one that cannot keeps working
+ * on its last sign-in until that lapses (the 30-day offline allowance), but never past the token's own
+ * expiry date.
+ */
+export const REVOKE_NOTE =
+  'Jobs that are online stop within the hour. A job that cannot reach the account server keeps working on its last sign-in until that lapses (up to 30 days, never past the token\'s own expiry).';
+
+/** Changing your password revokes every token; "sign out everywhere" does not. */
+export const ACCOUNT_NOTE = 'Changing your password revokes all your tokens. "Sign out everywhere" does not: revoke tokens here.';
 
 /** The two ways to use a new token, with the token left out (the dialog shows them next to it). */
 export const USAGE = [

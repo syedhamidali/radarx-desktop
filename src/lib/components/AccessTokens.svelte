@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { listApiTokens, createApiToken, revokeApiToken } from '../stores/auth';
   import {
-    DEFAULT_DAYS, EXPIRY_CHOICES, USAGE, createProblem, daysLeft, expiresSoon, friendlyTokenError, hintText, nameProblem, tokenStatus,
+    ACCOUNT_NOTE, DEFAULT_DAYS, EXPIRY_CHOICES, REVOKE_NOTE, USAGE, createProblem, daysLeft, expiresSoon, friendlyTokenError, hintText, nameProblem, tokenStatus,
     type ApiTokenRow,
   } from '../auth/apiTokens';
   import { addToast } from '../stores/toasts';
@@ -73,7 +73,7 @@
     try {
       await revokeApiToken(id);
       await load();
-      addToast('success', 'Token revoked. It stops working within the hour.');
+      addToast('success', `Token revoked. ${REVOKE_NOTE}`);
     } catch (e) {
       error = friendlyTokenError(e);
     } finally {
@@ -87,7 +87,7 @@
 
 <h3>Access tokens</h3>
 <p class="hint">
-  For batch jobs, cron, CI and clusters that cannot type a password. Each token signs in as you, so treat it like a password; revoke it when it is no longer needed.
+  For batch jobs, cron, CI and clusters that cannot type a password. Each token signs in as you, so treat it like a password; revoke it when it is no longer needed. {ACCOUNT_NOTE}
 </p>
 
 {#if fresh}
@@ -143,7 +143,7 @@
         {#if status === 'active'}
           {#if confirming === r.id}
             <span class="confirm">
-              Jobs using it stop within the hour.
+              {REVOKE_NOTE}
               <button class="danger-btn" disabled={busy} onclick={() => revoke(r.id)}>Revoke</button>
               <button class="linkish" onclick={() => (confirming = null)}>Cancel</button>
             </span>

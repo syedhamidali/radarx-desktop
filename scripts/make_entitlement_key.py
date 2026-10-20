@@ -6,15 +6,21 @@ Run it ONCE, on your own computer, as the project owner:
     python scripts/make_entitlement_key.py --out ~/radarx-entitlement-private.pem
 
 It prints the PUBLIC key (safe to paste into python/engine/account/jwks_seed.py and to commit) and
-writes the PRIVATE key to the file you name, readable by you alone (mode 0600). It never prints the
-private key. Then:
+writes two files that only you can read (mode 0600): the PRIVATE key (``--out``, PEM) and, next to
+it, ``<out>.env`` with the two Supabase secrets ``ENTITLEMENT_PRIVATE_KEY`` (used by the function
+that signs) and ``ENTITLEMENT_PUBLIC_JWK`` (the only one the activity function needs). It never
+prints the private key. Then:
 
-    supabase secrets set ENTITLEMENT_PRIVATE_KEY="$(cat ~/radarx-entitlement-private.pem)"
-    rm -P ~/radarx-entitlement-private.pem        # (shred -u on Linux) once the secret is set
+    supabase secrets set --env-file ~/radarx-entitlement-private.pem.env
 
-Keep a copy of the private key in your password manager if you want to be able to re-set the
-secret; the repository must never contain it. The script refuses to write inside this repository,
-and refuses to overwrite a file.
+(an env file keeps the key out of the command line, where other programs of yours can read it
+while the command runs; ``supabase secrets set NAME="$(cat file)"`` would not), then delete both
+files. Deleting is not erasing: on APFS, SSDs and journaling file systems the blocks may survive
+(``rm -P`` / ``shred`` do not help there), so keep the files on an encrypted disk, and rotate the
+key (docs/ACCOUNTS.md) if you ever suspect it was exposed. Keep a copy of the private key in your
+password manager if you want to be able to set the secret again; the repository must never
+contain it. The script refuses to write inside a git repository, and refuses to overwrite a file
+or to follow a link.
 
 Needs only the ``cryptography`` package that the engine already depends on.
 """
@@ -23,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import json
 import os
@@ -90,11 +97,25 @@ def tracked_by_git(path: Path) -> bool:
 
 
 def write_private(path: Path, data: bytes) -> None:
-    """Create ``path`` (never overwrite), mode 0600 from the start."""
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    """Create ``path`` (never overwrite, never follow a link), mode 0600 from the start."""
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
     with os.fdopen(fd, "wb") as fh:
         fh.write(data)
+
+
+def refuse(message: str) -> int:
+    print(f"refusing: {message}", file=sys.stderr)
+    return 2
+
+
+def env_file_text(pem: bytes, jwk: dict[str, object]) -> bytes:
+    """The two secrets in dotenv form (double quotes, ``\\n`` for the PEM's line ends)."""
+    private = pem.decode("ascii").strip().replace("\n", "\\n")
+    public = json.dumps({k: jwk[k] for k in ("kty", "crv", "x", "y", "kid")}, separators=(",", ":"))
+    return (
+        f'ENTITLEMENT_PRIVATE_KEY="{private}"\nENTITLEMENT_PUBLIC_JWK=\'{public}\'\n'
+    ).encode("ascii")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -102,25 +123,36 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True, type=Path, help="where to write the PRIVATE key (PEM)")
     args = ap.parse_args(argv)
     out: Path = args.out.expanduser()
-    if inside_repository(out) or tracked_by_git(out):
-        print(
-            "refusing: the private key must not be written inside a git repository "
-            "(it could be committed). Choose a path in your home folder.",
-            file=sys.stderr,
-        )
-        return 2
-    if out.exists():
-        print(f"refusing to overwrite {out}", file=sys.stderr)
-        return 2
+    env_out = out.with_name(out.name + ".env")
+    for target in (out, env_out):
+        if inside_repository(target) or tracked_by_git(target):
+            return refuse(
+                "the private key must not be written inside a git repository (it could be "
+                "committed). Choose a path in your home folder."
+            )
+        if os.path.lexists(target):  # also a link, even one that points nowhere
+            return refuse(f"{target} exists already (a file or a link): will not overwrite it")
+    if not out.parent.is_dir():
+        return refuse(f"the folder {out.parent} does not exist: create it first")
     pem, jwk = make_key()
-    write_private(out, pem)
-    print(f"Private key written to {out} (mode 0600). It is NOT shown here.\n")
+    try:
+        write_private(out, pem)
+        write_private(env_out, env_file_text(pem, jwk))
+    except OSError as exc:
+        for target in (out, env_out):
+            with contextlib.suppress(OSError):
+                if target.exists() and not target.is_symlink():
+                    target.unlink()
+        return refuse(f"could not write {out} ({exc.strerror or type(exc).__name__})")
+    print(f"Private key written to {out} and the secrets to {env_out} (mode 0600).")
+    print("The private key is NOT shown here.\n")
     print("1. Paste this PUBLIC key into ENTITLEMENT_SEED_JWKS in")
-    print("   python/engine/account/jwks_seed.py (add it to the list; keep older keys during a rotation):\n")
+    print("   python/engine/account/jwks_seed.py (add it to the list; keep the old ones):")
+    print()
     print(json.dumps(jwk, indent=4))
-    print("\n2. Set the secret, then delete the file:\n")
-    print(f'   supabase secrets set ENTITLEMENT_PRIVATE_KEY="$(cat {out})"')
-    print(f"   rm -P {out}      # shred -u {out} on Linux")
+    print("\n2. Set the secrets from the env file (not the command line), then delete both:\n")
+    print(f"   supabase secrets set --env-file {env_out}")
+    print(f"   rm {out} {env_out}   # not erasing on an SSD: see the notes in this script")
     print("\n3. Deploy the functions and apply the migration (see docs/ACCOUNTS.md).")
     return 0
 
