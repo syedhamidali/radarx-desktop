@@ -14,10 +14,10 @@ crack of a close strike) and keeps their label.
 
 | Part | Physically grounded (from the data) | Artistic (invented) |
 |---|---|---|
-| Thunder timing | every LMA VHF source is a point emitter; it is heard at `t_source + r / 343 m/s` (data time), mapped to clip time by the timeline: `delay_clip = r / 343 / speedup` for a constant speedup | none |
-| Thunder level | the distance to every source, the source power (relative, within the flash), the source count; **compressed for audibility** (see below): 12 dB per decade of range instead of the 20 of `1/r` | the compression itself, the energy proxy (amplitude ~ N^0.25), the tail length |
-| Thunder colour | ISO 9613-1 air absorption (station temperature and pressure, assumed 80 % humidity): far thunder loses its top | the noise carrier, the crack |
-| Direction | azimuth of the sources relative to the camera heading: interaural level and time difference (Woodworth, <= 0.66 ms) and a head-shadow low-pass; no HRTF data | the diffuse spread of the rumble |
+| Thunder timing | every LMA VHF source is a channel element at its real position and time; its sound arrives at `t_source + r / 343 m/s`; the onset follows the clip clock (`r / 343 / speedup` for a constant speedup), the later arrivals keep their real spacing | none |
+| Thunder pulse | each source radiates an N-wave (sharper and shorter close, longer with a slower front far away), the ISO 9613-1 air absorption of its own distance (minimum phase), a 40 or 80 Hz relaxation pulse, a ground reflection, scattering and turbulence | the N-wave shape laws, the pulse amplitudes, the scattering tail |
+| Thunder level | the distance to every source, the source power (relative, within the flash), the source count and density; **compressed for audibility** (see below): 12 dB per decade of range between flashes instead of the 20 of `1/r`, the physical `1/r` inside one flash | the compression itself, the energy proxy |
+| Thunder fine structure | none measured | **sub-resolution tortuosity** and the **channel between sources** around an arrival gap are modelled statistically (seeded, labelled in the report) |
 | Rain | rain rate (station, on a log curve), drop-size spectrum (number flux per size) when `<id>_dsd.npz` exists, Dm, MRR lowest gate when the listener is over the site, distance weighting | the impact kernels, the curve constants |
 | Wind | observed speed, gust, direction of the station nearest the listener; the gust front and pressure jump come out of the data | fine gust structure (amplitude from the observed variability) |
 | Hail | station hail events (time, max diameter, counts), the tail of the drop spectrum, events.json, radar hail class: never without evidence | the ring of the impact |
@@ -27,15 +27,20 @@ crack of a close strike) and keeps their label.
 
 ## Time-lapse
 
-The clip is a time-lapse (`speedup` data seconds per clip second, from `timeline.json`; constant or
-keyframed). Events are moved in time by the clock; the sounds themselves are **not** pitch-shifted
-or time-compressed. Sound travels at the real speed in data time, so the delay in the clip is
-`distance / 343 / speedup`: at 8x a flash 10 km away is heard 3.6 s after it, not 29 s. A 10 km
-long flash is heard from its nearest part and rolls on as the farther parts arrive, compressed by the same
-factor (the "rolling" is shorter than in real time; the tail of each part is in clip seconds). The
-camera position at the time of the flash is used for the distances; the heading at the arrival of
-each direction sector is used for the panning. Sound speed is the constant 343 m/s (it varies by a few
-percent with temperature).
+The clip is a time-lapse (`speedup` data seconds per clip second, from `timeline.json`; its `mapping` clip time to
+data time is used, so a varying speed-up is exact). Rain, wind and the like follow the clock. **Thunder does not
+follow it inside itself**: a thunder of 5 to 20 s compressed 8 times is a click, so
+
+* the **onset** (the first sound, from the nearest part of the channel) is where the clock puts it: the data time
+  `t + r / 343` mapped to clip time, i.e. `r / 343 / speedup` for a constant speed-up, and exact in a real-time
+  shot (speedup 1, the tornado shot of the film);
+* **every later arrival keeps its real sound time**: the far parts of a channel arrive `(r_i - r_min) / 343` s
+  after the onset (plus the real emission spacing of the sources), whatever the clip's speed-up, so a thunder lasts
+  as long as it would in real time and rolls with its real character. A thunder is voiced for at most 15 s (the last
+  4 s fade): a long flash is cut, not squeezed.
+
+The camera position at the time of the flash gives the distances; the heading at the arrival of each source gives the
+panning. Sound speed is the constant 343 m/s (it varies by a few percent with temperature).
 
 ## The listener
 
@@ -54,33 +59,31 @@ Priority (a layer is ducked by the louder layers above it, up to 10 / 6 / 4 / 3 
 tornado > hail > rain > wind**, then the convective rumble and the ambient bed. Each layer has its own level in
 `audio_report.json` (`layers.<name>.rms_dbfs`, `lufs`, `peak_dbfs`, 1 s level trace, maximum ducking).
 
-* **Thunder**, one per real LMA flash; the delay is physical, the level is compressed for audibility.
-  - *Level compressed for audibility; delay is physical.* A strict `1/r` (20 dB per decade of range) puts a
-    flash 40 km away 20 dB under one at 4 km and a whole storm under the rain, so the thunder was practically
-    inaudible. The level is now `L_ref - 12 dB x log10(r / 5 km)` (no louder than at 1 km; `audibility_gain`),
-    which keeps the order (nearer is louder) and puts a 50 km flash 12 dB, not 20 dB, under a 5 km one. The air
-    absorption is applied for a compressed distance `r_abs = 3 km x (r / 3 km)^0.5`, so a far flash is a long low
-    rumble, not a silence, and a flash up to 12 km away still gets a sharp crack. The delay
-    (`distance / 343 / speedup`, every source at `t_source + r / 343`) is not touched. `ThunderParams(level_model="physical")`
-    restores the strict 1/r.
-  - *Selection by audibility score instead of blind thinning.* `score = level at the listener + 3 dB per decade
-    of the number of sources + 4 dB if the flash is within 10 km of the tornado`. (1) **Guarantee**: in every 8 s of
-    clip time (by the time the sound arrives) the best-scoring flash within 80 km is voiced; a window with none
-    that near gets the best farther one (to 150 km), a long low rumble. (2) The rest by score, with overlapping
-    rolls: at most 3 voices at once, at most 3 starts within +-1 s, and masked only when more than 20 dB below
-    a louder one. Skipped flashes are counted with their reason (`skipped_density`, `skipped_masked`,
-    `skipped_voices`, `skipped_out_of_range`, `outside_clip`) and every voiced flash says how it was chosen
-    (`selection` = `guaranteed`, `guaranteed_distant`, `score`). Only real flashes are ever voiced: nothing is
-    added.
-  - *What the report says.* `thunder.selection` (flashes in the bundle, voiced, how many by each rule, how many heard in
-    the clip but not voiced, how many not heard, and for every 8 s window the flashes heard, in range and voiced),
-    `thunder.loudest_events` (the 10 loudest: arrival, flash time, distance, delay, final peak, margins over the
-    bed, the rain and the tornado) and the full row of every voiced flash (clip time, distance nearest / farthest
-    / centroid, azimuth, delay, first and last arrival, level, selection, `near_tornado_km`).
+* **Thunder**, one per real LMA flash, built from thunder acoustics (below); the delay is physical, the level of
+  a flash is compressed for audibility, the selection is by audibility score with variety.
+  - *Level compressed for audibility; delay is physical.* A strict `1/r` (20 dB per decade of range) puts a flash
+    40 km away 20 dB under one at 4 km and a whole storm under the rain. The level of a **flash** is
+    `L_ref - 12 dB x log10(r / 5 km)` (no louder than at 1 km; `audibility_gain`), which keeps the order (nearer is
+    louder) and puts a 50 km flash 12 dB, not 20 dB, under a 5 km one. **Inside one flash** the parts keep their
+    physical `1/r` ratios, so the attack is sharp and the decay natural. The air absorption is applied for half the
+    distance (`absorption_scale`, 1 = physical): the same compression for the brightness, so a far thunder is still
+    a rumble with some body. `ThunderParams(level_model="physical")` and `absorption_scale=1` restore the strict physics.
+  - *Selection by audibility score, with variety.* `score = level at the listener + 6 dB per decade of the number of
+    sources (the big flashes) + 4 dB if the flash is within 10 km of the tornado`, minus 3 dB for every voiced flash of
+    the same range class (near < 10 km, mid 10 to 30, far) within 6 s: cracks, rolls and rumble are mixed. (1)
+    **Guarantee**: in every 8 s of clip time (by the time the sound arrives) the best flash within 80 km is voiced; a
+    window with none that near gets the best farther one (to 150 km). (2) The rest by score, up to 3 overlapping
+    voices, at most 3 starts within +-1 s, masked only when more than 20 dB below a louder one. Skipped flashes are
+    counted with their reason (`skipped_density`, `skipped_masked`, `skipped_voices`, `skipped_out_of_range`,
+    `outside_clip`) and every voiced flash says how it was chosen (`selection`). Only real flashes are voiced.
+  - *What the report says.* `thunder.selection` (flashes in the bundle, voiced, by rule, not voiced, per 8 s window),
+    `thunder.loudest_events` (the 10 loudest) and the full row of every voiced flash: clip time, distances, delay, onset,
+    range class, channel extent, level, margins over the bed / rain / tornado, `n_pulses`, `n_reflections`,
+    `n_tortuosity_points`, `n_bridge_elements`, `rendered_duration_30db_s`, `spectral_centroid_hz`.
   - *A flash that cannot be heard yet is not voiced*: sound that has not arrived by the end of the clip is
-    `outside_clip`, and in the first seconds of a clip whose camera is 100 km from the line no flash can have
-    arrived (the nearest flash at 60 km needs 175 s of data time, 22 s of clip at 8x): the opening is ambient only, by
-    physics, whatever the level law.
+    `outside_clip`; in the first seconds of a clip whose camera is 100 km from the line no flash can have arrived (the
+    nearest flash at 60 km needs 175 s of data time, 22 s of clip at 8x): the opening is ambient only, by physics.
+
 * **Rain**. A Poisson stream of drop impacts per size class. With a drop spectrum the rate of each
   class is proportional to its number flux (`N(D) v(D) dD`), the amplitude to the mass^(2/3) of the
   drop (`D^2`), larger drops ring longer and lower with a hard click: heavy rain with big drops is
@@ -114,6 +117,44 @@ tornado > hail > rain > wind**, then the convective rumble and the ambient bed. 
   compressed like the thunder (12 dB per decade, no louder than at 1.5 km: a roar next to the tornado would bury
   every other layer once the mix is normalised), zero beyond 25 km, muffled when far (3.5 kHz close, 120 Hz far).
   Position from the survey; the sound is stylised and labelled so. No siren.
+
+## Thunder acoustics
+
+*Sources in the literature*: Few (1970), Holmes et al. (1971), Hill (1977), Bass (1980), Ribner and Roy (1982). The
+model, and the check against it:
+
+| Physics (literature) | In the synthesis (`thunder.py`, `nwave.py`) |
+|---|---|
+| Thunder is the sum of the sound from every element of the channel; the onset is the nearest point, a long or tilted channel rolls on | every LMA source is an element at its real position and time; arrival `t_i + r_i / 343`; onset = earliest arrival; duration from `(r_max - r_min) / c` |
+| Close to the channel the wave is a sharp N-wave (shock steepening: the stronger and nearer, the sharper); crack with energy at 1 to 5 kHz | N-wave of 0.1 ms rise and 2 ms length at 200 m, 1.6 ms and 5 ms at 6 km, 3 ms and 10 ms at 20 km; elements within 1.5 km are boosted (`crack_boost`) |
+| Spectral peak of the rumble at 20 to 100 Hz (heated-channel relaxation, tortuous segments) | a damped 40 Hz pulse per source, 80 Hz where the local density of sources is high; nothing below 20 Hz (not reproducible) |
+| Air absorption removes the highs with distance (ISO 9613-1) | the minimum-phase filter of each source's own distance (`absorbed`), 12 distance bins; test: within 1 dB of ISO 9613-1 at 1 km and 20 km |
+| Tortuosity of the channel (10 to 100 m) makes the crackle | **modelled**: between consecutive sources closer than 8 km, elements at random spacing 1 to 20 m with 3 m lateral scatter, seeded (`sub-resolution tortuosity modelled`) |
+| The LMA samples the channel, it does not cover it | **modelled**: arrival gaps longer than 0.4 s are filled along the chord between the sources around them (`n_bridge_elements`) |
+| Ground reflection, scattering and turbulence give the long irregular tail | a reflected copy of every source (ear at 1.7 m, coefficient 0.5), a slow amplitude modulation (4 to 30 %, growing with distance) and a decaying sparse-echo tail (0.5 to 2.5 s, 20 to 50 %) |
+| Binaural cues | every arrival panned by its azimuth relative to the camera heading at that time (equal-power level difference, Woodworth time difference, cone-of-confusion reduction for elevated sources, head shadow); a long flash is wide |
+
+*Not modelled*: refraction (wind and temperature gradients bend and shadow thunder), terrain and building shadowing,
+the individual return strokes (the LMA shows the channel, not the strokes: multiple-stroke detail is absent), the true
+acoustic strength of a source (VHF power is not acoustic energy), the Doppler shift of the moving camera, and
+real-air nonlinear propagation beyond the two power laws. It remains synthesis, not a recording.
+
+*Verification* (`tools/perils_movie/audio/verify_thunder.py`, `tests/test_perils_audio.py`): the first arrival of
+a single source is its distance / 343 / speedup to 1 ms; the spread of the arrivals is `(r_max - r_min) / 343` whatever
+the speed-up; the duration grows with the extent; the spectral centroid falls with the distance (800 m, 3, 12, 40
+km); a close channel has energy at 0.5 to 5 kHz and a 40 km one peaks below 150 Hz; the N-wave has no net impulse;
+the render is deterministic; no clipping. The previous synthesis (a filtered noise per direction sector under an
+envelope) was diagnosed with the same tools: a stationary noise bed whose centroid hardly moved with the distance
+(135, 125, 114, 101 Hz for 5, 10, 16, 44 km), a slow attack, no individual cracks, no structure: that is why it
+sounded fake. The new one: centroid 95, 64, 54, 40 Hz, an attack of a few ms, bursts of 10 to 20 dB inside the
+rumble (`audio/plots_v4/thunder_isolated_v3_vs_v4.png`).
+
+*Option, not done*: a hybrid with real thunder recordings (CC0 / public-domain: for example freesound.org
+sounds marked CC0, or the Wikimedia Commons public-domain thunder files) could add the natural broadband character
+and the 1 to 5 kHz detail of a close strike that a model of this kind does not have. It would need a download
+(none was made), a licence check per file (CC0 needs no credit; CC-BY needs the credit on the end card; CC-BY-NC
+conflicts with the project licence use), and would then be mixed under the same timing (onset, N-wave positions) from
+the real flash. Only with the maintainer's agreement.
 
 ## Mix
 
@@ -195,17 +236,16 @@ to 9.4, mean 8; its `camera_path.json` and `events.json`):
   sensor hit in the window.
 * Loudness -23.0 LUFS integrated, true peak -3.4 dBFS, no clipped sample, mono loss 1.0 dB, deterministic
   (two renders give the same SHA-1).
-* Thunder (the `perils_audio_v3` render, level compressed for audibility): **59 flashes voiced** of 3236 (12 by
-  the guarantee, 47 by score), first one arriving at 29.2 s and then never more than 4.1 s apart. Of the others,
-  281 are beyond 150 km, 558 arrive after the clip, 2338 were heard in the clip but not voiced (2160 voices, 92
-  density, 86 masked). Of the 15 windows of 8 s, 12 have a flash in range and **all 12 are voiced**; the first
-  three (0 to 24 s) have no flash that can arrive (physical delay, see above). Thunder layer: rms -25.8 dBFS,
-  peak -3.6 dBFS, -23.5 LUFS; the median voiced thunder is 12.1 dB above the rest of the mix and 20 dB above
-  the rain (smallest margin over the rain 4.5 dB). Peaks by range: 0 to 10 km median -11 dBFS, 10 to 25 km -12, 25 to 60 km
-  -13 (the loudest, -3.6, are three flashes 6 to 8 km from the tornado shot). Delays in the clip 1.2 to 32 s: in the
-  tornado shot the clock runs at 1x, so a flash 6 km away is heard 18 s after it.
-* Other layers (rms in the final mix): tornado roar -36 dBFS, rain -45, wind -47, convective bed -44,
-  ambient -50, hail silent (no evidence). The tornado is 5.5 km from the listener at the nearest. Rain is
+* Thunder (the `perils_audio_v4` render, thunder built per source, level compressed for audibility): **47 flashes
+  voiced** of 3236 (12 by the guarantee, 35 by score): 14 near (< 10 km), 16 mid (10 to 30 km), 17 far (> 30 km).
+  4303 channel elements (real LMA sources) rendered with 4300 ground reflections, 16 012 modelled tortuosity points
+  and 13 857 modelled bridge elements. First voiced arrival 29.4 s, then never more than 4.6 s apart. Not voiced:
+  261 beyond 150 km, 587 arrive after the clip, 2341 heard but dropped (2251 voices, 87 masked, 3 density). Of the 15
+  windows of 8 s, 12 have a flash in range and **all 12 are voiced**; the first three (0 to 24 s) have no flash that
+  can arrive (physical delay). Thunder layer: rms -24.4 dBFS, peak -2.5 dBFS; the median voiced thunder is 12.1 dB above
+  the rest of the mix. Median spectral centroid by class: near 89 Hz, mid 53 Hz, far 41 Hz.
+* Other layers (rms in the final mix): tornado roar -39 dBFS, rain -42, wind -43, convective bed -41,
+  ambient -47, hail silent (no evidence). The tornado is 5.5 km from the listener at the nearest. Rain is
   from the radar echo for 60 % of the clip (`radar_zr`), from instruments near the listener for 2 %, silent
   for 37 % (nothing near). Wind (max 8 m/s observed, 12 m/s with the observed gust) from StickNet 0223A,
   0102A, 0107A, 0217A, 0222A and mesonet SCOUT2.
@@ -225,7 +265,8 @@ to 9.4, mean 8; its `camera_path.json` and `events.json`):
   alone stays physical.
 * LMA source power is relative and not calibrated to acoustic energy: the loudness of a flash is a
   proxy (distance, number of sources, relative power).
-* A time-lapse compresses the rolling of long thunder; the sounds are not pitch-shifted.
+* Thunder keeps its real internal time (only the onset follows the clock) and is voiced for at most 15 s: a flash whose
+  far parts arrive later than that is cut. The sounds are not pitch-shifted.
 * A drop spectrum made from raw counts uses the Parsivel sensor area (0.0054 m2) and the sampling time
   (`from_counts`): the absolute flux is then approximate.
 * The thinning of dense bursts drops real flashes (they are counted in the report).
