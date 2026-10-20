@@ -256,4 +256,62 @@ The repository stays public for now. When you switch it, do these in order:
 
 ## GitHub Actions minutes for a private repository
 
-@@MINUTES@@
+A private repository on GitHub's free plan gets about **2,000 Actions minutes a month**; a macOS minute counts as **10**
+minutes and a Windows minute as **2**. (Public repositories pay nothing, which is why this has not mattered so far.) This is
+an estimate from this repository's own history, not a decision; the choice is yours.
+
+**What the workflows run** (from `.github/workflows/`):
+
+| Workflow | When | Jobs and runners |
+|---|---|---|
+| CI | every push to `main`, every pull-request push | Python on ubuntu and macOS, Frontend on ubuntu and macOS, Rust on ubuntu and macOS, Docker image on ubuntu: 3 macOS + 4 Linux jobs |
+| Release | a `v*` tag, a manual run, and pull requests that touch the packaging files | macOS (Apple silicon), macOS (Intel), Linux, Windows installer builds, each with a PyInstaller engine build; plus the new `downloads` job (ubuntu, about a minute) on tags |
+| Docs | push to `main`, pull requests | ubuntu |
+| Licenses | push, pull request, weekly | ubuntu |
+
+**Measured** with `gh api` over the last 30 days (2026-09-20 to 2026-10-20: 286 runs, a busy development month), each job
+rounded up to whole minutes as GitHub bills it, multiplied by 1 (Linux), 2 (Windows) and 10 (macOS):
+
+| Workflow and trigger | Runs | Raw minutes | Billed minutes | Per run |
+|---|---|---|---|---|
+| CI, pull request | 94 | 830 Linux + 698 macOS | 7,810 | 83 |
+| CI, push to `main` | 52 | 458 Linux + 386 macOS | 4,318 | 83 |
+| Release, pull request (packaging paths) | 23 | 188 Linux + 528 macOS + 235 Windows | 5,938 | 258 |
+| Release, tag push | 7 | 79 Linux + 182 macOS + 98 Windows | 2,095 | 299 |
+| Release, manual | 1 | 11 Linux + 27 macOS + 14 Windows | 309 | 309 |
+| Docs and Licenses (all triggers) | 109 | 116 Linux | 116 | about 1 |
+| **Total** | **286** | | **about 20,600** | |
+
+(Many of those runs were cancelled or failed early, but they are billed too.)
+
+**Is the free allowance enough? No, not at this pace.** The same month would use about ten times the allowance. The cost is
+almost all macOS: one CI run is about 83 billed minutes (74 of them from the three macOS jobs), so the whole allowance is
+about 24 CI runs a month, fewer than one a day; a full release build is about 300 billed minutes.
+
+**What would fit** (same month, recomputed from the table; each line adds to the one above it):
+
+| Change | Billed minutes in that month |
+|---|---|
+| none | about 20,600 |
+| the Release workflow no longer runs on pull requests (trial builds by hand only) | about 14,600 |
+| and CI on pull requests runs Linux only (macOS stays on pushes to `main`) | about 7,700 |
+| and CI on `main` runs macOS only nightly or weekly | about 3,800 (a release is about 300 of it) |
+
+Under roughly 2,000 a month means Linux-only CI on pull requests (about 9 minutes a run) plus one or two release builds
+and an occasional macOS check.
+
+**Options** (not decided here):
+
+1. **A paid plan** (GitHub Team or Pro): more included minutes (3,000 at the time of writing) and per-minute billing beyond
+   that. At this month's volume the overage would be on the order of 100 to 150 US dollars at list prices as I know them, mostly macOS minutes;
+   check GitHub's current rates before relying on a figure.
+2. **Fewer macOS jobs on pull requests**: keep the three macOS jobs only on `main` and on tags, keep Linux on every pull
+   request; run Release by hand or on tags only (remove the `pull_request` trigger, or keep it for `release.yml` edits
+   only). Costs some safety on macOS-only breakage until it reaches `main`.
+3. **A self-hosted runner** (for example a Mac you own) for the macOS jobs: GitHub counts no minutes for it, but you maintain it,
+   it must only run trusted code (a private repository's own branches, never forks), and GitHub has announced a small
+   per-minute platform fee for self-hosted runners; check the current terms.
+4. Smaller levers: cancel superseded runs (CI already does), cache more, and skip the Docs and Licenses workflows when
+   only unrelated files change (they cost about a minute each).
+
+The `downloads` and `promote` jobs added with this channel are Linux and cost about 1 to 3 minutes per release.
