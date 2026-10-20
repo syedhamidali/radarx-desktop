@@ -208,6 +208,73 @@ export function drawStations(e: SceneEnv, a: number): void {
 
 // ─── tornado ────────────────────────────────────────────────────────────────
 
+/**
+ * The damage swath on the ground up to the tornado's position: a ribbon of the SURVEYED width (a few hundred metres: a thin
+ * line from far away, a real band from a few km) along the surveyed path (INTERPOLATED between the surveyed ends).
+ * Drawn on the ground as projected quads; the part behind the near plane is skipped.
+ */
+export function drawSwath(e: SceneEnv, a: number): void {
+  if (a <= 0.02) return;
+  const { ctx, cam, u } = e;
+  for (const tor of e.data.tornadoes) {
+    const p = tor.path;
+    if (p.length < 2 || !tor.width_m) continue;
+    const cur = tornadoAt(tor, e.td);
+    const upto = cur ?? (e.td > p[p.length - 1].t ? { x: p[p.length - 1].x, y: p[p.length - 1].y } : null);
+    if (!upto) continue;
+    // sample the travelled path every ~250 m
+    const pts: [number, number][] = [[p[0].x, p[0].y]];
+    for (let i = 1; i < p.length; i++) {
+      const ax = p[i - 1].x;
+      const ay = p[i - 1].y;
+      const bx = p[i].x;
+      const by = p[i].y;
+      const len2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+      const f = Math.max(0, Math.min(1, ((upto.x - ax) * (bx - ax) + (upto.y - ay) * (by - ay)) / len2));
+      const done = f < 1 || (upto.x === bx && upto.y === by);
+      const ex = f < 1 ? ax + (bx - ax) * f : bx;
+      const ey = f < 1 ? ay + (by - ay) * f : by;
+      const n = Math.max(1, Math.ceil(Math.hypot(ex - ax, ey - ay) / 0.25));
+      for (let k = 1; k <= n; k++) pts.push([ax + ((ex - ax) * k) / n, ay + ((ey - ay) * k) / n]);
+      if (done && f < 1) break;
+    }
+    if (pts.length < 2) continue;
+    const hw = tor.width_m / 2000; // km
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(255,140,60,0.5)';
+    for (let i = 1; i < pts.length; i++) {
+      const [x0, y0] = pts[i - 1];
+      const [x1, y1] = pts[i];
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const l = Math.hypot(dx, dy) || 1;
+      const nx = (-dy / l) * hw;
+      const ny = (dx / l) * hw;
+      const q = [pj(cam, x0 + nx, y0 + ny, 0.03, e.ve), pj(cam, x1 + nx, y1 + ny, 0.03, e.ve), pj(cam, x1 - nx, y1 - ny, 0.03, e.ve), pj(cam, x0 - nx, y0 - ny, 0.03, e.ve)];
+      if (q.some((c) => !c)) continue;
+      ctx.beginPath();
+      q.forEach((c, k) => (k ? ctx.lineTo(c![0], c![1]) : ctx.moveTo(c![0], c![1])));
+      ctx.closePath();
+      ctx.fill();
+    }
+    // the edges of the swath, thin
+    ctx.strokeStyle = 'rgba(255,190,120,0.7)';
+    ctx.lineWidth = 1.2 * u;
+    for (const s of [1, -1]) {
+      const edge = pts.map(([x, y], i) => {
+        const [xa, ya] = pts[Math.max(0, i - 1)];
+        const [xb, yb] = pts[Math.min(pts.length - 1, i + 1)];
+        const l = Math.hypot(xb - xa, yb - ya) || 1;
+        return pj(cam, x + (-(yb - ya) / l) * hw * s, y + ((xb - xa) / l) * hw * s, 0.03, e.ve);
+      });
+      polyline(ctx, edge);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
 /** Surveyed track on the ground with start and end labels (OBSERVED, NWS survey). */
 export function drawTornadoTrack(e: SceneEnv, a: number): void {
   if (a <= 0.02) return;

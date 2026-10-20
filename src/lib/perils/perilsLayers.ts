@@ -8,46 +8,59 @@
 export type LayerId =
   | 'radars' | 'stations' | 'lma' | 'hail' | 'rotation' | 'tornadoTrack' | 'funnel' | 'zdr' | 'convStrat' | 'balloon'
   | 'mrms' | 'isotherms' | 'flow' | 'wsurface' | 'captions' | 'skewt' | 'envPanel' | 'stripCharts' | 'timeHeight' | 'lmaPanel' | 'stationCard'
-  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks' | 'immersion' | 'tornadoCard' | 'minimap' | 'sim';
+  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks' | 'immersion' | 'tornadoCard' | 'minimap' | 'sim'
+  | 'focusInset' | 'swath' | 'rotSeries';
 
-const SHOTS = ['establishing', 'flyby', 'tornado', 'window', 'rise', 'topdown'] as const;
+const SHOTS = [
+  'establishing', 'flyby', 'tornado', 'window', 'rise', 'topdown',
+  'focus_wide', 'focus_chaser', 'focus_close', 'focus_low', 'focus_swath', 'focus_top',
+] as const;
 type ShotName = (typeof SHOTS)[number];
 
-/** Opacity [0..1] per layer for the shots in order: establishing, flyby, tornado, window, rise, topdown. */
+/**
+ * Opacity [0..1] per layer for the shots in order: establishing, flyby, tornado (the v2 film's single tornado shot), window, rise,
+ * topdown, then the six angles of the tornado focus: wide, chaser, close, low, swath, top.
+ */
 export const LAYER_TABLE: Record<LayerId, number[]> = {
-  radars: [1, 0.55, 0.0, 0.35, 0.6, 1],
-  stations: [0.7, 0.9, 0.0, 1, 0.7, 1],
-  lma: [1, 1, 1, 1, 1, 1],
-  hail: [0.35, 1, 0.0, 0.7, 0.5, 0.8],
-  rotation: [0.5, 0.9, 0.0, 0.4, 0.5, 0.8],
-  tornadoTrack: [1, 1, 0.0, 0.5, 0.8, 1],
-  funnel: [0, 0.6, 1, 0.5, 0.5, 0],
-  zdr: [0.3, 0.8, 0.0, 0.3, 0.3, 0.5],
-  convStrat: [0.5, 0, 0, 0, 0.2, 1],
-  balloon: [1, 1, 0.0, 1, 0.8, 0.8],
-  mrms: [1, 0.8, 0.5, 0.8, 1, 1],
-  isotherms: [0.6, 0.6, 0.0, 0.0, 0.5, 0],
-  flow: [0, 0.3, 0.0, 0.5, 0.5, 0],
-  wsurface: [0, 0, 0, 0, 0, 0],
-  captions: [1, 1, 0.0, 1, 1, 1],
-  skewt: [0.95, 0, 0, 0, 0.9, 0],
-  envPanel: [0, 0, 0, 0, 0, 0.6],
-  stripCharts: [0, 0.4, 0, 1, 0.3, 0],
-  timeHeight: [0, 0, 0, 1, 0.3, 0],
-  lmaPanel: [1, 1, 0.0, 0.9, 1, 1],
-  stationCard: [0, 0.8, 0.0, 1, 0, 0.3],
-  modelCloud: [0.5, 0, 0, 0, 0.3, 0.5],
-  surfaceModels: [0.7, 0.3, 0.0, 0.3, 0.5, 0.8],
-  dsd: [0, 0, 0, 1, 0.3, 0],
-  rainStreaks: [0, 0, 0, 1, 0, 0],
-  /** Not a drawn layer: the immersive grade of the tornado shot (labels, arrows and cards out; one lower third). */
-  immersion: [0, 0, 1, 0, 0, 0],
-  /** The tornado card of the wide shots (the immersive shot has its own lower third). */
-  tornadoCard: [0, 1, 0, 0.7, 0, 0.7],
-  /** The plan-view inset: in every shot, small and faint in the immersive one. */
-  minimap: [1, 1, 0.6, 1, 1, 1],
-  /** The simulated tornado of the tornado shot (further multiplied by the camera's nearness to the tornado). */
-  sim: [0, 0, 1, 0, 0, 0],
+  radars: [1, 0.55, 0.0, 0.35, 0.6, 1, 0.3, 0, 0, 0, 0, 0.4],
+  stations: [0.7, 0.9, 0.0, 1, 0.7, 1, 0.3, 0, 0, 0, 0, 0.5],
+  lma: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+  hail: [0.35, 1, 0.0, 0.7, 0.5, 0.8, 0, 0, 0, 0, 0, 0],
+  rotation: [0.5, 0.9, 0.0, 0.4, 0.5, 0.8, 0, 0, 0, 0, 0, 0],
+  tornadoTrack: [1, 1, 0.0, 0.5, 0.8, 1, 1, 0.4, 0, 0, 0, 1],
+  funnel: [0, 0.6, 1, 0.5, 0.5, 0, 0.5, 1, 1, 1, 1, 0],
+  zdr: [0.3, 0.8, 0.0, 0.3, 0.3, 0.5, 0, 0, 0, 0, 0, 0],
+  convStrat: [0.5, 0, 0, 0, 0.2, 1, 0, 0, 0, 0, 0, 0],
+  balloon: [1, 1, 0.0, 1, 0.8, 0.8, 0, 0, 0, 0, 0, 0],
+  mrms: [1, 0.8, 0.5, 0.8, 1, 1, 0.8, 0.4, 0.4, 0.4, 0.4, 1],
+  isotherms: [0.6, 0.6, 0.0, 0.0, 0.5, 0, 0, 0, 0, 0, 0, 0],
+  flow: [0, 0.3, 0.0, 0.5, 0.5, 0, 0, 0, 0, 0, 0, 0],
+  wsurface: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  captions: [1, 1, 0.0, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+  skewt: [0.95, 0, 0, 0, 0.9, 0, 0, 0, 0, 0, 0, 0],
+  envPanel: [0, 0, 0, 0, 0, 0.6, 0, 0, 0, 0, 0, 0],
+  stripCharts: [0, 0.4, 0, 1, 0.3, 0, 0, 0, 0, 0, 0, 0],
+  timeHeight: [0, 0, 0, 1, 0.3, 0, 0, 0, 0, 0, 0, 0],
+  lmaPanel: [1, 1, 0.0, 0.9, 1, 1, 0.5, 0, 0, 0, 0, 0.5],
+  stationCard: [0, 0.8, 0.0, 1, 0, 0.3, 0, 0, 0, 0, 0, 0],
+  modelCloud: [0.5, 0, 0, 0, 0.3, 0.5, 0, 0, 0, 0, 0, 0],
+  surfaceModels: [0.7, 0.3, 0.0, 0.3, 0.5, 0.8, 0.3, 0, 0, 0, 0, 0.4],
+  dsd: [0, 0, 0, 1, 0.3, 0, 0, 0, 0, 0, 0, 0],
+  rainStreaks: [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+  /** Not a drawn layer: the immersive grade of the tornado shots (labels, arrows and cards out; one lower third). */
+  immersion: [0, 0, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0],
+  /** The tornado card of the wide shots (the immersive shots have their own lower third). */
+  tornadoCard: [0, 1, 0, 0.7, 0, 0.7, 1, 0, 0, 0, 0, 1],
+  /** The plan-view inset ("where the camera is"): in every shot but the tornado focus, which has its own. */
+  minimap: [1, 1, 0.6, 1, 1, 1, 0, 0, 0, 0, 0, 0],
+  /** The simulated tornado (further multiplied by the camera's nearness to the tornado and by the data clock being near real time). */
+  sim: [0, 0, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+  /** The tornado focus inset: column-maximum echo and storm-relative velocity around the tornado, the camera and its view cone. */
+  focusInset: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+  /** The damage swath on the ground (the surveyed width) up to the tornado's position. */
+  swath: [0, 0, 0, 0.5, 0.8, 1, 1, 0, 0, 0, 0.3, 0.8],
+  /** The small time series of the radar rotation next to the surveyed life of the tornado. */
+  rotSeries: [0, 0, 0, 0, 0, 0, 1, 0.85, 0.7, 0.7, 0.7, 1],
 };
 
 export function smoothstep(x: number): number {
@@ -59,6 +72,8 @@ export interface ShotSpan {
   name: string;
   t0: number;
   t1: number;
+  /** Seconds of the glide into this shot (the camera's); the default overlap of `crossfade` when absent. */
+  overlap?: number | null;
 }
 
 /**
@@ -73,7 +88,8 @@ export function crossfade(shots: ShotSpan[], values: number[], t: number, overla
   if (!shots.length) return val('establishing');
   let v = val(shots[0].name);
   for (let j = 1; j < shots.length; j++) {
-    const w = smoothstep((t - (shots[j].t0 - overlap / 2)) / overlap);
+    const ov = shots[j].overlap ?? overlap;
+    const w = smoothstep((t - (shots[j].t0 - ov / 2)) / ov);
     v = (1 - w) * v + w * val(shots[j].name);
   }
   return v;

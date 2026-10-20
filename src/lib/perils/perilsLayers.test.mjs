@@ -29,9 +29,9 @@ test('values change smoothly across a shot change: no pop, within the range of t
   }
 });
 
-test('all layer lists cover the six shots and stay within 0..1', () => {
+test('all layer lists cover the twelve shots (the six of the film and the six angles of the tornado focus) and stay within 0..1', () => {
   for (const [k, v] of Object.entries(LAYER_TABLE)) {
-    assert.equal(v.length, 6, k);
+    assert.equal(v.length, 12, k);
     assert.ok(v.every((x) => x >= 0 && x <= 1), k);
   }
 });

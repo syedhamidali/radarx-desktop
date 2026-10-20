@@ -422,17 +422,17 @@ export function drawLegend(ctx: CanvasRenderingContext2D, W: number, H: number, 
   const y = H - 60 * u;
   for (const k of kinds) x += chip(ctx, k, x, y, u, undefined, 12) + 8 * u;
   drawText(ctx, fit(ctx, m.credits, W * 0.9, u, { size: 12, weight: 500 }), W / 2, H - 22 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
-  drawText(ctx, `Vertical scale ×${m.vexag.toFixed(1)} · flat ground, no terrain · cloud look and lighting STYLISED, echo position and strength are radar data`, W / 2, H - 40 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
+  drawText(ctx, `Vertical scale ×${m.vexag.toFixed(1)} · flat ground, no terrain · cloud look and lighting STYLISED, echo position and strength are radar data (level uncertain by about 3 dB)`, W / 2, H - 40 * u, u, { size: 12, weight: 500, align: 'center', color: rgba(ui().dim, 0.95), halo: 3 });
 }
 
 /**
  * The key of the ground colours: surface temperature (ANALYSIS), MRMS reflectivity outside the radar volume
  * (OBSERVED), and the rotation swath (RETRIEVED). Only the layers that are on and have data get a row.
  */
-export function drawGroundKey(ctx: CanvasRenderingContext2D, u: number, m: HudModel, y: number, a: number): void {
+export function drawGroundKey(ctx: CanvasRenderingContext2D, u: number, m: HudModel, y: number, a: number): number {
   const k = m.groundKey;
   const rows = [k.temp && 'temp', k.mrms && 'mrms', k.swath && 'swath'].filter(Boolean) as string[];
-  if (!rows.length || a <= 0.02) return;
+  if (!rows.length || a <= 0.02) return 0;
   const w = 330 * u;
   const h = (14 + rows.length * 40) * u;
   const x = 34 * u;
@@ -473,6 +473,46 @@ export function drawGroundKey(ctx: CanvasRenderingContext2D, u: number, m: HudMo
     }
   });
   ctx.restore();
+  return h;
+}
+
+/**
+ * The one lower third of the tornado focus: a title, two or three lines made from the data (perilsFocusData.focusCaption), the
+ * badge that says whether the picture is the SIMULATION and whether the data clock is running in real time or in time-lapse.
+ */
+export function drawFocusLowerThird(
+  ctx: CanvasRenderingContext2D, H: number, u: number, a: number, cap: { title: string; lines: string[] },
+  badge: { sim: boolean; speedup: number }, rating: string,
+): void {
+  if (a <= 0.02 || !cap.title) return;
+  const real = badge.speedup <= 1.3;
+  const lines = cap.lines.flatMap((ln) => wrapText(ln, 122));
+  const w = 900 * u;
+  const h = (50 + lines.length * 19) * u;
+  const x = 34 * u;
+  const y = H - 150 * u - h;
+  ctx.save();
+  ctx.globalAlpha = a;
+  panel(ctx, x, y, w, h, u, 0.62);
+  drawText(ctx, cap.title, x + 14 * u, y + 29 * u, u, { size: 20, weight: 700, color: rgba([255, 130, 120], 1), halo: 0 });
+  let cx = x + 14 * u + measure(ctx, cap.title, u, { size: 20, weight: 700 }) + 14 * u;
+  if (badge.sim) cx += chip(ctx, 'stylised', cx, y + 27 * u, u, 'SIMULATION', 11) + 8 * u;
+  if (real) {
+    ctx.fillStyle = rgba(ui().caution, 0.95);
+    const label = `REAL TIME ×${badge.speedup.toFixed(1)}`;
+    const lw = measure(ctx, label, u, { size: 12, weight: 800, mono: true }) + 16 * u;
+    ctx.beginPath();
+    ctx.roundRect(cx, y + 13 * u, lw, 22 * u, 11 * u);
+    ctx.fill();
+    drawText(ctx, label, cx + 8 * u, y + 29 * u, u, { size: 12, weight: 800, mono: true, color: 'rgba(14,16,24,1)', halo: 0 });
+  } else {
+    drawText(ctx, `time-lapse ×${badge.speedup.toFixed(0)}`, cx, y + 29 * u, u, { size: 13, weight: 700, color: rgba(ui().caution, 1), halo: 0 });
+  }
+  lines.forEach((ln, i) => {
+    drawText(ctx, ln, x + 14 * u, y + (52 + i * 19) * u, u, { size: 13, weight: 500, halo: 0, color: rgba(ui().text, 0.95) });
+  });
+  void rating;
+  ctx.restore();
 }
 
 /** Opacity of the end card at clip time `tc` of a clip of `duration` s: it comes in over 1.2 s, 9 s before the end. */
@@ -484,8 +524,8 @@ export function endCardAlpha(tc: number, duration: number, span = 9): number {
  * The closing card: every data source and instrument of the manifest with its credit and class, and
  * what the six labels mean. It covers the right-hand part of the last seconds of the top-down shot.
  */
-export function drawEndCard(ctx: CanvasRenderingContext2D, W: number, H: number, u: number, m: HudModel, tc: number, duration: number): void {
-  const a = endCardAlpha(tc, duration);
+export function drawEndCard(ctx: CanvasRenderingContext2D, W: number, H: number, u: number, m: HudModel, tc: number, duration: number, span = 9): void {
+  const a = endCardAlpha(tc, duration, span);
   if (a <= 0.01) return;
   const src = m.data.sources ?? [];
   const w = Math.min(W * 0.56, 1040 * u);

@@ -56,6 +56,14 @@ export function simDistanceWeight(distKm: number, near = 1.8, far = 4.5): number
   return 1 - smooth((distKm - near) / (far - near));
 }
 
+/**
+ * The simulation runs near real time only (its swirl is physical at one data second per clip second): its opacity goes to
+ * zero as the data clock speeds up, from x6 (full) to x30 (none): the time-lapse stretches between the real-time angles show the simulation at the speed of the data clock (a fast hyperlapse of it) up to x6 and fade it into the radar-echo scene beyond.
+ */
+export function simSpeedWeight(speedup: number, from = 6, to = 30): number {
+  return 1 - smooth((speedup - from) / (to - from));
+}
+
 export class SimTornado {
   scene: TornadoScene | null = null;
   ready = false;
@@ -71,13 +79,16 @@ export class SimTornado {
   async init(
     file: SimSeedFile,
     shot: [number, number],
-    size: { width: number; height: number; scale?: number },
+    size: { width: number; height: number; scale?: number; land?: { half: number; size: number; treeRadius: number } },
     path: { tc: number; td: number; geo: SimGeoPose }[],
   ): Promise<void> {
     try {
       const { TornadoScene: Scene } = await import('../utils/tornado/TornadoScene');
       const canvas = document.createElement('canvas');
-      const scene = new Scene({ canvas, width: size.width, height: size.height, ambient: 'dusk', useTiles: true, tileBase: '', renderScale: size.scale });
+      const scene = new Scene({
+        canvas, width: size.width, height: size.height, ambient: 'dusk', useTiles: true, tileBase: '', renderScale: size.scale,
+        landHalf: size.land?.half, landSize: size.land?.size, treeRadius: size.land?.treeRadius,
+      });
       scene.setSeedData(file.seed);
       scene.setShot(shot[0], shot[1], 3500);
       await scene.loadGround();

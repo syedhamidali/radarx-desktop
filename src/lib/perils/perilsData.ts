@@ -5,6 +5,7 @@
  * in perilsData.test.mjs.
  */
 import { bracket, lerpAt } from './perilsDirector.ts';
+import type { FocusData } from './perilsFocusData.ts';
 
 export type ProvKind = 'observed' | 'model' | 'analysis' | 'retrieved' | 'interpolated' | 'stylised';
 
@@ -196,9 +197,11 @@ export interface PerilsData {
   tornadoes: TornadoRec[];
   rotation: RotationTrack[];
   /** Column-maximum reflectivity of each observed step (8-bit codes, the volume's code book): the plan-view inset. */
-  colmax?: ({ bin: string; nx: number; ny: number } | null)[];
+  colmax?: ({ bin: string; nx: number; ny: number; /** Quality 0..100 of the voxel of the column maximum (reflectivity merge v2): the opacity of the plan views. */ qual?: string } | null)[];
   /** The radar couplet at the surveyed tornado (the parent circulation) and the survey-scale spin estimate; null without the file. */
   vortex?: VortexData | null;
+  /** The tornado focus: storm-relative velocity and shear images of each step and the rotation series next to the surveyed position. */
+  focus?: FocusData | null;
   mrms: (MrmsMeta | null)[];
   surface?: (unknown | null)[];
   hail: ({ n: number; p: number[][] } | null)[];

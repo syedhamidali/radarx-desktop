@@ -11,7 +11,7 @@ import '../styles/provenance.css';
 import type { ClipApi, ClipExtras, ExtrasPose, FrameInfo, OverlayCam } from './clipExtras';
 import { COLORMAP_DATA } from '../utils/colormaps';
 import {
-  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, chooseEnvironmentPair, type SoundingRec, observedStepAt, stationReadout, tornadoAt, rotationAt, interpWeights,
+  type PerilsData, type ProvKind, type EnvSounding, pickEnvSounding, nearestSounding, chooseEnvironmentPair, type SoundingRec, observedStepAt, stationReadout, tornadoAt, rotationAt, interpWeights, seriesAt,
 } from './perilsData';
 import { Director, type CamEntry, type TimelineFile, nearestStation } from './perilsDirector';
 import { LayerVis, crossfade, type LayerId } from './perilsLayers';
@@ -19,15 +19,17 @@ import { GroundComposer, contourSegments, type PixelFn } from './perilsGround';
 import { decodeSurface, sampleGrid, blendFields, tempColour, coldPoolLevel, swathUpTo, type SurfaceMeta } from './perilsSurface';
 import { compileFlashes, flashFrame, flashesInWindow, lightFrom, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
 import { stationXY, balloonFlight } from './perilsData';
-import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
+import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawSwath, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
+import { type FocusCaption, type FocusInfo, focusCaption, focusNow, offsetStats, offsetText, bearingOf, SHEAR_CANDIDATE } from './perilsFocusData';
+import { drawFocusInset, drawRotSeries, insetHeight, type FocusInsetState } from './perilsFocusInset';
 import { drawStripCharts, drawDsdInset, drawTimeHeight, drawRainStreaks } from './perilsInsets';
-import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawTornadoLowerThird, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
+import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawTornadoLowerThird, drawFocusLowerThird, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
 import { activeCaption, captionAlpha, captionOf, scheduleCaptions, type ScheduledCaption, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
 import { drawMinimap, hfovFromTan, type MinimapState } from './perilsMinimap';
-import { SimTornado, simDistanceWeight, type SimSeedFile, type SimGeoPose } from './perilsTornadoSim';
+import { SimTornado, simDistanceWeight, simSpeedWeight, type SimSeedFile, type SimGeoPose } from './perilsTornadoSim';
 import { ParticleTornado, drawParentCirculation, vortexFrame, type TornadoRenderer, type VortexFrame } from './perilsVortex';
-import { provColour } from './perilsStyle';
+import { provColour, chip } from './perilsStyle';
 import { fmtOffset, clockUtc } from './perilsData';
 
 export interface PerilsOptions {
@@ -56,6 +58,11 @@ async function getJson<T>(url: string): Promise<T> {
   return (await r.json()) as T;
 }
 
+const smoothUnit = (x: number): number => {
+  const c = Math.max(0, Math.min(1, x));
+  return c * c * (3 - 2 * c);
+};
+
 export class PerilsExtras implements ClipExtras {
   readonly data: PerilsData;
   readonly director: Director;
@@ -68,6 +75,13 @@ export class PerilsExtras implements ClipExtras {
   private azCodes: (Uint8Array | null)[] = [];
   private colmaxCodes: (Uint8Array | null)[] = [];
   private colmaxCv: (HTMLCanvasElement | null)[] = [];
+  private qualCodes: (Uint8Array | null)[] = [];
+  /** The tornado focus: storm-relative velocity and azimuthal shear of each step (8-bit codes), the velocity images, the shear outline per step. */
+  private vsrCodes: (Uint8Array | null)[] = [];
+  private shearCodes: (Uint8Array | null)[] = [];
+  private vsrCv: (HTMLCanvasElement | null)[] = [];
+  private shearSegCache = new Map<number, number[][]>();
+  private vsrLegend: HTMLCanvasElement | null = null;
   private baseImg: ImageBitmap | null = null;
   private swathCache = new Map<number, Uint8Array | null>();
   private surf: (Record<string, Float32Array> | null)[] = [];
@@ -96,6 +110,9 @@ export class PerilsExtras implements ClipExtras {
   private hudCtx: CanvasRenderingContext2D | null = null;
   private vfCache: { td: number; imm: number; vf: VortexFrame | null } | null = null;
   groundMissing = true;
+  private get endSpan(): number {
+    return this.director.tl.end_card_s ?? 9;
+  }
   rainStreaks = 0;
   lmaDrawn = 0;
   maxSimultaneousFlashes = 0;
@@ -152,7 +169,7 @@ export class PerilsExtras implements ClipExtras {
    * data are not changed. Quantised to 1 dBZ so that the transfer function is rebuilt rarely.
    */
   look(t: number): Record<string, number> | null {
-    const c = crossfade(this.director.tl.shots, [24, 30, 36, 30, 28, 24], t);
+    const c = crossfade(this.director.tl.shots, [24, 30, 36, 30, 28, 24, 38, 36, 36, 36, 36, 38], t);
     // the tornado shot: a darker, denser, rain-wrapped wall cloud, nearer haze, more rain streaks, a little more vignette and grain
     const im = this.vis.at('immersion', t);
     const q = (v: number, step: number) => Math.round(v / step) * step;
@@ -203,6 +220,24 @@ export class PerilsExtras implements ClipExtras {
       }),
     );
     this.colmaxCv = this.colmaxCodes.map(() => null);
+    this.qualCodes = await Promise.all(
+      (this.data.colmax ?? []).map(async (m) => {
+        if (!m?.qual) return null;
+        const r = await fetch(`${this.base}/${m.qual}`);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      }),
+    );
+    // the tornado focus: storm-relative velocity and azimuthal shear of every step
+    const fd = this.data.focus;
+    if (fd) {
+      const load = (list: ({ bin: string } | null)[]) => Promise.all(list.map(async (m) => {
+        if (!m) return null;
+        const r = await fetch(`${this.base}/${m.bin}`);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      }));
+      [this.vsrCodes, this.shearCodes] = await Promise.all([load(fd.vsr), load(fd.shear)]);
+      this.vsrCv = this.vsrCodes.map(() => null);
+    }
     // MRMS azimuthal shear (the rotation swath) and the surface analysis
     this.azCodes = await Promise.all(
       this.data.mrms.map(async (m) => {
@@ -239,7 +274,12 @@ export class PerilsExtras implements ClipExtras {
   /** The simulated tornado: its seed (tornado_seed.json), the shot span and the camera path, then the scene. */
   private async initSim(): Promise<void> {
     if (this.opts.sim === false) return;
-    const shot = this.director.tl.shots.find((q) => q.name === 'tornado');
+    const tl = this.director.tl;
+    // the tornado focus runs the simulation over the data span of its close angles; the v2 film over its one tornado shot
+    const focus = tl.focus;
+    const shot = focus
+      ? { name: 'focus', t0: this.director.clipTimeOfData(focus.sim_span_data_s[0]), t1: this.director.clipTimeOfData(focus.sim_span_data_s[1]) }
+      : tl.shots.find((q) => q.name === 'tornado');
     if (!shot) return;
     let file: SimSeedFile;
     try {
@@ -254,9 +294,13 @@ export class PerilsExtras implements ClipExtras {
       return { lat: p.lat, lon: p.lon, altM: p.altM, headingDeg: p.yawDeg, pitchDeg: p.pitchDeg, fovDeg: p.fov ?? 50 };
     };
     const path: { tc: number; td: number; geo: SimGeoPose }[] = [];
-    for (let t = shot.t0 - 1; t <= shot.t1 + 1; t += 0.5) path.push({ tc: t, td: this.director.dataTime(t), geo: geoAt(t) });
+    // the camera places the simulation has to leave free of trees: every frame of the focus angles (the close ones matter), the shot's otherwise
+    const tA = focus ? Math.min(...focus.beats.filter((b) => b.name.startsWith('focus_')).map((b) => b.t0)) : shot.t0 - 1;
+    const tB = focus ? Math.max(...focus.beats.filter((b) => b.name.startsWith('focus_')).map((b) => b.t1)) : shot.t1 + 1;
+    for (let t = tA; t <= tB; t += 0.5) path.push({ tc: t, td: this.director.dataTime(t), geo: geoAt(t) });
     this.sim = new SimTornado();
-    await this.sim.init(file, [this.director.dataTime(shot.t0), this.director.dataTime(shot.t1)], { width: window.innerWidth, height: window.innerHeight, scale: this.opts.simScale }, path);
+    const span: [number, number] = focus ? [focus.sim_span_data_s[0], focus.sim_span_data_s[1]] : [this.director.dataTime(shot.t0), this.director.dataTime(shot.t1)];
+    await this.sim.init(file, span, { width: window.innerWidth, height: window.innerHeight, scale: this.opts.simScale, land: focus ? { half: 4500, size: 2048, treeRadius: 3400 } : undefined }, path);
     if (!this.sim.ready) console.warn('[perils] tornado simulation not available:', this.sim.error);
   }
 
@@ -402,10 +446,18 @@ export class PerilsExtras implements ClipExtras {
     const v = (id: LayerId) => this.vis.at(id, info.t);
     // the simulated tornado: its own render, drawn over the echo with an opacity that is zero away from the tornado
     this.simW = 0;
-    if (this.sim?.ready && this.sim.active(info.td)) {
-      const vf0 = this.vortex(info.td, 0);
-      const dist = vf0 ? Math.hypot(info.eye[0] - vf0.x, info.eye[1] - vf0.y) : 1e9;
-      this.simW = v('sim') * simDistanceWeight(dist);
+    // the simulation's availability (it needs no tornado to be alive: the particle funnel must not stand in for it while it ramps up)
+    const vf0 = this.vortex(info.td, 0);
+    const ez = info.eye[2] / Math.max(info.vexag, 1e-3); // the eye height is stretched by the vertical exaggeration
+    const dist = vf0 ? Math.hypot(info.eye[0] - vf0.x, info.eye[1] - vf0.y, ez) : 1e9; // the camera's distance to the tornado in 3-D, km
+    // in the tornado focus the simulation's scene fades in over the 8 s before the surveyed touchdown (its funnel then forms by itself) and out after the end
+    const tor0 = this.data.tornadoes.find((q) => q.path.length > 1);
+    const life = this.director.tl.focus && tor0
+      ? Math.min(smoothUnit((info.td - (tor0.path[0].t - 8)) / 8), smoothUnit((tor0.path[tor0.path.length - 1].t + 20 - info.td) / 12))
+      : 1;
+    const simAvail = this.sim?.ready ? v('sim') * simDistanceWeight(dist) * simSpeedWeight(this.director.speedup(info.t)) * life : 0;
+    if (this.sim?.ready && (this.director.tl.focus ? life > 0 : this.sim.active(info.td))) {
+      this.simW = simAvail;
       if (this.simW > 0.01) {
         const p = this.director.pose(info.t);
         const pose: SimGeoPose = { lat: p.lat, lon: p.lon, altM: p.altM, headingDeg: p.yawDeg, pitchDeg: p.pitchDeg, fovDeg: p.fov ?? 50 };
@@ -428,6 +480,7 @@ export class PerilsExtras implements ClipExtras {
     if (colOn) ctx.rect(W - 400 * u, 0, 400 * u, v('skewt') > 0.05 ? cam.h : cam.h * 0.72);
     ctx.clip('evenodd');
     drawIsotherms(env, v('isotherms'), centre, 55);
+    drawSwath(env, v('swath') * (1 - 0.55 * this.simW));
     drawTornadoTrack(env, v('tornadoTrack'));
     drawRadars(env, v('radars'));
     drawBalloons(env, v('balloon'));
@@ -448,7 +501,10 @@ export class PerilsExtras implements ClipExtras {
     const vf = this.vortex(info.td, imm);
     if (vf) {
       drawParentCirculation(env, v('rotation') * (1 - this.simW), vf, imm < 0.5);
-      this.tornado.draw(env, v('funnel') * (1 - this.simW), vf);
+      // the tornado focus: the stylised funnel only where the simulation is not in use (far away), not while the simulation ramps up or in a time-lapse close by
+      const near = Math.max(0, Math.min(1, (dist - 1.2) / 1.0));
+      const funnelW = this.director.tl.focus ? (1 - simAvail) * near * near * (3 - 2 * near) : 1 - this.simW;
+      this.tornado.draw(env, v('funnel') * funnelW, vf);
     }
     ctx.restore();
     this.lmaDrawn = drawLma(ctx, cam, this.lmaNow, projRaw, info.vexag, this.opts.lmaColourBy ?? this.lma.colourBy, 1);
@@ -526,7 +582,7 @@ export class PerilsExtras implements ClipExtras {
       data: d, title: this.opts.title ?? (d.title || 'PERiLS'), subtitle: this.opts.subtitle ?? (d.case || ''), td, tc: info.t, duration: this.director.duration, speedup: this.director.speedup(info.t), shotLabel: this.director.shotAt(info.t).label,
       observed: obs, interval: { k: w.k, s: w.s }, motionNote,
       flash: { perMin: flashesInWindow(this.firstTimes, td, 60), series, binS, total: this.firstTimes.length, nowIdx: Math.min(series.length - 1, Math.floor(td / binS)) },
-      station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: this.envPanel(td),
+      station, tornado, caption, sees, vis: (id) => this.vis.at(id as LayerId, info.t) * (1 - endCardAlpha(info.t, this.director.duration, this.endSpan)), yawDeg: info.yawDeg, tanX: this.api ? this.lastTanX : 0.7, env: this.envPanel(td),
       legendKinds: ['observed', 'model', 'analysis', 'retrieved', 'interpolated', 'stylised'], credits, shots: this.director.tl.shots, layersOn: [], vexag: info.vexag,
       immersion: this.vis.at('immersion', info.t), groundKey: {
         temp: highUp && this.surf.some(Boolean) && this.vis.at('surfaceModels', info.t) > 0.12 ? this.tRange : null,
@@ -593,7 +649,8 @@ export class PerilsExtras implements ClipExtras {
     drawTopLeft(ctx, u, m);
     ctx.restore();
     const mm = this.minimap(info, W, H, u, m);
-    let y = mm.next;
+    const fo = this.focusInset(info, W, H, u, m);
+    let y = Math.max(mm.next, fo.next);
     y = drawLmaPanel(ctx, W, u, m, m.vis('lmaPanel'), y);
     y = drawEnvPanel(ctx, W, u, y, m.env, m.vis('envPanel'));
     const win = this.data.steps[this.data.steps.length - 1].t_s;
@@ -618,18 +675,19 @@ export class PerilsExtras implements ClipExtras {
     }
     drawStationCard(ctx, H, u, m, m.vis('stationCard'));
     const cardH = drawTornadoCard(ctx, u, m, m.vis('tornadoCard'), 280 * u);
-    drawGroundKey(ctx, u, m, 280 * u + (cardH ? cardH + 10 * u : 0), m.vis('captions'));
+    const keyH = drawGroundKey(ctx, u, m, 280 * u + (cardH ? cardH + 10 * u : 0), m.vis('captions'));
     drawCaption(ctx, W, H, u, m);
+    this.focusLeft(ctx, info, W, H, u, m, 280 * u + (cardH ? cardH + 10 * u : 0) + (keyH ? keyH + 10 * u : 0), fo.now);
     // the one lower third of the immersive shot: in with the shot, and down to a quarter after its first seconds
     const tShot = this.director.tl.shots.find((q) => q.name === 'tornado');
     const calm = tShot ? Math.max(0, Math.min(1, (info.t - (tShot.t0 + 9)) / 5)) : 0;
-    drawTornadoLowerThird(ctx, H, u, m, imm * (1 - 0.72 * calm * calm * (3 - 2 * calm)));
+    drawTornadoLowerThird(ctx, H, u, m, imm * (1 - 0.72 * calm * calm * (3 - 2 * calm)) * (this.director.tl.focus ? 0 : 1));
     ctx.save();
     ctx.globalAlpha = 1 - 0.45 * imm;
     drawTimeline(ctx, W, H, u, m);
     drawLegend(ctx, W, H, u, m);
     ctx.restore();
-    drawEndCard(ctx, W, H, u, m, info.t, this.director.duration);
+    drawEndCard(ctx, W, H, u, m, info.t, this.director.duration, this.endSpan);
     this.updateInset(info, 430 * u, m.vis('skewt'), u);
   }
 
@@ -643,6 +701,7 @@ export class PerilsExtras implements ClipExtras {
     const codes = this.colmaxCodes[k];
     const meta = this.data.colmax?.[k];
     if (!codes || !meta || typeof document === 'undefined') return null;
+    const qual = this.qualCodes[k] ?? null;
     const { nx, ny } = meta;
     const cv = document.createElement('canvas');
     cv.width = nx;
@@ -662,7 +721,9 @@ export class PerilsExtras implements ClipExtras {
         img.data[o] = this.lut[li * 3];
         img.data[o + 1] = this.lut[li * 3 + 1];
         img.data[o + 2] = this.lut[li * 3 + 2];
-        img.data[o + 3] = Math.round(235 * Math.min(1, (dbz - 8) / 24));
+        // less opaque where the merged reflectivity is less certain (calibration, attenuation correction, radars that disagree)
+        const qa = qual ? 0.4 + 0.6 * Math.min(1, qual[j * nx + i] / 100) : 1;
+        img.data[o + 3] = Math.round(235 * qa * Math.min(1, (dbz - 8) / 24));
       }
     }
     c2.putImageData(img, 0, 0);
@@ -675,8 +736,8 @@ export class PerilsExtras implements ClipExtras {
     const ctx = this.hudCtx!;
     const shots = this.director.tl.shots;
     const t = info.t;
-    const a = m.vis('minimap') * (1 - endCardAlpha(t, this.director.duration));
-    const size = 360 * u * crossfade(shots, [1, 1, 0.62, 0.86, 1, 1.18], t);
+    const a = m.vis('minimap') * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    const size = 360 * u * crossfade(shots, [1, 1, 0.62, 0.86, 1, 1.18, 1, 0.62, 0.62, 0.62, 0.62, 1], t);
     const mapY = 60 * u;
     const next = mapY + size + 44 * u;
     const g = this.data.grid;
@@ -684,8 +745,8 @@ export class PerilsExtras implements ClipExtras {
     const stepT = this.data.steps.map((q) => q.t_s);
     const w = interpWeights(stepT, info.td);
     const centre = this.stormCentre(info.td);
-    const camW = crossfade(shots, [0, 0.25, 1, 1, 0.2, 0], t);
-    const half = crossfade(shots, [62, 48, 3.2, 12, 42, 75], t);
+    const camW = crossfade(shots, [0, 0.25, 1, 1, 0.2, 0, 0, 1, 1, 1, 1, 0], t);
+    const half = crossfade(shots, [62, 48, 3.2, 12, 42, 75, 48, 12, 12, 12, 12, 48], t);
     const mo = this.data.motion[Math.min(w.k, this.data.motion.length - 1)];
     const obs = m.observed >= 0;
     const tor = this.data.tornadoes.find((q) => q.path.length > 1) ?? null;
@@ -716,6 +777,222 @@ export class PerilsExtras implements ClipExtras {
     };
     drawMinimap(ctx, st);
     return { next };
+  }
+
+  // ── tornado focus: the two-panel inset, the rotation series and the lower third ───────────────────
+
+  /** Storm-relative velocity image of step `k` (north up, one pixel per grid cell, the StormRelVel colours), cached. */
+  private vsrImage(k: number): HTMLCanvasElement | null {
+    if (k < 0 || k >= this.vsrCodes.length) return null;
+    const hit = this.vsrCv[k];
+    if (hit) return hit;
+    const codes = this.vsrCodes[k];
+    const meta = this.data.focus?.vsr?.[k];
+    if (!codes || !meta || typeof document === 'undefined') return null;
+    const lut = COLORMAP_DATA['StormRelVel'];
+    const lim = this.data.focus?.vsrLim ?? 35;
+    const { nx, ny } = meta;
+    const cv = document.createElement('canvas');
+    cv.width = nx;
+    cv.height = ny;
+    const c2 = cv.getContext('2d')!;
+    const img = c2.createImageData(nx, ny);
+    for (let j = 0; j < ny; j++) {
+      const row = (ny - 1 - j) * nx;
+      for (let i = 0; i < nx; i++) {
+        const c = codes[j * nx + i];
+        if (c === 0) continue;
+        const v = ((c - 128) / 127) * lim; // m/s
+        const li = Math.max(0, Math.min(255, Math.round(((Math.max(-30, Math.min(30, v)) + 30) / 60) * 255)));
+        const o = (row + i) * 4;
+        img.data[o] = lut[li * 3];
+        img.data[o + 1] = lut[li * 3 + 1];
+        img.data[o + 2] = lut[li * 3 + 2];
+        img.data[o + 3] = 235;
+      }
+    }
+    c2.putImageData(img, 0, 0);
+    this.vsrCv[k] = cv;
+    return cv;
+  }
+
+  /** The colour bar of the velocity panel (a thin canvas), made once. */
+  private velocityLegend(): HTMLCanvasElement | null {
+    if (this.vsrLegend || typeof document === 'undefined') return this.vsrLegend;
+    const lut = COLORMAP_DATA['StormRelVel'];
+    const cv = document.createElement('canvas');
+    cv.width = 256;
+    cv.height = 1;
+    const c2 = cv.getContext('2d')!;
+    const img = c2.createImageData(256, 1);
+    for (let i = 0; i < 256; i++) {
+      img.data[i * 4] = lut[i * 3];
+      img.data[i * 4 + 1] = lut[i * 3 + 1];
+      img.data[i * 4 + 2] = lut[i * 3 + 2];
+      img.data[i * 4 + 3] = 255;
+    }
+    c2.putImageData(img, 0, 0);
+    this.vsrLegend = cv;
+    return cv;
+  }
+
+  /** Outline (km segments) of the azimuthal shear threshold of step `k`, cached. */
+  private shearOutline(k: number): number[][] {
+    const hit = this.shearSegCache.get(k);
+    if (hit) return hit;
+    const codes = this.shearCodes[k];
+    const meta = this.data.focus?.shear?.[k];
+    let segs: number[][] = [];
+    if (codes && meta) {
+      const lim = this.data.focus?.shearLim ?? 0.04;
+      const f = Float32Array.from(codes, (c) => (c === 0 ? 0 : ((c - 1) / 254) * lim));
+      const g = this.data.grid;
+      segs = contourSegments(f, meta.nx, meta.ny, g.x0, g.y0, g.dx, SHEAR_CANDIDATE);
+    }
+    this.shearSegCache.set(k, segs);
+    return segs;
+  }
+
+  /** The surveyed tornado's position at data time `td`, held at the survey's ends outside its life; `active` inside it. */
+  private tornadoNow(td: number): { x: number; y: number; active: boolean } | null {
+    const tor = this.data.tornadoes.find((q) => q.path.length > 1);
+    if (!tor) return null;
+    const cur = tornadoAt(tor, td);
+    if (cur) return { x: cur.x, y: cur.y, active: true };
+    const p = tor.path;
+    const q = td < p[0].t ? p[0] : p[p.length - 1];
+    return { x: q.x, y: q.y, active: false };
+  }
+
+  /** The two-panel inset of the tornado focus (see perilsFocusInset.ts); returns the y below it and the rotation numbers of the moment. */
+  private focusInset(info: FrameInfo, W: number, H: number, u: number, m: HudModel): { next: number; now: ReturnType<typeof focusNow> } {
+    const fd = this.data.focus;
+    const shots = this.director.tl.shots;
+    const t = info.t;
+    const tn = this.tornadoNow(info.td);
+    const now = fd && tn ? focusNow(fd, info.td, tn) : null;
+    const a = m.vis('focusInset') * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    if (!fd || !tn || a <= 0.02 || !this.api) return { next: 28 * u, now };
+    const sizeF = crossfade(shots, [1, 1, 1, 1, 1, 1, 1, 0.8, 0.72, 0.72, 0.72, 1], t);
+    const size = 400 * u * sizeF;
+    const half = crossfade(shots, [10, 10, 10, 10, 10, 10, 10, 10, 8, 8, 8, 12.5], t);
+    const stepT = this.data.steps.map((q) => q.t_s);
+    const w = interpWeights(stepT, info.td);
+    const g = this.data.grid;
+    const tor = this.data.tornadoes.find((q) => q.path.length > 1)!;
+    const p0 = tor.path[0];
+    const p1 = tor.path[tor.path.length - 1];
+    const secs = Math.max(1, p1.t - p0.t);
+    const lenKm = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    const kShear = w.s < 0.5 ? w.k : w.k + 1;
+    const st: FocusInsetState = {
+      x: W - 34 * u - size, y: 52 * u, size, u, alpha: a, cx: tn.x, cy: tn.y, half,
+      grid: { x0: g.x0, y0: g.y0, dx: g.dx, nx: g.nx, ny: g.ny },
+      echo: { a: this.colmaxImage(w.k), b: this.colmaxImage(w.k + 1), s: w.s },
+      vsr: { a: this.vsrImage(w.k), b: this.vsrImage(w.k + 1), s: w.s },
+      base: this.baseImg && this.ground ? { img: this.baseImg, cx: this.ground.spec.cx, cy: this.ground.spec.cy, half: this.ground.spec.half } : null,
+      shearSegs: this.shearOutline(kShear),
+      tornado: { path: tor.path.map((q) => [q.x, q.y] as [number, number]), cur: tn.active ? [tn.x, tn.y] : null, ghost: tn.active ? null : [tn.x, tn.y], widthKm: (tor.width_m ?? 300) / 1000, headingDeg: bearingOf(p1.x - p0.x, p1.y - p0.y), speedMs: (lenKm * 1000) / secs },
+      candidate: now && now.cx != null && now.cy != null ? { x: now.cx, y: now.cy } : null,
+      offsetText: offsetText(now),
+      camera: { x: info.eye[0], y: info.eye[1], yawDeg: info.yawDeg, hfovDeg: hfovFromTan(this.lastTanX) },
+      motionMs: fd.motion_ms,
+      radars: this.data.radars.map((r) => ({ name: r.name, x: r.x, y: r.y })),
+      bestRadar: (() => {
+        const r = this.data.radars.find((q) => q.name === now?.radar);
+        return r ? { name: r.name, x: r.x, y: r.y } : null;
+      })(),
+      flashes: this.lmaNow.sprites.map((q) => ({ x: q.x, y: q.y, b: q.bright })),
+      tag: m.observed >= 0 ? { kind: 'observed', text: 'OBSERVED' } : { kind: 'interpolated', text: 'INTERPOLATED' },
+      clock: clockUtc(this.data.time0, info.td),
+      compact: sizeF < 0.78,
+    };
+    drawFocusInset(this.hudCtx!, st, this.velocityLegend());
+    return { next: st.y + insetHeight(size, u, st.compact) + 10 * u, now };
+  }
+
+  /** The nearest station to the tornado with a temperature series: for the caption of the low angle (computed once). */
+  private tornadoStationCache: FocusInfo['station'] | undefined;
+  private tornadoStation(td: number): FocusInfo['station'] {
+    const tor = this.data.tornadoes.find((q) => q.path.length > 1);
+    if (!tor) return null;
+    const a = tor.path[0];
+    const b = tor.path[tor.path.length - 1];
+    const ab2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+    const onLine = (x: number, y: number): [number, number] => {
+      const f = Math.max(0, Math.min(1, ((x - a.x) * (b.x - a.x) + (y - a.y) * (b.y - a.y)) / ab2));
+      return [a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f];
+    };
+    let best: { s: PerilsData['stations'][number]; d: number; q: [number, number] } | null = null;
+    for (const s of this.data.stations) {
+      if (s.moving || !s.series?.temperature_c) continue;
+      const q = onLine(s.x, s.y);
+      const d = Math.hypot(s.x - q[0], s.y - q[1]);
+      if (!best || d < best.d) best = { s, d, q };
+    }
+    if (!best) return null;
+    const s = best.s;
+    const ser = s.series ?? {};
+    const ts = ser.t_s as number[] | undefined;
+    const at = (k: string, t: number) => seriesAt(ts, ser[k], t);
+    const T = at('temperature_c', td);
+    const T0 = at('temperature_c', td - 180);
+    const T1 = at('temperature_c', td + 180);
+    const ro = stationReadout(s, td);
+    return {
+      name: s.name || s.id.replace('_', ' '), km: best.d, bearing: bearingOf(s.x - best.q[0], s.y - best.q[1]),
+      tempC: T, dewC: at('dewpoint_c', td), windMs: ro.windMs, windFrom: ro.windDir,
+      dTempC: T0 != null && T1 != null ? T1 - T0 : null,
+    };
+  }
+
+  /** Rotation series, simulation tag and the lower third of the focus (left side and bottom). */
+  private focusLeft(ctx: CanvasRenderingContext2D, info: FrameInfo, W: number, H: number, u: number, m: HudModel, yFree: number, now: ReturnType<typeof focusNow>): void {
+    const fd = this.data.focus;
+    const tl = this.director.tl;
+    const tor = this.data.tornadoes.find((q) => q.path.length > 1);
+    if (!fd || !tor || !tl.focus) return;
+    const t = info.t;
+    const aSer = m.vis('rotSeries') * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    if (aSer > 0.02) {
+      const win = this.data.steps[this.data.steps.length - 1].t_s;
+      drawRotSeries(ctx, {
+        x: 34 * u, y: Math.max(yFree, 300 * u), w: 330 * u, h: 118 * u, u, alpha: aSer, window: [this.data.steps[0].t_s, win],
+        life: [tor.path[0].t, tor.path[tor.path.length - 1].t], td: info.td,
+        pts: fd.series.map((q) => ({ t: q.t, as: q.as, vrot: q.vrot })), now: { as: now?.as ?? null, vrot: now?.vrot ?? null },
+        from: clockUtc(this.data.time0, this.data.steps[0].t_s).slice(0, 5), to: clockUtc(this.data.time0, win).slice(0, 5),
+      });
+    }
+    // a small tag that the picture is a simulation, as long as the simulation is on screen
+    if (this.simW > 0.3) {
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, (this.simW - 0.3) / 0.4);
+      chip(ctx, 'stylised', W / 2 - 150 * u, 40 * u, u, 'SIMULATION · seeded by observations', 12);
+      ctx.restore();
+    }
+    // the lower third of the beat on screen: in over the first 0.8 s, out over the last 0.6 s
+    const beats = tl.shots.filter((q) => q.name.startsWith('focus_'));
+    const j = beats.findIndex((q, i) => t >= q.t0 && (i + 1 >= beats.length || t < beats[i + 1].t0));
+    if (j < 0) return;
+    const b = beats[j];
+    const nextT0 = j + 1 < beats.length ? beats[j + 1].t0 : b.t1;
+    const alpha = Math.max(0, Math.min(1, (t - b.t0) / 0.8 + 0.2, (nextT0 - t) / 0.6 + 0.1)) * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    const bt = tl.focus.beats.find((q) => q.name === b.name);
+    const tn = this.tornadoNow(info.td);
+    const ts = tor.path[0].t;
+    const te = tor.path[tor.path.length - 1].t;
+    const lenKm = Math.hypot(tor.path[tor.path.length - 1].x - tor.path[0].x, tor.path[tor.path.length - 1].y - tor.path[0].y);
+    const done = tn ? Math.hypot(tn.x - tor.path[0].x, tn.y - tor.path[0].y) * (tn.active || info.td > te ? 1 : 0) : 0;
+    const finfo: FocusInfo = {
+      rating: tor.rating ?? 'Tornado', widthM: tor.width_m ?? null,
+      touchdown: clockUtc(this.data.time0, ts), end: clockUtc(this.data.time0, te), trackKm: lenKm, doneKm: done,
+      speedMs: (lenKm * 1000) / Math.max(1, te - ts),
+      headingDeg: bearingOf(tor.path[tor.path.length - 1].x - tor.path[0].x, tor.path[tor.path.length - 1].y - tor.path[0].y),
+      distanceM: bt?.tornado_distance_m ?? 0, periodCoreS: this.sim?.numbers?.periodCore ?? null,
+      station: b.name === 'focus_low' ? this.tornadoStation(info.td) : null,
+    };
+    const cap: FocusCaption = focusCaption(b.name, now, finfo, offsetStats(fd));
+    drawFocusLowerThird(ctx, H, u, alpha, cap, { sim: this.simW > 0.3, speedup: this.director.speedup(t) }, finfo.rating);
   }
 
   // ── Skew-T inset (a real Svelte component, in the page) ───────────────────

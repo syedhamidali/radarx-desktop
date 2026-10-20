@@ -21,7 +21,30 @@ export interface TimelineFile {
   tornado_slowdown: { centre_clip_s: number; width_s: number; level: number } | null;
   mapping: { t_clip_s: number[]; t_data_s: number[] };
   speedup: number[];
-  shots: { name: string; label: string; t0: number; t1: number }[];
+  shots: { name: string; label: string; t0: number; t1: number; overlap?: number | null }[];
+  /** The part of the data window the clip shows (ISO times), when it is not all of it (the stand-alone tornado clip). */
+  shown_from?: string;
+  shown_to?: string;
+  /** How long the closing card (data credits) is on screen at the end, s (default 9). */
+  end_card_s?: number;
+  /** The tornado focus: the data span the simulation runs over and the stretches (angles, lapses) with their camera numbers. */
+  focus?: { layout: 'film' | 'clip'; sim_span_data_s: [number, number]; beats: FocusBeat[] };
+}
+
+export interface FocusBeat {
+  name: string;
+  kind: 'rt' | 'lapse' | 'cruise';
+  t0: number;
+  t1: number;
+  data_t0_s: number;
+  data_t1_s: number;
+  speedup_mean: number;
+  tornado_distance_m: number;
+  camera_bearing_from_tornado_deg: number;
+  camera_height_m: number;
+  heading_deg: number;
+  pitch_deg: number;
+  fov_deg: number;
 }
 
 export interface CamEntry {
