@@ -25,7 +25,7 @@ from pathlib import Path
 
 USER_AGENT = (
     "radarx-desktop-storm-clip/0.1 (non-commercial research tool; "
-    "https://github.com/syedhamidali/radarx-desktop)"
+    "https://radarx.labshope.com)"
 )
 
 SOURCES: dict[str, dict[str, str]] = {

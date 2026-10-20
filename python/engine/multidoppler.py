@@ -1955,7 +1955,7 @@ def _wind_attrs(rec: WindRecord) -> dict[str, Any]:
         + ", ".join(names),
         references=(
             "CF Conventions 1.8 https://cfconventions.org/; "
-            "radarx https://github.com/syedhamidali/radarx"
+            "radarx https://pypi.org/project/radarx/"
         ),
         comment=(
             "Winds on an azimuthal-equidistant grid (x, y metres from the origin, z metres above "

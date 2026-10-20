@@ -1686,7 +1686,7 @@ def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
         source="radarx.grid.grid_radars cone-grid + multi-radar merge of " + ", ".join(names),
         references=(
             "CF Conventions 1.10 https://cfconventions.org/; "
-            "radarx https://github.com/syedhamidali/radarx"
+            "radarx https://pypi.org/project/radarx/"
         ),
         comment=(
             "Product grid in Web-Mercator (EPSG:3857) metres, cells uniform in x and y; 2-D "

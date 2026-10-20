@@ -257,7 +257,7 @@ def test_client_sends_an_honest_user_agent() -> None:
     client, _ = _client(server)
     assert client.get_bytes(BASE_URL + "a.bin") == b"abc"
     ua = server.requests[0][1]
-    assert ua.startswith("radarx-desktop/") and "github.com/syedhamidali/radarx-desktop" in ua
+    assert ua.startswith("radarx-desktop/") and "radarx.labshope.com" in ua
 
 
 def test_client_retries_with_backoff_then_succeeds() -> None:
