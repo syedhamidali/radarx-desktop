@@ -2,7 +2,8 @@
 """Runtime benchmark: frame time while panning/zooming the 2D map and orbiting the 3D view, long
 tasks, WebGL resource leaks and JS heap growth over repeated file switches.
 
-Needs: an engine (python/server.py --port N), the perf build served somewhere
+Needs: an engine (RADARX_AUTH_DISABLED=1 python/server.py --port N: the account gate is off for
+benchmarks, like the perf build's), the perf build served somewhere
     npx vite build -c scripts/perf/vite.perf.config.ts && npx vite preview --outDir dist-perf --host 127.0.0.1 --port 4174
 and a radar volume (and optionally a second file to alternate with).
 

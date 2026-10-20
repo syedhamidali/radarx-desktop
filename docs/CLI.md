@@ -16,6 +16,28 @@ as the same program, so existing scripts and notebooks keep running; in a termin
 and it will be removed in a future release. Switch with a find-and-replace of `xrd` by `rxd`.
 ```
 
+## You need an account
+
+radarx-desktop needs a free account, in the terminal as well as in the app (see {doc}`ACCOUNTS`). Sign in once:
+
+```console
+$ rxd login
+E-mail: ada@example.org
+Password (not shown):
+Signed in as ada@example.org.
+$ rxd whoami
+Signed in as ada@example.org
+  sign-in valid until 2026-10-20 18:05 (renewed automatically)
+$ rxd logout
+```
+
+The password is typed without echo, never goes on the command line and is never stored; the session is kept in a
+private file in your user configuration folder, shared with the app and with `import rxd`. Without a session every
+command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help` and `--version` prints how to sign in
+and exits with **code 5**. With no network a sign-in keeps working for 30 days after the server last checked it.
+The deprecated `xrd` command behaves identically. (`RADARX_AUTH_DISABLED=1` switches the check off in a source
+checkout for developers; installers ignore it.)
+
 ## Quick start
 
 The six commands most people need (replace the file name with yours):
@@ -465,6 +487,7 @@ error: File not found: missing.nc (looked for /.../missing.nc). Check the path a
 | 2 | the command was used wrongly: unknown option, module, recipe, variable, bad `-P`, sweep out of range |
 | 3 | an input file is missing, is not a file, or cannot be read |
 | 4 | an optional Python package is missing; the message says how to install it (`pip install -U radarx`) |
+| 5 | no signed-in account: run `rxd login` (every command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help`, `--version`) |
 | 70 | an unexpected internal error (re-run with `-vv` for the traceback and report it) |
 | 130 | interrupted |
 

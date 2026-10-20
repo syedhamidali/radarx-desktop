@@ -1,27 +1,47 @@
-# Privacy notice (draft: to be reviewed by a lawyer before the first public release)
+# Privacy notice (draft: still needs a lawyer's review before the first public release)
 
-radarx is a desktop program. This notice covers the optional-to-use, required-to-start **account**.
+radarx is a desktop program, with a command line (`rxd`), a Python library (`import rxd`) and an optional web
+version. **An account is required to use any of them.** This notice covers that account and what radarx records
+about its use. It is a plain-language draft and has **not** been reviewed by a lawyer; it must be before a
+public release.
 
-**What we collect.** E-mail address, a password (stored only as a salted hash by our provider,
-Supabase), or the identity returned by Google, Apple or Facebook if you use them (name, e-mail,
-picture). Your name, affiliation and what you use radarx for, as you enter them. A random id, the
-name, platform and radarx version of each computer you sign in from, and when it was last used.
+**What we collect.** E-mail address, a password (stored only as a salted hash by our provider, Supabase), or the
+identity returned by Google, Apple or Facebook if you use them (name, e-mail, picture). Your name, affiliation and
+what you use radarx for, as you enter them. A random id, the name, platform and radarx version of each computer you
+sign in from, and when it was last used.
 
-**What we do not collect.** Radar files, results, locations you look at, the content of your work, or
-anything about what you do inside the program. They stay on your computer.
+**Activity: which features you use.** While you are signed in, radarx records short feature-level events so the
+owner knows who uses it and which functions matter. Each event is one of: the app was started, you signed in or
+out, an `rxd` command was run (its name only, for example `run`), an algorithm was run (its name, for example
+`radarx_hid`; a plug-in you wrote yourself is recorded only as `custom`), a file was opened (the format *family*,
+for example `NEXRAD`), a file was exported (the format), a mosaic, wind analysis, animation or rainfall estimate was
+run (that it happened), or an error occurred (the error class only). Each event also carries the time, where it came
+from (app, terminal, Python or engine), a random install id, the radarx version and your operating-system family
+(macOS, Windows or Linux). The program and the database both refuse anything else. **You can see every entry:**
+*Account > Activity* lists the last 100 events your account has sent. Activity cannot be switched off while you use an
+account, because it is the reason for the account being required; the list above is all of it.
 
-**Why.** To let you sign in on several computers, keep what you choose to sync, understand which
-communities use radarx so we build the right things, and contact you about your account. We do not sell
-personal data and we do not show your data to other users.
+**What we do not collect.** Radar files and their contents, **file names or paths**, locations you look at
+(coordinates or place names), radar site identifiers, results, anything you type, or the content of your work. They
+stay on your computer. (The public web version necessarily receives the files you upload to process them; it keeps
+them only for your session and deletes them when it ends, see the web documentation.)
 
-**Who processes it.** Supabase (database and sign-in, region Mumbai) and, if you choose them, Google,
-Apple or Facebook as sign-in providers. Sharing a picture or movie opens the social network yourself;
-radarx sends them nothing.
+**Why.** To let you sign in on several computers, keep what you choose to sync, understand which communities use
+radarx and which features matter so we build the right things, know who is using it, and contact you about your
+account. We do not sell personal data and we do not show your data to other users.
 
-**Your rights.** Open *Account* and edit your details, remove computers, or delete the account: the
-account and every row above are removed. For anything else, write to the project owner (see the
+**How long.** Activity events are kept for up to one year; the owner removes older ones periodically. Account data
+is kept until you delete the account. *(The owner must schedule the clean-up; see the account documentation.)*
+
+**Who processes it.** Supabase (database and sign-in, region Mumbai) and, if you choose them, Google, Apple or
+Facebook as sign-in providers. Sharing a picture or movie opens the social network yourself; radarx sends them
+nothing.
+
+**Your rights.** Open *Account* and edit your details, remove computers, or delete the account: the account and every
+row above, **including the activity**, are removed. For anything else, write to the project owner (see the
 repository).
 
-**Offline.** After you have signed in, radarx works for up to 30 days without contacting the server.
+**Offline.** After you have signed in, radarx works for up to 30 days without contacting the server. Activity events
+are then kept on your computer (at most 500 small events) and sent when the connection returns.
 
-Version 2026-10.
+Version 2026-10-21 (previous version 2026-10, which said nothing about activity: everyone is asked to accept again).

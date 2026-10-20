@@ -3,7 +3,7 @@
 
 Start the engine with the in-memory fake provider (no network is ever used) and throw-away settings:
 
-    XRADAR_ENV_FAKE=1 XRADAR_ENV_SETTINGS=/tmp/envhome/environment.json \\
+    RADARX_AUTH_DISABLED=1 XRADAR_ENV_FAKE=1 XRADAR_ENV_SETTINGS=/tmp/envhome/environment.json \\
     XRADAR_ENV_CACHE_DIR=/tmp/envhome/cache  python python/server.py --port 25612
     npx vite build -c scripts/perf/vite.perf.config.ts
     npx vite preview --outDir dist-perf --port 4174

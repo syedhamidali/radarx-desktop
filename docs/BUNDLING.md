@@ -17,6 +17,10 @@ cd python
 pip install -e ".[radarx,bundle,dev]"          # radarx needs Python >= 3.12; no system libraries needed
 python packaging/build_engine.py           # -> python/dist/xradar-engine/, then smoke-tests it
 
+# The packaged engine requires a signed-in account and ignores the development bypass, so the smoke test
+# checks the closed gate and the packaged sign-in check offline. To also run the full workflow (open, render,
+# export, module), give it a test account's access token: RADARX_SMOKE_ACCESS_TOKEN=... python packaging/build_engine.py
+
 cd ..
 npm ci
 # macOS
