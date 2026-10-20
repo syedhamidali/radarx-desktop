@@ -56,35 +56,47 @@ def parse_iso(s: str) -> datetime:
     return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
 
 
+R_EARTH_M = 6370997.0  # the bundle's sphere (Py-ART 'pyart_aeqd'); docs/PERILS_BUNDLE.md, manifest grid.projection
+
+
 class Geo:
-    """lat / lon <-> km east / north of the volume origin (azimuthal equidistant, as the engine's mosaics)."""
+    """lat / lon <-> km east / north of the volume origin: azimuthal equidistant on a sphere of radius 6 370 997 m.
+
+    This is the projection of the bundle's grids, stations, tornado ends and radar sites (manifest ``grid.projection``), written
+    out here in numpy so that every environment of the pipeline (the engine's and the clip renderer's, which has no pyproj) gives
+    the same numbers. (Until the geometry check of the film the class used pyproj WGS84 ellipsoid, which put the survey
+    points 0.13 km from the volumes, and a plain-equirectangular fallback in the clip environment that put
+    the camera's latitude and longitude 150 m from its own scene position at the tornado: tools/perils_movie/render/verify_geometry.py.)
+    """
 
     def __init__(self, lat0: float, lon0: float):
         self.lat0, self.lon0 = lat0, lon0
-        try:
-            import pyproj
-
-            self._p = pyproj.Proj(proj="aeqd", lat_0=lat0, lon_0=lon0, datum="WGS84")
-        except Exception:  # pragma: no cover - pyproj is a dependency of the engine
-            self._p = None
+        self._phi0 = math.radians(lat0)
+        self._lam0 = math.radians(lon0)
 
     def xy(self, lat, lon):
-        lat = np.asarray(lat, float)
-        lon = np.asarray(lon, float)
-        if self._p is not None:
-            x, y = self._p(lon, lat)
-            return np.asarray(x) / 1000.0, np.asarray(y) / 1000.0
-        k = 111.19
-        return (lon - self.lon0) * k * math.cos(math.radians(self.lat0)), (lat - self.lat0) * k
+        phi = np.radians(np.asarray(lat, float))
+        dlam = np.radians(np.asarray(lon, float)) - self._lam0
+        cos_c = np.clip(math.sin(self._phi0) * np.sin(phi) + math.cos(self._phi0) * np.cos(phi) * np.cos(dlam), -1.0, 1.0)
+        c = np.arccos(cos_c)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            k = np.where(c < 1e-12, 1.0, c / np.sin(c))
+        x = R_EARTH_M * k * np.cos(phi) * np.sin(dlam)
+        y = R_EARTH_M * k * (math.cos(self._phi0) * np.sin(phi) - math.sin(self._phi0) * np.cos(phi) * np.cos(dlam))
+        return x / 1000.0, y / 1000.0
 
     def latlon(self, x, y):
-        x = np.asarray(x, float)
-        y = np.asarray(y, float)
-        if self._p is not None:
-            lon, lat = self._p(x * 1000.0, y * 1000.0, inverse=True)
-            return np.asarray(lat), np.asarray(lon)
-        k = 111.19
-        return self.lat0 + y / k, self.lon0 + x / (k * math.cos(math.radians(self.lat0)))
+        x = np.asarray(x, float) * 1000.0
+        y = np.asarray(y, float) * 1000.0
+        rho = np.hypot(x, y)
+        c = rho / R_EARTH_M
+        with np.errstate(invalid="ignore", divide="ignore"):
+            sin_c, cos_c = np.sin(c), np.cos(c)
+            frac = np.where(rho < 1e-9, 0.0, y * sin_c * math.cos(self._phi0) / np.where(rho < 1e-9, 1.0, rho))
+            phi = np.arcsin(np.clip(cos_c * math.sin(self._phi0) + frac, -1.0, 1.0))
+            lam = self._lam0 + np.arctan2(x * sin_c, rho * math.cos(self._phi0) * cos_c - y * math.sin(self._phi0) * sin_c)
+        lam = np.where(rho < 1e-9, self._lam0, lam)
+        return np.degrees(phi), np.degrees(lam)
 
 
 # ── line motion by phase correlation ────────────────────────────────────────
