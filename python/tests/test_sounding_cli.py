@@ -1,4 +1,4 @@
-"""``xrd sounding``: the command-line front end of the sounding reader and diagnostics."""
+"""``rxd sounding``: the command-line front end of the sounding reader and diagnostics."""
 
 from __future__ import annotations
 
@@ -81,13 +81,13 @@ def test_errors_are_plain(capsys, tmp_path: Path) -> None:
 
 
 def test_python_api_function_matches_the_command() -> None:
-    import xrd
+    import rxd
     from engine import api
 
     d = api.sounding(FIX, wind_units="kt")
     assert d["station"] == "BMX" and d["provenance"]["kind"] == "observed"
     assert d["diagnostics"]["parcels"]["most-unstable"]["cape"] is not None
-    assert xrd.sounding is api.sounding and "sounding" in api.__all__
+    assert rxd.sounding is api.sounding and "sounding" in api.__all__
     no_tv = api.sounding(FIX, wind_units="kt", virtual_temperature=False)
     assert no_tv["diagnostics"]["virtual_temperature"] is False
     assert (

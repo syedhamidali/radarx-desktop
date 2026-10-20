@@ -1,4 +1,4 @@
-"""One call that does what ``xrd qpe`` does: accumulate, adjust to gauges, summarise basins.
+"""One call that does what ``rxd qpe`` does: accumulate, adjust to gauges, summarise basins.
 
 Used by the command line, the Python API (``api.qpe``), the QPE module and the QPE panel so that all
 of them give the same numbers from the same options.

@@ -1,26 +1,26 @@
 # The Python API
 
-Everything the app and the [`xrd` command line](CLI.md) do is available from a script or a Jupyter
+Everything the app and the [`rxd` command line](CLI.md) do is available from a script or a Jupyter
 notebook, without the GUI and without the WebSocket server. The names are the same as on the command line.
 
 ```python
-from engine import api      # or:  import xrd        (xrd is a short alias of engine.api)
+from engine import api      # or:  import rxd        (rxd is a short alias of engine.api)
 help(api)                   # a guide: Look / Clean / Analyse / Combine / Save
 ```
 
 | Command line | Python | Returns |
 |---|---|---|
-| `xrd info -i FILE` | `api.info(file)` / `vol.info()` | `dict` |
-| `xrd plot -i FILE -V velocity -p out.png` | `api.plot(file, "velocity", out="out.png")` / `vol.plot(...)` | matplotlib `Figure` |
-| `xrd modules`, `xrd modules show ID` | `api.modules()`, `api.module(id)` | table of `dict`s |
-| `xrd run MODULE -i FILE [-s N] -P k=v` | `api.run(module, file, sweep, k=v)` / `vol.run(...)` | `ModuleResult` |
-| `xrd run MODULE -i FILE --all-sweeps` | `vol.run(module, all_sweeps=True)` | `ModuleResult` (derived variable on `vol`) |
-| `xrd pipeline RECIPE -i FILE` | `api.pipeline(recipe, file)` / `vol.pipeline(...)` | `PipelineResult` |
-| `xrd pipeline list / show` | `api.recipes()`, `api.recipe(name)` | table / `Recipe` |
-| `xrd cells -i FILE [FILE ...]` | `api.cells(file)` / `api.track(files)` | `CellsResult` / `TrackingResult` |
-| `xrd mosaic -i F1 F2 ... -o out.nc -p map.png` | `api.mosaic([F1, F2], out="out.nc", plot="map.png")` | `Mosaic` |
-| `xrd winds -i F1 F2 ... -o w.nc -p w.png` | `api.winds([F1, F2], out="w.nc", plot="w.png")` | `Winds` |
-| `xrd export -i FILE -o out.zarr` | `api.export(file, out="out.zarr")` / `vol.export(...)` | `pathlib.Path` |
+| `rxd info -i FILE` | `api.info(file)` / `vol.info()` | `dict` |
+| `rxd plot -i FILE -V velocity -p out.png` | `api.plot(file, "velocity", out="out.png")` / `vol.plot(...)` | matplotlib `Figure` |
+| `rxd modules`, `rxd modules show ID` | `api.modules()`, `api.module(id)` | table of `dict`s |
+| `rxd run MODULE -i FILE [-s N] -P k=v` | `api.run(module, file, sweep, k=v)` / `vol.run(...)` | `ModuleResult` |
+| `rxd run MODULE -i FILE --all-sweeps` | `vol.run(module, all_sweeps=True)` | `ModuleResult` (derived variable on `vol`) |
+| `rxd pipeline RECIPE -i FILE` | `api.pipeline(recipe, file)` / `vol.pipeline(...)` | `PipelineResult` |
+| `rxd pipeline list / show` | `api.recipes()`, `api.recipe(name)` | table / `Recipe` |
+| `rxd cells -i FILE [FILE ...]` | `api.cells(file)` / `api.track(files)` | `CellsResult` / `TrackingResult` |
+| `rxd mosaic -i F1 F2 ... -o out.nc -p map.png` | `api.mosaic([F1, F2], out="out.nc", plot="map.png")` | `Mosaic` |
+| `rxd winds -i F1 F2 ... -o w.nc -p w.png` | `api.winds([F1, F2], out="w.nc", plot="w.png")` | `Winds` |
+| `rxd export -i FILE -o out.zarr` | `api.export(file, out="out.zarr")` / `vol.export(...)` | `pathlib.Path` |
 
 Argument names match the options: `files` (`-i`), `out` (`-o`), `plot` (`-p`), `variable` (`-V`),
 `sweep` (`-s`), keyword parameters (`-P`). Anywhere a volume is expected you may pass a file path or a `Volume`.
@@ -207,7 +207,7 @@ res.basin_series.summary()              # one dict per basin
 vol.qpe()                               # the instantaneous rate of one volume (res.rate_last)
 ```
 
-Files are passed as paths and opened one at a time. Options are the `xrd qpe` ones; unknown names raise
+Files are passed as paths and opened one at a time. Options are the `rxd qpe` ones; unknown names raise
 `XrdArgumentError` with a suggestion. Details, equations and limits: {doc}`HYDROLOGY`.
 
 ## Results at a glance

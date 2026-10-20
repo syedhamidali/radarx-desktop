@@ -37,7 +37,7 @@ the map: what the parts are, how data moves, and why it is built this way. Detai
    (any xradar         (Cloud data panel,     (S3, on request)     Zarr, CSV, PNG/SVG/PDF)
     format)             on request)
 
-The same engine runs without the window:  xrd ...  (engine/cli.py)   from engine import api
+The same engine runs without the window:  rxd ...  (engine/cli.py)   from engine import api
 and as an anonymous web service:          python server.py --web     (docs/WEB.md)
 ```
 
@@ -111,7 +111,7 @@ default and is not bundled.
 | Science first | Every layer has a provenance class; nothing invented; stylised looks opt-in and labelled | [docs/SCIENCE.md](docs/SCIENCE.md) |
 | Speed | Send data once, do colour/mask/smoothing on the GPU; cache decoded sweeps; lower 3D quality on its own when slow | interaction never waits for the engine; [docs/PERFORMANCE.md](docs/PERFORMANCE.md), [docs/PERFORMANCE_FRONTEND.md](docs/PERFORMANCE_FRONTEND.md) |
 | Stability | Engine in a separate process, supervised; modules time-limited; memory budget; cancellable requests | a bad file or module never takes the window down |
-| Same engine everywhere | GUI, `xrd` CLI, Python API and the web service share `engine/` | results are identical and scriptable ([docs/CLI.md](docs/CLI.md), [docs/API.md](docs/API.md)) |
+| Same engine everywhere | GUI, `rxd` CLI, Python API and the web service share `engine/` | results are identical and scriptable ([docs/CLI.md](docs/CLI.md), [docs/API.md](docs/API.md)) |
 | Outputs | CF-1.8 + CfRadial 1.4 / FM-301 layout, provenance attributes, no local paths | files open elsewhere and can be reproduced ([docs/OUTPUT_STANDARDS.md](docs/OUTPUT_STANDARDS.md)) |
 | Algorithms | Plug-in modules: one Python file, generated UI | easy to extend ([docs/MODULES.md](docs/MODULES.md)) |
 | Size | Tauri over a bundled browser; slimmed engine bundle; optional heavy dependencies out | [docs/PACKAGING_AUDIT.md](docs/PACKAGING_AUDIT.md) |
@@ -138,7 +138,7 @@ radarx-desktop/
 │   ├── modules/             plug-in algorithms (radarx_*.py, storm_detection.py ...)
 │   ├── packaging/           PyInstaller spec and build script
 │   ├── tests/  benchmarks/
-│   └── xrd/                 `import xrd` alias of engine.api
+│   └── rxd/                 `import rxd` alias of engine.api
 ├── docs/                    Sphinx sources (Read the Docs) and images
 ├── scripts/                 perf/ (measurements), licenses/ (notices + policy), check_links.py
 ├── tools/storm_clip/        offline storm-centred 3D clip renderer (docs/STORM_CLIP.md)

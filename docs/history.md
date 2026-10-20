@@ -7,7 +7,7 @@
 
 - **Updates:** the app can find, verify and install new versions by itself (signed updates from GitHub Releases;
   you stay in control: check on launch, ask first, never during a running job). See {doc}`UPDATES`.
-- **Command line and Python:** `xrd` (info, plot, run, pipeline, mosaic, winds, cells, export, check, sounding, qpe,
+- **Command line and Python:** `rxd` (info, plot, run, pipeline, mosaic, winds, cells, export, check, sounding, qpe,
   basin, animate) and `from engine import api`, with bulk-job recipes ({doc}`CLI`, {doc}`BULK`, {doc}`API`).
 - **3D:** mosaics and multi-Doppler winds in the 3D view, wind-flow particles that follow only the retrieved winds,
   realistic ground (terrain and satellite imagery), a stylised realistic storm look with about 50 colour controls and

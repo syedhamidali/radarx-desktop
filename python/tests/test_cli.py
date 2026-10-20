@@ -1,4 +1,4 @@
-"""Tests of the ``xrd`` command line (``engine.cli``).
+"""Tests of the ``rxd`` command line (``engine.cli``).
 
 Commands are run through ``main(argv)`` (fast, output captured) and, for the packaging checks,
 as real subprocesses. Synthetic volumes are written as small NetCDF files; the real KTLX and
@@ -121,9 +121,9 @@ def test_main_help_and_version(capsys) -> None:
     code, out, _ = run_cli(capsys, "--help")
     assert code == 0 and "-i, --input" in out and "exit codes" in out
     code, out, _ = run_cli(capsys, "--version")
-    assert code == 0 and out.startswith("xrd ")
+    assert code == 0 and out.startswith("rxd ")
     code, out, _ = run_cli(capsys)  # no arguments: a friendly overview, not an error
-    assert code == 0 and "Look" in out and "Combine" in out and "xrd examples" in out
+    assert code == 0 and "Look" in out and "Combine" in out and "rxd examples" in out
 
 
 @pytest.mark.parametrize(
@@ -164,7 +164,7 @@ def test_every_help_example_parses() -> None:
         args, extras = parser.parse_known_args(cli.prepare_argv(argv))
         assert not [e for e in extras if e.startswith("-")], (name, argv, extras)
         expected = "run" if argv[:2] == ["modules", "run"] else name  # 'modules run' = 'run'
-        assert args.command == (expected if name != "xrd" else args.command), (name, argv)
+        assert args.command == (expected if name != "rxd" else args.command), (name, argv)
 
 
 def test_documented_final_form_parses() -> None:
@@ -210,7 +210,7 @@ def test_unknown_option_and_missing_command_are_usage_errors(capsys, nc: Path) -
     code, _, err = run_cli(capsys, "run", "-i", nc)
     assert code == 2 and "needs a module" in err
     code, _, err = run_cli(capsys, "info")
-    assert code == 2 and "needs a radar file" in err and "xrd info -i" in err
+    assert code == 2 and "needs a radar file" in err and "rxd info -i" in err
 
 
 def test_no_color_is_honoured(monkeypatch) -> None:
@@ -511,7 +511,7 @@ def test_pipeline_errors(capsys, nc: Path) -> None:
     code, _, err = run_cli(capsys, "pipeline", "Reflectivity QC", "-i", nc, "-P", "nostep.x=1")
     assert code == 2 and "no step 'nostep'" in err
     code, _, err = run_cli(capsys, "pipeline", "script")
-    assert code == 2 and "usage: xrd pipeline script" in err
+    assert code == 2 and "usage: rxd pipeline script" in err
     code, _, err = run_cli(capsys, "pipeline", "Dual-pol QC", "-i", nc)
     assert code == 1 and "ZDR" in err  # no ZDR in the synthetic file: processing failed
 
@@ -798,8 +798,8 @@ def test_real_ktlx_info_run_plot(capsys, tmp_path: Path) -> None:
 def test_console_script_is_declared() -> None:
     tomllib = pytest.importorskip("tomllib")
     data = tomllib.loads((PYTHON_DIR / "pyproject.toml").read_text())
-    assert data["project"]["scripts"]["xrd"] == "engine.cli:main"
-    assert "xrd*" in data["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert data["project"]["scripts"]["rxd"] == "engine.cli:main"
+    assert "rxd*" in data["tool"]["setuptools"]["packages"]["find"]["include"]
     assert callable(cli.main)
 
 
@@ -816,14 +816,14 @@ def _python(*args: str, **kw) -> subprocess.CompletedProcess:
 
 
 def test_python_dash_m_engine_and_xrd(real_nc: Path) -> None:
-    for module in ("engine", "xrd"):
+    for module in ("engine", "rxd"):
         proc = _python("-m", module, "info", "-i", str(real_nc), "--json")
         assert proc.returncode == 0, proc.stderr
         assert json.loads(proc.stdout)["n_sweeps"] == 3
     proc = _python("-m", "engine", "info", "-i", "/does/not/exist.nc")
     assert proc.returncode == 3 and "File not found" in proc.stderr and proc.stdout == ""
     proc = _python("-m", "engine", "--help")
-    assert proc.returncode == 0 and "usage: xrd" in proc.stdout
+    assert proc.returncode == 0 and "usage: rxd" in proc.stdout
 
 
 def test_cli_import_is_light_and_server_never_imports_it() -> None:
@@ -863,7 +863,7 @@ def test_examples_tour_and_topics(capsys) -> None:
     code, out, _ = run_cli(capsys, "examples")
     assert code == 0 and "# LOOK" in out and "# COMBINE" in out and "--config run.toml" in out
     code, out, _ = run_cli(capsys, "tour", "combine")  # alias
-    assert code == 0 and out.startswith("# COMBINE") and "xrd mosaic" in out
+    assert code == 0 and out.startswith("# COMBINE") and "rxd mosaic" in out
     parser = cli.build_parser()
     commands = cli.tour_commands()
     assert len(commands) >= 20
@@ -891,7 +891,7 @@ def test_modules_list_show_run_pattern(capsys, nc: Path) -> None:
     code, out, _ = run_cli(capsys, "modules", "list", "--category", "QC")
     assert code == 0 and "qc_clean" in out
     code, out, _ = run_cli(capsys, "modules", "show", "storm_detection")
-    assert "Run it:  xrd run storm_detection -i FILE --all-sweeps" in out
+    assert "Run it:  rxd run storm_detection -i FILE --all-sweeps" in out
     code, out, _ = run_cli(capsys, "modules", "run", "storm_detection", "-i", nc)
     assert code == 0 and "Cells:" in out
     code, out, _ = run_cli(capsys, "pipeline", "show", "reflectivity qc")
@@ -1015,12 +1015,12 @@ def test_print_command_gives_the_equivalent_command(
     assert code == 0
     line = next(ln for ln in out.splitlines() if ln.startswith("command: "))
     assert (
-        line.startswith("command: xrd plot -i ")
+        line.startswith("command: rxd plot -i ")
         and " -s 1" in line
         and "--print-command" not in line
     )
     code, out, _ = run_cli(capsys, "info", "-i", split_file, "--print-command")
-    assert "command: xrd info -i " in out
+    assert "command: rxd info -i " in out
 
 
 def test_completion_scripts(tmp_path: Path, capsys) -> None:
@@ -1036,16 +1036,16 @@ def test_completion_scripts(tmp_path: Path, capsys) -> None:
         and "complete -o default" in text
     )
     assert "compdef" not in text and "bashcompinit" in cli.completion_script("zsh")
-    assert "complete -c xrd -n __fish_use_subcommand -a info" in cli.completion_script("fish")
+    assert "complete -c rxd -n __fish_use_subcommand -a info" in cli.completion_script("fish")
     if shutil.which("bash"):
-        script = tmp_path / "xrd.bash"
+        script = tmp_path / "rxd.bash"
         script.write_text(text)
         assert subprocess.run(["bash", "-n", str(script)]).returncode == 0
         probe = subprocess.run(
             [
                 "bash",
                 "-c",
-                f"source {script}; COMP_WORDS=(xrd mos); COMP_CWORD=1; _xrd; "
+                f"source {script}; COMP_WORDS=(rxd mos); COMP_CWORD=1; _xrd; "
                 'echo "${COMPREPLY[@]}"',
             ],
             capture_output=True,
@@ -1074,7 +1074,7 @@ def test_equivalent_python_api_names() -> None:
     for name in ("modules", "module", "recipes", "recipe"):
         assert callable(getattr(api, name)), name
     doc = api.__doc__
-    assert "Look" in doc and "Combine" in doc and "xrd mosaic" in doc
+    assert "Look" in doc and "Combine" in doc and "rxd mosaic" in doc
 
 
 def test_main_does_not_leak_log_filters(capsys, tmp_path) -> None:
@@ -1087,13 +1087,92 @@ def test_main_does_not_leak_log_filters(capsys, tmp_path) -> None:
     assert logging.lastResort.filters == saved  # nothing leaks out of main()
 
 
+# --- the former name, `xrd`, keeps working (deprecated alias of `rxd`) ---------------------------
+
+
+def test_xrd_alias_is_the_same_program(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    assert cli.main_xrd(["--version"]) == cli.main(["--version"]) == 0
+    out = capsys.readouterr()
+    assert out.err == ""  # scripts and pipes see no extra output
+
+
+def test_xrd_alias_says_so_in_a_terminal(capsys, monkeypatch) -> None:
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    assert cli.main_xrd(["--version"]) == 0
+    assert "now called 'rxd'" in capsys.readouterr().err
+
+
+def test_both_commands_are_installed_entry_points() -> None:
+    text = (PYTHON_DIR / "pyproject.toml").read_text()
+    assert 'rxd = "engine.cli:main"' in text
+    assert 'xrd = "engine.cli:main_xrd"' in text
+    assert cli.PROG == "rxd"
+
+
+def test_import_xrd_is_import_rxd_and_warns() -> None:
+    code = (
+        "import warnings; warnings.simplefilter('error', DeprecationWarning)\n"
+        "import rxd\n"
+        "try:\n"
+        "    import xrd\n"
+        "except DeprecationWarning as w:\n"
+        "    assert 'rxd' in str(w); print('warned')\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", code], cwd=PYTHON_DIR, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 0, done.stderr
+    assert "warned" in done.stdout
+    same = (
+        "import warnings; warnings.simplefilter('ignore'); import rxd, xrd; "
+        "assert xrd.open is rxd.open and xrd.__all__ == rxd.__all__"
+    )
+    done = subprocess.run(
+        [sys.executable, "-W", "ignore", "-c", same],
+        cwd=PYTHON_DIR,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+
+
+@pytest.mark.parametrize("module", ["rxd", "xrd"])
+def test_python_dash_m_runs_both_names(module: str) -> None:
+    done = subprocess.run(
+        [sys.executable, "-m", module, "--version"],
+        cwd=PYTHON_DIR,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip()
+
+
 def test_version_is_the_one_stamped_into_files(capsys) -> None:
-    """``xrd --version`` and ``xrd.__version__`` follow the app version, not a stale constant."""
-    import xrd
+    """``rxd --version`` and ``rxd.__version__`` follow the app version, not a stale constant."""
+    import rxd
     from engine import provenance
 
     version = provenance.software_version()
     assert version != "0.1.0"  # the old hard-coded fallback
     code, out, _ = run_cli(capsys, "--version")
-    assert code == 0 and out.strip() == f"xrd {version}"
-    assert xrd.__version__ == version
+    assert code == 0 and out.strip() == f"rxd {version}"
+    assert rxd.__version__ == version
+
+
+def test_xrd_alias_reports_the_same_version() -> None:
+    code = (
+        "import warnings; warnings.simplefilter('ignore'); import rxd, xrd; "
+        "assert xrd.__version__ == rxd.__version__"
+    )
+    done = subprocess.run(
+        [sys.executable, "-W", "ignore", "-c", code],
+        cwd=PYTHON_DIR,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr

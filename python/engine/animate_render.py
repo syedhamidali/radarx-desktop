@@ -1,4 +1,4 @@
-"""Rendering of ``xrd animate``: the app's own 3D renderer in headless Chrome, frames, and the MP4.
+"""Rendering of ``rxd animate``: the app's own 3D renderer in headless Chrome, frames, and the MP4.
 
 The picture is drawn by the same code as the 3D tab (``CartesianRenderer``: the ray-marched volume,
 transfer function, lighting, map ground and overlay), loaded in a headless Chrome at
@@ -59,7 +59,7 @@ def have_module(name: str) -> bool:
 
 
 def video_status() -> dict[str, bool]:
-    """Which of the optional packages ``xrd animate`` uses are importable."""
+    """Which of the optional packages ``rxd animate`` uses are importable."""
     return {"playwright": have_module("playwright"), "av": have_module("av")}
 
 
@@ -67,7 +67,7 @@ def install_help(missing: list[str]) -> str:
     names = {"playwright": "Playwright (drives Chrome)", "av": "PyAV (writes the MP4)"}
     what = " and ".join(names[m] for m in missing)
     return (
-        f"xrd animate needs {what}, which are not installed by default. Install the optional "
+        f"rxd animate needs {what}, which are not installed by default. Install the optional "
         f"'video' extra:\n  {INSTALL_VIDEO}\n  (from a source checkout: {INSTALL_VIDEO_CHECKOUT})\n"
         "The system Google Chrome is used: no browser is downloaded. Without PyAV the frames are "
         "still written as PNG files that ffmpeg can encode (the command prints the line)."
@@ -158,9 +158,9 @@ def find_frontend(explicit: str | None = None) -> Path:
         else:
             tried.append(str(cand))
     raise _dependency_error(
-        "the built app (its frontend) was not found. xrd animate draws with the app's own 3D "
+        "the built app (its frontend) was not found. rxd animate draws with the app's own 3D "
         "renderer, which is in dist/ after `npm run build`:\n"
-        "  from a source checkout:   npm ci && npm run build      (xrd then finds <checkout>/dist)\n"
+        "  from a source checkout:   npm ci && npm run build      (rxd then finds <checkout>/dist)\n"
         "  or point to a build:      --app-dist /path/to/dist     or  XRADAR_APP_DIST=/path/to/dist\n"
         "The installers embed the frontend in the executable, so they cannot be used for this.\n"
         "Looked in: " + "; ".join(tried[:6]) + (" ..." if len(tried) > 6 else "")
@@ -352,7 +352,7 @@ class Renderer:
                 or "not found" in text
             ):
                 raise _dependency_error(
-                    f"could not start the browser (channel '{channel}'). xrd animate uses the system "
+                    f"could not start the browser (channel '{channel}'). rxd animate uses the system "
                     "Google Chrome: install Chrome (https://www.google.com/chrome/), or use another "
                     "Chromium with --browser chromium after `python -m playwright install chromium`. "
                     f"Details: {text.splitlines()[0][:160]}"

@@ -1,7 +1,7 @@
 # Bulk jobs from the command line
 
 Process a whole day of scans, a folder of cases or a nightly feed with the same commands you use
-for one file. There is no special "batch mode": `xrd` returns clear exit codes, writes files you
+for one file. There is no special "batch mode": `rxd` returns clear exit codes, writes files you
 name, and prints machine-readable results with `--json`, so ordinary shell tools do the looping.
 Read [the command line page](CLI.md) first for the options used here.
 
@@ -9,11 +9,11 @@ Read [the command line page](CLI.md) first for the options used here.
 
 | Command | Several `-i` files | What happens |
 |---|---|---|
-| `xrd info` | yes | one report per file |
-| `xrd cells` | yes | the files are one radar over time and the cells are **tracked** |
-| `xrd mosaic`, `xrd winds` | yes | the files are different radars at one time and are **combined** |
-| `xrd animate` | yes | the files are one or more radars over time: grouped by radar and time, the nearest volume of each radar per step, one 3D animation (see [ANIMATE.md](ANIMATE.md)) |
-| `xrd run`, `xrd pipeline`, `xrd plot`, `xrd export` | one file per call | loop over the files |
+| `rxd info` | yes | one report per file |
+| `rxd cells` | yes | the files are one radar over time and the cells are **tracked** |
+| `rxd mosaic`, `rxd winds` | yes | the files are different radars at one time and are **combined** |
+| `rxd animate` | yes | the files are one or more radars over time: grouped by radar and time, the nearest volume of each radar per step, one 3D animation (see [ANIMATE.md](ANIMATE.md)) |
+| `rxd run`, `rxd pipeline`, `rxd plot`, `rxd export` | one file per call | loop over the files |
 
 So a bulk job over many independent files is a loop around one of the last four commands. Every
 example below works the same in a shell script, a cron job or a CI step.
@@ -23,7 +23,7 @@ example below works the same in a shell script, a cron job or a CI step.
 ```bash
 mkdir -p out
 for f in data/*_V06; do
-  xrd run storm_detection -i "$f" -P threshold_dbz=45 -q -o "out/$(basename "$f").csv" \
+  rxd run storm_detection -i "$f" -P threshold_dbz=45 -q -o "out/$(basename "$f").csv" \
     || echo "FAILED: $f" >> failed.txt
 done
 ```
@@ -33,15 +33,15 @@ quote `"$f"`: radar file names often contain characters a shell would otherwise 
 
 ## 2. Use all the cores
 
-`xargs -P` (or GNU `parallel`) runs several files at once. Each `xrd` is a separate process with its
+`xargs -P` (or GNU `parallel`) runs several files at once. Each `rxd` is a separate process with its
 own memory, so choose `-P` by how much memory one volume needs, not only by the number of cores.
 
 ```bash
 ls data/*_V06 | xargs -P 4 -I{} sh -c \
-  'xrd pipeline "Reflectivity QC" -i "$1" -q -o "out/$(basename "$1").nc"' _ {}
+  'rxd pipeline "Reflectivity QC" -i "$1" -q -o "out/$(basename "$1").nc"' _ {}
 ```
 
-A NEXRAD volume is about 330 MB when decoded (see `xrd info`), so `-P 4` needs roughly 1.5 GB.
+A NEXRAD volume is about 330 MB when decoded (see `rxd info`), so `-P 4` needs roughly 1.5 GB.
 
 ## 3. Stop one bad file from stopping the job
 
@@ -57,7 +57,7 @@ The exit code says what went wrong, so a script can react to it.
 
 ```bash
 for f in data/*_V06; do
-  xrd export -i "$f" -o "out/$(basename "$f").zarr" -q
+  rxd export -i "$f" -o "out/$(basename "$f").zarr" -q
   case $? in
     0) ;;
     1|3) echo "$f" >> skipped.txt ;;       # a bad or empty file: note it and carry on
@@ -74,7 +74,7 @@ Skip what is already done, so an interrupted job picks up where it stopped:
 for f in data/*_V06; do
   out="out/$(basename "$f").nc"
   [ -s "$out" ] && continue
-  xrd pipeline "Reflectivity QC" -i "$f" -q -o "$out.part" && mv "$out.part" "$out"
+  rxd pipeline "Reflectivity QC" -i "$f" -q -o "$out.part" && mv "$out.part" "$out"
 done
 ```
 
@@ -87,7 +87,7 @@ finished.
 
 ```bash
 for f in data/*_V06; do
-  xrd run storm_detection -i "$f" -P threshold_dbz=45 --json 2>/dev/null \
+  rxd run storm_detection -i "$f" -P threshold_dbz=45 --json 2>/dev/null \
     | jq -r --arg f "$(basename "$f")" '[$f, .scalars.Cells] | @tsv'
 done > cells_per_scan.tsv
 ```
@@ -95,7 +95,7 @@ done > cells_per_scan.tsv
 An inventory of a whole archive is one command, because `info` takes many files:
 
 ```bash
-xrd info -i data --json | jq -r '.[] | [.radar, .time, .n_sweeps] | @tsv' > inventory.tsv
+rxd info -i data --json | jq -r '.[] | [.radar, .time, .n_sweeps] | @tsv' > inventory.tsv
 ```
 
 ## 6. One recipe for every file
@@ -114,7 +114,7 @@ threshold_dbz = 45
 
 ```bash
 for f in data/*_V06; do
-  xrd --config qc_cells.toml -i "$f" -q -o "out/$(basename "$f").csv"
+  rxd --config qc_cells.toml -i "$f" -q -o "out/$(basename "$f").csv"
 done
 ```
 
@@ -127,14 +127,14 @@ in a log next to the results.
 cells through time (files are sorted by time, so the shell glob order does not matter).
 
 ```bash
-xrd cells -i 'data/KHPX*' --threshold-dbz 45 -o cells_all.csv --tracks tracks.csv -p tracks.png
+rxd cells -i 'data/KHPX*' --threshold-dbz 45 -o cells_all.csv --tracks tracks.csv -p tracks.png
 ```
 
 To get one set of tracks per day, loop over the day folders:
 
 ```bash
 for d in data/2021-12-1*/; do
-  xrd cells -i "$d" --threshold-dbz 45 -q -o "out/$(basename "$d")_cells.csv" \
+  rxd cells -i "$d" --threshold-dbz 45 -q -o "out/$(basename "$d")_cells.csv" \
     --tracks "out/$(basename "$d")_tracks.csv"
 done
 ```
@@ -142,16 +142,16 @@ done
 ## 8. A mosaic for every time step
 
 Each time step has a file from every radar. Group them by a time stamp in the name and loop over the
-groups; the same pattern works for `xrd winds`.
+groups; the same pattern works for `rxd winds`.
 
 ```bash
 for t in 20211211_0159 20211211_0209 20211211_0219; do
-  xrd mosaic -i data/KHPX${t}* data/KNQA${t}* data/KPAH${t}* \
+  rxd mosaic -i data/KHPX${t}* data/KNQA${t}* data/KPAH${t}* \
     --product composite -q -o "out/mosaic_${t}.nc" -p "out/mosaic_${t}.png"
 done
 ```
 
-The files of one mosaic do not have to start in the same minute; the table printed by `xrd mosaic`
+The files of one mosaic do not have to start in the same minute; the table printed by `rxd mosaic`
 shows each radar's volume time, so a check of the spread is easy to add with `--json`.
 
 ## 9. The same thing from Python

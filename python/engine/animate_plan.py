@@ -1,4 +1,4 @@
-"""Planning of ``xrd animate``: which volumes, which time steps, which frame shows which moment.
+"""Planning of ``rxd animate``: which volumes, which time steps, which frame shows which moment.
 
 Pure Python (standard library only, no radar data is decoded here), so everything in this module is
 fast and testable without a browser or radarx:

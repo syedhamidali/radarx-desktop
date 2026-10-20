@@ -2,8 +2,8 @@
 
 The desktop app is a thin shell around this engine; this module exposes the same functions
 without the WebSocket server, so a workflow you built in the GUI can be repeated unattended.
-Every step has the same name here as on the command line (``xrd info`` is :func:`info`,
-``xrd run`` is :func:`run`, and ``xrd mosaic -i F1 F2 -o out.nc`` is
+Every step has the same name here as on the command line (``rxd info`` is :func:`info`,
+``rxd run`` is :func:`run`, and ``rxd mosaic -i F1 F2 -o out.nc`` is
 ``api.mosaic([F1, F2], out="out.nc")``).
 
 Look
@@ -21,7 +21,7 @@ Save
 
 Quick tour::
 
-    from engine import api            # or:  import xrd
+    from engine import api            # or:  import rxd
 
     vol = api.open("KTLX20130520_201643_V06.gz")        # -> Volume
     vol.info()                                          # format, site, time, sweeps, nyquist ...
@@ -348,7 +348,7 @@ def find_module(module_id: str) -> plugins.ModuleSpec:
     close = difflib.get_close_matches(module_id, list(mods), n=3, cutoff=0.5)
     hint = f" Did you mean {', '.join(close)}?" if close else ""
     raise XrdArgumentError(
-        f"Unknown module '{module_id}'.{hint} List them with api.modules() or `xrd modules`."
+        f"Unknown module '{module_id}'.{hint} List them with api.modules() or `rxd modules`."
     )
 
 
@@ -489,7 +489,7 @@ def recipe(spec: Any) -> Recipe:
         path = Path(spec).expanduser()
         if not path.is_file():
             raise XrdArgumentError(
-                f"Recipe file not found: {path}. Give a recipe name (see `xrd pipeline list`) "
+                f"Recipe file not found: {path}. Give a recipe name (see `rxd pipeline list`) "
                 "or the path of a JSON file saved from the app."
             )
         try:
@@ -1307,7 +1307,7 @@ class Volume:
             )
         except plugins.ModuleError as exc:
             raise plugins.ModuleError(
-                f"{exc}. Check the target variable (--target) and the sweeps with `xrd info`."
+                f"{exc}. Check the target variable (--target) and the sweeps with `rxd info`."
             ) from exc
         built = pipe.build_variables(run)
         store = self._store
@@ -1429,7 +1429,7 @@ class Volume:
         )
 
     def qpe(self, **kwargs: Any) -> Any:
-        """Rain rate of this volume on a map grid (``xrd qpe -i FILE``); see :func:`qpe`.
+        """Rain rate of this volume on a map grid (``rxd qpe -i FILE``); see :func:`qpe`.
 
         One volume gives an instantaneous composite (``result.rate_last``, mm/h) with its
         uncertainty and quality fields; for an accumulation use :func:`qpe` with several volumes.
@@ -1783,7 +1783,7 @@ class Volume:
         if fmt in ("csv", "png", "svg", "pdf"):
             parts += [(variable or "var").replace(":", "_"), f"sweep{sweep}"]
         else:
-            parts.append("xrd")
+            parts.append("rxd")
         return Path.cwd() / ("_".join(parts) + _EXPORT_EXT[fmt])
 
 
@@ -2030,7 +2030,7 @@ def mosaic(
     Parameters
     ----------
     files : list of Volume or path
-        One or more volumes scanned at about the same time (CLI: ``xrd mosaic -i F1 F2 ...``).
+        One or more volumes scanned at about the same time (CLI: ``rxd mosaic -i F1 F2 ...``).
     product : {"composite", "cappi", "echo_top"}
         Column maximum, constant-altitude PPI at ``height_m`` (above sea level), or the
         height of the ``threshold_dbz`` echo.
@@ -2146,7 +2146,7 @@ def qpe(
 ) -> Any:
     """Radar rainfall: rate, accumulation, uncertainty, gauge adjustment and basin averages.
 
-    ``xrd qpe -i FILES -o qpe.nc`` is ``api.qpe(FILES, out="qpe.nc")``. Methods, equations and
+    ``rxd qpe -i FILES -o qpe.nc`` is ``api.qpe(FILES, out="qpe.nc")``. Methods, equations and
     limits are in ``docs/HYDROLOGY.md``; every output is labelled ``RETRIEVED`` (a radar estimate)
     or ``ADJUSTED`` (after gauges), never as an observation.
 
@@ -2332,7 +2332,7 @@ def winds(
     Parameters
     ----------
     files : list of Volume or path
-        At least two volumes, scanned at about the same time (CLI: ``xrd winds -i F1 F2``).
+        At least two volumes, scanned at about the same time (CLI: ``rxd winds -i F1 F2``).
     method : {"analytic", "variational"}
         Dual-Doppler solution (fast) or variational analysis (smoother, slower).
     dealias : str or None
@@ -2451,7 +2451,7 @@ def track(
     Parameters
     ----------
     files : list of Volume or path
-        Volumes of the same radar (CLI: ``xrd cells -i F1 F2 F3``). They are put in time
+        Volumes of the same radar (CLI: ``rxd cells -i F1 F2 F3``). They are put in time
         order when ``sort`` is true and every
         volume carries ray times.
     variable, sweep, threshold_dbz, min_size_km2, backend, thresholds, grid_spacing_km, smooth
@@ -2524,7 +2524,7 @@ def track(
 
 
 def info(file: str | os.PathLike[str] | Volume) -> dict[str, Any]:
-    """:meth:`Volume.info` of a file (``xrd info -i FILE``)."""
+    """:meth:`Volume.info` of a file (``rxd info -i FILE``)."""
     return open(file).info()
 
 
@@ -2535,7 +2535,7 @@ def sounding(
     wind_units: str | None = None,
     virtual_temperature: bool = True,
 ) -> dict[str, Any]:
-    """Read a radiosonde file and return its labelled diagnostics (``xrd sounding -i FILE --json``).
+    """Read a radiosonde file and return its labelled diagnostics (``rxd sounding -i FILE --json``).
 
     Formats: University of Wyoming text list and CSV, SPC / SHARPpy text, IEM RAOB JSON, IGRA2 and
     any CSV whose header names the columns. The result is a plain dict: ``levels`` (hPa, m, degC,
@@ -2569,7 +2569,7 @@ def plot(
     sweep: int | None = None,
     **kwargs: Any,
 ) -> plt.Figure:
-    """:meth:`Volume.plot` of a file (``xrd plot -i FILE -V VARIABLE -s SWEEP -p OUT``).
+    """:meth:`Volume.plot` of a file (``rxd plot -i FILE -V VARIABLE -s SWEEP -p OUT``).
 
     Examples
     --------
@@ -2584,7 +2584,7 @@ def run(
     sweep: int | None = None,
     **kwargs: Any,
 ) -> ModuleResult:
-    """:meth:`Volume.run` on a file (``xrd run MODULE -i FILE``).
+    """:meth:`Volume.run` on a file (``rxd run MODULE -i FILE``).
 
     The result keeps its volume alive, so ``all_sweeps=True`` results stay usable.
 
@@ -2602,7 +2602,7 @@ def pipeline(
     target: str | None = None,
     **kwargs: Any,
 ) -> PipelineResult:
-    """:meth:`Volume.pipeline` on a file (``xrd pipeline RECIPE -i FILE``)."""
+    """:meth:`Volume.pipeline` on a file (``rxd pipeline RECIPE -i FILE``)."""
     return open(file).pipeline(recipe, target, **kwargs)
 
 
@@ -2614,7 +2614,7 @@ def cells(
     min_size_km2: float = 10.0,
     **kwargs: Any,
 ) -> CellsResult:
-    """:meth:`Volume.cells` of a file (``xrd cells -i FILE``); several files: :func:`track`."""
+    """:meth:`Volume.cells` of a file (``rxd cells -i FILE``); several files: :func:`track`."""
     return open(file).cells(sweep, variable, threshold_dbz, min_size_km2, **kwargs)
 
 
@@ -2624,7 +2624,7 @@ def export(
     out: str | os.PathLike[str] | None = None,
     **kwargs: Any,
 ) -> Path:
-    """:meth:`Volume.export` of a file (``xrd export -i FILE -o OUT``).
+    """:meth:`Volume.export` of a file (``rxd export -i FILE -o OUT``).
 
     Examples
     --------
