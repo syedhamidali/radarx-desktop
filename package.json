@@ -9,10 +9,11 @@
     "build:web": "vite build --mode web --base ./ --outDir dist-web",
     "preview": "vite preview",
     "tauri": "tauri",
-    "test:unit": "node --test src/lib/utils/*.test.mjs",
+    "test:unit": "node --test src/lib/utils/*.test.mjs src/lib/auth/*.test.mjs",
     "check:colors": "node scripts/check-colors.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.118.0",
     "@tauri-apps/api": "2.10.1",
     "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-shell": "^2",

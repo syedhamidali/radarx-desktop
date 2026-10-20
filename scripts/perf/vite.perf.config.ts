@@ -21,5 +21,6 @@ export default (env: any) =>
   mergeConfig((base as any)(env), {
     // PERF_NOMINIFY=1 keeps function names readable for scripts/perf/profile.py
     build: { outDir: process.env.PERF_OUT ?? "dist-perf", emptyOutDir: true, ...(process.env.PERF_NOMINIFY ? { minify: false } : {}) },
+    define: { __AUTH_DISABLED__: true }, // the UI benchmarks run without an account
     plugins: [injectHook()],
   });
