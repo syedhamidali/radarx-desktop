@@ -49,6 +49,10 @@ from websockets.asyncio.server import ServerConnection
 
 from engine import derived, layer_provenance, mosaic, pipeline, plugins, quality, rhi, varmap, web
 from engine import multidoppler as mdop
+from engine.account import activity as account_activity
+from engine.account import config as account_config
+from engine.account import core as account_core
+from engine.account.errors import AccountRequired
 from engine.cloud import (
     get_latest_nexrad_l2,
     latest_scan_info,
@@ -116,6 +120,23 @@ WEB_SAVE_TEXT_MAX_BYTES = 5 * 1024 * 1024
 
 #: Identifies this engine process; reported by ``ping`` (see ``_handle_ping``).
 ENGINE_ID = uuid.uuid4().hex
+
+#: The account gate (docs/ACCOUNTS.md): until a connection has presented a valid signed-in account
+#: with ``auth_session``, every message except these is answered ``{type: "auth_required"}`` and no
+#: radar processing happens. ``ping`` and ``get_web_info`` carry no data.
+AUTH_MESSAGES = frozenset({"auth_session", "auth_signout", "auth_status"})
+GATE_OPEN_MESSAGES = frozenset({"ping", "get_web_info"}) | AUTH_MESSAGES
+
+#: One worker thread for the activity log: events keep their order (a sign-out is sent after what
+#: came before it) and the log never competes with the work threads or blocks the event loop.
+_ACTIVITY_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="radarx-rec"
+)
+
+# The request being handled by the current task (for the activity log's details).
+_CURRENT_REQUEST: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "radarx_current_request", default=None
+)
 
 # True while the current message task has announced progress < 100 without closing it.
 _PROGRESS_OPEN: contextvars.ContextVar[bool] = contextvars.ContextVar(
@@ -815,6 +836,169 @@ class ConnectionHandler(EnvironmentMessages):
         # identify_cells -> track_cells in arrival order despite concurrent dispatch.
         self._previous_cells: list[Any] | None = None
         self._cells_lock = asyncio.Lock()
+        #: The signed-in account this connection presented (None until ``auth_session`` succeeds).
+        self.account: account_core.Account | None = None
+        self._access_token: str | None = None
+        self._why_refused = "no_session"
+        self._app_started = False
+
+    # ------------------------------------------------------------------
+    # Accounts: the gate, auth_session / auth_signout, the activity log
+    # ------------------------------------------------------------------
+
+    def _gate_active(self) -> bool:
+        """Is the account gate on for this connection? (Off only for the development bypass.)"""
+        if account_config.auth_disabled():
+            return False
+        if self.session is not None:  # the public web service
+            return account_config.web_gate_enabled()
+        return True
+
+    def _authorised(self) -> bool:
+        """True while this connection holds an account that is good right now."""
+        account = self.account
+        if account is None:
+            return False
+        if account.bypassed:
+            return True
+        # The offline rule (docs/ACCOUNTS.md): 30 days from when the server last vouched.
+        if (
+            account_core.now() - account.issued_at
+            > account_config.OFFLINE_GRACE_DAYS * account_config.DAY_S
+        ):
+            self._why_refused = "offline_expired"
+            return False
+        return True
+
+    async def _refuse(self, msg_type: Any, msg: dict[str, Any]) -> None:
+        text = AccountRequired(self._why_refused)
+        await self.send(
+            {
+                "type": "auth_required",
+                "reason": text.reason,
+                "message": str(text),
+                "request_type": str(msg_type)[:64],
+                "request_id": msg.get("request_id")
+                if isinstance(msg.get("request_id"), str)
+                else None,
+            }
+        )
+
+    async def _handle_account_message(self, msg_type: str, msg: dict[str, Any]) -> None:
+        loop = asyncio.get_running_loop()
+        if msg_type == "auth_status":
+            if not self._gate_active():
+                await self.send({"type": "auth_ok", "bypass": True})
+            elif self._authorised():
+                await self.send(self._auth_ok_message())
+            else:
+                await self._refuse(msg_type, msg)
+            return
+        if msg_type == "auth_signout":
+            if self.account is not None and not self.account.bypassed:
+                self._record("sign_out")
+                await loop.run_in_executor(_ACTIVITY_POOL, account_activity.flush, 2.0)
+                if self.session is None:
+                    await loop.run_in_executor(None, account_core.end_presented_session)
+            self.account = None
+            self._access_token = None
+            self._why_refused = "no_session"
+            await self.send({"type": "auth_signed_out"})
+            return
+        # auth_session
+        if not self._gate_active():
+            self.account = account_core.require_account()  # the bypass account
+            await self.send({"type": "auth_ok", "bypass": True})
+            return
+        token = msg.get("access_token")
+        try:
+            if not isinstance(token, str):
+                raise AccountRequired("invalid")
+            persist = self.session is None  # the desktop engine has one user; the web service many
+            account = await loop.run_in_executor(
+                None,
+                functools.partial(account_core.verify_presented_token, token, persist=persist),
+            )
+        except AccountRequired as exc:
+            self.account = None
+            self._access_token = None
+            self._why_refused = exc.reason
+            await self.send({"type": "auth_required", "reason": exc.reason, "message": str(exc)})
+            return
+        self.account = account
+        self._access_token = token
+        self._why_refused = "no_session"
+        device = msg.get("device_id")
+        if self.session is None and isinstance(device, str):
+            from engine.account import store as account_store
+
+            await loop.run_in_executor(None, account_store.set_device_id, device)
+        if not self._app_started:
+            self._app_started = True
+            self._record("app_start")
+        if msg.get("reason") == "sign_in":
+            self._record("sign_in")
+        await self.send(self._auth_ok_message())
+
+    def _auth_ok_message(self) -> dict[str, Any]:
+        account = self.account
+        if account is None:
+            return {"type": "auth_ok"}
+        return {
+            "type": "auth_ok",
+            "email": account.email,
+            "stale": account.stale,
+            "grace_days_left": account.grace_days_left,
+            "bypass": account.bypassed,
+        }
+
+    def _record(self, event: str, **detail: Any) -> None:
+        """Queue one activity event for this account (never blocks or raises)."""
+        account = self.account
+        if account is None or account.bypassed or not self._gate_active():
+            return
+        web_extra: dict[str, Any] = {}
+        if (
+            self.session is not None
+        ):  # the web service: the visitor's own token, kept in memory only
+            web_extra = {
+                "token": self._access_token,
+                "device": re.sub(r"[^A-Za-z0-9]", "", str(self.session.id))[:40] or None,
+                "os_name": "Web",
+            }
+        surface = "engine" if event == "error" else "app"
+        with contextlib.suppress(RuntimeError):  # no running loop (shutting down)
+            asyncio.get_running_loop().run_in_executor(
+                _ACTIVITY_POOL,
+                functools.partial(
+                    account_activity.record, event, surface=surface, **web_extra, **detail
+                ),
+            )
+
+    def _observe_reply(self, msg: dict[str, Any]) -> None:
+        """Turn a successful reply into at most one activity event (feature level only)."""
+        kind = msg.get("type")
+        request = _CURRENT_REQUEST.get() or {}
+        if kind == "file_opened":
+            data = msg.get("data")
+            label = data.get("format") if isinstance(data, dict) else None
+            self._record("file_opened", format=account_activity.format_family(label))
+        elif kind == "module_result" and isinstance(msg.get("module"), str):
+            spec = plugins.MODULES.get(msg["module"])
+            self._record(
+                "module_run",
+                module=account_activity.module_label(msg["module"], getattr(spec, "source", None)),
+            )
+        elif kind in ("export_complete", "batch_export_complete"):
+            self._record("export", format=request.get("format"))
+        elif kind == "animation_export_complete":
+            self._record("animate_run", type=request.get("format"))
+        elif kind == "mosaic_result":
+            self._record("mosaic_run", type=request.get("product"))
+        elif kind == "multidoppler_result":
+            self._record("winds_run", type=request.get("method"))
+        elif kind == "qpe_result" and request.get("type") == "qpe_run":
+            self._record("qpe_run")
 
     async def _send_text(self, msg: dict[str, Any]) -> None:
         """Send one JSON message. Caller must hold ``_send_lock``."""
@@ -829,6 +1013,8 @@ class ConnectionHandler(EnvironmentMessages):
         await self.ws.send(payload)
 
     async def send(self, msg: dict[str, Any]) -> None:
+        if self.account is not None:
+            self._observe_reply(msg)
         if self.session is not None and isinstance(msg.get("message"), str):
             # never show the server's folder layout to a visitor (progress texts name files too)
             msg = {**msg, "message": self._scrub(msg["message"])}
@@ -986,6 +1172,15 @@ class ConnectionHandler(EnvironmentMessages):
             await self.send_error("Unauthorized WebSocket message")
             return
 
+        # The account gate: nothing but ping / get_web_info / auth_* is answered without a signed-in
+        # account on this connection (docs/ACCOUNTS.md).
+        if msg_type in AUTH_MESSAGES:
+            await self._handle_account_message(msg_type, msg)
+            return
+        if msg_type not in GATE_OPEN_MESSAGES and self._gate_active() and not self._authorised():
+            await self._refuse(msg_type, msg)
+            return
+
         table: dict[str, Any] = {
             "open_file": self._handle_open_file,
             "close_file": self._handle_close_file,
@@ -1075,6 +1270,7 @@ class ConnectionHandler(EnvironmentMessages):
             return
 
         _PROGRESS_OPEN.set(False)
+        _CURRENT_REQUEST.set(msg)
         try:
             await handler(msg)
         except (SystemExit, KeyboardInterrupt, GeneratorExit) as exc:
@@ -1086,6 +1282,7 @@ class ConnectionHandler(EnvironmentMessages):
                 f"({type(exc).__name__}). Nothing was changed; try again."
             )
         except Exception as exc:
+            self._record("error", **{"class": type(exc).__name__})
             level, text = _failure_text(str(msg_type), exc)
             if level == logging.ERROR:
                 logger.error("Error handling '%s': %s\n%s", msg_type, exc, traceback.format_exc())
