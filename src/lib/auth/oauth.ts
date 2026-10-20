@@ -9,6 +9,7 @@
 import { getClient } from './client';
 import { inTauri } from '../utils/env';
 import type { OAuthProvider } from './config';
+import { oauthFailureMessage } from './gate';
 
 async function openExternal(url: string): Promise<void> {
   const { open } = await import('@tauri-apps/plugin-shell');
@@ -36,8 +37,7 @@ export async function signInWithProvider(provider: OAuthProvider): Promise<void>
     await openExternal(data.url);
     const query = await invoke<string>('oauth_listen_wait');
     const params = new URLSearchParams(query);
-    const failure = params.get('error_description') || params.get('error');
-    if (failure) throw new Error(failure);
+    if (params.get('error')) throw new Error(oauthFailureMessage(params.get('error'))); // never the provider's own text
     const code = params.get('code');
     if (!code) throw new Error('The sign-in did not return a code.');
     const { error: exErr } = await sb.auth.exchangeCodeForSession(code);

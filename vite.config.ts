@@ -45,6 +45,7 @@ function webCsp(engineUrl: string | undefined, supabaseUrl: string = DEFAULT_SUP
         "worker-src 'self' blob:",
         "object-src 'none'",
         "base-uri 'self'",
+        "form-action 'self'",
       ].join("; ");
       // After <meta charset> (which must stay within the first 1024 bytes), before any script.
       return html.replace(

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { enabledProviders } from './config.ts';
-import { gateState, graceDaysLeft, looksLikeEmail, passwordProblem, friendlyAuthError } from './gate.ts';
+import { gateState, graceDaysLeft, looksLikeEmail, passwordProblem, friendlyAuthError, oauthFailureMessage } from './gate.ts';
 
 const DAY = 86_400_000;
 const now = 1_800_000_000_000;
@@ -47,4 +47,11 @@ test('social buttons appear only for providers that were listed', () => {
   assert.deepEqual(enabledProviders(''), []);
   assert.deepEqual(enabledProviders('google, Apple').map((p) => p.id), ['google', 'apple']);
   assert.deepEqual(enabledProviders('myspace'), []);
+});
+
+test('the OAuth failure text is a fixed sentence, never the provider text', () => {
+  assert.equal(oauthFailureMessage('access_denied'), 'Sign-in was cancelled.');
+  for (const e of ['server_error', 'Your account was hacked, call 555-0100', null, undefined, '']) {
+    assert.equal(oauthFailureMessage(e), 'The sign-in was not completed. Please try again.');
+  }
 });
