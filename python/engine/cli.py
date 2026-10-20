@@ -404,7 +404,7 @@ def overview() -> str:
     ]
     for title, items in GROUPS:
         for i, (name, text) in enumerate(items):
-            lines.append(f"  {title if i == 0 else '':<8}{name:<12}{text}")
+            lines.append(f"  {title if i == 0 else '':<10}{name:<12}{text}")
     lines += [
         "",
         f"First time: an account is needed (free). Sign in once with  {PROG} login  (create it in the app).",
@@ -427,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     listing = []
     for title, items in GROUPS:
         for i, (name, text) in enumerate(items):
-            listing.append(f"  {title if i == 0 else '':<8}{name:<12}{text}")
+            listing.append(f"  {title if i == 0 else '':<10}{name:<12}{text}")
     parser = _Parser(
         prog=PROG,
         usage="rxd [--version] COMMAND [options]",

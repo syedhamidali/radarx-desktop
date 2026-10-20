@@ -56,7 +56,7 @@ Log = Callable[[str], None]
 
 
 def default_cache_dir() -> Path:
-    """``$XRADAR_ANIMATE_CACHE``, else ``~/.cache/xradar-desktop/animate``."""
+    """``$XRADAR_ANIMATE_CACHE``, else ``~/.cache/radarx-desktop/animate``."""
     env = os.environ.get("XRADAR_ANIMATE_CACHE")
     if env:
         return Path(env).expanduser()

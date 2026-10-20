@@ -489,7 +489,7 @@ def _safe_stem(name: str) -> str:
 def default_export_dir() -> Path:
     """Where exports go when the caller did not choose a destination.
 
-    A normal, visible folder (``~/Downloads/xradar-exports``, or ``$XRADAR_EXPORT_DIR``), never a
+    A normal, visible folder (``~/Downloads/radarx-exports``, or ``$XRADAR_EXPORT_DIR``), never a
     hidden system temp directory that the user cannot find.
     """
     from engine import web
@@ -500,7 +500,7 @@ def default_export_dir() -> Path:
     if env:
         return Path(env).expanduser()
     downloads = Path.home() / "Downloads"
-    return (downloads if downloads.is_dir() else Path.home()) / "xradar-exports"
+    return (downloads if downloads.is_dir() else Path.home()) / "radarx-exports"
 
 
 def _unique_in(directory: Path, prefix: str, suffix: str) -> Path:
@@ -1456,7 +1456,7 @@ class RadarExporter:
                     ),
                 },
             )
-            with _output_target(output_path, suffix=f".{fmt}", prefix="xradar_export_") as target:
+            with _output_target(output_path, suffix=f".{fmt}", prefix="radarx_export_") as target:
                 fig.savefig(
                     target,
                     format=fmt,
@@ -1513,7 +1513,7 @@ class RadarExporter:
             raise ValueError("No variables or sweeps selected for batch export")
 
         if output_dir is None:
-            output_dir = str(_unique_in(default_export_dir(), "xradar_batch_", ""))
+            output_dir = str(_unique_in(default_export_dir(), "radarx_batch_", ""))
             os.makedirs(output_dir, exist_ok=True)
         else:
             output_dir = str(Path(output_dir).expanduser())
@@ -1662,7 +1662,7 @@ class RadarExporter:
                 frames[k] = canvas
 
         try:
-            with _output_target(output_path, suffix=".gif", prefix="xradar_anim_") as target:
+            with _output_target(output_path, suffix=".gif", prefix="radarx_anim_") as target:
                 frames[0].save(
                     target,
                     format="GIF",
@@ -1704,7 +1704,7 @@ class RadarExporter:
         mask = bool(options.get("mask_no_echo", True))
         vm, vm_params = _volume_value_masks(options, datatree)
         with (
-            _output_target(output_path, suffix=".nc", prefix="xradar_export_") as target,
+            _output_target(output_path, suffix=".nc", prefix="radarx_export_") as target,
             _fast_cfradial1_mapper(),
         ):
             cfwrite.write_cfradial1(
@@ -1733,7 +1733,7 @@ class RadarExporter:
         progress(10, "Preparing CfRadial2 export")
         mask = bool(options.get("mask_no_echo", True))
         vm, vm_params = _volume_value_masks(options, datatree)
-        with _output_target(output_path, suffix=".nc", prefix="xradar_cfradial2_") as target:
+        with _output_target(output_path, suffix=".nc", prefix="radarx_cfradial2_") as target:
             cfwrite.write_cfradial2(
                 _netcdf_safe_tree(datatree, mask=mask, value_masks=vm),
                 target,
@@ -1800,7 +1800,7 @@ class RadarExporter:
 
         header = _csv_header(datatree, sweep_ds, da, variable, sweep, options, len(df))
         with (
-            _output_target(output_path, suffix=".csv", prefix="xradar_export_") as target,
+            _output_target(output_path, suffix=".csv", prefix="radarx_export_") as target,
             open(target, "w", encoding="utf-8", newline="") as fh,
         ):
             fh.write(header)
@@ -1833,7 +1833,7 @@ class RadarExporter:
         progress(10, "Preparing Zarr export")
         vm, vm_params = _volume_value_masks(options, datatree)
         with _output_target(
-            output_path, suffix=".zarr", prefix="xradar_export_", directory=True
+            output_path, suffix=".zarr", prefix="radarx_export_", directory=True
         ) as target:
             mask = bool(options.get("mask_no_echo", True))
             cfwrite.write_zarr(

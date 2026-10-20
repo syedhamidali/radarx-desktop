@@ -484,7 +484,7 @@ class SessionContext:
             raise WebError(LOCAL_PATHS_DISABLED)
         return real
 
-    def export_target(self, requested: Any, *, ext: str, prefix: str = "xradar_export_") -> Path:
+    def export_target(self, requested: Any, *, ext: str, prefix: str = "radarx_export_") -> Path:
         """Where an export named *requested* (a bare file name, or None) is written.
 
         Always inside ``<session>/exports``; the name never escapes it. Existing files are not
@@ -500,7 +500,7 @@ class SessionContext:
                 name = f"{name}.{ext}"
         return self._unique(self.exports_dir, name)
 
-    def export_subdir(self, requested: Any, *, prefix: str = "xradar_batch_") -> Path:
+    def export_subdir(self, requested: Any, *, prefix: str = "radarx_batch_") -> Path:
         """A fresh sub-folder of ``<session>/exports`` for a batch export."""
         if requested is None or requested == "":
             name = f"{prefix}{secrets.token_hex(4)}"

@@ -123,7 +123,7 @@
       },
       {
         id: 'about',
-        label: 'About radarx desktop',
+        label: 'About Radarx Desktop',
         category: 'App',
         icon: '\u2139',
         action: () => dispatch('action', { type: 'about' }),

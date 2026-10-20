@@ -1182,3 +1182,11 @@ def test_xrd_alias_reports_the_same_version() -> None:
         timeout=120,
     )
     assert done.returncode == 0, done.stderr
+
+
+def test_command_listing_keeps_the_group_title_apart_from_the_command() -> None:
+    """A group title wider than its column ran into the command name ("Hydrologyqpe")."""
+    text = cli.overview()
+    for title, items in cli.GROUPS:
+        assert f"  {title:<10}{items[0][0]:<12}" in text
+        assert len(title) < 10
