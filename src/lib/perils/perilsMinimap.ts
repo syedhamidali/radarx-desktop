@@ -8,7 +8,7 @@
  *  - the camera position and its view cone (heading and field of view of the frame), the storm's motion arrow, radar
  *    sites with their names, the stations (the one nearest the camera ringed), the surveyed tornado path with the
  *    marker of the clip time (the path between the surveyed ends is a straight line: INTERPOLATED), the lightning
- *    sources of the last moments, and the radiosondes in flight as tiny dots with a faint trail (nothing written on them);
+ *    of the last moments (short faint line segments, no markers), and the radiosondes in flight as tiny dots with a faint trail (nothing written on them);
  *  - a scale bar, a north arrow and the clock.
  * The view follows the storm in the wide shots and the camera in the close ones. Pure drawing; the numbers come in
  * through `MinimapState`.
@@ -47,7 +47,8 @@ export interface MinimapState {
   radars: { name: string; x: number; y: number }[];
   stations: { x: number; y: number; near: boolean }[];
   tornado: { path: [number, number][]; cur: [number, number] | null } | null;
-  flashes: { x: number; y: number; b: number }[];
+  /** Lightning of the last moments as short plan-view line segments (the channel's edges): no markers. */
+  streaks: { ax: number; ay: number; bx: number; by: number; b: number }[];
   balloons: { x: number; y: number; trail: [number, number][]; a: number }[];
   tag: { kind: ProvKind; text: string };
   clock: string;
@@ -215,13 +216,16 @@ export function drawMinimap(ctx: CanvasRenderingContext2D, s: MinimapState): voi
     ctx.fill();
   }
   ctx.globalAlpha = s.alpha;
-  // lightning sources of the last moments
-  for (const f of s.flashes) {
-    ctx.globalAlpha = s.alpha * Math.min(1, f.b);
-    ctx.fillStyle = 'rgba(255,248,210,1)';
+  // lightning of the last moments: faint short line segments, nothing at the sources
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = 'rgb(255,248,210)';
+  ctx.lineWidth = 1.1 * u;
+  for (const f of s.streaks ?? []) {
+    ctx.globalAlpha = s.alpha * Math.min(0.8, 0.1 + 0.6 * f.b);
     ctx.beginPath();
-    ctx.arc(X(f.x), Y(f.y), 1.7 * u, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(X(f.ax), Y(f.ay));
+    ctx.lineTo(X(f.bx), Y(f.by));
+    ctx.stroke();
   }
   ctx.globalAlpha = s.alpha;
   // the surveyed tornado marker

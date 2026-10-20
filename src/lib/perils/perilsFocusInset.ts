@@ -50,7 +50,8 @@ export interface FocusInsetState {
   radars: { name: string; x: number; y: number }[];
   /** The radar of the velocity panel: the one that sees the tornado. */
   bestRadar: { name: string; x: number; y: number } | null;
-  flashes: { x: number; y: number; b: number }[];
+  /** Lightning of the last moments as short plan-view line segments (the channel's edges): no markers. */
+  streaks: { ax: number; ay: number; bx: number; by: number; b: number }[];
   tag: { kind: ProvKind; text: string };
   clock: string;
   /** Smaller panels without footers (the immersive angles). */
@@ -213,15 +214,19 @@ function drawMap(ctx: CanvasRenderingContext2D, st: FocusInsetState, which: Whic
       ctx.lineCap = 'round';
     }
   }
-  // lightning sources of the last moments
-  for (const f of st.flashes) {
-    const [fx, fy] = P(f.x, f.y);
-    if (fx < x || fx > x + size || fy < y || fy > y + size) continue;
-    ctx.globalAlpha = st.alpha * Math.min(1, f.b);
-    ctx.fillStyle = 'rgba(255,248,210,1)';
+  // lightning of the last moments: faint short line segments, nothing at the sources
+  ctx.lineCap = 'butt';
+  ctx.strokeStyle = 'rgb(255,248,210)';
+  ctx.lineWidth = 1.1 * u;
+  for (const f of st.streaks ?? []) {
+    const [ax, ay] = P(f.ax, f.ay);
+    const [bx, by] = P(f.bx, f.by);
+    if ((ax < x && bx < x) || (ax > x + size && bx > x + size) || (ay < y && by < y) || (ay > y + size && by > y + size)) continue;
+    ctx.globalAlpha = st.alpha * Math.min(0.8, 0.1 + 0.6 * f.b);
     ctx.beginPath();
-    ctx.arc(fx, fy, 1.6 * u, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
   }
   ctx.globalAlpha = st.alpha;
   // the radar that sees the tornado, and the line to it (velocity panel)

@@ -88,16 +88,34 @@ is drawn (and says so on screen).
   column-maximum reflectivity of the two observed steps around the clip time, cross-faded, in the colours of the scene and over
   the dimmed schematic map, with the OBSERVED VOLUME / INTERPOLATED tag of the frame (and, with merge v2, less opaque where the
   merge quality is low); the camera and its view cone, the storm's motion arrow, the radar sites, the stations, the surveyed
-  tornado path and marker, the lightning of the last moments, the radiosondes in flight, a scale bar, a north arrow and the data
+  tornado path and marker, the lightning of the last moments (short faint line segments, no markers), the radiosondes in flight, a scale bar, a north arrow and the data
   clock. In the tornado focus it is replaced by the two-panel focus inset (below).
-* **Lightning** (`lmaFx.ts`): every VHF source of the lightning mapping array is drawn at its measured
-  position and time (no jitter, no invented branches, no synthetic strokes). Consecutive sources of a flash are
-  joined by a thin line only when they are within 3.5 km and 0.4 s of each other. A source flares when it
-  appears and fades over 0.55 s of clip time (afterglow); colour by position in the flash (white-hot start,
-  cooling to blue), optionally by power. The brightest flashes light the cloud, the ground and the sky through the
-  renderer's flash light. Panel: flashes in the last minute and the flash-rate series, all counted from the real
-  flashes. Because one clip second is about eight data seconds, a flash (about a second of data) lasts a few
-  frames and its afterglow is longer than the flash itself.
+* **Lightning** (`lmaChannel.ts`; the light and the rates in `lmaFx.ts`): lines only, no dots, no spheres, no sprites at the
+  sources (the same on the film, the focus clip and the maps). Each flash is drawn as a thin luminous channel, white-blue core and
+  a faint violet-blue glow, added to the picture:
+  * **OBSERVED**: the position and the time of every VHF source, the order in which the channel grew, and where it forked. The
+    sources are put in time order; a source within 120 m of an earlier one (the LMA's own location error, about 100 m) is the
+    same node; every other source is joined to its NEAREST EARLIER node within 2.5 km, so a fork appears where two later
+    sources have the same nearest earlier one, and a source with no neighbour is joined to nothing. The trunk (the path of the
+    heaviest subtrees) is drawn brightest and widest, the branches thinner and fainter by their share of the flash.
+  * **MODELLED** (said as "fine-scale jaggedness modelled"): a smooth path (centripetal Catmull-Rom spline) that passes exactly
+    through every kept source; fine tortuosity between them by seeded midpoint displacement from the piece length down to 8 m, with
+    a sigma of 12 % of the piece length and at most 50 m (inside the LMA location uncertainty), seeded by flash, branch and piece, so
+    a flash has the same shape in every frame (no flicker); the level of detail follows the camera (a piece is split until it is
+    about 6 px long), and the finer levels never move the coarser points, so an approaching camera shows more of the same channel.
+    The audio models the sub-resolution tortuosity of the channel the same way (statistical, seeded, 1 to 20 m pieces, 3 m scatter);
+    here the scale is larger because the picture needs it. The width is the same physical width seen in perspective (5 m for the
+    trunk): 1 to 3 px far away (hair-like lines), up to 11 px when close, with a soft glow and a bloom.
+  * **TIME**: each edge grows toward its source along the sources' own time order (the leader), at most 0.15 clip s before the source
+    appears; the whole channel is brightened at the peaks of the real source rate (the return-stroke-like bursts), and, where
+    fewer than three bursts are found, re-lit after the last source at about 80 ms intervals (**modelled**, flagged in the data as
+    `modelled`), so each flash flickers over 0.2 to 0.5 s; it fades in 0.75 s of clip time. In a time-lapse of x40 a flash
+    lasts a frame or two and its afterglow is longer than the flash. Flash positions and times are the data's: no flash,
+    fork or stroke is added; only the sources inside the data window the film shows are used (the clock clamps outside it).
+  * **Light**: the brightest flashes light the cloud, the ground and the sky through the renderer's flash light, from the sources
+    as before (`lmaFx.ts`).
+  * **Maps** (the plan-view inset and the focus inset): the channel's edges as short faint line segments in plan view, with no marker.
+  Panel: flashes in the last minute and the flash-rate series, all counted from the real flashes.
 * **Stations** (37 in the bundle: PIPS disdrometers, TTU StickNet, the RaDAPS site, mobile mesonets, FARM
   Parsivels; vehicles are drawn along their tracks and are never the station nearest the camera): standing on the ground with a pole, a ring that grows with the rain rate, a wind arrow along
   the ground, the live read-out and a pulse when the disdrometer counts a hail candidate; the station nearest the
@@ -306,7 +324,9 @@ the rotation sample, the echo context, the wind context) and their conversion; `
 from the data, never "supercell") and the inset geometry; `src/lib/utils/tornado/echoField.test.mjs` (the echo carried along the
 motion, not cross-faded): the director (clock, pose, lens, nearest station), the data lookups
 (series gaps, soundings, balloon flight and fade, tornado, interpolation weights), the real-LMA maths (a source appears
-at its time and not before, links break over long steps, only measured positions), layer relevance and the immersive
+at its time and not before, only measured positions give light; `lmaChannel.test.mjs`: the nearest-earlier tree and its fork, the
+spline through the real positions, the seeded jaggedness (bounded, stable, finer levels keep the coarse points), growth in time
+order, the strokes, the widths, and that the drawing calls only lines: no arc, disc or gradient), layer relevance and the immersive
 grade, captions, the parcel path, the surface analysis and ground layers, the insets' helpers, the vortex
 (spin numbers, Rankine rates, the indicator phase), the plan-view helpers and the opacity of the simulation with the
 distance of the camera.

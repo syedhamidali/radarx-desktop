@@ -4,7 +4,7 @@
  * the lightning light, draws the scene annotations and the heads-up display. See docs/PERILS_MOVIE.md.
  *
  * Honesty rules that live here: the radar volume (drawn by the renderer) is the truth for echo; real
- * LMA sources are drawn at their measured places and times; layers appear only where the bundle has
+ * the lightning is drawn as lines (the channel grown through the real LMA sources in time order, at their measured places and times; the fine jaggedness is modelled and said so); layers appear only where the bundle has
  * their data; a frame between two observed volumes says INTERPOLATED; stylised things say STYLISED.
  */
 import '../styles/provenance.css';
@@ -17,7 +17,8 @@ import { Director, type CamEntry, type TimelineFile, nearestStation } from './pe
 import { LayerVis, crossfade, type LayerId } from './perilsLayers';
 import { GroundComposer, contourSegments, type PixelFn } from './perilsGround';
 import { decodeSurface, sampleGrid, blendFields, tempColour, coldPoolLevel, swathUpTo, type SurfaceMeta } from './perilsSurface';
-import { compileFlashes, flashFrame, flashesInWindow, lightFrom, smoothedFlashLight, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
+import { compileFlashes, flashFrame, flashesInWindow, flashesInWindowOf, lightFrom, smoothedFlashLight, longestFlash, rateSeries, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
+import { compileChannels, longestChannel, planStreaks, drawChannels, type Channel, type Streak } from './lmaChannel';
 import { stationXY, balloonFlight } from './perilsData';
 import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawSwath, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
 import { type FocusCaption, type FocusInfo, focusCaption, focusNow, offsetStats, offsetText, bearingOf, SHEAR_CANDIDATE } from './perilsFocusData';
@@ -36,7 +37,6 @@ export interface PerilsOptions {
   /** Switch layers on (1) or off (0) for the whole film. */
   layers?: Partial<Record<LayerId, number>>;
   lma?: Partial<LmaParams>;
-  lmaColourBy?: 'time' | 'power';
   /** Title and subtitle at the top left (default: the bundle's). */
   title?: string;
   subtitle?: string;
@@ -91,7 +91,11 @@ export class PerilsExtras implements ClipExtras {
   private maxDur = 0;
   private firstTimes: number[] = [];
   private lma: LmaParams;
-  private lmaNow: FlashFrame = { sprites: [], links: [], active: 0 };
+  private lmaNow: FlashFrame = { sources: [], active: 0 };
+  /** The lightning drawn as lines (lmaChannel.ts) and the faint plan-view streaks for the maps. */
+  private channels: Channel[] = [];
+  private channelSpan = 0;
+  private lmaStreaks: Streak[] = [];
   private events: ScienceEvent[] = [];
   private sched: ScheduledCaption[] = [];
   private pair: { pre: SoundingRec; post: SoundingRec | null } | null = null;
@@ -132,8 +136,14 @@ export class PerilsExtras implements ClipExtras {
     const wEnd = data.steps[data.steps.length - 1]?.t_s ?? 0;
     this.pair = chooseEnvironmentPair(data.soundings, wEnd, c0);
     if (data.lma) {
-      this.flashes = compileFlashes(data.lma.flashes, (td) => director.clipTimeOfData(td));
+      // only the sources inside the data window the film shows (the clock clamps outside it: a flash before the first or after the
+      // last shown moment would otherwise pile up at the first or the last frame)
+      const m = director.tl.mapping.t_data_s;
+      const shown = flashesInWindowOf(data.lma.flashes, m[0], m[m.length - 1]);
+      this.flashes = compileFlashes(shown, (td) => director.clipTimeOfData(td));
       this.maxDur = longestFlash(this.flashes);
+      this.channels = compileChannels(shown, (td) => director.clipTimeOfData(td));
+      this.channelSpan = longestChannel(this.channels);
       this.firstTimes = data.lma.flashes.map((f) => f.t0).sort((a, b) => a - b);
     }
   }
@@ -411,7 +421,8 @@ export class PerilsExtras implements ClipExtras {
 
   beforeFrame(info: FrameInfo): void {
     this.frameNo++;
-    this.lmaNow = this.flashes.length ? flashFrame(this.flashes, info.t, this.maxDur, this.lma) : { sprites: [], links: [], active: 0 };
+    this.lmaNow = this.flashes.length ? flashFrame(this.flashes, info.t, this.maxDur, this.lma) : { sources: [], active: 0 };
+    this.lmaStreaks = this.channels.length ? planStreaks(this.channels, info.t, this.channelSpan) : [];
     this.maxSimultaneousFlashes = Math.max(this.maxSimultaneousFlashes, this.lmaNow.active);
     this.composeGround(info);
   }
@@ -510,7 +521,7 @@ export class PerilsExtras implements ClipExtras {
       this.tornado.draw(env, v('funnel') * funnelW, vf);
     }
     ctx.restore();
-    this.lmaDrawn = drawLma(ctx, cam, this.lmaNow, projRaw, info.vexag, this.opts.lmaColourBy ?? this.lma.colourBy, 1);
+    this.lmaDrawn = drawChannels(ctx, cam, this.channels, info.t, this.channelSpan, projRaw, info.vexag, 1);
   }
 
   /** The vortex of the surveyed tornado at data time `td` (null outside its life), cached per frame. */
@@ -773,7 +784,7 @@ export class PerilsExtras implements ClipExtras {
         return { x: p[0], y: p[1], near: s0.id === this.lastNearest };
       }),
       tornado: tor ? { path: tor.path.map((q) => [q.x, q.y] as [number, number]), cur: curT ? [curT.x, curT.y] : null } : null,
-      flashes: this.lmaNow.sprites.map((q) => ({ x: q.x, y: q.y, b: q.bright })),
+      streaks: this.lmaStreaks,
       balloons,
       tag: obs ? { kind: 'observed', text: 'OBSERVED VOLUME' } : { kind: 'interpolated', text: 'INTERPOLATED' },
       clock: clockUtc(this.data.time0, info.td),
@@ -906,7 +917,7 @@ export class PerilsExtras implements ClipExtras {
         const r = this.data.radars.find((q) => q.name === now?.radar);
         return r ? { name: r.name, x: r.x, y: r.y } : null;
       })(),
-      flashes: this.lmaNow.sprites.map((q) => ({ x: q.x, y: q.y, b: q.bright })),
+      streaks: this.lmaStreaks,
       tag: m.observed >= 0 ? { kind: 'observed', text: 'OBSERVED' } : { kind: 'interpolated', text: 'INTERPOLATED' },
       clock: clockUtc(this.data.time0, info.td),
       compact: sizeF < 0.78,
