@@ -2,6 +2,7 @@
   import { onMount, onDestroy, setContext } from 'svelte';
   import { workspaceStore, currentWorkspace } from '../stores/workspace';
   import { lazy, whenIdle } from '../utils/lazy.svelte';
+  import { movePanel } from '../utils/panelOrder';
 
   setContext('embedded-panel', true); // panels below draw only their body; this component owns the header
 
@@ -146,6 +147,18 @@
     workspaceStore.updateCurrentConfig({ rightPanelOrder: panelOrder });
   }
 
+  /** Alt+ArrowUp / Alt+ArrowDown on a panel header moves the panel (no drag needed). */
+  function handleHeaderKey(e: KeyboardEvent, id: string) {
+    if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    e.stopPropagation();
+    const next = movePanel(panelOrder, id, e.key === 'ArrowUp' ? -1 : 1);
+    if (next.every((p, i) => p === panelOrder[i])) return;
+    panelOrder = next;
+    workspaceStore.updateCurrentConfig({ rightPanelOrder: panelOrder });
+  }
+
   function handleDragEnd() {
     dragTarget = null;
     dragOverTarget = null;
@@ -158,6 +171,7 @@
     {#if panel}
       <div
         class="managed-panel"
+        role="presentation"
         class:collapsed={panelCollapsed[id]}
         class:drag-over={dragOverTarget === id}
         class:dragging={dragTarget === id}
@@ -166,10 +180,10 @@
         on:dragleave={handleDragLeave}
         on:drop={(e) => handleDrop(e, id)}
       >
-        <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div class="managed-panel-header">
           <div
             class="drag-handle"
+            role="presentation"
             draggable="true"
             on:dragstart={(e) => handleDragStart(e, id)}
             on:dragend={handleDragEnd}
@@ -181,7 +195,7 @@
               <circle cx="2" cy="10" r="1.2" /><circle cx="6" cy="10" r="1.2" />
             </svg>
           </div>
-          <button class="managed-panel-toggle" on:click={() => toggleCollapse(id)} aria-expanded={!panelCollapsed[id]} title="{panelCollapsed[id] ? 'Expand' : 'Collapse'} {panel.label}">
+          <button class="managed-panel-toggle" on:click={() => toggleCollapse(id)} on:keydown={(e) => handleHeaderKey(e, id)} aria-expanded={!panelCollapsed[id]} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="{panelCollapsed[id] ? 'Expand' : 'Collapse'} {panel.label} (Alt+Up / Alt+Down moves the panel)">
             <span class="managed-panel-index mono">{String(panelOrder.indexOf(id) + 1).padStart(2, '0')}</span>
             {#if PANEL_ICONS[id]}
               <svg class="managed-panel-svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{@html PANEL_ICONS[id]}</svg>
