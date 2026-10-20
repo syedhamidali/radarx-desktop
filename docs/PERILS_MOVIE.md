@@ -14,11 +14,14 @@ The data side is [PERILS_BUNDLE.md](PERILS_BUNDLE.md) (branch `feat/perils-data`
 
 ## The film
 
-Six files, in `~/Downloads/xradar-exports/perils_movie/` (not in the repository):
+Eight files, in `~/Downloads/xradar-exports/perils_movie/` (not in the repository):
 
-* `perils_qlcs_movie_v4.mp4`: the current film: the same as v3 with the **lightning drawn as thin branching channels, lines only**
-  (below) and the louder soundtrack `perils_audio_v5`; 3600 frames, 120.00 s, 293 MB.
-* `perils_tornado_focus_v2.mp4`: the current clip: the same change; 2580 frames, 86.00 s, 258 MB.
+* `perils_qlcs_movie_v5.mp4`: the current film: the same as v4 (lightning as lines, the soundtrack `perils_audio_v5`) with the **overlay
+  laid out by rules** (below): no two labels or cards on top of each other, the flash counter inside the frame, a real compass strip,
+  the track label clear of the timeline; same timeline, camera and events; 3600 frames, 120.00 s, 296 MB.
+* `perils_tornado_focus_v3.mp4`: the current clip: the same change; 2580 frames, 86.00 s, 258 MB.
+* `perils_qlcs_movie_v4.mp4` and `perils_tornado_focus_v2.mp4` (kept): the lightning as lines, before the overlay layout rules
+  (293 MB and 258 MB).
 * `perils_qlcs_movie_v3.mp4`: the film with the **tornado focus** (below): the merged reflectivity of **merge v2** (calibrated,
   attenuation-corrected, advected to the step time; `bundle/manifest_v2.json`), six angles on the surveyed tornado in 49 s of
   the 120, the radar echo and velocity inset, the rotation series, the finale with the whole track. 3600 frames, 120.00 s,
@@ -35,12 +38,20 @@ lapses between them). The files that drive it (`timeline.json`, `camera_path.jso
 
 Checks made on the encoded files:
 
-* **Film v3**: 3600 decoded frames, 120.00 s, 1920x1080, H.264 + AAC (48 kHz stereo, 120.0 s); no black frame (the darkest frame
-  has a mean luminance of 49 of 255); the largest frame-to-frame changes are the fast lapses (the simulation fading into the
-  echo scene over about half a second at x43). Stills across the tornado segment read by eye: the wide start, the descent
-  into the chaser view, the funnel forming, the close and the low angle, the damage-path view, the track from above, and the
-  inset against the 3-D view (the cone of the inset points where the camera looks, the strong echo is behind the tornado in the
-  chaser view, on the same side in the inset).
+* **Film v5 and clip v3** (the overlay laid out by rules; the sound and the plan files are those of v4 / v3): film 3600 decoded frames,
+  120.00 s, AAC 120.00 s (sample peak -1.6 dBFS), darkest frame 54.3 of 255, no black frame, the largest frame-to-frame change
+  42.7 at frame 1339 (a bright flash, as in v4); clip 2580 frames, 86.00 s, AAC 86.00 s, darkest frame 54.3, the largest change
+  40.4 at frame 1276. `timeline.json`, `camera_path.json` and `events.json` are byte-identical to those of v4 / v3 (SHA-256 of the
+  film's: 06068f4b..., 5a7f7d27..., 1d89fe34...; of the clip's: fda0e0ea..., 430a24a2..., facdbadf...). **Layout check on every
+  frame** (`--layout-dump`): 3600 of 3600 film frames and 2580 of 2580 clip frames without a violation (no two visible items overlap,
+  none outside the frame); labels visible per frame: film mean 5.1, at most 11 (the fading ones counted), clip mean 2.1, at most
+  9. Stability of the labels over the whole film: 85 reversals of a label's opacity within 20 frames (almost all of a few
+  hundredths, from the layers' own fades) and 15 labels shown for less than half a second (mostly faint ones at 0.2 to 0.4
+  opacity); the largest abrupt change in a label that was already on screen: the "ends 01:20:00" label dips for two frames at 90.4 s
+  when it hops to another of its places while the right-hand cards fade in at about 0.2 opacity (the threshold at which a card counts
+  as an obstacle); a hysteresis on that threshold would remove it. Stills read by eye at 01:07:15 (the original problem frame: the faded mesonet card and
+  the stack of labels are gone, the "EF2 starts" label stands above the timeline with a leader line, the flash counter is under
+  the rotation series), 01:08:34, 01:09:08 and across the film.
 * **Film v4 and clip v2** (the lightning as lines, the sound `perils_audio_v5`): film 3600 decoded frames, 120.00 s, AAC 120.00 s,
   darkest frame 49.5 of 255, no black frame; clip 2580 frames, 86.00 s, AAC 86.00 s, darkest frame 52.1; the largest
   frame-to-frame changes (42.7 in the film at 44.6 s, 40.4 in the clip at 42.5 s) are a bright flash that lights the whole
@@ -358,6 +369,8 @@ schematic ground; `convert_bundle.py` / `convert_extras.py` turn the bundle into
 
 ## Tests
 
+`src/lib/perils/perilsLayout.test.mjs` (Node unit tests): the layout rules (overlap, frame, yield, cross-fades, labels: place, cap, key labels, slide with leader, fades, no flicker, random scenes) and the real card rectangles of the HUD at three frame sizes; it fails when two drawn items overlap or an item leaves the frame.
+
 `python/tests/test_perils_movie.py`: conversion, the echo motion (phase correlation, long baselines, a fixed strong
 feature ignored, fallbacks), the timeline (monotone, covers the window, slows down, inverse), the camera (no jumps,
 no jerks, bounded heading and pitch, the ground-level shot stands at a station and looks at the approaching line),
@@ -385,6 +398,14 @@ grade, captions, the parcel path, the surface analysis and ground layers, the in
 distance of the camera.
 
 ## Honest limits
+
+* **Overlay layout** (v5): the rules keep every *registered* item apart; the pictures drawn into the scene itself (the funnel, the
+  rain, the lightning, the 3-D track line, the white playhead dot of the timeline at the end of its bar, which can cover the
+  "01:20:00" end time) and the Skew-T (a page element, registered by its measured size) are not labels and are not moved.
+  A label that finds no free place is dropped, so a crowded frame shows fewer names than there are instruments (at most 8; the
+  tornado's start and end and the event marker are always shown); a new label appears about a quarter of a second after its place is
+  free. The scene's own labels fade with their layer, so several are faint in the cross-fades. The unit tests and the frame check
+  test the rules on the boxes of the text (a measured width, 1.2 em high), not on the pixels.
 
 * **Lightning** (v4): the line of a flash is the real sources' skeleton drawn smooth with modelled fine jaggedness: a real channel
   has branches the LMA does not locate (the sources are VHF pulses, mostly from the negative leaders in the cloud, and the
