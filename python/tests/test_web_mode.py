@@ -1579,12 +1579,16 @@ class TestExportsAndDownloads:
     async def test_download_wrong_filename_or_token(self, client: WebClient, nc_file: Path) -> None:
         name, url = await self._download(client, nc_file)
         _, _, token, _ = url.split("/")
+        # A token that differs in its last character. (A fixed "x" was the real token one time in
+        # 64, so the request below was a valid download and the test failed at random.)
+        altered = token[:-1] + ("a" if token[-1] != "a" else "b")
+        assert altered != token
         for bad in (
             f"/download/{token}/other.csv",
             f"/download/{token}/",
             f"/download/{token}",
             f"/download/{token}/{name}/extra",
-            f"/download/{token[:-1]}x/{name}",
+            f"/download/{altered}/{name}",
             f"/download/nope/{name}",
             f"/download/{token}/..%2F..%2Fetc%2Fpasswd",
             f"/download/{token}/../../../etc/passwd",
