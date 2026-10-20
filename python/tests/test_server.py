@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1832,3 +1833,52 @@ class TestNexradLatestInfo:
         handler, _ = _make_handler()
         await handler.handle_message(json.dumps({"type": "get_nexrad_latest_info"}))
         assert handler._sent[-1]["type"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# get_metadata_tree reads statistics without making the open file stay in memory
+# ---------------------------------------------------------------------------
+
+
+def _lazy_reader(tmp_path: Path) -> tuple[RadarReader, str]:
+    path = tmp_path / "vol.nc"
+    make_synthetic_datatree(n_azimuth=24, n_range=40, elevations=[0.5, 1.5]).to_netcdf(path)
+    reader = RadarReader()
+    reader.open_file(str(path))
+    return reader, server._register_reader(reader)
+
+
+def _in_memory(reader: RadarReader) -> list[str]:
+    out = []
+    for node in reader.datatree.descendants:
+        for name, var in node.to_dataset().variables.items():
+            if var._in_memory:
+                out.append(f"{node.name}/{name}")
+    return out
+
+
+def _find(nodes: list[dict], *path: str) -> dict:
+    for node in nodes:
+        if node["name"] == path[0]:
+            return node if len(path) == 1 else _find(node["children"], *path[1:])
+    raise KeyError(path)
+
+
+@pytest.mark.asyncio
+async def test_metadata_tree_does_not_load_the_file_into_memory(tmp_path: Path) -> None:
+    reader, file_id = _lazy_reader(tmp_path)
+    sweep0 = reader.datatree["sweep_0"].to_dataset()
+    assert not sweep0["DBZH"].variable._in_memory  # the file is read lazily
+    before = set(_in_memory(reader))
+
+    handler, _ = _make_handler()
+    await handler.handle_message(json.dumps({"type": "get_metadata_tree", "file_id": file_id}))
+
+    result = next(m for m in handler._sent if m["type"] == "metadata_tree_result")
+    assert set(_in_memory(reader)) == before  # the request left the tree as it found it
+    # ... and the statistics are the real ones
+    dbz = _find(result["tree"], "sweep_0", "DBZH")
+    expected = np.asarray(reader.datatree["sweep_0"].to_dataset()["DBZH"].values)
+    assert dbz["min"] == round(float(expected.min()), 4)
+    assert dbz["max"] == round(float(expected.max()), 4)
+    assert dbz["mean"] == round(float(expected.mean()), 4)

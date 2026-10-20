@@ -702,20 +702,9 @@ def mp4_metadata(res: AnimateResult, video: Path) -> dict[str, str]:
 
 
 def _xrd_version() -> str:
-    try:
-        from importlib.metadata import PackageNotFoundError, version
+    from engine import provenance
 
-        for name in (
-            "radarx-desktop-engine",
-            "xradar-desktop-engine",
-        ):  # the old name: older installs
-            try:
-                return version(name)
-            except PackageNotFoundError:
-                continue
-        return "unknown"
-    except Exception:
-        return "unknown"
+    return provenance.software_version()
 
 
 def _module_version(name: str) -> str | None:
