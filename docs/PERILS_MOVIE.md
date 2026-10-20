@@ -25,7 +25,10 @@ Two versions, in `~/Downloads/xradar-exports/perils_movie/` (not in the reposito
 Both show 960 s of data (01:04:00 to 01:20:00 UTC) in 120 s: a mean speed-up of x8, between x1.0 (the whole tornado
 shot) and x10.1. The files that drive the film (`timeline.json`, `camera_path.json`, `events.json`) are in the same folder
 and, for reference, in `tools/perils_movie/reference/` with the measurements of the rotation.
-Checks made on the encoded v2 film: 3600 decoded frames and 120.00 s, an audio stream (peak 0.39, rms 0.024), no black
+Checks made on the encoded v2 film: 3600 decoded frames and 120.00 s, an audio stream (the audio agent's `perils_audio_v3.wav`
+made for these plan files: peak -3.0 dBFS, rms -25.2 dBFS; the thunder layer peaks at -3.6 dBFS with 59 thunder events, 3 to 22 dB
+over the rain, wind and convective bed from 20 s on, none before 20 s because no flash can be heard that early from the
+camera's position: the first 20 s have only the quiet bed, -55 dBFS rms), no black
 frames, stills every 10 s and every second of the tornado shot read by eye (storm in frame, labels readable at 1080p, the
 dissolves into and out of the simulation without a jump in exposure), the flashes of the screen correlated with the clip
 times of the real LMA sources (v1: a detrended correlation of 0.17 against 0.00 +- 0.04 for the same series shifted by 1.5
