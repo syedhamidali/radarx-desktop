@@ -36,7 +36,13 @@ from perils_movie.audio.bundle import (
 from perils_movie.audio.render import render_mix
 from perils_movie.audio.scene import Scene
 from perils_movie.audio.synthetic import LAT0, LON0, WINDOW_START, offset_ll, synthetic_scenario
-from perils_movie.audio.thunder import ThunderParams, plan_flash, render_flash, select_flashes
+from perils_movie.audio.thunder import (
+    ThunderParams,
+    plan_flash,
+    range_class,
+    render_flash,
+    select_flashes,
+)
 from perils_movie.audio.timeline import CameraPath, Timeline
 from perils_movie.audio.wavio import read_wav, write_wav
 
@@ -139,17 +145,18 @@ def test_audio_is_silent_before_the_arrival_and_loud_after():
 
 
 def test_a_long_flash_starts_at_its_nearest_part_and_rolls_on():
-    tl = Timeline.constant(30.0, 5.0)
+    tl = Timeline.constant(300.0, 5.0)
     la0, lo0 = offset_ll(LAT0, LON0, 0.0, 3000.0)
     la1, _lo1 = offset_ll(LAT0, LON0, 0.0, 13000.0)
     t = np.linspace(50.0, 51.0, 20)
     lat = np.linspace(la0, la1, 20)
     src = np.column_stack([t, lat, np.full(20, lo0), np.zeros(20), np.zeros(20)])
     f = Flash("long", 50.0, 51.0, (lat.mean(), lo0, 0.0), src, 20)
-    row = plan_flash(f, tl, cam(0.0, 30.0), 30.0, ThunderParams())
+    row = plan_flash(f, tl, cam(0.0, 300.0), 300.0, ThunderParams())
     assert row["dist_farthest_m"] > row["dist_nearest_m"] + 9000
-    spread = row["last_arrival_clip_s"] - row["first_arrival_clip_s"]
-    assert spread == pytest.approx(10000.0 / SPEED_OF_SOUND_MS / 5.0, rel=0.15)
+    spread = row["_arr"].max() - row["_arr"].min()
+    # the rolling keeps its REAL duration (not divided by the speed-up): about (r_max - r_min) / c
+    assert spread == pytest.approx(10000.0 / SPEED_OF_SOUND_MS, rel=0.1)
 
 
 def test_farther_flash_is_later_quieter_and_lower_passed():
@@ -1281,3 +1288,260 @@ def test_every_voiced_thunder_is_a_real_flash_with_a_complete_report_row(storm):
         (e["final_peak_dbfs"] for e in loud), reverse=True
     )
     assert "audibility" in rep["thunder"]["level_model"]
+
+
+# ------------------------------- thunder acoustics: per-source N-waves, real-time arrivals
+
+
+def line_flash(r0, extent, t=50.0, n=60, fid="line", alt=3000.0, bearing_east=False, power=5.0):
+    """A channel of n sources from r0 to r0 + extent metres away (north or east) within 0.3 s."""
+    d = np.linspace(r0, r0 + extent, n)
+    e, nn = (d, np.zeros(n)) if bearing_east else (np.zeros(n), d)
+    la, lo = offset_ll(LAT0, LON0, e, nn)
+    la = np.broadcast_to(la, (n,)) if np.ndim(la) == 0 else la
+    lo = np.broadcast_to(lo, (n,)) if np.ndim(lo) == 0 else lo
+    src = np.column_stack(
+        [t + np.linspace(0.0, 0.3, n), la, lo, np.full(n, alt), np.full(n, power)]
+    )
+    return Flash(fid, t, t + 0.3, (float(la.mean()), float(lo.mean()), alt), src, n)
+
+
+def _render(flash, speedup=1.0, prm=None, seed=1, dur=200.0, heading=0.0):
+    prm = prm or ThunderParams()
+    tl = Timeline.constant(dur, speedup)
+    row = plan_flash(flash, tl, cam(heading, dur), dur, prm)
+    start, x = render_flash(row, SR, seed, cam(heading, dur), prm, (15.0, 1000.0), 0.0)
+    return row, start, x
+
+
+def test_first_arrival_is_the_nearest_source_distance_over_343_within_1_ms():
+    for speedup in (1.0, 5.0):
+        f = flash_at(0.0, 1500.0, alt=0.0, t=20.0 * speedup, fid="one", n=1)
+        row, start, x = _render(f, speedup=speedup, dur=100.0)
+        expect = 20.0 + row["dist_nearest_m"] / SPEED_OF_SOUND_MS / speedup
+        assert row["first_arrival_clip_s"] == pytest.approx(expect, abs=1e-9)
+        m = np.abs(x.mean(axis=0))
+        first = int(np.argmax(m > 0.02 * m.max()))
+        assert (start + first) / SR == pytest.approx(
+            expect, abs=1e-3
+        )  # the audio starts when it should
+
+
+def test_the_onset_is_time_lapsed_but_the_arrivals_after_it_keep_real_time():
+    # a 6 km long channel: the sound of its far end follows its near end by (r_max - r_min) / 343 s
+    # whatever the speed-up of the clip; only the onset delay is divided by it
+    spans, onsets = [], []
+    for speedup in (1.0, 8.0):
+        f = line_flash(4000.0, 6000.0, t=20.0 * speedup, fid="roll")
+        row = plan_flash(
+            f, Timeline.constant(300.0, speedup), cam(0.0, 300.0), 300.0, ThunderParams()
+        )
+        spans.append(row["_arr"].max() - row["_arr"].min())
+        extent = row["dist_farthest_m"] - row["dist_nearest_m"]
+        onsets.append(row["first_arrival_clip_s"] - row["t_flash_clip_s"])
+    assert spans[0] == pytest.approx(spans[1], rel=1e-6)
+    assert spans[0] == pytest.approx(extent / SPEED_OF_SOUND_MS, abs=0.5)  # (r_max - r_min) / c
+    assert onsets[0] == pytest.approx(
+        8.0 * onsets[1], rel=0.02
+    )  # the onset delay is divided by the speed-up
+
+
+def test_duration_grows_with_the_channel_extent_and_the_distance():
+    prm = ThunderParams(max_thunder_s=60.0)
+    dur = {}
+    for ext in (1000.0, 3000.0, 9000.0):
+        row, _, _ = _render(line_flash(3000.0, ext, fid=f"e{ext}", n=120), prm=prm)
+        dur[ext] = row["rendered_duration_30db_s"]
+        assert dur[ext] >= 0.6 * ext / SPEED_OF_SOUND_MS  # at least most of (r_max - r_min) / c
+        assert dur[ext] <= ext / SPEED_OF_SOUND_MS + 12.0  # plus a tail
+    assert dur[1000.0] < dur[3000.0] < dur[9000.0]
+    near, _, _ = _render(line_flash(3000.0, 2000.0, fid="n", n=80), prm=prm)
+    far, _, _ = _render(line_flash(40000.0, 2000.0, fid="f", n=80), prm=prm)
+    assert (
+        far["rendered_duration_30db_s"] >= near["rendered_duration_30db_s"] - 0.5
+    )  # longer tail far away
+
+
+def test_spectral_centroid_falls_with_the_distance_and_a_close_channel_cracks():
+    cents = []
+    for r in (800.0, 3000.0, 12000.0, 40000.0):
+        row, _, x = _render(flash_at(0.0, r, alt=0.0, t=10.0, fid=f"c{r}", n=1), dur=300.0)
+        cents.append(row["spectral_centroid_hz"])
+    assert all(b < a for a, b in itertools.pairwise(cents)), cents
+    assert cents[0] > 150.0  # a close channel has its energy above the rumble: the crack
+    row, _, x = _render(flash_at(0.0, 800.0, alt=0.0, t=10.0, fid="close", n=1), dur=300.0)
+    sp = np.abs(np.fft.rfft(x.mean(axis=0))) ** 2
+    fr = np.fft.rfftfreq(x.shape[1], 1 / SR)
+    assert sp[(fr > 500) & (fr < 5000)].sum() > 0.05 * sp[fr > 20].sum()  # energy at 0.5 to 5 kHz
+    _far, _, xf = _render(flash_at(0.0, 40000.0, alt=0.0, t=10.0, fid="farone", n=1), dur=400.0)
+    spf = np.abs(np.fft.rfft(xf.mean(axis=0))) ** 2
+    frf = np.fft.rfftfreq(xf.shape[1], 1 / SR)
+    assert (
+        frf[(frf > 20) & (frf < 1000)][np.argmax(spf[(frf > 20) & (frf < 1000)])] < 150.0
+    )  # a rumble
+
+
+def test_air_absorption_filter_is_iso_9613_at_1_km_and_20_km():
+    from perils_movie.audio.nwave import absorbed, absorption_magnitude
+
+    f = np.array([100.0, 500.0, 1000.0, 2000.0])
+    a = air_absorption_db_per_m(f, 15.0, 80.0, 1000.0)
+    for r in (1000.0, 20000.0):
+        h = absorbed(np.array([1.0]), SR, r, 15.0, 1000.0, 80.0, nfft=32768)
+        spec = np.abs(np.fft.rfft(h, 32768))
+        fr = np.fft.rfftfreq(32768, 1 / SR)
+        for fi, ai in zip(f, a, strict=True):
+            target_db = -ai * r
+            if target_db < -50:
+                continue
+            got = 20 * np.log10(spec[np.argmin(np.abs(fr - fi))] + 1e-12)
+            assert got == pytest.approx(target_db, abs=1.0), (r, fi)
+        # minimum phase: causal and compact (no ringing before the arrival)
+        n_head = round((0.005 if r < 5000 else 0.03) * SR)
+        assert (h[:n_head] ** 2).sum() > 0.9 * (h**2).sum()
+    m1 = absorption_magnitude(np.array([1000.0]), 1000.0, 15.0, 1000.0, 80.0)[0]
+    m20 = absorption_magnitude(np.array([1000.0]), 20000.0, 15.0, 1000.0, 80.0)[0]
+    assert 20 * np.log10(m20 / m1) == pytest.approx(
+        -19000.0 * a[2], rel=1e-6
+    )  # 19 km more of 1 kHz absorption
+
+
+def test_n_wave_is_sharper_and_shorter_close_and_has_no_net_impulse():
+    from perils_movie.audio.nwave import n_wave, n_wave_params
+
+    r1, d1 = n_wave_params(300.0)
+    r2, d2 = n_wave_params(20000.0)
+    assert r1 < r2
+    assert (
+        d1 < d2
+    )  # nonlinear steepening: the front is sharpest and the wave shortest close to the channel
+    w = n_wave(SR, 5000.0)
+    assert w.max() > 0.9
+    assert w.min() < -0.9
+    assert abs(w.sum()) < 0.05 * np.abs(w).sum()  # compression and rarefaction balance
+
+
+def test_thunder_synthesis_is_deterministic_and_seed_dependent_and_never_clips():
+    f = line_flash(2500.0, 3000.0, fid="det", n=80)
+    _, s1, x1 = _render(f, seed=3)
+    _, s2, x2 = _render(f, seed=3)
+    _, _, x3 = _render(f, seed=4)
+    assert s1 == s2
+    assert np.array_equal(x1, x2)
+    assert not np.array_equal(x1, x3)
+    assert np.isfinite(x1).all()
+    assert np.abs(x1).max() < 1.0  # before the master (peak_amp is small)
+
+
+def test_binaural_per_arrival_a_flash_on_the_left_and_overhead():
+    # heading east: a source to the north is on the left; to the south on the right
+    la, lo = offset_ll(LAT0, LON0, 0.0, 5000.0)
+    north = Flash(
+        "north",
+        50.0,
+        50.3,
+        (la, lo, 3000.0),
+        np.array([[50.0 + 0.01 * k, la, lo, 3000.0, 5.0] for k in range(30)]),
+        30,
+    )
+    _, _, xn = _render(north, heading=90.0)
+    assert rms(xn[0]) > 1.3 * rms(
+        xn[1]
+    )  # to the left of an eastward heading: louder left, earlier left
+    south_la, south_lo = offset_ll(LAT0, LON0, 0.0, -5000.0)
+    south = Flash(
+        "south",
+        50.0,
+        50.3,
+        (south_la, south_lo, 3000.0),
+        np.array([[50.0 + 0.01 * k, south_la, south_lo, 3000.0, 5.0] for k in range(30)]),
+        30,
+    )
+    _, _, xs = _render(south, heading=90.0)
+    assert rms(xs[1]) > 1.3 * rms(xs[0])
+    # a source straight overhead has no left-right cue; the same offset on the ground has
+    ov_la, ov_lo = offset_ll(LAT0, LON0, 500.0, 0.0)
+    over = Flash(
+        "over",
+        50.0,
+        50.3,
+        (ov_la, ov_lo, 8000.0),
+        np.array([[50.0 + 0.01 * k, ov_la, ov_lo, 8000.0, 5.0] for k in range(30)]),
+        30,
+    )
+    gnd = Flash(
+        "gnd",
+        50.0,
+        50.3,
+        (ov_la, ov_lo, 100.0),
+        np.array([[50.0 + 0.01 * k, ov_la, ov_lo, 100.0, 5.0] for k in range(30)]),
+        30,
+    )
+    _, _, xo = _render(over)
+    _, _, xg = _render(gnd)
+    imb_over = abs(np.log(rms(xo[1]) / rms(xo[0])))
+    imb_gnd = abs(np.log(rms(xg[1]) / rms(xg[0])))
+    assert imb_over < imb_gnd
+
+
+def test_tortuosity_is_modelled_only_near_and_is_labelled_and_seeded():
+    near = line_flash(2000.0, 600.0, fid="tn", n=6)
+    row, _, _ = _render(near)
+    assert row["n_tortuosity_points"] > 50
+    assert "sub-resolution tortuosity modelled" in row["tortuosity"]
+    again, _, _ = _render(near)
+    assert again["n_tortuosity_points"] == row["n_tortuosity_points"]
+    far = line_flash(30000.0, 600.0, fid="tf", n=6)
+    row_f, _, _ = _render(far)
+    assert row_f["n_tortuosity_points"] == 0  # beyond 8 km the highs are gone: not modelled
+    off, _, _ = _render(near, prm=ThunderParams(tortuosity=False))
+    assert off["n_tortuosity_points"] == 0
+
+
+def test_gaps_between_arrivals_are_bridged_along_the_channel_and_reported():
+    la1, lo1 = offset_ll(LAT0, LON0, 0.0, 3000.0)
+    la2, lo2 = offset_ll(
+        LAT0, LON0, 0.0, 6500.0
+    )  # 10 s of sound time farther: a gap in the arrivals
+    src = np.array(
+        [[50.0 + 0.01 * k, la1, lo1, 3000.0, 5.0] for k in range(20)]
+        + [[50.3 + 0.01 * k, la2, lo2, 3000.0, 5.0] for k in range(20)]
+    )
+    f = Flash("gap", 50.0, 50.6, (la1, lo1, 3000.0), src, 40)
+    on, _s0, x_on = _render(f, prm=ThunderParams(max_thunder_s=30.0))
+    off, _, x_off = _render(f, prm=ThunderParams(max_thunder_s=30.0, bridge_gaps=False))
+    assert on["n_bridge_elements"] > 50
+    assert off["n_bridge_elements"] == 0
+    mid = slice(int(4.0 * SR), int(8.0 * SR))  # the middle of the gap
+    assert rms(x_on[:, mid]) > 10 * rms(x_off[:, mid])
+
+
+def test_selection_mixes_near_mid_and_far_thunder():
+    def row(i, t, dist, score):
+        return {
+            "id": i,
+            "status": "pending",
+            "first_arrival_clip_s": t,
+            "last_arrival_clip_s": t + 3.0,
+            "dist_nearest_m": dist,
+            "score_db": score,
+            "peak_amp": 0.05,
+            "range_class": range_class(dist),
+        }
+
+    rows = [row(f"n{i}", 10.0 + 0.4 * i, 5000.0, -20.0 - 0.01 * i) for i in range(10)]
+    rows += [row(f"m{i}", 10.0 + 0.4 * i, 20000.0, -24.0) for i in range(10)]
+    rows += [row(f"f{i}", 10.0 + 0.4 * i, 50000.0, -27.0) for i in range(10)]
+    prm = ThunderParams(max_voices=6, window_cap=20, guarantee_window_s=1000.0, variety_db=3.0)
+    select_flashes(rows, prm, 60.0)
+    got = {r["range_class"] for r in rows if r["status"] == "rendered"}
+    assert got == {0, 1, 2}  # cracks, rolls and rumble
+    flat = [dict(r, status="pending") for r in rows]
+    select_flashes(
+        flat,
+        ThunderParams(max_voices=3, window_cap=20, guarantee_window_s=1000.0, variety_db=0.0),
+        60.0,
+    )
+    assert {r["range_class"] for r in flat if r["status"] == "rendered"} == {
+        0
+    }  # without variety only the loudest

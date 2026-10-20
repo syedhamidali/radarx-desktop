@@ -93,7 +93,7 @@ def render_mix(
             if row["status"] != "rendered":
                 continue
             air = scene.air_state(float(np.clip(row["t_flash_clip_s"], 0.0, dur)))
-            start, x = render_flash(row, sr, seed, cam, prm, air)
+            start, x = render_flash(row, sr, seed, cam, prm, air, ground)
             add_at(th, start, x)
     raw["thunder"] = th
     info["thunder"] = {"counts": counts}
@@ -220,9 +220,17 @@ def render_mix(
         "provenance": provenance,
         "priority": PRIORITY,
         "assumptions": [
-            "sound speed 343 m/s, constant; delay in the clip = distance / 343 / speedup",
-            "thunder arrival of each LMA source = t_source + r / 343 (data time), mapped to clip time",
-            "air absorption: ISO 9613-1 with assumed 80 % relative humidity, station T and p when present",
+            "sound speed 343 m/s, constant; the onset delay in the clip = distance / 343 / speedup (through the clock)",
+            "thunder: every LMA source is a channel element radiating an N-wave; it arrives at t_source + r / 343, the "
+            "onset through the time-lapse clock, the later arrivals in REAL sound time (thunder is not time-lapsed)",
+            "thunder: sub-resolution tortuosity (sources closer than 8 km) and the channel between the sources around "
+            "an arrival gap are MODELLED statistically, not measured; labelled in the rows",
+            "thunder: ground reflection (ear 1.7 m), weak turbulence modulation and a decaying scattering tail are modelled",
+            "thunder not modelled: refraction (wind and temperature gradients), terrain or building shadowing, the "
+            "individual return strokes (the LMA shows the channel, not the strokes), the real acoustic source strength, "
+            "Doppler shift of the moving camera",
+            "air absorption: ISO 9613-1 (minimum phase) with assumed 80 % relative humidity, station T and p when "
+            "present, applied for absorption_scale (default 0.5) of the distance: audibility compression",
             "rain Dm assumed from the rain rate where the station has no Dm (see layers.rain.dm_mm)",
             "tornado roar, debris rattle and hail impacts: STYLISED timbre, position/time from the data",
             "listener = camera: positions at the flash time; heading at the sector's arrival time",

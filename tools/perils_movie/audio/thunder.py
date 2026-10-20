@@ -1,40 +1,58 @@
-"""Thunder from every real LMA flash.
+"""Thunder from every real LMA flash, built from thunder acoustics (Few 1970; Holmes et al. 1971; Hill 1977;
+Ribner and Roy 1982; Bass 1980).
 
-Physically grounded: every VHF source is a point emitter; its sound arrives at the listener
-(the camera) at  t_source + r / 343 m/s  in data time, which is then mapped to clip time
-(= flash clip time + r / 343 / speedup for a constant speedup). A long flash therefore starts at
-its nearest part and rolls on as the farther parts arrive. The spectrum loses its top with range
-through the ISO 9613-1 air absorption.
+Thunder is the sum of the sound radiated by every element of the lightning channel. Here every LMA VHF source
+of a flash is one channel element at its real position (lat, lon, alt) and time:
 
-LEVEL IS COMPRESSED FOR AUDIBILITY; THE DELAY IS PHYSICAL. A strict 1/r law (20 dB per decade of range)
-makes a flash 40 km away 20 dB quieter than one at 4 km and puts nearly all of a storm under the rain, so
-the level follows ``L_ref - k log10(r / r_ref)`` with k = 12 dB per decade (``audibility_gain``); the air
-absorption is applied for a compressed distance (``r_abs``) so a far flash is still a low rumble, not a
-silence. Which flash is voiced is chosen by an audibility score (``select_flashes``), never invented:
-every thunder is one real LMA flash with its row in the report.
+* **Arrival**: the sound of source i reaches the listener (the camera's ground track) at
+  ``t_i + r_i / 343 m/s``: the onset is the nearest (earliest) part of the channel, and a long or tilted channel
+  rolls on as the farther parts arrive.
+* **Time-lapse**: the clip is a time-lapse but thunder is not. The ONSET delay is ``r / 343 / speedup`` (the
+  speedup at the flash); the arrivals after the onset keep their real spacing, so a thunder lasts as long as it
+  would in real time (5 to 40 s) and its rolling keeps its character. In a real-time shot (speedup 1) all is
+  exactly physical.
+* **Pulse**: each source radiates an N-wave (``nwave.n_wave``): sharp and short close to the channel, a longer
+  one with a slower front far away, with the ISO 9613-1 air absorption of its own distance applied as a
+  minimum-phase filter (the highs of a far channel are gone, a close channel keeps its 1 to 5 kHz crack).
+* **Low frequencies**: a damped 40 or 80 Hz pulse per source (heated-channel relaxation), the 80 Hz one where the
+  local density of sources is high.
+* **Tortuosity**: the LMA does not resolve the channel below ~100 m. Between consecutive sources closer than 3 km
+  the channel is filled with extra elements at random spacing (1 to 20 m) and random lateral offsets (3 m),
+  seeded: *sub-resolution tortuosity modelled* (statistical, not measured). It gives the crackle of a close channel.
+* **Ground reflection** (listener at the ground): a delayed copy (``2 z_s h / r`` of path difference, coefficient
+  0.5) of every source; **scattering and turbulence**: a weak slow amplitude modulation and a decaying
+  sparse-echo tail whose length grows with the distance.
+* **Binaural**: every arrival is panned by its azimuth relative to the camera heading at that time (equal-power
+  level difference, Woodworth time difference, a cone-of-confusion reduction for elevated sources, a head-shadow
+  low-pass on the far ear); a long flash is wide.
 
-Artistic: the noise carrier, the crack of a close strike, the energy proxy from the number of
-sources and their relative power, the length of the tail. Synthesised, not a recording.
+LEVEL IS COMPRESSED FOR AUDIBILITY; THE DELAY IS PHYSICAL (see ``acoustics.audibility_gain``). Not modelled:
+refraction (wind and temperature gradients), terrain and building shadowing, the individual return strokes (the
+LMA shows the channel, not the strokes), the true source strength (VHF power is not acoustic energy), the Doppler
+shift of a moving camera. Synthesised from the data, not a recording.
 """
 
 from __future__ import annotations
 
+import heapq
 import zlib
 from dataclasses import dataclass
 
 import numpy as np
 from scipy.ndimage import gaussian_filter1d
-from scipy.signal import lfilter
+from scipy.signal import butter, fftconvolve, lfilter, sosfilt
+from scipy.spatial import cKDTree
 
 from .acoustics import (
+    HEAD_RADIUS_M,
     SPEED_OF_SOUND_MS,
-    air_absorption_db_per_m,
     audibility_gain,
-    binaural,
     db,
     distance_gain,
+    lateral_pan,
 )
 from .geo import bearing_deg, enu, rel_azimuth_deg
+from .nwave import absorbed, accumulate, lf_pulse, n_wave, scatter_kernel
 from .timeline import CameraPath, Timeline
 
 
@@ -48,17 +66,47 @@ class ThunderParams:
     r_min_m: float = 1000.0  # no louder than this range (audibility model)
     r0_m: float = 300.0  # minimum range of the physical 1/r law
     floor_db: float = -42.0  # level floor of the physical law (reported when engaged)
-    abs_ref_m: float = 3000.0  # air absorption uses r_abs = abs_ref * (r / abs_ref) ** 0.5
+    # the ISO 9613-1 absorption is applied for this fraction of the real distance: 1 = physical; 0.5 keeps a far
+    # thunder as bright as one half as far (the same compression as the level, so it stays audible on small speakers)
+    absorption_scale: float = 0.5
     max_range_m: float = 150_000.0  # beyond this a flash is not rendered
-    env_rate: int = 1000
-    n_sectors: int = 6
+    max_thunder_s: float = (
+        15.0  # arrivals later than this after the onset are dropped (faded over the last 4 s)
+    )
+    fade_s: float = 4.0
     rh_pct: float = 80.0  # assumed (not in the data)
     tail_s_per_km: float = 0.06
     tail_min_s: float = 0.5
     tail_max_s: float = 7.0
-    crack_range_m: float = 12000.0
+    # synthesis
+    n_dist_bins: int = 12
+    crack_range_m: float = 1500.0  # sources closer than this are boosted (the crack)
+    crack_boost: float = 2.0
+    lf_gain: float = 0.15  # low-frequency pulse amplitude relative to the N-wave
+    intra_flash_exponent: float = (
+        1.0  # amplitude ~ r^-this between the parts of ONE flash (physical 1/r)
+    )
+    lf_low_hz: float = 40.0
+    lf_high_hz: float = 80.0
+    ground_reflection: float = 0.5
+    ear_height_m: float = 1.7
+    tortuosity: bool = True
+    tort_r_max_m: float = (
+        8000.0  # tortuosity only for channel parts closer than this (beyond it the highs are gone)
+    )
+    tort_spacing_m: tuple[float, float] = (1.0, 20.0)
+    tort_sigma_m: float = 3.0
+    tort_gain: float = 0.3
+    tort_max_points: int = 20000
+    bridge_gaps: bool = True  # fill arrival gaps longer than bridge_gap_s along the chord between the sources around them
+    bridge_gap_s: float = 0.4
+    bridge_gain: float = 0.25
+    turbulence_depth_per_km: float = (
+        0.012  # amplitude modulation depth: 0.04 + this x km, at most 0.3
+    )
+    scatter_gain_per_km: float = 0.01  # tail level: 0.2 + this x km (at most 0.5)
     # selection (see select_flashes): a clearly audible thunder in every ``guarantee_window_s`` of clip time
-    # whenever a flash within ``guarantee_range_m`` is heard in it; then the best scores, at most
+    # whenever a flash within ``guarantee_range_m`` is heard in it; then the best scores with variety, at most
     # ``max_voices`` at once, ``window_cap`` starts per +-``window_s``, masking only below ``mask_db``
     guarantee_window_s: float = 8.0
     guarantee_range_m: float = 80_000.0
@@ -68,18 +116,34 @@ class ThunderParams:
     mask_db: float = 20.0
     mask_s: float = 3.0
     tornado_bonus_db: float = 4.0  # score bonus for a flash within 10 km of the tornado
-    n_bonus_db_per_decade: float = 3.0  # score bonus for the number of sources (relative to 50)
+    n_bonus_db_per_decade: float = (
+        6.0  # score bonus for the number of sources (the big flashes), vs 50
+    )
+    variety_db: float = 3.0  # score penalty per voiced flash of the same range class within +-6 s
+    variety_s: float = 6.0
 
 
 def flash_seed(seed: int, fid: str) -> int:
     return (seed * 1_000_003 + zlib.crc32(str(fid).encode())) & 0x7FFFFFFF
 
 
+def range_class(dist_m: float) -> int:
+    """0 near (< 10 km, cracks and close rolls), 1 mid (10 to 30 km), 2 far (rumble)."""
+    return 0 if dist_m < 10_000.0 else (1 if dist_m < 30_000.0 else 2)
+
+
 def plan_flash(
     flash, timeline: Timeline, camera: CameraPath, duration: float, prm: ThunderParams
 ) -> dict:
-    """Timing, distances and level of one flash for the camera as listener. No audio."""
-    src = flash.sources
+    """Timing, distances and level of one flash for the camera as listener. No audio.
+
+    The onset (first arrival) is the clock's clip time of the first sound (``flash + r / 343`` in data time);
+    later arrivals follow in real time (``arrival_i - first arrival`` seconds)."""
+    src = (
+        flash.sources[np.argsort(flash.sources[:, 0], kind="stable")]
+        if len(flash.sources)
+        else flash.sources
+    )
     row = {
         "id": flash.id,
         "n_sources": int(flash.n_sources or len(src)),
@@ -89,13 +153,19 @@ def plan_flash(
         row["status"] = "no_sources"
         return row
     t_i = src[:, 0]
-    tf = float(timeline.data_to_clip(flash.t_start_s))
+    t0 = float(t_i[0])
+    tf = float(timeline.data_to_clip(t0))
     cam = camera.at(np.clip(tf, 0.0, duration))
     e, n, u = enu(cam["lat"], cam["lon"], cam["alt_m"], src[:, 1], src[:, 2], src[:, 3])
     r = np.sqrt(e * e + n * n + u * u)
     k = int(np.argmin(r))
-    arr = timeline.data_to_clip(t_i + r / SPEED_OF_SOUND_MS)
-    emit = timeline.data_to_clip(t_i)
+    arr_real = t_i + r / SPEED_OF_SOUND_MS  # data time = real time of the sound
+    a0 = float(arr_real.min())
+    sp_f = float(timeline.speedup_at(np.clip(tf, 0.0, duration)))
+    # the onset follows the clock through the time-lapse (= r / 343 / speedup for a constant speedup, and exact in a
+    # real-time shot); the arrivals after it keep their real spacing
+    onset = float(timeline.data_to_clip(a0))
+    arr = onset + (arr_real - a0)
     p = src[:, 4]
     pm = np.nanmedian(p) if np.isfinite(p).any() else 0.0
     w = np.clip(10 ** ((np.nan_to_num(p, nan=pm) - pm) / 40.0), 0.4, 2.5)
@@ -103,6 +173,19 @@ def plan_flash(
         A, floored = distance_gain(r, prm.a1 / 5.0, prm.r0_m, prm.floor_db)
     else:
         A, floored = audibility_gain(r, prm.a1, prm.r_ref_m, prm.k_db_per_decade, prm.r_min_m)
+    # local density of sources (within 1.5 km): a denser channel part radiates more
+    if len(r) > 2:
+        cnt = np.array(
+            [
+                len(x)
+                for x in cKDTree(np.column_stack([e, n, u])).query_ball_point(
+                    np.column_stack([e, n, u]), 1500.0
+                )
+            ]
+        ).astype(float)
+        rho = (cnt + 1.0) / (np.median(cnt) + 1.0)
+    else:
+        rho = np.ones(len(r))
     q = (w * A) ** 2
     nf = float(np.clip((row["n_sources"] / 50.0) ** 0.25, 0.6, 1.6))
     a_flash = float(np.sqrt(q.sum() / (w**2).sum()) * nf)
@@ -123,13 +206,19 @@ def plan_flash(
         dist_nearest_m=float(r[k]),
         dist_farthest_m=float(r.max()),
         dist_centroid_m=r_cen,
+        range_class=range_class(float(r[k])),
         bearing_nearest_deg=float(bearing_deg(e[k], n[k])),
         az_rel_nearest_deg=float(rel_azimuth_deg(bearing_deg(e[k], n[k]), cam["heading_deg"])),
-        first_arrival_clip_s=float(arr.min()),
-        last_arrival_clip_s=float(arr.max()),
-        delay_nearest_clip_s=float(arr[k] - emit[k]),
+        first_arrival_clip_s=float(onset),
+        last_arrival_clip_s=float(min(arr.max(), onset + prm.max_thunder_s)),
+        channel_extent_m=float(r.max() - r.min()),
+        flash_duration_s=float(t_i[-1] - t0),
+        delay_nearest_clip_s=float(
+            timeline.data_to_clip(t_i[k] + r[k] / SPEED_OF_SOUND_MS) - timeline.data_to_clip(t_i[k])
+        ),
         delay_nearest_real_s=float(r[k] / SPEED_OF_SOUND_MS),
-        speedup_at_flash=float(timeline.speedup_at(np.clip(tf, 0, duration))),
+        onset_delay_clip_s=float(onset - tf),
+        speedup_at_flash=sp_f,
         peak_amp=a_flash,
         peak_dbfs_premaster=float(db(a_flash)),
         score_db=float(db(a_flash))
@@ -140,7 +229,11 @@ def plan_flash(
         t_light_start_data_s=float(flash.t_start_s),
         _r=r,
         _arr=arr,
-        _q=q,
+        _t=t_i,
+        _a0=a0,
+        _onset=float(onset),
+        _A=A,
+        _rho=rho,
         _e=e,
         _n=n,
         _u=u,
@@ -149,17 +242,9 @@ def plan_flash(
     )
     if r[k] > prm.max_range_m:
         row["status"] = "skipped_out_of_range"
-    elif arr.min() >= duration or arr.max() + prm.tail_max_s < 0:
+    elif onset >= duration - 1.0 or arr.max() + prm.tail_max_s < 0:
         row["status"] = "outside_clip"
     return row
-
-
-def _r_abs(prm: ThunderParams, r_m: float) -> float:
-    """Distance used for the air absorption. Audibility model: compressed (square root about abs_ref_m), so a
-    far flash keeps its low and mid rumble; physical model: the real distance."""
-    if prm.level_model == "physical":
-        return float(r_m)
-    return float(prm.abs_ref_m * (max(r_m, 1.0) / prm.abs_ref_m) ** 0.5)
 
 
 def _tail_s(prm: ThunderParams, dist_m: float) -> float:
@@ -173,15 +258,16 @@ def _tail_s(prm: ThunderParams, dist_m: float) -> float:
 def select_flashes(
     rows: list[dict], prm: ThunderParams, duration: float | None = None
 ) -> dict[str, int]:
-    """Choose which real flashes are voiced, by audibility score (``score_db``: level at the listener, number
-    of sources, a bonus near the tornado) instead of blind thinning.
+    """Choose which real flashes are voiced, by audibility score (``score_db``: level at the listener, a bonus for
+    the number of sources, a bonus near the tornado) with variety, instead of blind thinning.
 
     1. Guarantee: in every ``guarantee_window_s`` of clip time (by first arrival) the best-scoring flash within
        ``guarantee_range_m`` is voiced (``selection = "guaranteed"``). A window with none that near but some
        farther (within ``max_range_m``) gets the best of those (``"guaranteed_distant"``, a long low rumble).
-    2. The rest by score, with overlapping rolls allowed up to ``max_voices`` at once, at most ``window_cap``
-       starts within +-``window_s``, and masked only when more than ``mask_db`` below a louder one at the
-       same time.
+    2. The rest by score, best first, with a penalty (``variety_db``) for every voiced flash of the same range
+       class (near, mid, far) within ``variety_s`` so that cracks, rolls and rumble are mixed; overlapping rolls
+       are allowed up to ``max_voices`` at once, at most ``window_cap`` starts within +-``window_s``, and a flash
+       is masked only when more than ``mask_db`` below a louder one at the same time.
 
     Sets row["status"] ("rendered" or "skipped_density" / "skipped_masked" / "skipped_voices") and
     row["selection"], and returns the count per status."""
@@ -217,6 +303,16 @@ def select_flashes(
         r["selection"] = how
         kept.append(r)
 
+    def adjusted(r):
+        a = r["first_arrival_clip_s"]
+        same = sum(
+            1
+            for k in kept
+            if k["range_class"] == r["range_class"]
+            and abs(k["first_arrival_clip_s"] - a) <= prm.variety_s
+        )
+        return r["score_db"] - prm.variety_db * same
+
     # 1. the guarantee, window by window
     n_win = int(np.ceil(duration / prm.guarantee_window_s))
     for w in range(n_win):
@@ -226,8 +322,15 @@ def select_flashes(
         pool, how = (near, "guaranteed") if near else (inwin, "guaranteed_distant")
         if pool:
             accept(max(pool, key=lambda r: r["score_db"]), how)
-    # 2. the rest by score
-    for r in sorted((r for r in cand if r["status"] == "pending"), key=lambda r: -r["score_db"]):
+    # 2. the rest by (variety-adjusted) score: a lazy priority queue, the penalty only ever lowers a score
+    heap = [(-r["score_db"], i, r) for i, r in enumerate(cand) if r["status"] == "pending"]
+    heapq.heapify(heap)
+    while heap:
+        neg, i, r = heapq.heappop(heap)
+        adj = adjusted(r)
+        if heap and adj < -heap[0][0] - 1e-9 and adj < -neg - 1e-9:
+            heapq.heappush(heap, (-adj, i, r))
+            continue
         a = r["first_arrival_clip_s"]
         if (
             len([k for k in kept if abs(k["first_arrival_clip_s"] - a) <= prm.window_s])
@@ -253,95 +356,243 @@ def select_flashes(
     return counts
 
 
-def _rumble_shape(f: np.ndarray) -> np.ndarray:
-    """Source spectrum of the carrier: -6 dB/octave above 200 Hz, nothing below ~25 Hz."""
-    return (1.0 / np.sqrt(1.0 + (f / 200.0) ** 2)) * (f**2 / (f**2 + 25.0**2))
+# --------------------------------------------------------------------------------------------- synthesis
 
 
-def _shaped_noise(
-    rng, n: int, sr: int, r_m: float, temp_c: float, p_hpa: float, rh: float, base: str = "rumble"
-):
-    """Unit-RMS noise with the source shape and the air absorption of ``r_m`` metres."""
-    x = rng.standard_normal(n)
-    X = np.fft.rfft(x)
-    f = np.fft.rfftfreq(n, 1.0 / sr)
-    alpha = air_absorption_db_per_m(np.maximum(f, 1.0), temp_c, rh, p_hpa)
-    H = 10 ** (-alpha * r_m / 20.0)
-    # the crack is flat above 500 Hz
-    H = H * (_rumble_shape(f) if base == "rumble" else f**2 / (f**2 + 500.0**2))
-    y = np.fft.irfft(X * H, n)
-    s = np.sqrt(np.mean(y * y))
-    return y / s if s > 0 else y
+def _tortuosity(rng, e, n, u, t, amp, r, prm: ThunderParams):
+    """Sub-resolution tortuosity, modelled statistically: between consecutive sources (time order) closer than
+    ``tort_r_max_m`` the chord is filled with elements at random spacing (1 to 20 m) with random lateral offsets
+    (sigma ``tort_sigma_m``). Returns positions, emission times and amplitudes of the extra elements."""
+    empty = (np.zeros(0),) * 5
+    if len(e) < 2:
+        return empty
+    de, dn, du = np.diff(e), np.diff(n), np.diff(u)
+    ln = np.sqrt(de * de + dn * dn + du * du)
+    rm = np.minimum(r[:-1], r[1:])
+    ok = np.nonzero((rm < prm.tort_r_max_m) & (ln > 3.0) & (ln < 3000.0))[0]
+    if len(ok) == 0:
+        return empty
+    spacing = rng.uniform(prm.tort_spacing_m[0], prm.tort_spacing_m[1], len(ok))
+    m = np.minimum(np.ceil(ln[ok] / spacing).astype(int), 400)
+    order = np.argsort(rm[ok])  # nearest chords first when there are too many points
+    cum = np.cumsum(m[order])
+    keep = order[cum <= prm.tort_max_points]
+    ok, m, spacing = ok[keep], m[keep], spacing[keep]
+    if len(ok) == 0:
+        return empty
+    j = np.repeat(ok, m)
+    f = rng.random(len(j))
+    d = np.column_stack([de[j], dn[j], du[j]])
+    dh = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-9)
+    v1 = rng.standard_normal(d.shape)
+    v1 -= (v1 * dh).sum(axis=1, keepdims=True) * dh
+    v1 /= np.maximum(np.linalg.norm(v1, axis=1, keepdims=True), 1e-9)
+    v2 = np.cross(dh, v1)
+    off = (
+        rng.standard_normal(len(j))[:, None] * v1 + rng.standard_normal(len(j))[:, None] * v2
+    ) * prm.tort_sigma_m
+    p0 = np.column_stack([e[j], n[j], u[j]])
+    pos = p0 + f[:, None] * d + off
+    tm = t[j] + f * (t[j + 1] - t[j])
+    sp = np.repeat(spacing, m)
+    am = 0.5 * (amp[j] + amp[j + 1]) * prm.tort_gain * np.sqrt(sp / 10.0)
+    return pos[:, 0], pos[:, 1], pos[:, 2], tm, am
+
+
+def _bridge(rng, e, n, u, t, r, amp, arr, onset, a0, prm: ThunderParams, c: float):
+    """The VHF sources sample the channel, they do not cover it: where the arrivals of the real sources leave a
+    gap longer than ``bridge_gap_s`` (real time), the straight chord between the two sources that arrive around
+    it is filled with elements (20 ms of arrival per element, positions with a lateral scatter that grows with
+    the chord length, amplitude ``bridge_gain`` of theirs). Modelled continuity, not measured: reported as
+    ``bridged_s``. Returns positions, emission times, amplitudes and arrival times of the elements."""
+    empty = (np.zeros(0),) * 5
+    order = np.argsort(arr, kind="stable")
+    a_s = arr[order]
+    gaps = np.nonzero(np.diff(a_s) > prm.bridge_gap_s)[0]
+    if len(gaps) == 0:
+        return empty
+    out = []
+    for g in gaps:
+        ia, ib = order[g], order[g + 1]
+        gap = a_s[g + 1] - a_s[g]
+        m = int(np.clip(np.ceil(gap / 0.02), 4, 400))
+        f = (np.arange(m) + rng.random(m)) / m
+        pa, pb = np.array([e[ia], n[ia], u[ia]]), np.array([e[ib], n[ib], u[ib]])
+        d = pb - pa
+        ln = float(np.linalg.norm(d))
+        pos = (
+            pa
+            + f[:, None] * d
+            + rng.standard_normal((m, 3)) * (prm.tort_sigma_m * (1.0 + ln / 1000.0))
+        )
+        tt = t[ia] + f * (t[ib] - t[ia])
+        rr = np.linalg.norm(pos, axis=1)
+        aa = onset + (tt + rr / c - a0)
+        inside = (aa > a_s[g]) & (aa < a_s[g + 1])
+        amp_el = np.full(m, 0.5 * (amp[ia] + amp[ib]) * prm.bridge_gain)
+        out.append((pos[inside], tt[inside], amp_el[inside], aa[inside]))
+    if not out:
+        return empty
+    pos = np.concatenate([o[0] for o in out])
+    return (
+        pos[:, 0],
+        pos[:, 1],
+        pos[:, 2],
+        np.concatenate([o[1] for o in out]),
+        np.concatenate([o[2] for o in out]),
+    )
+
+
+def _binaural_gains(e, n, u, heading_deg, sr):
+    """Per arrival: (gain left, gain right, ITD samples left, ITD samples right, lateral position p)."""
+    az = rel_azimuth_deg(bearing_deg(e, n), heading_deg)
+    el = np.degrees(np.arctan2(u, np.hypot(e, n)))
+    p = lateral_pan(az, el)
+    ang = (0.7 * p + 1.0) * np.pi / 4.0
+    th = np.arcsin(np.abs(p))
+    d = np.round(HEAD_RADIUS_M / SPEED_OF_SOUND_MS * (th + np.sin(th)) * sr).astype(int)
+    dl = np.where(p > 0, d, 0)
+    dr = np.where(p < 0, d, 0)
+    return np.cos(ang), np.sin(ang), dl, dr, p
 
 
 def render_flash(
-    row: dict, sr: int, seed: int, camera: CameraPath, prm: ThunderParams, air: tuple[float, float]
+    row: dict,
+    sr: int,
+    seed: int,
+    camera: CameraPath,
+    prm: ThunderParams,
+    air: tuple[float, float],
+    ground_alt_m: float = 0.0,
 ):
-    """Stereo audio of one planned flash: (start_sample, (2, L) array)."""
+    """Stereo audio of one planned flash: (start_sample, (2, L) array). Adds the synthesis statistics to ``row``
+    (pulses, tortuosity points, reflections, duration, spectral centroid)."""
     rng = np.random.default_rng(flash_seed(seed, row["id"]))
-    r, arr, q = row["_r"], row["_arr"], row["_q"]
     temp_c, p_hpa = air
-    tau = _tail_s(prm, row["dist_nearest_m"])
-    t_a = float(arr.min()) - 0.05
-    span = float(arr.max() - arr.min()) + 0.1 + 4.5 * tau
-    rate = prm.env_rate
-    nb = int(np.ceil(span * rate)) + 1
-    L = int(np.ceil(span * sr)) + 1
-    bearing = bearing_deg(row["_e"], row["_n"])
-    sec = np.minimum((bearing / (360.0 / prm.n_sectors)).astype(int), prm.n_sectors - 1)
-    bin_idx = np.clip(np.round((arr - t_a) * rate).astype(int), 0, nb - 1)
-    alpha = np.exp(-1.0 / (rate * tau))
-    S: dict[int, np.ndarray] = {}
-    info: dict[int, tuple[float, float, float]] = {}
-    for s in range(prm.n_sectors):
-        m = sec == s
-        if not m.any():
-            continue
-        qs = q[m]
-        r_eff = float((qs * r[m]).sum() / qs.sum())
-        sig = (0.04 + 0.01 * np.sqrt(r_eff / 1000.0)) * rate
-        h = np.bincount(bin_idx[m], weights=qs, minlength=nb).astype(float)
-        h = gaussian_filter1d(h, sig, mode="constant")
-        h = lfilter([1 - alpha], [1, -alpha], h)  # the ringing tail, on power
-        S[s] = h
-        ux, uy = np.sin(np.radians(bearing[m])), np.cos(np.radians(bearing[m]))
-        mean_b = float(np.degrees(np.arctan2((qs * ux).sum(), (qs * uy).sum())) % 360.0)
-        t_mean = float((qs * arr[m]).sum() / qs.sum())
-        info[s] = (r_eff, mean_b, t_mean)
-    tot = sum(S.values())
-    norm = float(np.sqrt(tot.max())) or 1.0
-    amp = row["peak_amp"]
-    grid_t = t_a + np.arange(nb) / rate
-    t_aud = t_a + np.arange(L) / sr
+    c = SPEED_OF_SOUND_MS
+    onset, a0 = row["_onset"], row["_a0"]
+    r, e, n, u, t = row["_r"], row["_e"], row["_n"], row["_u"], row["_t"]
+    arr, w, rho = row["_arr"], row["_w"], row["_rho"]
+    # inside one flash the parts keep their physical 1/r ratios (natural attack and decay); the compression is
+    # applied to the level of the whole flash (the normalisation below)
+    a_rel = (
+        max(float(r.min()), prm.r_min_m) / np.maximum(r, prm.r_min_m)
+    ) ** prm.intra_flash_exponent
+    amp = a_rel * w * rho**0.25
+    amp = amp * (
+        1.0 + prm.crack_boost * np.clip((prm.crack_range_m - r) / prm.crack_range_m, 0.0, 1.0)
+    )
+    # tortuosity (sub-resolution, modelled): extra elements between consecutive sources
+    te, tn, tu, tt, ta = (
+        _tortuosity(rng, e, n, u, t, amp, r, prm) if prm.tortuosity else (np.zeros(0),) * 5
+    )
+    tr = np.sqrt(te * te + tn * tn + tu * tu)
+    t_arr = onset + (tt + tr / c - a0)
+    # the chord between the real sources that arrive around a gap (modelled continuity of the channel)
+    be, bn, bu, bt, ba = (
+        _bridge(rng, e, n, u, t, r, amp, arr, onset, a0, prm, c)
+        if prm.bridge_gaps
+        else (np.zeros(0),) * 5
+    )
+    br = np.sqrt(be * be + bn * bn + bu * bu)
+    b_arr = onset + (bt + br / c - a0)
+    # ground reflection of the primary sources (listener at the ground)
+    z_s = row["_cam"]["alt_m"] + u - ground_alt_m
+    h = np.hypot(e, n)
+    hl = prm.ear_height_m
+    d_path = (np.sqrt(h**2 + (z_s + hl) ** 2) - np.sqrt(h**2 + (z_s - hl) ** 2)) / c
+    # all pulses: (kind 0 primary, 1 reflection, 2 tortuosity)
+    nx = len(te) + len(be)
+    P_e = np.concatenate([e, e, te, be])
+    P_n = np.concatenate([n, n, tn, bn])
+    P_u = np.concatenate([u, u, tu, bu])
+    P_r = np.concatenate([r, r, tr, br])
+    P_arr = np.concatenate([arr, arr + np.maximum(d_path, 0.0), t_arr, b_arr])
+    P_amp = np.concatenate([amp, amp * prm.ground_reflection, ta, ba])
+    P_lf = np.concatenate(
+        [amp * prm.lf_gain, amp * prm.lf_gain * prm.ground_reflection, np.zeros(nx)]
+    )
+    P_hi = np.concatenate([rho >= 1.0, rho >= 1.0, np.zeros(nx, bool)])
+    # thunder lasts as long as the channel is long, up to max_thunder_s: the last fade_s seconds fade out
+    x = np.clip((P_arr - onset - (prm.max_thunder_s - prm.fade_s)) / prm.fade_s, 0.0, 1.0)
+    taper = np.cos(0.5 * np.pi * x) ** 2
+    P_amp, P_lf = P_amp * taper, P_lf * taper
+    live = taper > 1e-4
+    n_prim_live = int(live[: len(r)].sum())
+    P_e, P_n, P_u, P_r, P_arr, P_amp, P_lf, P_hi = (
+        x[live] for x in (P_e, P_n, P_u, P_r, P_arr, P_amp, P_lf, P_hi)
+    )
+    heading = camera.at(np.clip(P_arr, camera.t[0], camera.t[-1]))["heading_deg"]
+    gl, gr, dl, dr, lat_p = _binaural_gains(P_e, P_n, P_u, heading, sr)
+    t_a = onset - 0.02
+    span = float(P_arr.max() - onset) + 0.1
+    scat_s = float(np.clip(0.5 + 0.05 * float(np.median(r)) / 1000.0, 0.5, 2.5))
+    L = int((span + scat_s + 0.8) * sr) + 1
+    idx = np.round((P_arr - t_a) * sr).astype(int)
+    # distance bins: the kernel of each bin is the N-wave of its distance after the air absorption of it
+    r_lo, r_hi = float(P_r.min()), float(P_r.max())
+    ratio = max(1.3, (r_hi / max(r_lo, 1.0)) ** (1.0 / prm.n_dist_bins))
+    b = np.floor(np.log(np.maximum(P_r, 1.0) / max(r_lo, 1.0)) / np.log(ratio)).astype(int)
     out = np.zeros((2, L))
-    for s, h in S.items():
-        r_eff, mean_b, t_mean = info[s]
-        env = np.interp(t_aud, grid_t, np.sqrt(h) / norm * amp)
-        car = _shaped_noise(rng, L, sr, _r_abs(prm, r_eff), temp_c, p_hpa, prm.rh_pct)
-        mono = car * env
-        head = float(camera.at(np.clip(t_mean, camera.t[0], camera.t[-1]))["heading_deg"])
-        az = float(rel_azimuth_deg(mean_b, head))
-        out += binaural(mono, sr, az)
-        # a little diffuse spread (the rumble is reverberant): two short-delayed copies, one per ear
-        d1, d2 = int(0.007 * sr), int(0.013 * sr)
-        out[0, d1:] += 0.22 * mono[:-d1]
-        out[1, d2:] += 0.22 * mono[:-d2]
-    # the crack of a close strike, from the nearest source
-    if row["dist_nearest_m"] < prm.crack_range_m:
-        k = int(np.argmin(r))
-        nc = int(0.35 * sr)
-        tt = np.arange(nc) / sr
-        env = np.minimum(tt / 0.002, 1.0) * np.exp(-tt / 0.06)
-        r_crack = min(
-            _r_abs(prm, float(r[k])), 2000.0
-        )  # a sharp crack even for a flash several km away
-        c = _shaped_noise(rng, nc, sr, r_crack, temp_c, p_hpa, prm.rh_pct, base="crack") * env
-        c *= 1.2 * amp * (1.0 - row["dist_nearest_m"] / prm.crack_range_m)
-        c = binaural(c, sr, row["az_rel_nearest_deg"])
-        i0 = round((float(arr[k]) - t_a) * sr)
-        j1 = min(L, i0 + nc)
-        if j1 > i0:
-            out[:, i0:j1] += c[:, : j1 - i0]
+    for bi in np.unique(b):
+        m = b == bi
+        rb = float(np.sqrt(P_r[m].min() * P_r[m].max()))
+        r_abs = rb * prm.absorption_scale
+        kern = absorbed(n_wave(sr, rb), sr, r_abs, temp_c, p_hpa, prm.rh_pct)
+        for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
+            accumulate(out[ear], idx[m] + dd[m], P_amp[m] * g[m], kern)
+        for hi, f0 in ((False, prm.lf_low_hz), (True, prm.lf_high_hz)):
+            mm = m & (P_hi == hi) & (P_lf > 0)
+            if not mm.any():
+                continue
+            kl = absorbed(lf_pulse(sr, f0), sr, r_abs, temp_c, p_hpa, prm.rh_pct)
+            for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
+                accumulate(out[ear], idx[mm] + dd[mm], P_lf[mm] * g[mm], kl)
+    # head shadow on the ear that is farther from the energy (a low-pass blend)
+    e_l, e_r = float((P_amp**2 * gl**2).sum()), float((P_amp**2 * gr**2).sum())
+    far = 0 if e_l < e_r else 1
+    shadow = float(
+        np.clip((P_amp**2 * np.abs(lat_p)).sum() / max((P_amp**2).sum(), 1e-12), 0.0, 1.0) ** 1.5
+    )
+    a_lp = np.exp(-2 * np.pi * 1800.0 / sr)
+    out[far] = (1 - shadow) * out[far] + shadow * lfilter([1 - a_lp], [1, -a_lp], out[far])
+    # atmospheric turbulence: a weak slow amplitude modulation (depth grows with the distance)
+    r_km = float(np.median(r)) / 1000.0
+    depth = float(np.clip(0.04 + prm.turbulence_depth_per_km * r_km, 0.04, 0.3))
+    for ear in (0, 1):
+        nz = gaussian_filter1d(rng.standard_normal(L // 240 + 4), 2.0)
+        nz /= max(nz.std(), 1e-9)
+        out[ear] *= np.maximum(
+            1.0 + depth * np.interp(np.arange(L) / sr, np.arange(len(nz)) * 240 / sr, nz), 0.0
+        )
+    # scattering by the ground and the turbulence: the long irregular tail
+    w_s = float(np.clip(0.2 + prm.scatter_gain_per_km * r_km, 0.2, 0.5))
+    for ear in (0, 1):
+        sk = scatter_kernel(sr, rng, scat_s)
+        out[ear] += w_s * fftconvolve(out[ear], sk)[:L]
+    # nothing below 20 Hz: ears and loudspeakers do not reproduce infrasound
+    out = sosfilt(butter(2, 20.0, btype="high", fs=sr, output="sos"), out, axis=1)
+    # level: the loudest 100 ms (mean of the ears) is the audibility level of the flash
+    win = sr // 10
+    env = np.sqrt(np.convolve(out.mean(axis=0) ** 2, np.ones(win) / win, mode="same"))
+    out *= row["peak_amp"] / max(float(env.max()), 1e-12)
+    # statistics for the report
+    m1 = out.mean(axis=0)
+    env2 = np.sqrt(np.convolve(m1 * m1, np.ones(sr // 50) / (sr // 50), mode="same"))
+    above = np.nonzero(env2 > 10 ** (-30 / 20) * env2.max())[0]
+    spec = np.abs(np.fft.rfft(m1)) ** 2
+    fr = np.fft.rfftfreq(len(m1), 1 / sr)
+    row["n_pulses"] = n_prim_live
+    row["n_reflections"] = int(live[len(r) : 2 * len(r)].sum())
+    row["n_tortuosity_points"] = int(live[2 * len(r) : 2 * len(r) + len(te)].sum())
+    row["n_bridge_elements"] = int(live[2 * len(r) + len(te) :].sum())
+    row["tortuosity"] = (
+        "sub-resolution tortuosity modelled (statistical, seeded)"
+        if row["n_tortuosity_points"]
+        else None
+    )
+    row["rendered_duration_30db_s"] = float((above[-1] - above[0]) / sr) if len(above) else 0.0
+    row["spectral_centroid_hz"] = float((spec * fr).sum() / max(spec.sum(), 1e-30))
     return round(t_a * sr), out
 
 
