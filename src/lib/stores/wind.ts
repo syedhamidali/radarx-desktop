@@ -19,6 +19,7 @@ import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { openFiles } from './fileManager';
 import { connectionStatus } from './radarData';
 import { addToast } from './toasts';
+import { registerJobSource } from './jobSources';
 import { maskOf, valueMasks } from './valueMask';
 import { RADAR_COLORS, fileSite, fileTimeMs, formatTimeMs, fitMapToBounds, inTauri } from './mosaic';
 import {
@@ -190,6 +191,7 @@ export const windRun = writable<WindRunState>({
   message: '',
   error: null,
 });
+registerJobSource('wind', derived(windRun, (r) => (r.running ? 1 : 0)));
 
 export const windResult = writable<WindResult | null>(null);
 

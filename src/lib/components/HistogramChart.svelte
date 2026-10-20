@@ -245,8 +245,12 @@
     <div class="hist-loading hist-error" role="alert">{errorText}</div>
   {/if}
 
+  <!-- Pointer-driven chart (range selection); the same counts are in the statistics beside it. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <svg
     bind:this={svgEl}
+    role="img"
+    aria-label="Histogram of {variable}. Drag to select a range, double-click to reset."
     {width}
     height={svgH}
     on:mousedown={onMouseDown}

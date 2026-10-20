@@ -507,6 +507,8 @@
   }
 </script>
 
+<!-- Pointer-driven picture (zoom, pan); a role of "img" keeps its label. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <div class="cs-viewer" bind:this={containerEl}
      on:wheel={onWheel}
      on:mousedown={onMouseDown}

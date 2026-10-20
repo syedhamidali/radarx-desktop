@@ -22,6 +22,7 @@ import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/we
 import { trackEngine } from './engineIdentity';
 import { findRequestForReply, isForOtherFile } from './sweepMatch';
 import { AUTH_DISABLED } from '../auth/config';
+import { tidyServerError } from './errorText';
 
 type MessageHandler = (data: any) => void;
 
@@ -682,7 +683,7 @@ class WebSocketManager {
 
           // Register in the multi-file manager if we got a file_id
           if (fileId && openedPath) {
-            const filename = openedPath.split('/').pop() ?? openedPath;
+            const filename = basename(openedPath);
             const entry: FileEntry = {
               id: fileId,
               path: openedPath,
@@ -855,7 +856,10 @@ class WebSocketManager {
       }
 
       default:
-        console.log('[WS] Unhandled message type:', type, msg);
+        // Most reply types are answered by handlers registered through onMessage (scatter, histogram,
+        // statistics ...): only a type nobody listens for is worth a line, and only its name: the
+        // payload (thousands of points) would be kept alive by an open DevTools console.
+        if (!this.messageHandlers.has(type)) console.log('[WS] Unhandled message type:', type);
     }
 
     // Dispatch to custom handlers
@@ -889,7 +893,7 @@ class WebSocketManager {
   }
 
   private notifyError(message: string): void {
-    addToast('error', message, 8000);
+    addToast('error', tidyServerError(message), 8000);
   }
 
   /**
@@ -1496,6 +1500,10 @@ class WebSocketManager {
     clearAllFiles();
     clearSweepCache();
     this.cancelQueuedSweeps(() => true);
+    // "Loading DBZH sweep 5 failed: Connection lost" rows belong to files that are gone now; their
+    // Retry button could only ask the new engine for a file it never opened.
+    for (const id of this.failedSweepOps.values()) dismissOp(id);
+    this.failedSweepOps.clear();
     processingProgress.set(null);
     addToast(
       'error',

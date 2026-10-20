@@ -1,4 +1,5 @@
 import { writable, derived, get } from 'svelte/store';
+import { basename } from '../utils/env';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -174,7 +175,7 @@ function loadSettings(): AppSettings {
         .filter((f: any) => f && typeof f.path === 'string' && f.path)
         .map((f: any) => ({
           path: f.path,
-          name: typeof f.name === 'string' && f.name ? f.name : f.path.split('/').pop() ?? f.path,
+          name: typeof f.name === 'string' && f.name ? f.name : basename(f.path),
           openedAt: Number.isFinite(f.openedAt) ? f.openedAt : 0,
           ...(Number.isFinite(f.size) ? { size: f.size } : {}),
         }));
