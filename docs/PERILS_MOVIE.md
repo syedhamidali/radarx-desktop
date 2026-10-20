@@ -19,14 +19,38 @@ Four files, in `~/Downloads/xradar-exports/perils_movie/` (not in the repository
 * `perils_qlcs_movie_v3.mp4`: the film with the **tornado focus** (below): the merged reflectivity of **merge v2** (calibrated,
   attenuation-corrected, advected to the step time; `bundle/manifest_v2.json`), six angles on the surveyed tornado in 49 s of
   the 120, the radar echo and velocity inset, the rotation series, the finale with the whole track. 3600 frames, 120.00 s,
-  1920x1080 at 30 fps, H.264 (crf 17) with AAC stereo 48 kHz (the audio agent's `perils_audio_v4`).
-* `perils_tornado_focus.mp4`: the same six angles at more length, 86 s, 1080p, with its own sound; the data 01:06:30 to 01:20:00.
+  1920x1080 at 30 fps, H.264 (crf 17) with AAC stereo 48 kHz (the audio agent's `perils_audio_v4`), 294 MB.
+* `perils_tornado_focus.mp4`: the same six angles at more length, 86 s (2580 frames), 1080p, 260 MB, with its own sound; the data
+  01:06:30 to 01:20:00, the end of the track at 01:20 held for 3 s in real time.
 * `perils_qlcs_movie_v2.mp4` (the film with the single tornado shot, 262 MB; made with the old projection, see
   `verification_geometry.md`) and `perils_qlcs_movie.mp4` (v1, the particle funnel): kept.
 
 The film shows 960 s of data (01:04:00 to 01:20:00 UTC) in 120 s, between x1.0 (the real-time stretches) and x43 (the 3 s
 lapses between them). The files that drive it (`timeline.json`, `camera_path.json`, `events.json`) are in `v3/` and
-`focus_clip/` and, for reference, in `tools/perils_movie/reference/`.
+`focus_clip/` (and at the top of the export folder for the film) and, for reference, in `tools/perils_movie/reference/v3/` and
+`focus_clip/` (the v2 files are the ones directly in `reference/`).
+
+Checks made on the encoded files:
+
+* **Film v3**: 3600 decoded frames, 120.00 s, 1920x1080, H.264 + AAC (48 kHz stereo, 120.0 s); no black frame (the darkest frame
+  has a mean luminance of 49 of 255); the largest frame-to-frame changes are the fast lapses (the simulation fading into the
+  echo scene over about half a second at x43). Stills across the tornado segment read by eye: the wide start, the descent
+  into the chaser view, the funnel forming, the close and the low angle, the damage-path view, the track from above, and the
+  inset against the 3-D view (the cone of the inset points where the camera looks, the strong echo is behind the tornado in the
+  chaser view, on the same side in the inset).
+* **Sound** (`perils_audio_v4`, rendered from the v3 plan files): -23.0 LUFS, true peak -5.0 dBFS; the thunder layer has rms
+  -23.7 dBFS and peak -5.5 dBFS with 54 voiced events (a median of 12 dB over the rain, wind and convective bed, which is
+  -44 dBFS rms): in every 10-s window from 20 s on the loudest second of thunder is -18.9 to -22.5 dBFS against -43.5 to -49.3
+  dBFS for the rain layer. There is an event in every 10-s window but the first; the first sound arrives at 15.9 s because
+  the opening camera is 143 km from the line and no flash is within hearing range before that. The clip: -23.0 LUFS, true peak
+  -3.7 dBFS, 50 voiced events, one in every 10-s window.
+* **Rotation of the simulated funnel measured in the decoded frames** (`measure_funnel.py`, tornado simulation, model wall
+  tangential wind at 40 to 100 m): close angle (450 m): 83 bands, measured / modelled **1.11** (interquartile range 1.03 to
+  1.19, so the funnel wall turns once in 90 % of the modelled period), within 15 %; at 1.0 km (the chaser) the wall's texture
+  is too faint through the rain for the shift to be measured (0.003: not usable), so the measurement is made at the close angle.
+  v2 (the chaser 800 m away, no rain gain): 1.02.
+* The soundtrack and the frames were made from the same plan: the camera, the events and the clock that the sound reads are
+  `v3/*.json`.
 
 ## The labels (provenance)
 
