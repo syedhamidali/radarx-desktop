@@ -52,7 +52,9 @@ def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
     return frames
 
 
-def build_tornado_seed(bundle: Path, clip: Path, work: Path, log=print) -> bool:
+def build_tornado_seed(
+    bundle: Path, clip: Path, work: Path, log=print, manifest_name: str = "manifest.json"
+) -> bool:
     """Write ``tornado_seed.json`` (tools/tornado_sim/make_seed.py) for the data span of the tornado shot.
 
     The seed builder reads ``<movie>/bundle`` and ``<movie>/events.json``; a scratch folder with a link to the bundle and the
@@ -62,6 +64,11 @@ def build_tornado_seed(bundle: Path, clip: Path, work: Path, log=print) -> bool:
 
     ev = json.loads((clip / "events.json").read_text())
     shot = (ev.get("tornado") or {}).get("shot")
+    focus = (json.loads((clip / "timeline.json").read_text()).get("focus") or {}).get(
+        "sim_span_data_s"
+    )
+    if focus:  # the tornado focus: the simulation runs over the span of its close angles
+        shot = {"t0_data_s": focus[0], "t1_data_s": focus[1]}
     maker = Path(__file__).resolve().parents[2] / "tornado_sim" / "make_seed.py"
     if not shot or not maker.exists() or not (bundle / "tornadoes" / "tornadoes.json").exists():
         log(
@@ -84,7 +91,14 @@ def build_tornado_seed(bundle: Path, clip: Path, work: Path, log=print) -> bool:
         str(clip / "tornado_seed.json"),
         "--shot",
         f"{shot['t0_data_s']},{shot['t1_data_s']}",
+        "--echo-series",
+        "--echo-half-km",
+        "9",
+        "--manifest",
+        manifest_name,
     ]
+    if focus:  # a funnel that forms in 15 s, not 25 s: the first angle ends 18 s after the surveyed begin time
+        cmd += ["--ramp-form", "15"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     log(
         (r.stdout or r.stderr).strip().splitlines()[-1]
@@ -101,6 +115,9 @@ def prepare_bundle(
     counties: Path | None = None,
     log=print,
     sim: bool = True,
+    plan: str = "film",
+    keep_plan: bool = False,
+    manifest_name: str = "manifest.json",
 ) -> Path:
     """Convert the bundle (if needed) and write timeline / camera / events next to the converted files."""
     import choreography
@@ -108,10 +125,10 @@ def prepare_bundle(
 
     clip = work / "clip_bundle"
     stamp = clip / "perils.json"
-    man = bundle / "manifest.json"
+    man = bundle / manifest_name
     if not stamp.exists() or stamp.stat().st_mtime < man.stat().st_mtime:
         log(f"converting {bundle} -> {clip}")
-        convert_bundle.convert(bundle, clip, log=log)
+        convert_bundle.convert(bundle, clip, log=log, manifest_name=manifest_name)
     else:
         log(f"conversion up to date: {clip}")
     if not (clip / "ground.png").exists():
@@ -137,9 +154,18 @@ def prepare_bundle(
             stamp.write_text(json.dumps(p))
         except Exception as e:  # the movie still renders: a plain grid ground, said on screen
             log(f"no ground map ({e}); the ground will be a plain grid")
-    choreography.write(stamp, clip, 120.0, 30, log=log)
+    if (
+        keep_plan and (clip / "timeline.json").exists()
+    ):  # experiments: the plan on disk is used as it is
+        log("keeping the plan on disk (--keep-plan)")
+    elif plan == "v2":  # the v2 film (a single tornado shot), kept reproducible
+        choreography.write(stamp, clip, 120.0, 30, log=log)
+    else:  # the tornado focus: "film" (perils_qlcs_movie_v3.mp4) or "clip" (perils_tornado_focus.mp4)
+        import focus_plan
+
+        focus_plan.write_focus(stamp, clip, plan, 30, log=log)
     if sim:
-        build_tornado_seed(bundle, clip, work, log=log)
+        build_tornado_seed(bundle, clip, work, log=log, manifest_name=manifest_name)
     if export_dir:
         export_dir.mkdir(parents=True, exist_ok=True)
         for name in ("timeline.json", "camera_path.json", "events.json"):
@@ -156,7 +182,7 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
     dist = Path(a.app_dist).expanduser().resolve()
     if not (dist / "index.html").exists():
         sys.exit(f"{dist}/index.html not found: run `npm run build` first (or pass --app-dist)")
-    todo = [i for i in frames if frame_path(frames_dir, i) is None]
+    todo = [i for i in frames if a.redraw or frame_path(frames_dir, i) is None]
     log(
         f"{len(frames)} frames wanted, {len(frames) - len(todo)} already on disk, {len(todo)} to draw"
     )
@@ -362,6 +388,27 @@ def main(argv=None) -> None:
     )
     ap.add_argument("--work", required=True, help="scratch folder: converted bundle, frames")
     ap.add_argument("--out", default=None, help="MP4 to write")
+    ap.add_argument(
+        "--redraw",
+        action="store_true",
+        help="draw the wanted frames again even if a file exists (stills while the look is being tuned)",
+    )
+    ap.add_argument(
+        "--manifest",
+        default="manifest.json",
+        help="the bundle's manifest: manifest.json (reflectivity merge v1) or manifest_v2.json (calibrated, attenuation-corrected, with quality)",
+    )
+    ap.add_argument(
+        "--keep-plan",
+        action="store_true",
+        help="do not plan again: use the timeline / camera / events already in the work folder (experiments)",
+    )
+    ap.add_argument(
+        "--plan",
+        default="film",
+        choices=["film", "clip", "v2"],
+        help="film: the 120 s film with the tornado focus (v3); clip: the stand-alone tornado-focus clip; v2: the earlier film",
+    )
     ap.add_argument("--audio", default=None, help="an audio file to mux (any format PyAV reads)")
     ap.add_argument(
         "--export-dir",
@@ -456,6 +503,9 @@ def main(argv=None) -> None:
         export,
         Path(a.counties).expanduser() if a.counties else None,
         sim=not a.no_sim,
+        plan=a.plan,
+        keep_plan=a.keep_plan,
+        manifest_name=a.manifest,
     )
     if a.convert_only:
         return

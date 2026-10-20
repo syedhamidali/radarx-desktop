@@ -126,15 +126,27 @@ def test_geo_is_the_bundles_sphere_aeqd_without_pyproj():
     # a far point, against an independent formula (haversine distance and initial bearing)
     la, lo = 35.2, -86.9
     phi0, phi, dl = math.radians(33.575864857), math.radians(la), math.radians(lo + 88.54851899)
-    c = 2 * math.asin(math.sqrt(math.sin((phi - phi0) / 2) ** 2 + math.cos(phi0) * math.cos(phi) * math.sin(dl / 2) ** 2))
-    brg = math.atan2(math.sin(dl) * math.cos(phi), math.cos(phi0) * math.sin(phi) - math.sin(phi0) * math.cos(phi) * math.cos(dl))
+    c = 2 * math.asin(
+        math.sqrt(
+            math.sin((phi - phi0) / 2) ** 2 + math.cos(phi0) * math.cos(phi) * math.sin(dl / 2) ** 2
+        )
+    )
+    brg = math.atan2(
+        math.sin(dl) * math.cos(phi),
+        math.cos(phi0) * math.sin(phi) - math.sin(phi0) * math.cos(phi) * math.cos(dl),
+    )
     x2, y2 = g.xy(la, lo)
     assert abs(math.hypot(float(x2), float(y2)) - 6370.997 * c) < 1e-6
-    assert abs(float(x2) - 6370.997 * c * math.sin(brg)) < 1e-6 and abs(float(y2) - 6370.997 * c * math.cos(brg)) < 1e-6
+    assert (
+        abs(float(x2) - 6370.997 * c * math.sin(brg)) < 1e-6
+        and abs(float(y2) - 6370.997 * c * math.cos(brg)) < 1e-6
+    )
     # arrays and the inverse
     la_a, lo_a = g.latlon(np.array([0.0, 30.0, -70.0]), np.array([0.0, -45.0, 120.0]))
     x3, y3 = g.xy(la_a, lo_a)
-    assert np.allclose(x3, [0.0, 30.0, -70.0], atol=1e-8) and np.allclose(y3, [0.0, -45.0, 120.0], atol=1e-8)
+    assert np.allclose(x3, [0.0, 30.0, -70.0], atol=1e-8) and np.allclose(
+        y3, [0.0, -45.0, 120.0], atol=1e-8
+    )
 
 
 # ── conversion ──────────────────────────────────────────────────────────────

@@ -36,6 +36,7 @@ from vortex import vortex_params
 
 EYE_M = 2.0  # eye height of the ground-level (window) camera above the ground, m
 EYE_TOR_M = 2.0  # eye height of the standing observer of the tornado shot, m
+DEFAULT_FOV = 45.0  # vertical field of view of the renderer's default lens, degrees
 TOR_SHOT_S = 24.0  # length of the tornado shot, s
 TOR_BLEND_S = 8.0  # the camera glides into the tornado shot over this many seconds (slower than the others: it comes from 60 km)
 TOR_SIDE = -1.0  # the observer is to the right of the direction of travel
@@ -318,6 +319,10 @@ class Shot:
         fn,
         vexag: float,
         overlap: float | None = None,
+        fov: float | object = DEFAULT_FOV,
+        shake: float = 0.0,
+        arc_km: float = 0.0,
+        immersion: float = 0.0,
     ):
         self.name, self.label, self.t0, self.t1, self.fn, self.vexag = (
             name,
@@ -330,12 +335,35 @@ class Shot:
         self.overlap = (
             overlap  # seconds of the crossfade into this shot (None: the default of blend_shots)
         )
+        self.fov = fov  # vertical field of view, degrees: a number, or a function of the clip times
+        self.shake = shake  # weight of the hand-held look (0 none .. 1 full)
+        self.arc_km = (
+            arc_km  # extra height the camera rises to in the middle of the glide into this shot
+        )
+        self.immersion = immersion  # 0..1: how immersive the shot is (labels, grade): for the sound and the tests
+
+    def fov_at(self, t) -> np.ndarray:
+        t = np.asarray(t, float)
+        return np.asarray(
+            self.fov(t) if callable(self.fov) else np.full(len(t), float(self.fov)), float
+        )
 
 
 def plan_shots(
-    scene: Scene, tl: dict, duration: float, tor_c: float | None, station: dict | None
+    scene: Scene,
+    tl: dict,
+    duration: float,
+    tor_c: float | None,
+    station: dict | None,
+    focus: list[Shot] | None = None,
+    layout: dict | None = None,
 ) -> list[Shot]:
-    """The shot list. Times are clip seconds; ``tor_c`` is the clip time of the tornado shot's middle (or None)."""
+    """The shot list. Times are clip seconds; ``tor_c`` is the clip time of the tornado shot's middle (or None).
+
+    With ``focus`` (the five angles of focus.py) they replace the single tornado shot. ``layout`` gives the clip times
+    of the other shots: ``est_end`` (the flyby starts), ``fly_end`` (it ends, the first focus angle begins), ``win_s`` and
+    ``rise_s`` (lengths of the ground-level and the rising shot), ``top`` = (centre km, (height0, height1) km) of the finale
+    when it is to look at the track instead of the line."""
     m, a = scene.m, scene.a
     front = scene.front_km
     L = scene.half_len_km
@@ -354,8 +382,11 @@ def plan_shots(
         P = cen(t) + col(R) * (col(np.cos(th)) * m[None, :] - col(np.sin(th)) * a[None, :])
         return P, _pad(58.0 - 24.0 * u, len(t)), cen(t), _pad(3.0, len(t))
 
-    b0 = 15.0
-    b1 = (tor_c - 12.0) if tor_c is not None else 40.0
+    lay = layout or {}
+    b0 = lay.get("est_end", 15.0)
+    b1 = lay.get("fly_end", (tor_c - 12.0) if tor_c is not None else 40.0)
+    if focus:
+        tor_c = b1  # the flyby ends at the first angle, near the tornado
 
     # the flyby runs along the line from its north end toward where the tornado is, and ends a few km from it
     if tor_c is not None:
@@ -385,7 +416,10 @@ def plan_shots(
         Shot("flyby", "Low flyby along the line", b0, b1, fly, 2.4),
     ]
     t_after = b1
-    if tor_c is not None:
+    if focus:
+        shots.extend(focus)
+        t_after = focus[-1].t1
+    elif tor_c is not None:
         t_a = tor_c - 12.0
         u_t, n_t = scene.tornado_axes()
         td_a = float(data_time_of_clip(tl, t_a))
@@ -422,22 +456,32 @@ def plan_shots(
                 tor,
                 1.0,
                 overlap=TOR_BLEND_S,
+                fov=lambda t, _t_a=t_a: (
+                    FOV_CHASER + (FOV_DEBRIS - FOV_CHASER) * tornado_dolly(t, _t_a)
+                ),
+                shake=1.0,
+                immersion=1.0,
             )
         )
         t_after = tor_c + 12.0
-    t_st1 = min(duration - 30.0, t_after + 27.0)
+    t_st1 = min(duration - 30.0, t_after + lay.get("win_s", 27.0))
     if station is not None:
         sx, sy = station["x"], station["y"]
         look_b = (scene.perp_deg + 180.0) % 360.0  # looking back toward the approaching line
 
+        long_shot = (t_st1 - t_after) >= 20.0
+
         def stat(t):
             u = np.clip((t - t_after) / max(1e-6, t_st1 - t_after), 0, 1)
-            # a slow pan while the line approaches, then (after it has passed) a turn to watch it leave
-            yaw = np.radians(
-                look_b
-                + 14.0 * (1.0 - 2.0 * smoothstep(u / 0.7))
-                + 180.0 * smoothstep((u - 0.7) / 0.3)
-            )
+            # a slow pan while the line approaches; in a long shot, after it has passed, a turn to watch it leave (a short shot only
+            # drifts round by 70 degrees: a turn of 180 degrees in a few seconds is a whip)
+            if long_shot:
+                turn = 14.0 * (1.0 - 2.0 * smoothstep(u / 0.7)) + 180.0 * smoothstep(
+                    (u - 0.7) / 0.3
+                )
+            else:
+                turn = 14.0 * (1.0 - 2.0 * smoothstep(u / 0.7)) + 70.0 * smoothstep((u - 0.3) / 0.7)
+            yaw = np.radians(look_b + turn)
             P = np.stack([np.full(len(t), sx), np.full(len(t), sy)], -1)
             T = P + 30.0 * np.stack([np.sin(yaw), np.cos(yaw)], -1)
             return (
@@ -459,7 +503,9 @@ def plan_shots(
         )
     else:
         t_st1 = t_after
-    e1 = duration - 15.0
+    e1 = duration - lay.get("top_s", 15.0)
+    if "rise_s" in lay and station is not None:
+        e1 = t_st1 + lay["rise_s"]
 
     def rise(t):
         u = smoothstep((t - t_st1) / max(1e-6, e1 - t_st1))
@@ -473,6 +519,15 @@ def plan_shots(
         c = cen(t)
         # looking down with the line's motion toward the top of the frame (a small offset along the
         # motion fixes the heading, and it is the heading the rising shot arrives with: no spin)
+        if lay.get("top"):
+            ctr, (h0, h1) = np.asarray(lay["top"][0], float), lay["top"][1]
+            cc = np.broadcast_to(ctr, c.shape)
+            return (
+                cc,
+                h0 + (h1 - h0) * smoothstep(u),
+                cc + 0.35 * np.array([0.0, 1.0]),
+                _pad(0.0, len(t)),
+            )
         return c, 62.0 + 16.0 * smoothstep(u), c + 7.0 * m, _pad(0.0, len(t))
 
     shots.append(Shot("topdown", "Top-down: the line from above", e1, duration, top, 3.0))
@@ -480,7 +535,8 @@ def plan_shots(
 
 
 def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
-    """P (km, scene), eye altitude (km), look-at point and its height, vexag, shot index, heading and pitch per frame.
+    """P (km, scene), eye altitude (km), look-at point and its height, vexag, shot index, heading, pitch, field of view
+    and the weight of the hand-held look per frame.
 
     Shots crossfade in sequence: shot j fades in over ``overlap`` seconds centred on its start
     (smoothstep weight), on top of the blend of the shots before it. Every shot is continuous with a
@@ -491,6 +547,8 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
     t = np.asarray(t, float)
     n = len(t)
     first = shots[0].fn(np.clip(t, shots[0].t0 - overlap, shots[0].t1 + overlap))
+    fov = shots[0].fov_at(t)
+    shake = np.full(n, float(shots[0].shake))
     P = first[0].astype(float).copy()
     alt = np.asarray(first[1], float).copy()
     T = first[2].astype(float).copy()
@@ -508,6 +566,7 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
         )
 
     heading, pitch = aim(P, alt, T, tz, vex)
+    heading = np.degrees(np.unwrap(np.radians(heading)))  # continuous in time (no wrap at 360)
     for j, s in enumerate(shots[1:], start=1):
         ov = s.overlap or overlap
         w = smoothstep((t - (s.t0 - ov / 2.0)) / ov)
@@ -517,11 +576,20 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
         T = (1 - w)[:, None] * T + w[:, None] * ev[2]
         tz = (1 - w) * tz + w * np.asarray(ev[3], float)
         vex = (1 - w) * vex + w * s.vexag
+        fov = (1 - w) * fov + w * s.fov_at(t)
+        shake = (1 - w) * shake + w * s.shake
+        alt = alt + s.arc_km * 4.0 * w * (1 - w)
         idx = np.where(w >= 0.5, j, idx)
         hj, pj = aim(ev[0], ev[1], ev[2], ev[3], s.vexag)
-        heading = (heading + (((hj - heading) + 180.0) % 360.0 - 180.0) * w) % 360.0
+        # the aim is blended the short way round AT THE MIDDLE of the glide, and continuously through it: a difference that crosses 180
+        # degrees during the glide (the two aims nearly opposite) would otherwise flip the blended heading by a whole turn in one frame
+        hj = np.degrees(np.unwrap(np.radians(hj)))
+        mid = int(np.argmax(w >= 0.5)) if (w >= 0.5).any() else n - 1
+        hj = hj + 360.0 * np.round((heading[mid] - hj[mid]) / 360.0)
+        heading = heading + (hj - heading) * w
         pitch = (1 - w) * pitch + w * pj
-    return P, alt, T, tz, vex, idx, heading, pitch
+    heading = heading % 360.0
+    return P, alt, T, tz, vex, idx, heading, pitch, fov, shake
 
 
 def tornado_dolly(t, t_a: float):
@@ -529,15 +597,20 @@ def tornado_dolly(t, t_a: float):
     return smoothstep((np.asarray(t, float) - t_a - DOLLY_START) / DOLLY_S)
 
 
+def crossfade_values(shots: list[Shot], values, t, overlap: float = 5.0) -> np.ndarray:
+    """A per-shot value as a function of clip time: shot j fades in over its overlap, centred on its start (the page's ``crossfade``)."""
+    t = np.asarray(t, float)
+    v = np.full(len(t), float(values[0]))
+    for j in range(1, len(shots)):
+        ov = shots[j].overlap or overlap
+        w = smoothstep((t - (shots[j].t0 - ov / 2.0)) / ov)
+        v = (1 - w) * v + w * float(values[j])
+    return v
+
+
 def immersion(shots: list[Shot], t: np.ndarray, overlap: float = 5.0) -> np.ndarray:
-    """1 inside the tornado shot, 0 elsewhere, crossfading with the same smoothstep as the shots (and the layers)."""
-    w = np.zeros_like(t, dtype=float)
-    for s in shots:
-        if s.name == "tornado":
-            up = smoothstep((t - (s.t0 - overlap / 2.0)) / overlap)
-            down = smoothstep((t - (s.t1 - overlap / 2.0)) / overlap)
-            w = np.maximum(w, up * (1.0 - down))
-    return w
+    """0..1 how immersive the shot in charge is (the tornado shots 1), crossfading with the same smoothstep as the shots."""
+    return crossfade_values(shots, [s.immersion for s in shots], t, overlap)
 
 
 FOV_CHASER, FOV_DEBRIS = (
@@ -568,32 +641,25 @@ def shake_signal(t: np.ndarray, seed: float) -> np.ndarray:
 
 def build_camera(scene: Scene, tl: dict, shots: list[Shot], shake: bool = True) -> list[dict]:
     t = tl["t_clip_s"]
-    P, alt, _T, _tz, vex, idx, heading, pitch = blend_shots(shots, t)
+    P, alt, _T, _tz, vex, idx, heading, pitch, fov, wshake = blend_shots(shots, t)
     # the renderer stretches heights by the vertical exaggeration of the frame: so does the pitch (blend_shots)
-    sh = next((q for q in shots if q.name == "tornado"), None)
-    w = immersion(shots, t)
-    if shake and w.max() > 0:
-        # hand-held look inside the tornado shot: stronger where the tornado is near (it is bounded)
-        near = 1.0
-        if sh is not None:
+    if shake and wshake.max() > 0:
+        # hand-held look in the shots that ask for it: stronger where the tornado is near (it is bounded)
+        near = np.zeros(len(t))
+        if scene.p.get("tornadoes"):
             a_xy = scene.tornado_at(data_time_of_clip(tl, t))[0]
             near = np.exp(-((np.hypot(P[:, 0] - a_xy[:, 0], P[:, 1] - a_xy[:, 1]) / 0.15) ** 2))
-        g = w * (1.0 + SHAKE_NEAR * near) / (1.0 + SHAKE_NEAR)
+        g = wshake * (1.0 + SHAKE_NEAR * near) / (1.0 + SHAKE_NEAR)
         P = P + g[:, None] * np.stack([shake_signal(t, 0.4), shake_signal(t, 1.7)], -1) * (
             SHAKE["pos_m"] / 1000.0
         )
         alt = alt + g * shake_signal(t, 2.9) * (SHAKE["pos_m"] / 2000.0)
-        alt = np.maximum(alt, 0.0021)
+        alt = np.where(wshake > 0.01, np.maximum(alt, 0.0021), alt)
         heading = (
             heading + g * shake_signal(t, 3.3) * SHAKE["heading_deg"] * (1.0 + SHAKE_NEAR)
         ) % 360.0
         pitch = pitch + g * shake_signal(t, 4.1) * SHAKE["pitch_deg"] * (1.0 + SHAKE_NEAR)
     pitch = np.clip(pitch, -86.0, 86.0)
-    # a wider lens inside the tornado shot (a phone-like first-person view); 45 degrees (the renderer's default) elsewhere
-    fov = np.full(len(t), 45.0)
-    if sh is not None:
-        fov_t = FOV_CHASER + (FOV_DEBRIS - FOV_CHASER) * tornado_dolly(t, sh.t0)
-        fov = (1 - w) * fov + w * fov_t
     lat, lon = scene.geo.latlon(P[:, 0], P[:, 1])
     out = []
     for i in range(len(t)):
@@ -681,8 +747,11 @@ def build_events(
             "t_clip_end_s": round(t_b, 3),
             "positions": pos,
         }
-        # the rotation of the vortex (vortex.py): at the middle of the tornado shot
+        # the rotation of the vortex (vortex.py): at the middle of the tornado shot (or of the real-time angles of the focus)
         sh = next((s for s in shots if s.name == "tornado"), None)
+        foc = [s for s in shots if s.name.startswith("focus_")]
+        if sh is None and foc:
+            sh = Shot("focus", "Tornado focus", foc[0].t0, foc[-1].t1, None, 1.0)
         if sh is not None:
             ev["tornado"]["shot"] = {
                 "t0_clip_s": round(sh.t0, 3),
@@ -691,6 +760,10 @@ def build_events(
                 "t1_data_s": round(float(data_time_of_clip(tl, sh.t1)), 3),
             }
             tm = 0.5 * (sh.t0 + sh.t1)
+            if foc:
+                rt = [s for s in foc if s.name in ("focus_chaser", "focus_close", "focus_low")]
+                if rt:
+                    tm = 0.5 * (rt[0].t0 + rt[-1].t1)
             tdm = float(data_time_of_clip(tl, tm))
             _q, _a = scene.tornado_at(tdm)
             vp = vortex_params(tors[0], p.get("vortex"), tdm)
@@ -796,7 +869,13 @@ def build_events(
             ev["nearest_station"].append({"t_clip_s": c["t_clip_s"], "id": sid})
             last = sid
     ev["shots"] = [
-        {"name": s.name, "label": s.label, "t0": round(s.t0, 3), "t1": round(s.t1, 3)}
+        {
+            "name": s.name,
+            "label": s.label,
+            "t0": round(s.t0, 3),
+            "t1": round(s.t1, 3),
+            "overlap": s.overlap,
+        }
         for s in shots
     ]
     if station:
