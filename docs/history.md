@@ -30,6 +30,27 @@
   5 times faster with far less memory, first paint about 2 times faster, installers about 25 % smaller.
 - **More reliable:** a native crash that could stop the engine when opening or reading NetCDF-based files is fixed,
   and 15 more problems found by fault-injection testing are fixed ({doc}`STABILITY`).
+- **Accounts:** radarx needs a **free account**, in the app, in the engine, in the terminal (`rxd login`, `rxd logout`,
+  `rxd whoami`; commands exit with code 5 when nobody is signed in) and in Python (`rxd.AccountRequired`).
+  The first start asks for name, e-mail, affiliation and what you use it for; later starts open straight in, and
+  a sign-in keeps working offline for 30 days after the server last checked it. Codes arrive by e-mail (sent with
+  Resend, and with Mailjet if Resend fails). The Account dialog lists your computers and the activity your account
+  has sent (feature-level only: never file names, places or contents), and can delete the account. Google, Apple
+  and Facebook sign-in appear once they are set up. See {doc}`ACCOUNTS` and the privacy notice
+  (a draft, still to be reviewed by a lawyer).
+- **Sharing:** after saving an image or movie, a bar offers prefilled posts for X, Facebook, LinkedIn and Bluesky
+  (Instagram: the caption is copied and the file shown). radarx never posts for you.
+- **Command line:** the command is now `rxd` (also `import rxd` and `python -m rxd`); `xrd` keeps working as a
+  deprecated alias so existing scripts and notebooks still run ({doc}`CLI`).
+- **Name:** the app calls itself Radarx.
+- **Fixed (engine):** CfRadial2 files written by xradar work with every module and open in under a second instead
+  of about 18 s; the metadata tree no longer keeps the whole file in memory; the difference and accumulation of
+  scans on different ray or gate grids match by angle and distance, not by index; URLs and UTC offsets are handled
+  correctly in provenance and animation plans; figure titles show the earliest ray's time.
+- **Fixed (interface):** the Cloud Data panel works when it opens after the engine connected; Windows paths show
+  only the file name; the saved panel order keeps the Rainfall and Pipelines panels; impossible colour-bar limits
+  are refused; the browser build loads the realistic ground's tiles; stale "not connected" rows are cleared after
+  an engine restart; sidebar splitters and panel headers work from the keyboard; the first load is smaller.
 - **Licence:** source-available under the PolyForm Noncommercial License 1.0.0; third-party notices are in
   `THIRD_PARTY_NOTICES.md`.
 
