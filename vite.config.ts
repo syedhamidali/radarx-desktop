@@ -11,11 +11,14 @@ const appVersion: string = JSON.parse(readFileSync("./package.json", "utf-8")).v
  * Web build only (`vite build --mode web`): the desktop app gets its CSP from tauri.conf.json, a
  * static site has no such file, so the equivalent policy is injected as a <meta> tag.
  *
- * connect-src is limited to this origin and the engine in VITE_ENGINE_URL (ws/wss plus the same
+ * connect-src is limited to this origin, the account server (Supabase) and the engine in VITE_ENGINE_URL (ws/wss plus the same
  * host over http/https for downloads). Without VITE_ENGINE_URL no tag is written (the engine would
  * only be known at run time via ?engine=); set the equivalent header on the host instead.
  */
-function webCsp(engineUrl: string | undefined): Plugin {
+// Accounts: the same public project URL as src/lib/auth/config.ts (a build can override it).
+const DEFAULT_SUPABASE_URL = "https://bfyimkgvnqiqedcwprpi.supabase.co";
+
+function webCsp(engineUrl: string | undefined, supabaseUrl: string = DEFAULT_SUPABASE_URL): Plugin {
   return {
     name: "xradar-web-csp",
     apply: "build",
@@ -33,7 +36,7 @@ function webCsp(engineUrl: string | undefined): Plugin {
       const engine = secure ? `wss://${host} https://${host}` : `ws://${host} http://${host}`;
       const csp = [
         "default-src 'self'",
-        `connect-src 'self' ${engine}`,
+        `connect-src 'self' ${engine} ${supabaseUrl}`,
         // Same tile servers as the desktop CSP (the map background loads them as images).
         "img-src 'self' data: blob: https://api.mapbox.com https://*.tiles.mapbox.com https://tile.openstreetmap.org https://*.tile.opentopomap.org",
         "style-src 'self' 'unsafe-inline' https://api.mapbox.com",
@@ -57,7 +60,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       svelte(),
-      ...(mode === "web" ? [webCsp(env.VITE_ENGINE_URL)] : []),
+      ...(mode === "web" ? [webCsp(env.VITE_ENGINE_URL, env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL)] : []),
       // Bundle size report to Codecov: CI only (needs CODECOV_TOKEN), always the last plugin.
       codecovVitePlugin({
         enableBundleAnalysis: Boolean(process.env.CODECOV_TOKEN),
@@ -65,7 +68,11 @@ export default defineConfig(({ mode }) => {
         uploadToken: process.env.CODECOV_TOKEN,
       }),
     ],
-    define: { __APP_VERSION__: JSON.stringify(appVersion) },
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
+      // UI tests and offline-only builds skip the account gate; releases never set this.
+      __AUTH_DISABLED__: JSON.stringify(process.env.RADARX_AUTH_DISABLED === "1"),
+    },
     clearScreen: false,
     server: {
       port: 1420,

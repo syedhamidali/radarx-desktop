@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+mod oauth;
 mod updates;
 
 /// How long to wait for the sidecar's `READY:<port>` line. Generous because the very first start
@@ -67,6 +68,23 @@ fn find_python() -> PathBuf {
 
 fn server_script() -> PathBuf {
     project_root().join("python/server.py")
+}
+
+/// Shows a saved file in the system file manager (Finder / Explorer / the default file manager).
+#[tauri::command]
+fn reveal_in_folder(path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("that file no longer exists".into());
+    }
+    #[cfg(target_os = "macos")]
+    let status = Command::new("open").arg("-R").arg(&p).status();
+    #[cfg(target_os = "windows")]
+    let status = Command::new("explorer").arg(format!("/select,{}", p.display())).status();
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let status = Command::new("xdg-open").arg(p.parent().unwrap_or(&p)).status();
+    // Explorer reports 1 even on success, so only a failure to start is an error.
+    status.map(|_| ()).map_err(|e| e.to_string())
 }
 
 struct SidecarState {
@@ -793,6 +811,7 @@ fn main() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .manage(oauth::OAuthState::default())
         .manage(SharedSidecar(Arc::clone(&shared)))
         .manage(PendingOpen {
             files: Mutex::new(paths_from_args(std::env::args().skip(1))),
@@ -874,6 +893,10 @@ fn main() {
             updater_status,
             stop_engine_for_update,
             relaunch_app,
+            oauth::oauth_listen_start,
+            oauth::oauth_listen_wait,
+            oauth::oauth_listen_cancel,
+            reveal_in_folder,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

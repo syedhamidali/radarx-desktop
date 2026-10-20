@@ -160,7 +160,7 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 
 The production dependencies of `package.json` and the runtime of Svelte (a dev dependency whose runtime is compiled into the bundle), resolved through `package-lock.json`. Build tools (Vite, TypeScript, ...) are not shipped and are not listed.
 
-24 packages. Licences: MIT (18), MIT OR Apache-2.0 (3), Apache-2.0 (2), Apache-2.0 OR MIT (1).
+33 packages. Licences: MIT (26), MIT OR Apache-2.0 (3), Apache-2.0 (2), Apache-2.0 OR MIT (1), 0BSD (1).
 
 | Package | Version | Licence | Identified by | Link |
 | --- | --- | --- | --- | --- |
@@ -169,6 +169,13 @@ The production dependencies of `package.json` and the runtime of Svelte (a dev d
 | @jridgewell/resolve-uri | 3.1.2 | MIT | package-lock | https://www.npmjs.com/package/@jridgewell/resolve-uri |
 | @jridgewell/sourcemap-codec | 1.5.5 | MIT | package-lock | https://www.npmjs.com/package/@jridgewell/sourcemap-codec |
 | @jridgewell/trace-mapping | 0.3.31 | MIT | package-lock | https://www.npmjs.com/package/@jridgewell/trace-mapping |
+| @supabase/auth-js | 2.118.0 | MIT | package-lock | https://www.npmjs.com/package/@supabase/auth-js |
+| @supabase/functions-js | 2.118.0 | MIT | package-lock | https://www.npmjs.com/package/@supabase/functions-js |
+| @supabase/phoenix | 0.4.5 | MIT | package-lock | https://www.npmjs.com/package/@supabase/phoenix |
+| @supabase/postgrest-js | 2.118.0 | MIT | package-lock | https://www.npmjs.com/package/@supabase/postgrest-js |
+| @supabase/realtime-js | 2.118.0 | MIT | package-lock | https://www.npmjs.com/package/@supabase/realtime-js |
+| @supabase/storage-js | 2.118.0 | MIT | package-lock | https://www.npmjs.com/package/@supabase/storage-js |
+| @supabase/supabase-js | 2.118.0 | MIT | package-lock | https://www.npmjs.com/package/@supabase/supabase-js |
 | @sveltejs/acorn-typescript | 1.0.9 | MIT | package-lock | https://www.npmjs.com/package/@sveltejs/acorn-typescript |
 | @tauri-apps/api | 2.10.1 | Apache-2.0 OR MIT | package-lock | https://www.npmjs.com/package/@tauri-apps/api |
 | @tauri-apps/plugin-dialog | 2.7.0 | MIT OR Apache-2.0 | package-lock | https://www.npmjs.com/package/@tauri-apps/plugin-dialog |
@@ -183,10 +190,12 @@ The production dependencies of `package.json` and the runtime of Svelte (a dev d
 | devalue | 5.7.1 | MIT | package-lock | https://www.npmjs.com/package/devalue |
 | esm-env | 1.2.2 | MIT | package-lock | https://www.npmjs.com/package/esm-env |
 | esrap | 2.2.5 | MIT | package-lock | https://www.npmjs.com/package/esrap |
+| iceberg-js | 0.8.1 | MIT | package-lock | https://www.npmjs.com/package/iceberg-js |
 | is-reference | 3.0.3 | MIT | package-lock | https://www.npmjs.com/package/is-reference |
 | locate-character | 3.0.0 | MIT | package-lock | https://www.npmjs.com/package/locate-character |
 | magic-string | 0.30.21 | MIT | package-lock | https://www.npmjs.com/package/magic-string |
 | svelte | 5.55.5 | MIT | package-lock | https://www.npmjs.com/package/svelte |
+| tslib | 2.8.1 | 0BSD | package-lock | https://www.npmjs.com/package/tslib |
 | zimmerframe | 1.1.4 | MIT | package-lock | https://www.npmjs.com/package/zimmerframe |
 
 ## Desktop shell (Rust crates)

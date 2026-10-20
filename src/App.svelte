@@ -14,6 +14,7 @@
   import NotificationCenter from './lib/components/NotificationCenter.svelte';
   import OperationsTray from './lib/components/OperationsTray.svelte';
   import UpdateChip from './lib/components/UpdateChip.svelte';
+  import AccountChip from './lib/components/AccountChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import UpdateDialog from './lib/components/UpdateDialog.svelte';
@@ -58,6 +59,8 @@
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
+  // "Share" offer after an image or movie is saved.
+  const shareHost = lazy(() => import('./lib/components/ShareHost.svelte'));
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -143,6 +146,7 @@
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
   $effect(() => { whenIdle(() => envDialog.load()); });
+  $effect(() => { whenIdle(() => shareHost.load()); });
   let isDragOver = $state(false);
   let isPlaying = $state(false);
   let animSpeed = $state(1000);
@@ -1071,6 +1075,7 @@
     </div>
     <DataCheckChip />
     <UpdateChip />
+    <AccountChip />
     <OperationsTray />
     <div class="statusbar-right">
       <span class="hud-label sb-key">FILES</span><span class="mono sb-val">{pad2($openFiles.length)}</span>
@@ -1114,6 +1119,7 @@
   {#if aboutDialog.component}<aboutDialog.component bind:visible={aboutDialogVisible} />{/if}
   {#if crossDialog.component}<crossDialog.component />{/if}
   {#if envDialog.component}<envDialog.component />{/if}
+  {#if shareHost.component}<shareHost.component />{/if}
   {#if settingsOpen && settingsDialog.component}
     <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}
