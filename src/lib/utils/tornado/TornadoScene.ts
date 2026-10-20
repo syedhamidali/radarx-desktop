@@ -159,6 +159,8 @@ export class TornadoScene {
   exposureMul = 1;
   /** Multiplier on the lightning illumination. */
   flashMul = 1;
+  /** Multiplier on the extinction of the volume rain (1 = the physical value for the rain rate of the echo): a display choice, for seeing a funnel through heavy rain from far. */
+  rainGain = 1;
 
   private land: Landscape | null = null;
   private landFocus: [number, number] = [0, 0];
@@ -1000,7 +1002,7 @@ export class TornadoScene {
       gl.uniform4f(p.u.uFunnel, r.condition.dpCrit, Math.max(60, 0.08 * r.condition.dpCrit), 0.55, 0.11);
       gl.uniform4f(p.u.uFunnel2, heightDeficit(r.condition, 500) / 500, 0, 0, 0);
       gl.uniform3f(p.u.uFog, amb.fog[0], amb.fog[1], amb.fog[2]);
-      gl.uniform4f(p.u.uFogK, 1 / 4500, 800, 0.00006, this.echoOn ? this.echoMean : 25);
+      gl.uniform4f(p.u.uFogK, 1 / 4500, 800, 0.00006 * this.rainGain, this.echoOn ? this.echoMean : 25);
       gl.uniform4f(p.u.uDust, 32, 0.035, 0.06, 1);
       gl.uniform1f(p.u.uDebug, 0);
       gl.uniform1f(p.u.uMask, overlay ? (this.mask & 52) : this.mask);

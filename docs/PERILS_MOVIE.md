@@ -137,11 +137,13 @@ What the data say, and what the picture adds (`perilsVortex.ts`, `perilsTornadoS
   the funnel wall in about 7 s; the survey-scale estimate of the data bundle is 19 to 23 s per turn (solid body at the rated
   wind over the damage width): both are on the screen. The sense is cyclonic (counter-clockwise from above).
 * **How it is in the film**: `make_seed.py` (tools/tornado_sim) writes `tornado_seed.json` for the data span of the close angles
-  (`render_movie.py` runs it): the survey, the parent circulation, the stations' air, the 550 or so flashes, and the **echo of every
+  (`render_movie.py` runs it): the survey, the parent circulation, the stations' air, the 540 or so flashes, and the **echo of every
   observed step of the tornado's life on one grid** (0.5 km reflectivity, 72 x 72 cells of 500 m), carried along the observed
   echo motion between the steps (`echoField.ts`), so the simulation's rain curtains follow the radar echo through time (they
-  are the volume's rain rate at the same cells: checked against it at all 15 steps). The funnel forms over 15 s after the
-  surveyed begin time (a modelled choice; the survey gives the time only). The page draws the simulation on its own canvas over
+  are the volume's rain rate at the same cells: checked against it at all 15 steps). The funnel forms over 8 s after the
+  surveyed begin time (a modelled choice; the survey gives the time only). The extinction of the simulation's rain is drawn
+  at 40 % of the physical value from 1.2 km and beyond, rising to 100 % inside 0.55 km (`simRainGain`: a display choice, so that a
+  funnel can be seen through 50 dBZ of rain; the pattern of the rain is the radar's). The page draws the simulation on its own canvas over
   the echo render with an opacity that is the layer weight times the camera's nearness to the tornado in 3-D (full inside 1.8 km,
   none beyond 4.5 km) times the speed of the data clock (full to x6, none from x30: in the time-lapse stretches the simulation runs
   at the data clock, a hyperlapse of it, and fades into the echo scene at the fastest). The simulation's scene fades in over the 8 s
@@ -169,7 +171,7 @@ radar products), `src/lib/perils/perilsFocusData.ts` / `perilsFocusInset.ts` (th
 | angle | where | what it shows |
 |---|---|---|
 | wide | 14 to 9 km south of the tornado (the inflow side, 170 degrees), 2.5 to 2 km high, 60 degree lens, time-lapse | the strong band above the tornado, outside the echo, with the lightning |
-| chaser | 1.7 km at 151 degrees (right of the track, a little south), 12 m high, 42 degree lens, x1 | the touchdown at 01:08:00 (the camera starts 3 s before it) and the funnel forming under the echo, the storm crossing the frame |
+| chaser | 1.25 km at 151 degrees (right of the track, a little south), 12 m high, 44 degree lens, x1 | the touchdown at 01:08:00 (the camera starts 3 s before it) and the funnel forming under the echo (a chaser at 1.7 to 2.3 km sees nothing of the funnel through the simulated rain of the v2 echo; 1.25 km is the farthest at which it is seen), the storm crossing the frame |
 | close, side-on | 450 m to the right of the track, 2 m, 62 degree lens, x1 | the funnel passing across the frame |
 | low | 360 m, 2 m, 68 degree lens looking up 31 degrees, x1 | the wall cloud and funnel from below |
 | damage path | 465 m behind and 200 m to the right, 90 m high, 62 degree lens, x1 | the path just made, the trees the simulation lays down, the funnel ahead |

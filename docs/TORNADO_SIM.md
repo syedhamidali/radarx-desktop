@@ -242,9 +242,10 @@ shot, with these additions to the scene (all optional, the earlier behaviour is 
   later one back along the motion and blends them in rain-rate space (Marshall-Palmer), so the rain curtains move and change with
   the radar echo; tested (`echoField.test.mjs`: the blob is one blob in the middle, not two half-strength ones). Verified
   cell by cell against the volume (the seed's maximum at the same cell, all 15 steps).
-- **Formation time**: `seed.ramp = {form, decay}` (default 25 s and 40 s); the film uses 15 s so that the first angle ends with a
-  visible funnel. The survey gives only the begin and end times; the ramps are modelled.
+- **Formation time**: `seed.ramp = {form, decay}` (default 25 s and 40 s); the film uses 8 s so that the first angle shows a formed funnel. The survey gives only the begin and end times; the ramps are modelled.
 - **Jumps of the clock**: a forward jump of more than 20 s restarts the debris pool with a 12 s warm-up before the new time (a pure
   function of the time), so a time-lapse stretch between two real-time angles costs nothing.
 - **Land size**: `landHalf`, `landSize`, `treeRadius` (the film uses 4.5 km, 2048 px and 3.4 km) so that one landscape holds the
   chaser (1.7 km from the track) and the damage-path view 4 km along it.
+- **Rain gain**: `TornadoScene.rainGain` scales the extinction of the volume rain (default 1, the physical value for the echo's rain rate); the film
+  thins it from 1.2 km away (0.4) to nothing changed inside 0.55 km, so that a funnel is visible through 50 dBZ of rain.

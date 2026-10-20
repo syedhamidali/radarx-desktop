@@ -31,6 +31,7 @@ def main(argv=None) -> None:
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--bundle", required=True)
+    ap.add_argument("--manifest", default="manifest.json")
     ap.add_argument("--perils", required=True)
     ap.add_argument("--camera", required=True)
     ap.add_argument("--timeline", required=True)
@@ -40,7 +41,7 @@ def main(argv=None) -> None:
     a = ap.parse_args(argv)
     bundle, out = Path(a.bundle), Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    man = json.loads((bundle / "manifest.json").read_text())
+    man = json.loads((bundle / a.manifest).read_text())
     g = man["grid"]
     xs, ys = np.array(g["x_km"]), np.array(g["y_km"])
     p = json.loads(Path(a.perils).read_text())
@@ -52,7 +53,7 @@ def main(argv=None) -> None:
     px = np.array([q["x"] for q in path])
     py = np.array([q["y"] for q in path])
     series = (p.get("focus") or {}).get("series", [])
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+    fig, axes = plt.subplots(2, 3, figsize=(21, 14))
     for ax, b in zip(axes.ravel(), beats, strict=False):
         tm = 0.5 * (b["t0"] + b["t1"])
         td = float(np.interp(tm, tl["mapping"]["t_clip_s"], tl["mapping"]["t_data_s"]))
@@ -99,7 +100,7 @@ def main(argv=None) -> None:
             f"{b['name']}  clip {tm:.1f} s, data {t_utc} UTC (step {k}), x{b['speedup_mean']:.1f}\n"
             f"camera {b['tornado_distance_m']} m from the tornado, bearing {b['camera_bearing_from_tornado_deg']:.0f} deg, "
             f"{b['camera_height_m']:.0f} m high, looking {c['heading_deg']:.0f} deg, lens {b['fov_deg']:.0f} deg",
-            fontsize=9,
+            fontsize=8,
         )
         _ = (hh, mm)
     fig.colorbar(im, ax=axes.ravel().tolist(), shrink=0.6, label="column-max reflectivity, dBZ")

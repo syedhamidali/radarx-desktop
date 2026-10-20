@@ -10,7 +10,7 @@ Six angles, in the frame of the tornado (``travel`` = along the track, ``right``
 inflow / rain-free side):
 
 1. WIDE, from the inflow side, 14 -> 9 km away and 2.5 -> 2 km high, 60 degree lens: the parent echo above the tornado. Time-lapse.
-2. CHASER, a standing observer on the right of the track 1.7 km away, 12 m high, 42 degree lens: the whole funnel and the
+2. CHASER, a standing observer on the right of the track 1.25 km away, 12 m high, 44 degree lens: the whole funnel and the
    wall cloud under the echo, the tornado crossing the frame. Real time (touchdown).
 3. CLOSE, side-on 450 m from the track, 2 m high, 62 degree lens: the funnel passes across the frame. Real time.
 4. LOW, 340 m from the track, 1.5 m high, looking up 30 degrees with a 68 degree lens. Real time.
@@ -53,10 +53,10 @@ WIDE_AIM_NORTH_KM = (
     0.5,
 )  # the aim point is this far north of the tornado (the echo above it), start and end
 WIDE_AIM_Z_KM = (3.0, 2.5)  # and this high, km
-CHASER_DIST_KM = 1.7
+CHASER_DIST_KM = 1.25
 CHASER_BEARING_OFF = 15.0  # degrees south of the right-hand perpendicular: the strong echo (north) stays in the frame
 CHASER_ALT_M = 12.0
-CHASER_FOV = 42.0
+CHASER_FOV = 44.0
 CHASER_FOLLOW = 0.75  # share of the tornado's motion the observer pans after
 CLOSE_DIST_KM = 0.45
 CLOSE_ALT_M = 2.0
@@ -261,7 +261,7 @@ def focus_shots(
         n = len(t)
         P = np.broadcast_to(P_c, (n, 2)).copy()
         look = T_c[None, :] + CHASER_FOLLOW * (rig.T(t) - T_c[None, :])
-        return P, _col(CHASER_ALT_M / 1000.0, n), look, _col(0.4 + 0.02 * np.sin(0.2 * t), n)
+        return P, _col(CHASER_ALT_M / 1000.0, n), look, _col(0.32 + 0.02 * np.sin(0.2 * t), n)
 
     c0, c1 = beats["focus_close"]
     tm_x = 0.5 * (c0 + c1)

@@ -27,7 +27,7 @@ import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, ty
 import { activeCaption, captionAlpha, captionOf, scheduleCaptions, type ScheduledCaption, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
 import { drawMinimap, hfovFromTan, type MinimapState } from './perilsMinimap';
-import { SimTornado, simDistanceWeight, simSpeedWeight, type SimSeedFile, type SimGeoPose } from './perilsTornadoSim';
+import { SimTornado, simDistanceWeight, simSpeedWeight, simRainGain, type SimSeedFile, type SimGeoPose } from './perilsTornadoSim';
 import { ParticleTornado, drawParentCirculation, vortexFrame, type TornadoRenderer, type VortexFrame } from './perilsVortex';
 import { provColour, chip } from './perilsStyle';
 import { fmtOffset, clockUtc } from './perilsData';
@@ -461,7 +461,7 @@ export class PerilsExtras implements ClipExtras {
       if (this.simW > 0.01) {
         const p = this.director.pose(info.t);
         const pose: SimGeoPose = { lat: p.lat, lon: p.lon, altM: p.altM, headingDeg: p.yawDeg, pitchDeg: p.pitchDeg, fovDeg: p.fov ?? 50 };
-        const c = this.sim.render(info.td, pose, this.simPrev ?? undefined);
+        const c = this.sim.render(info.td, pose, this.simPrev ?? undefined, this.director.tl.focus ? simRainGain(dist) : 1);
         this.simPrev = { td: info.td, pose };
         if (c) {
           ctx.save();
@@ -736,7 +736,8 @@ export class PerilsExtras implements ClipExtras {
     const ctx = this.hudCtx!;
     const shots = this.director.tl.shots;
     const t = info.t;
-    const a = m.vis('minimap') * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    // the plan-view inset and the focus inset take turns (one fades out before the other fades in): they stand in the same place
+    const a = m.vis('minimap') * Math.max(0, Math.min(1, 1 - 2 * m.vis('focusInset'))) * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
     const size = 360 * u * crossfade(shots, [1, 1, 0.62, 0.86, 1, 1.18, 1, 0.62, 0.62, 0.62, 0.62, 1], t);
     const mapY = 60 * u;
     const next = mapY + size + 44 * u;
@@ -871,7 +872,7 @@ export class PerilsExtras implements ClipExtras {
     const t = info.t;
     const tn = this.tornadoNow(info.td);
     const now = fd && tn ? focusNow(fd, info.td, tn) : null;
-    const a = m.vis('focusInset') * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    const a = Math.max(0, Math.min(1, 2 * m.vis('focusInset') - 1)) * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
     if (!fd || !tn || a <= 0.02 || !this.api) return { next: 28 * u, now };
     const sizeF = crossfade(shots, [1, 1, 1, 1, 1, 1, 1, 0.8, 0.72, 0.72, 0.72, 1], t);
     const size = 400 * u * sizeF;

@@ -97,8 +97,8 @@ def build_tornado_seed(
         "--manifest",
         manifest_name,
     ]
-    if focus:  # a funnel that forms in 15 s, not 25 s: the first angle ends 18 s after the surveyed begin time
-        cmd += ["--ramp-form", "15"]
+    if focus:  # a funnel that forms in 8 s, not 25 s: the first angle sees the surveyed begin time and 15 s after it
+        cmd += ["--ramp-form", "8"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     log(
         (r.stdout or r.stderr).strip().splitlines()[-1]

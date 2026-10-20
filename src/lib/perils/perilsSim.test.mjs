@@ -2,7 +2,7 @@
 // Run with Node >= 22.6:  npm run test:unit
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { simDistanceWeight, simSpeedWeight } from './perilsTornadoSim.ts';
+import { simDistanceWeight, simSpeedWeight, simRainGain } from './perilsTornadoSim.ts';
 import { crossfade, LAYER_TABLE } from './perilsLayers.ts';
 
 test('the simulation is opaque near the tornado, absent far from it, and smooth in between', () => {
@@ -73,4 +73,18 @@ test('the glide into a shot follows the shot\'s own overlap', () => {
   assert.ok(Math.abs(before - 0.85) < 1e-9 && Math.abs(after - 0.7) < 1e-9, `${before} ${after}`);
   const mid = crossfade(focusShots, LAYER_TABLE.rotSeries, 45.5);
   assert.ok(mid < 0.85 && mid > 0.7);
+});
+
+test('the simulation\'s rain is thinned only from far, and never thicker than the physical value', () => {
+  assert.equal(simRainGain(0.1), 1);
+  assert.equal(simRainGain(0.465), 1); // the damage-path view
+  assert.equal(simRainGain(0.55), 1);
+  assert.equal(simRainGain(1.2), 0.4);
+  assert.equal(simRainGain(5), 0.4);
+  let prev = 1;
+  for (let d = 0.55; d <= 1.2; d += 0.05) {
+    const g = simRainGain(d);
+    assert.ok(g <= prev + 1e-12 && g >= 0.4 && g <= 1);
+    prev = g;
+  }
 });
