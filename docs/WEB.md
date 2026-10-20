@@ -19,7 +19,7 @@ Desktop behaviour is unchanged when web mode is off (the default). Code: `python
 | Variable | Default | Meaning |
 |---|---|---|
 | `XRADAR_WEB` | off | `1`/`true` enables web mode (CLI: `--web`). |
-| `RADARX_WEB_REQUIRE_ACCOUNT` | **on** | A visitor must present a signed-in radarx account before the engine does any work (see *Accounts* below). `0` / `false` turns the gate off, for a private deployment. Ignored by a frozen (installer) build. |
+| `RADARX_WEB_REQUIRE_ACCOUNT` | **on** | A visitor must present a signed-in radarx account before the engine does any work (see *Accounts* below). `0` / `false` turns the gate off, for a private deployment (also build the web app with `RADARX_AUTH_DISABLED=1`). Ignored by a frozen (installer) build. |
 | `PORT` | | Port when `--port` is not given (web mode only). |
 | `--host` | `127.0.0.1` (web), `localhost` (desktop) | Interface to bind; Docker uses `0.0.0.0`. |
 | `XRADAR_ALLOWED_ORIGINS` | *(empty)* | Comma-separated allowed `Origin`s (`https://app.example.com`). Empty = same-origin only. `*` allows every origin and is honoured **only if set explicitly**. |
@@ -71,10 +71,10 @@ client -> {type: "auth_status"}                                # server -> auth_
 Until the connection has an accepted account, every message except `ping`, `get_web_info` and `auth_*` is answered
 `{type: "auth_required", reason, message, request_type, request_id}` and **no work happens** (an upload does not
 start, no file is opened). The token is verified offline against the project's public key; the refresh token never
-reaches the server, and the web engine never writes a session or an activity queue to disk. `/health` stays open.
+reaches the server, and the web engine never writes a session or an activity queue to disk. The token must be **unexpired**, and the engine checks that again on every message: when it lapses the answer is `auth_required` with `reason: "expired"` and the browser renews its Supabase token and sends `auth_session` again (the web service is always online, so the 30-day offline allowance of the desktop engine does not apply). `/health` stays open.
 
 **Behaviour change for a public demo:** before accounts existed, anyone who could reach the port could open a session;
-now they need a radarx account. Set `RADARX_WEB_REQUIRE_ACCOUNT=0` to keep a deployment anonymous.
+now they need a radarx account. For a deployment that stays anonymous set `RADARX_WEB_REQUIRE_ACCOUNT=0` on the engine **and** build the web app with `RADARX_AUTH_DISABLED=1` (`npm run build:web`), so the page does not ask for a sign-in either; the engine then answers `auth_session` with `{type: "auth_ok", bypass: true}`.
 
 ### Uploads
 

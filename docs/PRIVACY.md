@@ -15,9 +15,12 @@ owner knows who uses it and which functions matter. Each event is one of: the ap
 out, an `rxd` command was run (its name only, for example `run`), an algorithm was run (its name, for example
 `radarx_hid`; a plug-in you wrote yourself is recorded only as `custom`), a file was opened (the format *family*,
 for example `NEXRAD`), a file was exported (the format), a mosaic, wind analysis, animation or rainfall estimate was
-run (that it happened), or an error occurred (the error class only). Each event also carries the time, where it came
-from (app, terminal, Python or engine), a random install id, the radarx version and your operating-system family
-(macOS, Windows or Linux). The program and the database both refuse anything else. **You can see every entry:**
+run (that it happened, with the kind of run), or an error occurred (the error class only). Every value comes
+from a fixed list of words radarx knows (its own commands, formats, products, algorithms and error classes); anything
+else, such as an algorithm you wrote yourself or an error class from your own plug-in, is recorded only as `other` or
+`custom`. Each event also carries the time, where it came
+from (app, terminal, Python or engine), a random install id, the radarx version number and your operating-system family
+(macOS, Windows, Linux, or Web for the browser version). An event is recorded only for the account that caused it. The program and the database both refuse anything else. **You can see every entry:**
 *Account > Activity* lists the last 100 events your account has sent. Activity cannot be switched off while you use an
 account, because it is the reason for the account being required; the list above is all of it.
 
@@ -45,3 +48,5 @@ repository).
 are then kept on your computer (at most 500 small events) and sent when the connection returns.
 
 Version 2026-10-21 (previous version 2026-10, which said nothing about activity: everyone is asked to accept again).
+The rules above were tightened after that version was drafted (fixed word lists, no free text in the version or system
+fields); they only narrow what is recorded, so the version number is unchanged.

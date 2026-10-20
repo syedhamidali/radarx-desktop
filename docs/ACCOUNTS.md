@@ -81,27 +81,50 @@ bits do not apply: the file inherits the private permissions of your profile fol
   is the server's refresh-token rotation: if two programs both used one refresh token, the server would see a
   reused token and end the session for both (signing you out of the app). So each sign-in has exactly one
   program that renews it: the app for an `app` session, `rxd` for a `cli` session. When the app is closed and an
-  `app` session has expired, `rxd` says so and asks for `rxd login` (a separate session of its own).
+  `app` session has expired, `rxd` and `import rxd` **refuse it while the account server is reachable** and say
+  "open the radarx-desktop app (it renews its own sign-in) or sign in again" (`rxd login` makes a separate session of
+  its own); only when the server cannot be reached does the 30-day offline rule below apply.
 * **Signing out** in the app, or `rxd logout`, removes the file for everyone; `rxd logout` also ends the
   session on the server.
 
 Checking a session is the same on every surface (`python/engine/account/`): the access token (a signed JWT) is
-verified **offline** against the project's public signing key (ES256; the key document is
-`<project>/auth/v1/.well-known/jwks.json`, cached on disk, a copy ships in the code, and a token signed with an
-unknown key triggers one re-download at most every five minutes). Only the signature algorithms ES256 and
+verified **offline** against the project's public signing key (ES256). That key is **built into the program**
+(`jwks_seed.py`; the same public document anyone can read at `<project>/auth/v1/.well-known/jwks.json`). A token with
+a different `kid` makes the program download that document over HTTPS once (kept in memory for that run only, at most
+every five minutes). **Nothing is ever read from a file in your folder as a key**: such a file is data you control, and
+a session verified against it would prove nothing (an earlier version cached the document on disk; a user could then
+mint their own session from data files alone, which the review found and which is fixed). Offline, a token with an
+unknown key is simply refused, so after the project rotates its signing key one online run (or an app update that ships
+the new key) is needed. Only the signature algorithms ES256 and
 RS256 are accepted; issuer, audience and the `authenticated` role must match, and anonymous sessions do not count.
 No secret is involved: the project URL and the publishable key are public values, the same as in
 `src/lib/auth/config.ts`.
 
 ### The offline rule
 
-A stored session is accepted for **30 days after the last time the server vouched for the account**, that is the
-`iat` (issued-at) claim of the newest token, which is signed and cannot be edited. An expired token
-(they last an hour) is renewed online when that is possible; when the server cannot be reached, the session still
-counts until 30 days have passed. A clock set backwards does not help: the latest clock reading ever seen is kept
-in the session file and the later of it and the current clock is used; it is trusted again only after the server has
-vouched for the account anew (a refresh or a sign-in). The number is `OFFLINE_GRACE_DAYS` in the frontend and in
-`python/engine/account/config.py`; both are 30.
+A stored session is accepted **while the account server cannot be reached**, for **30 days after the last time the
+server vouched for the account**: the `iat` (issued-at) claim of the newest token, which is signed and cannot be
+edited. What applies when:
+
+| Situation | Result |
+|---|---|
+| access token not yet expired | accepted (no network needed) |
+| expired, `rxd login` session (has a refresh token) | renewed online; if the server **answers with its own refusal** (GoTrue's `invalid_grant`, `refresh_token_not_found`, ... ) the session is removed; if it cannot be reached, or a proxy / portal / outage answers something else (403, 404, 407, 408, 429, 5xx, HTML), the session is **kept** and the 30-day rule applies |
+| expired, app session | the app renews its own token and hands it over. If the server is **reachable** (a short probe, at most 2 s) and nobody renewed it: refused ("open the app or sign in again"). If it is **not reachable**: accepted until 30 days after the token's `iat` |
+| the app (engine WebSocket, desktop) with an expired token | accepted on the same 30-day rule (a ship has no network); the app renews and hands over a fresh token when it can |
+| the public web service | **only an unexpired token** is accepted, and it is re-checked on every message: the service is always online, so no offline allowance applies; the browser renews its token about hourly and presents it again |
+
+**Clocks.** The latest clock reading ever seen with a session is kept in the file (`high_water`) and the later of it and
+the current clock is used, so setting the clock **backwards** does not extend the 30 days. Honest limits: (1) a clock that
+is simply stopped at an old date (never advanced) cannot be told from a real one without a trusted time source, so it
+*does* keep an offline session alive; (2) one wrong reading far in the future (a virtual machine resuming, a dead
+clock battery) also refuses an offline session until the server vouches for the account again. Going online fixes it: a
+sign-in, a refresh, or the app handing over a token that was issued just now (within 10 minutes of the local clock by the
+server's own timestamp) and is newer than the one on file resets the mark. The number is `OFFLINE_GRACE_DAYS` in the
+frontend and in `python/engine/account/config.py`; both are 30. At **start-up the app** applies the same rule to the
+session in its own storage (`startup.ts`), without asking Supabase to renew it first: opening a laptop offline the next
+day opens the app ("offline" in the status bar) and hands the stored token to the engine. Only a **definite** answer from
+the server (its own session or user is gone) signs the user out; a 5xx, 429, a portal page or a timeout does not.
 
 ### The entitlement hook (for the day charging starts)
 
@@ -143,11 +166,22 @@ dialog lists the last 100 events your account has sent, read back from the datab
 
 In the database (`supabase/migrations/20261021000000_activity.sql`): you can insert and read your own rows and
 nothing else; nobody but the service role can change or delete them; the event names and detail keys are checked by a
-trigger; at most 2000 events per account per 24 hours; timestamps are clamped. Deleting the account deletes its
-log. `purge_old_activity(days)` removes old rows (service role only; **scheduling it is left to the owner**, for
+trigger; at most 2000 events per account per 24 hours (the count is made under a per-user advisory lock, so
+concurrent inserts cannot slip past it; the lock is tested for presence, its concurrent effect needs a real
+multi-connection test that the single-connection test harness cannot do); timestamps are clamped. The accounts schema
+is hardened in `20261022000000_accounts_hardening.sql`: the same lock for the synced-items quota, and at most **50
+registered computers per account** (a 51st replaces the computer unused for the longest time). Deleting the account deletes its
+log. The values are checked against **fixed word lists** before they are sent: a command name that is not an
+`rxd` command, an export format, mosaic product or error class that is not one radarx knows, or an algorithm that is not
+shipped with radarx is recorded as `other` (algorithms: `custom`), so a plug-in's class name, a product someone invented
+or a typo can never identify a person or a project. `app_version` must look like a version number and `os` is one of
+`macOS`, `Windows`, `Linux`, `Web`, `Other`. An event is attributed to the account of the connection that caused it
+(never to whatever session file is current now), a 400 for one bad row costs only that row (the batch is split), and a
+web visitor's events are dropped if their token expired. `purge_old_activity(days)` removes old rows (service role only; **scheduling it is left to the owner**, for
 example monthly with `select public.purge_old_activity(365);`), and the view `public.activity_overview` gives the
 owner one row per account (e-mail, first and last seen, counts per surface); only the service role can read it.
-`supabase/tests/activity_rls.sql` tests all of this.
+`supabase/tests/activity_rls.sql` and `accounts_hardening.sql` test this (the checks name the error they expect, so a
+typo cannot pass as "refused").
 
 ## The web service
 
@@ -156,7 +190,10 @@ The public web engine (`docs/WEB.md`) has the same gate. It is controlled by `RA
 `auth_session`, and until then the engine answers only `ping` and `get_web_info`. The web engine serves many users, so
 it **never writes a session or an activity queue to disk**: the account lives in that connection's memory only, and
 its activity events are sent with that visitor's own token. The operator can switch the gate off with
-`RADARX_WEB_REQUIRE_ACCOUNT=0` (for a private deployment); an installer build ignores that variable.
+`RADARX_WEB_REQUIRE_ACCOUNT=0` (for a private deployment): then `auth_session` is answered `auth_ok` with
+`bypass: true` and nothing is checked; **build the web app for that deployment with `RADARX_AUTH_DISABLED=1`** so its
+screen does not ask for a sign-in either. An installer build ignores the engine variable. A web connection's token must
+be unexpired, and the engine re-checks it on every message (see the table above).
 
 ## Development bypass
 
@@ -168,19 +205,33 @@ well. No activity is recorded while the bypass is on.
 
 ## Known ways around the gate
 
-Said plainly, so nobody relies on more than it gives:
+Said plainly, so nobody relies on more than it gives. The gate stops honest use without an account; it is not copy
+protection. Everything below is real, including what is not worth fixing:
 
-* Edit the source (it is available): remove the check, or `pip install` the engine and call modules such as
-  `engine.reader` directly, which are not behind the API gate.
-* Set `RADARX_AUTH_DISABLED=1` in a source or `pip` install (installers ignore it).
-* A frozen engine can be repackaged from edited source.
-* Run a copy of the engine that never shows the gate, or talk to the engine's WebSocket without the app: the gate is
-  per connection, and a modified client could present a stolen token (the sidecar's own random connection token
-  already keeps other programs out of an installed app's engine).
-* Within the offline rule, a revoked or deleted account keeps working for up to 30 days when it cannot reach the
-  server, and up to an hour (the token's life) when it can.
-* Already-open `Volume` objects keep their data after sign-out, and some read-only properties are not gated.
-* The activity log is only as honest as the client that sends it.
+* **Edit the source** (it is available): remove the check, or `pip install` the engine and call modules such as
+  `engine.reader` or `modules/` directly, which are not behind the API gate. This includes tools outside the gate
+  (`tools/storm_clip`, `scripts/`).
+* **`RADARX_AUTH_DISABLED=1`** in a source or `pip` install (installers ignore it). Likewise `RADARX_SUPABASE_URL` /
+  `RADARX_SUPABASE_KEY` there, which point the checks at another project (and its keys).
+* **Repackage a frozen engine** from edited source.
+* **Talk to the engine without the app** and present a token that is not yours (the sidecar's random connection
+  token keeps other programs out of an installed app's engine, but a modified app has it).
+* **A stopped clock** keeps an offline session alive (see "Clocks" above); only a trusted time source (the server)
+  fixes that, and offline there is none.
+* **Within the offline rule**, a revoked or deleted account keeps working for up to 30 days when it cannot reach the
+  server (a user can also simply block the account server), and up to an hour (the token's life) when it can.
+  Signing out in the app while the engine is unreachable is remembered and delivered later, but until then the shared
+  session file survives.
+* **Tokens at rest**: the session file holds a one-hour access token (and, for `rxd login`, a refresh token) with mode
+  0600 only; anything running as the same user can read it. Keychain storage is a follow-up.
+* **The page's script policy keeps `'unsafe-inline'`** (`script-src`) in both the desktop and the web build because
+  the UI is built with inline scripts and styles; a content-injection bug in the UI would therefore not be stopped by
+  the CSP. `base-uri 'self'` and `form-action 'self'` are set to close the cheaper tricks. Not changed here.
+* **Already-open `Volume` objects** keep their data after sign-out, and some read-only properties are not gated.
+* **The activity log** is only as honest as the client that sends it, and it cannot be switched off while an account
+  is used.
+* **The public web service** does not limit work per account (any valid free account passes), and one account can be
+  used from many places.
 
 ## Setting it up (owner, once)
 
@@ -193,15 +244,23 @@ Said plainly, so nobody relies on more than it gives:
    supabase config push                                   # applies supabase/config.toml (auth settings)
    ```
 
-2. **E-mail codes.** The app asks for a 6-digit code (a desktop app has no web page to open a link in).
+2. **Custom SMTP: required before real users sign up.** Supabase's built-in mailer is for testing and sends only a
+   handful of e-mails per hour for the whole project, far too few for sign-up and reset codes. In *Authentication >
+   Emails > SMTP Settings* (or in `supabase/config.toml` `[auth.email.smtp]`, with the password given as `env(...)`)
+   configure a real mail provider and a sender address you own; only then does `[auth.rate_limit] email_sent`
+   apply. `site_url` in `config.toml` is deliberately an https address (the project page): `config push` writes it to
+   the hosted project, and the e-mails carry codes, not links.
+
+3. **E-mail codes.** The app asks for a 6-digit code (a desktop app has no web page to open a link in).
    `supabase config push` installs the templates in `supabase/templates/`. Without it, edit
    *Authentication > Emails* in the dashboard so both "Confirm sign up" and "Reset password" contain
    `{{ .Token }}`.
 
-3. **Redirect URLs** (*Authentication > URL Configuration*): add `http://127.0.0.1:*/auth/callback`
-   (the desktop sign-in return) and the address of the web build.
+4. **Redirect URLs** (*Authentication > URL Configuration*): add `http://127.0.0.1:*/auth/callback`
+   (the desktop sign-in return) and the address of the web build. **`supabase config push` replaces the redirect list
+   with the one in `config.toml`: URLs you added only in the dashboard are erased**, so keep them in the file.
 
-4. **Social sign-in** (*Authentication > Sign In / Providers*). Supabase's callback address is
+5. **Social sign-in** (*Authentication > Sign In / Providers*). Supabase's callback address is
    `https://bfyimkgvnqiqedcwprpi.supabase.co/auth/v1/callback`. Each provider needs its own app:
 
    | Provider | Create at | Notes |
@@ -216,11 +275,11 @@ Said plainly, so nobody relies on more than it gives:
    default**: after a provider works, build with `VITE_OAUTH_PROVIDERS=google,apple,facebook` (only the ones
    that work) to show them.
 
-5. **Activity retention.** Decide how long the activity log is kept (the privacy notice says so) and schedule
+6. **Activity retention.** Decide how long the activity log is kept (the privacy notice says so) and schedule
    `select public.purge_old_activity(365);` (for example with pg_cron or a monthly reminder). Nothing purges
    it automatically.
 
-6. Rotate the publishable key if it ever leaks; it is public by design but can be revoked.
+7. Rotate the publishable key if it ever leaks; it is public by design but can be revoked.
 
 ## For developers
 
