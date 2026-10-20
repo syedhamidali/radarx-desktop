@@ -17,7 +17,7 @@ import { Director, type CamEntry, type TimelineFile, nearestStation } from './pe
 import { LayerVis, crossfade, type LayerId } from './perilsLayers';
 import { GroundComposer, contourSegments, type PixelFn } from './perilsGround';
 import { decodeSurface, sampleGrid, blendFields, tempColour, coldPoolLevel, swathUpTo, type SurfaceMeta } from './perilsSurface';
-import { compileFlashes, flashFrame, flashesInWindow, lightFrom, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
+import { compileFlashes, flashFrame, flashesInWindow, lightFrom, smoothedFlashLight, longestFlash, rateSeries, drawLma, LMA_DEFAULTS, type CompiledFlash, type FlashFrame, type LmaParams } from './lmaFx';
 import { stationXY, balloonFlight } from './perilsData';
 import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawSwath, drawRotation, drawTds, drawHail, drawZdrColumns, drawBalloons, drawIsotherms, drawWinds, drawColdPool, drawEventMarker, type SceneEnv } from './perilsScene';
 import { type FocusCaption, type FocusInfo, focusCaption, focusNow, offsetStats, offsetText, bearingOf, SHEAR_CANDIDATE } from './perilsFocusData';
@@ -417,7 +417,10 @@ export class PerilsExtras implements ClipExtras {
   }
 
   flashLight(info: FrameInfo): { points: { x: number; y: number; z: number; i: number }[]; sky: number } | null {
-    return lightFrom(this.lmaNow, info.vexag);
+    if (!this.director.tl.focus || !this.flashes.length) return lightFrom(this.lmaNow, info.vexag);
+    // the tornado focus: the light of the real flashes is the mean over the last quarter second of clip time (as the simulation's), so that
+    // a camera inside the cloud does not flicker at 5 Hz; where and when the flashes are is unchanged
+    return smoothedFlashLight((tt) => (tt === info.t ? this.lmaNow : flashFrame(this.flashes, tt, this.maxDur, this.lma)), info.t, info.vexag);
   }
 
   private nearStep(td: number): number {

@@ -177,6 +177,35 @@ export function lightFrom(frame: FlashFrame, vexag: number, maxPoints = 4): { po
   return { points, sky };
 }
 
+/**
+ * The scene light of the flashes averaged over the last `windowS` seconds of clip time (`n` samples): the light points of the samples
+ * that are within `mergeKm` of each other are one point (position by intensity, intensities added and divided by `n`), the strongest
+ * `maxPoints` are kept, the sky is the mean. Pure, deterministic; a flash that lasts less than the window is dimmer and longer.
+ */
+export function smoothedFlashLight(
+  frameAt: (t: number) => FlashFrame, t: number, vexag: number, windowS = 0.25, n = 6, mergeKm = 3, maxPoints = 4,
+): { points: { x: number; y: number; z: number; i: number }[]; sky: number } {
+  const acc: { x: number; y: number; z: number; i: number }[] = [];
+  let sky = 0;
+  for (let k = 0; k < n; k++) {
+    const l = lightFrom(frameAt(t - (k * windowS) / Math.max(1, n - 1)), vexag, 8);
+    sky += l.sky / n;
+    for (const p of l.points) {
+      const w = p.i / n;
+      const hit = acc.find((q) => Math.hypot(q.x - p.x, q.y - p.y) <= mergeKm);
+      if (hit) {
+        const tot = hit.i + w;
+        hit.x = (hit.x * hit.i + p.x * w) / tot;
+        hit.y = (hit.y * hit.i + p.y * w) / tot;
+        hit.z = (hit.z * hit.i + p.z * w) / tot;
+        hit.i = tot;
+      } else acc.push({ x: p.x, y: p.y, z: p.z, i: w });
+    }
+  }
+  acc.sort((a, b) => b.i - a.i);
+  return { points: acc.slice(0, maxPoints), sky };
+}
+
 // ─── rates ──────────────────────────────────────────────────────────────────
 
 /** Flashes whose first source lies in (t - windowS, t] (data seconds): the flash rate per `windowS`. */

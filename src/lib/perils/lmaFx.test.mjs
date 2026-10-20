@@ -95,3 +95,19 @@ test('colour by time runs from white to blue, by power from violet to white', ()
   const hi = sourceColour({ phase: 0, powerDbw: 30 }, 'power');
   assert.ok(hi[0] > lo[0] && hi[1] > lo[1]);
 });
+
+import { smoothedFlashLight } from './lmaFx.ts';
+
+test('the smoothed flash light is the mean over the window: a one-frame flash is dimmer, a steady one is unchanged', () => {
+  const lit = { sprites: [{ flash: 1, x: 10, y: 20, z: 5, bright: 1 }, { flash: 1, x: 10.2, y: 20.1, z: 5.1, bright: 1 }, { flash: 1, x: 9.8, y: 19.9, z: 4.9, bright: 1 }], links: [], active: 1 };
+  const dark = { sprites: [], links: [], active: 0 };
+  const steady = smoothedFlashLight(() => lit, 5, 1);
+  const raw = lightFrom(lit, 1);
+  assert.ok(Math.abs(steady.points[0].i - raw.points[0].i) < 1e-9 && Math.abs(steady.sky - raw.sky) < 1e-9);
+  // lit now, dark in the five samples before: one sixth of the light
+  const blip = smoothedFlashLight((t) => (t === 5 ? lit : dark), 5, 1);
+  assert.ok(Math.abs(blip.points[0].i - raw.points[0].i / 6) < 1e-9);
+  assert.ok(Math.abs(blip.sky - raw.sky / 6) < 1e-9);
+  // nothing in the window: no points
+  assert.equal(smoothedFlashLight(() => dark, 5, 1).points.length, 0);
+});
