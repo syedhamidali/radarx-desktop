@@ -6,6 +6,7 @@
   import RadarSweep from './RadarSweep.svelte';
   import { webUi } from '../stores/webInfo';
   import { WEBSITE_URL, XRADAR_DOCS_URL, PRODUCT_CREDIT } from '../utils/brand';
+  import { openReportIssue } from '../stores/reportIssue';
 
   export let visible = false;
 
@@ -30,6 +31,11 @@
       e.preventDefault();
       e.stopPropagation();
     }
+  }
+
+  function reportIssue() {
+    close();
+    openReportIssue();
   }
 
   async function openLink(url: string) {
@@ -83,6 +89,12 @@
             <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
           </svg>
           xradar documentation
+        </button>
+        <button class="link-btn" on:click={reportIssue}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>
+          </svg>
+          Report an issue
         </button>
       </div>
 
