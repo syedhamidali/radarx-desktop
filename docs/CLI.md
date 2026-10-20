@@ -45,7 +45,7 @@ checkout for developers; installers ignore it.)
 | at a keyboard, with an e-mail and password account | `rxd login` |
 | a script that has the password in a file or a secret store | `rxd login --email EMAIL --password-stdin` |
 | signed up with Google, Apple or Facebook (no password) | `rxd login --browser --provider google` (needs a browser on this same computer) |
-| a batch job, cron, CI or a cluster node | an access token: see {doc}`ACCOUNTS` (`RADARX_TOKEN`, `rxd login --token`) |
+| a batch job, cron, CI or a cluster node | an access token (created in the app: *Account > Access tokens*): `rxd login --token` or `RADARX_TOKEN` |
 
 **`--password-stdin`** reads **one** line from standard input (like `docker login --password-stdin`). The password is
 never taken from the command line or the environment, where other users' `ps` or a shell history could see it. The
@@ -62,6 +62,11 @@ the provider (asked for in a terminal when left out); a provider the project has
 The address is also printed, and `--no-open` only prints it. The browser has to run **on the same computer** as `rxd`,
 because the answer comes back to a port on `127.0.0.1` there. Over **SSH, on a cluster login node, or in a container** it
 does not work: use an access token instead. Provider messages are never shown, only fixed sentences.
+
+**`--token`** reads an access token from standard input (a hidden prompt on a keyboard), exchanges it once to check it and
+keeps it in the private session file; `rxd whoami` then shows its name and expiry. Alternatively set **`RADARX_TOKEN`**
+in the environment: it is exchanged at the first use, the one-hour sign-in is kept in memory only, nothing is written to
+disk, and it wins over a stored session. The token is as sensitive as a password (see {doc}`ACCOUNTS`).
 
 Which program keeps a sign-in alive is shown by `rxd whoami` (and `renewed_by` in `--json`): a sign-in made by
 `rxd login` is renewed by `rxd` and Python; one made by the **app** is renewed only by the app while it is open (the
@@ -517,11 +522,41 @@ error: File not found: missing.nc (looked for /.../missing.nc). Check the path a
 | 2 | the command was used wrongly: unknown option, module, recipe, variable, bad `-P`, sweep out of range |
 | 3 | an input file is missing, is not a file, or cannot be read |
 | 4 | an optional Python package is missing; the message says how to install it (`pip install -U radarx`) |
-| 5 | no signed-in account: run `rxd login` (every command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help`, `--version`) |
+| 5 | no signed-in account: run `rxd login`, or set `RADARX_TOKEN` (every command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help`, `--version`) |
 | 70 | an unexpected internal error (re-run with `-vv` for the traceback and report it) |
 | 130 | interrupted |
 
 ## Scripting
+
+### Signing in from a script, CI or a cluster
+
+Create a token in the app (*Account > Access tokens*) and store it in the secret store of the system that runs the job.
+
+```yaml
+# GitHub Actions: RADARX_TOKEN is read from a repository secret (its value is masked in the log)
+- run: pip install radarx-desktop-engine
+- run: rxd run radarx_hid -i data/KTLX20130520_201643_V06.gz -o hid.nc
+  env:
+    RADARX_TOKEN: ${{ secrets.RADARX_TOKEN }}
+```
+
+```bash
+#!/bin/bash
+#SBATCH --array=1-200
+# Slurm: the compute nodes have no internet, so sign in ONCE on the login node (it has):
+#     rxd login --token < ~/.radarx-token       (chmod 600 that file)
+# The session file lives in your home folder, which the nodes share: they verify it offline for up to 30 days
+# after its last renewal. Renew it from the login node, for example in a crontab:   0 * * * *  rxd whoami > /dev/null
+rxd run radarx_hid -i "data/scan_${SLURM_ARRAY_TASK_ID}.nc" -o "out/hid_${SLURM_ARRAY_TASK_ID}.nc"
+```
+
+If the nodes do have internet, `export RADARX_TOKEN=$(cat ~/.radarx-token)` in the job script works too (one exchange per
+job and hour; very large arrays behind one address may meet the server's rate limit and should be staggered).
+Never put the token on a command line or in a log: `RADARX_TOKEN` and standard input are the two ways in. In Python, the
+same variable makes `import rxd` work in a notebook or a batch script (see {doc}`API`). A script can test the exit code:
+**5** means no usable sign-in (the message says whether the token is malformed, revoked or expired, or the server cannot
+be reached and nothing is stored), **1** a refused or failed `rxd login`, **2** bad options (for example a keyboard given to
+`--password-stdin`).
 
 `--json` prints one JSON document on stdout (results, parameters, the files written) and nothing else;
 messages go to stderr; `-q` silences everything but errors. `NO_COLOR=1` (or `--no-color`) turns colour off.

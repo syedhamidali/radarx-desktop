@@ -24,6 +24,13 @@ from (app, terminal, Python or engine), a random install id, the radarx version 
 *Account > Activity* lists the last 100 events your account has sent. Activity cannot be switched off while you use an
 account, because it is the reason for the account being required; the list above is all of it.
 
+**Access tokens (only if you create one).** For batch jobs, cron, CI and clusters you may create *access tokens* in
+*Account > Access tokens*. We store the name you give it, a one-way fingerprint (SHA-256) of the token (never the token
+itself: it is shown to you once), the first four characters as a hint, when it was created, when it expires, when it
+was last used and when you revoked it. A job using a token sends the same feature-level activity events as above. Tokens
+are removed with the account; revoked and expired ones stay on record for audit until the owner clears them.
+*(Adding this did not change the terms version: it collects nothing unless you create a token. The owner may bump it.)*
+
 **What we do not collect.** Radar files and their contents, **file names or paths**, locations you look at
 (coordinates or place names), radar site identifiers, results, anything you type, or the content of your work. They
 stay on your computer. (The public web version necessarily receives the files you upload to process them; it keeps

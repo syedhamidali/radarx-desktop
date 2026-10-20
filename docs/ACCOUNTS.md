@@ -54,6 +54,7 @@ computation that runs on our servers). The list of ways around it is in
 | `devices` | a random install id, computer name, platform, app version, last seen | the user only |
 | `synced_items` | recipes, workspaces, looks, colour maps the user chose to sync | the user only |
 | `activity_events` | which **features** the account used (no file names, places or data; see below) | the user (insert and read their own); the owner via a service-role-only view |
+| `api_tokens` | access tokens for automation: name, SHA-256 of the token (**never the token**), a 4-character hint, created / expires / last used / revoked | the user, **except the hash** (column grants + a view); only the definer functions change it |
 
 Row-level security is on for every table (see `supabase/migrations/`). The app, the engine and `rxd` hold only
 the **publishable** key; the database password and the service-role key are never in this repository or on a
@@ -89,6 +90,8 @@ bits do not apply: the file inherits the private permissions of your profile fol
   its own); only when the server cannot be reached does the 30-day offline rule below apply.
 * **Signing out** in the app, or `rxd logout`, removes the file for everyone; `rxd logout` also ends the
   session on the server.
+* **`rxd login --token`** keeps an **access-token session** (`source: pat`) in the same file: the token itself (a long-lived
+  secret, as sensitive as a password) and the current one-hour entitlement token (see [Access tokens](#access-tokens-for-automation)).
 * **The file holds one sign-in at a time**, whichever program wrote last: `rxd login` replaces an app sign-in in the
   file (the app keeps its own, in its own storage), and the app handing over a newer token replaces an `rxd` one. When
   the sign-in in the file was made by the app and has expired while the app is closed, `rxd` and `import rxd` say
@@ -237,8 +240,87 @@ typo cannot pass as "refused").
 
 ## Access tokens for automation
 
-Batch jobs, cron, CI and cluster nodes cannot type a password and often have no browser. Personal access tokens for
-them are added in a later step of this change; until then use `rxd login --password-stdin` from a secret store.
+Batch jobs, cron, CI and cluster nodes cannot type a password and often have no browser. For them you create an
+**access token** in the app (*Account > Access tokens*: a name, an expiry of 7 days to 1 year, default 90). The token
+(`rxd_pat_` followed by 43 URL-safe characters, 256 random bits) is shown **once**, with a copy button; the server keeps
+only its SHA-256, so a lost token cannot be shown again and you make a new one. You can have at most **10 active**
+tokens; the list shows name, creation, expiry and **last use**, and **Revoke** ends one (nothing is deleted: the record
+stays for audit).
+
+| How | For | What happens |
+|---|---|---|
+| `rxd login --token < token.txt` | a machine you log in to (a login node, a laptop) | the token is read from standard input (a hidden prompt on a keyboard), exchanged once to check it, and kept in the private session file (mode 0600); every later `rxd` / `import rxd` renews the one-hour sign-in from it |
+| `RADARX_TOKEN=rxd_pat_...` in the environment | CI, one job that should leave nothing behind | exchanged at the first use, the one-hour sign-in kept **in memory only**, renewed hourly; no session file, no queue file. It wins over a stored session. `rxd logout` reminds you that the variable still signs you in |
+
+`rxd whoami` shows `access token 'NAME', expires DATE`, where it came from (`RADARX_TOKEN` or the session file) and
+`session: pat`; `rxd logout` removes a stored token **from this computer only** (revoking is done in the app). A bad
+token, an unreachable server with nothing stored, or a malformed variable gives exit code **5** with a message that says
+which.
+
+### How it works
+
+1. The program sends the token to the Edge Function **`exchange-api-token`** (`supabase/functions/`), which hashes it,
+   looks the hash up with the service role (`use_api_token`), and answers with an **entitlement token**: an ES256 JWT
+   valid for **one hour** (or until the access token expires, if sooner), with the claims `iss` (a fixed string that is
+   not Supabase's: `radarx-desktop/entitlement/v1`), `aud` `radarx-cli`, `sub` (your user id), `src: "pat"`, `jti`,
+   `iat`, `exp`, your e-mail, the token's id, name and expiry date (`pat_exp`) and a `kid` in the header. It is signed with
+   a private key that is **only** the Edge Function secret `ENTITLEMENT_PRIVATE_KEY`.
+2. It is **not a Supabase token**: a different issuer, audience and key, so row-level security never accepts it and it
+   reads or writes nothing in the database by itself. The program verifies it **offline** against a public key built into
+   the code (`ENTITLEMENT_SEED_JWKS` in `jwks_seed.py`, with a `kid`; rotation = add a key). The two token kinds are kept
+   apart: different key sets (the entitlement keys are never fetched from the network or read from a file), the algorithm
+   pinned to ES256 before any key is looked at, different issuer and audience, and the stored session says which kind it
+   holds, so a Supabase token cannot pass as an entitlement token or the reverse (tested, including the worst case of
+   one key in both sets).
+3. Renewal is **single-flight** like every other renewal (see above): many jobs on one session file exchange once, because
+   the function rate-limits per client address (300 per 10 minutes) and per token hash (600 per hour), counted *before*
+   the lookup. Unknown, revoked, expired and malformed tokens and the tokens of banned or deleted accounts all get the
+   **same** answer (`401 invalid_token`); a server or database problem is a `503` and never read as "the token is bad".
+4. **Offline rule.** The same 30 days counted from the newest entitlement token's `iat`, with the same clock rules, **and
+   one stricter limit**: the token's own expiry date `pat_exp` is signed into every entitlement token and holds even
+   offline (a token given 2 days stops after 2 days, not after the 30-day allowance). Written reason for deviating from
+   "the same grace rule": the date was set by the owner of the token as an explicit limit, it costs nothing to honour
+   offline, and honouring the longer allowance would let a lapsed token keep working for a month.
+5. **The entitlement hook** (`entitlement_allows`) receives the entitlement token's claims (`src`, `pat_name`, ...).
+6. **Activity.** A token session has no database token, so its events go through the second function **`log-activity`**
+   with the entitlement token. It applies the same allow-list and caps as the table (one copy in
+   `supabase/functions/log-activity/allowlist.json`, and a test, `test_account_activity_allowlist.py`, fails if it differs
+   from `activity.py` or the migration), always inserts for the token's own account, and the table's trigger (including the
+   2000-events-a-day cap) still runs. Same privacy rules: feature level only. With `RADARX_TOKEN` the events are kept in
+   memory and sent in the background and at exit with the then-current token.
+
+### What a token can and cannot do, and the limits
+
+* A token lets its holder pass the account gate **as you** and add feature-level events to your activity log. It is **not**
+  a database token: it cannot read or change your profile, computers, synced items, activity or tokens, cannot create other
+  tokens and cannot delete the account. **It is nevertheless as sensitive as a password**: keep it in a secret store, a
+  file readable only by you, or your CI's secret variables (with output masking); never in a repository, a chat or a
+  job log. `RADARX_TOKEN` is visible to every process of the same user (and to root) through the environment; a stored
+  token sits in the session file with mode 0600.
+* **Revocation is not instant.** After you revoke a token, a job that already holds an entitlement token keeps working
+  for up to its remaining life, **at most 1 hour (plus the 1-minute clock leeway)**, while the server is reachable; at the
+  next renewal the server says "invalid" and the stored session is removed. When the server **cannot be reached** a
+  revoked token keeps working until the offline allowance ends: **up to 30 days** after the last entitlement token was
+  issued, and never past the token's own expiry date. A user (or a proxy) can also block the server on purpose.
+* **Nodes without internet** (many cluster compute nodes) cannot exchange a token. Run `rxd login --token` on a machine
+  that can, in the shared home folder: the compute nodes then read the stored session **offline for up to 30 days** after
+  its last renewal, so schedule `rxd whoami` (it renews) on the login node, for example hourly, and see the Slurm example
+  in {doc}`CLI`. `RADARX_TOKEN` alone needs the server on every node, once an hour.
+* **The signing key** exists as a Supabase function secret. Whoever obtains it can mint entitlement tokens for any user
+  id, which passes the gate for those users and writes events to their log; it still cannot touch their data, but rotate
+  it at once (below). The two functions run with the service-role key (provided to them by Supabase, never in this
+  repository): `use_api_token` only looks a hash up and sets `last_used_at`, and `log-activity` only inserts the checked
+  rows; it accepts only an entitlement token, never a Supabase one.
+* **Rotating the key:** run `scripts/make_entitlement_key.py` again, ADD the new public key to `ENTITLEMENT_SEED_JWKS`,
+  release, set the new secret, and remove the old public key once its last token (1 hour) and the offline allowance
+  (30 days) have passed. Until a release with the new key reaches a machine, that machine refuses the new tokens.
+* The per-address limit trusts the platform's `cf-connecting-ip` header (else the last `x-forwarded-for` entry): not
+  verified on a real deployment. A very large array job behind one address can hit it (`429`, retried by the next run).
+* A job that uses the app's own storage on the same machine: the app **never replaces or ends** a stored access-token
+  session (it keeps its own sign-in), and `rxd login` with a password replaces it.
+* **Not verified here:** a real run of the Edge Functions (Deno is not installed on the development machine: the logic is
+  tested under Node with fakes and its tokens verified by the Python engine), the signing key script on Windows, and
+  concurrent token creation in a real multi-connection Postgres (the per-user advisory lock is tested for presence).
 
 ## The web service
 
@@ -279,8 +361,14 @@ protection. Everything below is real, including what is not worth fixing:
   server (a user can also simply block the account server), and up to an hour (the token's life) when it can.
   Signing out in the app while the engine is unreachable is remembered and delivered later, but until then the shared
   session file survives.
-* **Tokens at rest**: the session file holds a one-hour access token (and, for `rxd login`, a refresh token) with mode
-  0600 only; anything running as the same user can read it. Keychain storage is a follow-up.
+* **Tokens at rest**: the session file holds a one-hour access token (and, for `rxd login`, a refresh token; for
+  `rxd login --token`, the long-lived access token itself) with mode 0600 only; anything running as the same user can
+  read it. Keychain storage is a follow-up.
+* **Access tokens** (see their section for the full list): a revoked token keeps working up to 1 hour online and up to 30
+  days (never past its own expiry date) when the server cannot be reached; `RADARX_TOKEN` is visible to the user's other
+  processes; whoever holds the signing secret can mint entitlement tokens that pass the gate (not the database); the
+  function's per-address limit trusts a platform header; and, like every check here, the entitlement verification runs on
+  the user's machine and can be removed from source-available code.
 * **The page's script policy keeps `'unsafe-inline'`** (`script-src`) in both the desktop and the web build because
   the UI is built with inline scripts and styles; a content-injection bug in the UI would therefore not be stopped by
   the CSP. `base-uri 'self'` and `form-action 'self'` are set to close the cheaper tricks. Not changed here.
@@ -336,7 +424,23 @@ protection. Everything below is real, including what is not worth fixing:
    `select public.purge_old_activity(365);` (for example with pg_cron or a monthly reminder). Nothing purges
    it automatically.
 
-7. Rotate the publishable key if it ever leaks; it is public by design but can be revoked.
+7. **Access tokens for automation** (only after steps 1 to 6). The migration `20261023000000_api_tokens.sql` is applied by
+   step 1's `supabase db push`. Then, on your own computer (never paste a key into a chat, an issue or a file in this
+   repository):
+
+   ```bash
+   python scripts/make_entitlement_key.py --out ~/radarx-entitlement-private.pem   # prints the PUBLIC key; writes the private one (0600)
+   # add the printed public JSON to ENTITLEMENT_SEED_JWKS in python/engine/account/jwks_seed.py, release
+   supabase secrets set ENTITLEMENT_PRIVATE_KEY="$(cat ~/radarx-entitlement-private.pem)"
+   rm -P ~/radarx-entitlement-private.pem                                           # Linux: shred -u
+   supabase functions deploy exchange-api-token log-activity --no-verify-jwt
+   ```
+
+   Then create a token in the app and check it with `printf '%s\n' "$TOKEN" | rxd login --token` and `rxd whoami`.
+   Optionally schedule `select public.purge_api_tokens(400);` (removes tokens that ended over 400 days ago). The details
+   and what the functions answer are in `supabase/functions/exchange-api-token/README.md`.
+
+8. Rotate the publishable key if it ever leaks; it is public by design but can be revoked.
 
 ## For developers
 
@@ -353,7 +457,8 @@ they never touch the real network or a real account. The gate's decision logic i
 (unit-tested); handing the session to the engine is `src/lib/auth/engineSession.ts` (unit-tested) wired by
 `engineLink.ts`; sign-in with a provider on desktop is `src/lib/auth/oauth.ts` plus the loopback
 listener `src-tauri/src/oauth.rs`. The Python side is the package `python/engine/account/`
-(`store`, `gotrue`, `tokens`, `core`, `entitlement`, `activity`, `commands`).
+(`store`, `gotrue`, `tokens`, `core`, `entitlement`, `activity`, `commands`, `oauth_login`, `pat`).
 
 SQL tests (no Docker needed): run `supabase/migrations/*.sql` and `supabase/tests/*.sql` on an in-process Postgres
-(PGlite) with a small stub of the Supabase roles, or on a local stack with `psql -f`.
+(PGlite, with its pgcrypto extension, which the token generator needs) and a small stub of the Supabase roles and
+`auth.users`, or on a local stack with `psql -f`. The Edge Function logic is tested with `npm run test:unit` (plain Node).

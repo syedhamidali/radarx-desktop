@@ -42,7 +42,22 @@ except rxd.AccountRequired as exc:
 ```
 
 The check reads the same session file as the app and `rxd` (it is renewed automatically; with no network it holds for
-30 days after the last server check) and costs microseconds after the first call. `RADARX_AUTH_DISABLED=1` switches it
+30 days after the last server check) and costs microseconds after the first call.
+
+**Without a typed password** (batch jobs, notebooks on a cluster, CI): create an access token in the app (*Account >
+Access tokens*) and either run `rxd login --token < token.txt` once (the session file is then shared with Python), or
+set `RADARX_TOKEN` in the environment of the job: `import rxd` then signs in by itself, exchanging the token at the first
+call, keeping the one-hour sign-in in memory only and renewing it hourly; nothing is written to disk.
+
+```python
+import os, rxd
+
+os.environ["RADARX_TOKEN"] = secret_from_your_vault   # or set it in the job's environment; never hard-code it
+vol = rxd.open("KTLX20130520_201643_V06.gz")           # works: signed in by the token
+```
+
+`exc.reason` is `"invalid"` for a malformed variable, `"revoked"` for a revoked or expired token (create a new one),
+`"unavailable"` when the account server cannot be reached and no session is stored. See {doc}`ACCOUNTS` for the limits. `RADARX_AUTH_DISABLED=1` switches it
 off for developers working from a source checkout; installers ignore that variable.
 
 ## A session

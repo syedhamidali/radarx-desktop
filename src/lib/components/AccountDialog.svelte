@@ -4,6 +4,7 @@
   import { auth, saveProfile, retryProfile, signOut, deleteAccount, listDevices, removeDevice, listActivity, deviceId, USE_CASES, type DeviceRow, type ActivityRow } from '../stores/auth';
   import { focusTrap } from '../utils/focusTrap';
   import { addToast } from '../stores/toasts';
+  import AccessTokens from './AccessTokens.svelte';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -106,6 +107,8 @@
         {/each}
       </ul>
     {/if}
+
+    <AccessTokens />
 
     <h3>Activity</h3>
     <p class="hint">

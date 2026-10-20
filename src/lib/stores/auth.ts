@@ -5,6 +5,7 @@ import { signInWithProvider, cancelOAuth } from '../auth/oauth';
 import { AUTH_DISABLED, OFFLINE_GRACE_DAYS, type OAuthProvider } from '../auth/config';
 import { friendlyAuthError, type GateState } from '../auth/gate';
 import { parseStoredSession, planStartup, tokenIssuedAt, isDefiniteAuthFailure, isValidDeviceId, type StoredSession } from '../auth/startup';
+import { cleanTokenName, nameProblem, parseCreated, parseRows, type ApiTokenRow } from '../auth/apiTokens';
 import { startEngineLink, engineSignedIn, engineSignedOut, engineTokenRefreshed, hasPendingSignOut } from '../auth/engineLink';
 
 /**
@@ -452,6 +453,40 @@ export async function listActivity(): Promise<ActivityRow[]> {
     .limit(100);
   if (error) throw error;
   return (data as ActivityRow[]) ?? [];
+}
+
+/**
+ * Access tokens (docs/ACCOUNTS.md "Access tokens for automation"). The list comes from a view that
+ * has no hash; the plaintext of a new token is returned ONCE by create_api_token and is kept by the
+ * caller in memory only: nothing here stores, logs or caches it.
+ */
+export async function listApiTokens(): Promise<ApiTokenRow[]> {
+  const sb = await getClient();
+  const { data, error } = await sb
+    .from('my_api_tokens')
+    .select('id, name, hint, created_at, expires_at, last_used_at, revoked_at')
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return parseRows(data);
+}
+
+export async function createApiToken(name: string, days: number): Promise<{ id: string; token: string; name: string; expires_at: string }> {
+  const clean = cleanTokenName(name);
+  if (!clean) throw new Error(nameProblem(name) ?? 'That name is not allowed.');
+  const sb = await getClient();
+  const { data, error } = await sb.rpc('create_api_token', { p_name: clean, p_days: days });
+  if (error) throw error;
+  const made = parseCreated(data);
+  if (!made) throw new Error('The account server sent something unexpected.');
+  return made;
+}
+
+export async function revokeApiToken(id: string): Promise<boolean> {
+  const sb = await getClient();
+  const { data, error } = await sb.rpc('revoke_api_token', { p_id: id });
+  if (error) throw error;
+  return data === true;
 }
 
 export async function removeDevice(id: string): Promise<void> {
