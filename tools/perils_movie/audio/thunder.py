@@ -137,6 +137,13 @@ class ThunderParams:
     variety_s: float = 6.0
 
 
+_VARIANTS = (
+    0.8,
+    1.0,
+    1.25,
+)  # N-wave length variants (their spectral nulls fall at different frequencies)
+
+
 def lf_gain_for(prm: ThunderParams, r_nearest_m: float) -> float:
     """Low-frequency gain by the distance of the flash: near, mid (15 km) and far, log-interpolated."""
     x = np.log([8000.0, 15000.0, 30000.0])
@@ -582,7 +589,9 @@ def render_flash(
     P_n = np.concatenate([n, n, tn, bn])
     P_u = np.concatenate([u, u, tu, bu])
     P_r = np.concatenate([r, r, tr, br])
-    P_arr = np.concatenate([arr, arr + np.maximum(d_path, 0.0), t_arr, b_arr])
+    # a rough ground: the path difference of the reflection scatters by +-0.4 ms, so it does not comb the spectrum
+    d_refl = np.maximum(d_path + rng.normal(0.0, 0.0004, len(d_path)), 0.0)
+    P_arr = np.concatenate([arr, arr + d_refl, t_arr, b_arr])
     P_amp = np.concatenate([amp, amp * prm.ground_reflection, ta, ba])
     lfg = lf_gain_for(prm, float(r.min()))
     P_lf = np.concatenate([amp * lfg, amp * lfg * prm.ground_reflection, np.zeros(nx)])
@@ -611,13 +620,20 @@ def render_flash(
     ratio = max(1.3, (r_hi / max(r_lo, 1.0)) ** (1.0 / prm.n_dist_bins))
     b = np.floor(np.log(np.maximum(P_r, 1.0) / max(r_lo, 1.0)) / np.log(ratio)).astype(int)
     out = np.zeros((2, L))
+    var = rng.integers(
+        0, len(_VARIANTS), len(P_r)
+    )  # which length variant of the N-wave each element has
     for bi in np.unique(b):
         m = b == bi
         rb = float(np.sqrt(P_r[m].min() * P_r[m].max()))
         r_abs = rb * prm.absorption_scale
-        kern = absorbed(n_wave(sr, rb), sr, r_abs, temp_c, p_hpa, prm.rh_pct)
-        for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
-            accumulate(out[ear], idx[m] + dd[m], P_amp[m] * g[m], kern)
+        for v, scale in enumerate(_VARIANTS):
+            mv = m & (var == v)
+            if not mv.any():
+                continue
+            kern = absorbed(n_wave(sr, rb, scale), sr, r_abs, temp_c, p_hpa, prm.rh_pct)
+            for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
+                accumulate(out[ear], idx[mv] + dd[mv], P_amp[mv] * g[mv], kern)
         for hi, f0 in ((0, prm.lf_low_hz), (1, prm.lf_high_hz), (2, prm.lf_mid_hz)):
             mm = m & (P_hi == hi) & (P_lf > 0)
             if not mm.any():
@@ -632,17 +648,21 @@ def render_flash(
         if not m.any():
             continue
         rb = float(np.sqrt(P_r[m].min() * P_r[m].max()))
-        kc = absorbed(
-            n_wave(sr, min(rb, 1500.0)),
-            sr,
-            min(rb * prm.absorption_scale, prm.crack_absorb_m),
-            temp_c,
-            p_hpa,
-            prm.rh_pct,
-        )
-        wc = prm.crack_gain * np.sqrt(1.0 - P_r[m] / prm.crack_range_m)
-        for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
-            accumulate(out[ear], idx[m] + dd[m], P_amp[m] * wc * g[m], kc)
+        wc = prm.crack_gain * np.sqrt(np.clip(1.0 - P_r / prm.crack_range_m, 0.0, 1.0))
+        for v, scale in enumerate(_VARIANTS):
+            mv = m & (var == v)
+            if not mv.any():
+                continue
+            kc = absorbed(
+                n_wave(sr, min(rb, 1500.0), scale),
+                sr,
+                min(rb * prm.absorption_scale, prm.crack_absorb_m),
+                temp_c,
+                p_hpa,
+                prm.rh_pct,
+            )
+            for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
+                accumulate(out[ear], idx[mv] + dd[mv], P_amp[mv] * wc[mv] * g[mv], kc)
     # head shadow on the ear that is farther from the energy (a low-pass blend)
     e_l, e_r = float((P_amp**2 * gl**2).sum()), float((P_amp**2 * gr**2).sum())
     far = 0 if e_l < e_r else 1

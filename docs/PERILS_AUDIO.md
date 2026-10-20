@@ -132,7 +132,7 @@ model, and the check against it:
 | Physics (literature) | In the synthesis (`thunder.py`, `nwave.py`) |
 |---|---|
 | Thunder is the sum of the sound from every element of the channel; the onset is the nearest point, a long or tilted channel rolls on | every LMA source is an element at its real position and time; arrival `t_i + r_i / 343`; onset = earliest arrival; duration from `(r_max - r_min) / c` |
-| Close to the channel the wave is a sharp N-wave (shock steepening: the stronger and nearer, the sharper); crack with energy at 1 to 5 kHz | N-wave of 0.1 ms rise and 2 ms length at 200 m, 1.6 ms and 5 ms at 6 km, 3 ms and 10 ms at 20 km; elements within 15 km are boosted (`crack_boost`) and get an extra short N-wave that keeps the brightness of a channel at most 1.5 km away (`crack_gain`): a sharp crack for flashes to 15 km |
+| Close to the channel the wave is a sharp N-wave (shock steepening: the stronger and nearer, the sharper); crack with energy at 1 to 5 kHz | N-wave (length varied by 0.8, 1.0 or 1.25 per element, so the spectral nulls do not stripe the spectrum) of 0.1 ms rise and 2 ms length at 200 m, 1.6 ms and 5 ms at 6 km, 3 ms and 10 ms at 20 km; elements within 15 km are boosted (`crack_boost`) and get an extra short N-wave that keeps the brightness of a channel at most 1.5 km away (`crack_gain`): a sharp crack for flashes to 15 km |
 | Spectral peak of the rumble at 20 to 100 Hz (heated-channel relaxation, tortuous segments) | a damped 55, 80 or 110 Hz pulse per source (by the local density of sources), 0.6 of the N-wave for a flash within 8 km, 0.4 at 15 km, 0.2 beyond 30 km: the low end is felt, not just heard; nothing below 20 Hz (not reproducible) |
 | Air absorption removes the highs with distance (ISO 9613-1) | the minimum-phase filter of each source's own distance (`absorbed`), 12 distance bins; test: within 1 dB of ISO 9613-1 at 1 km and 20 km |
 | Tortuosity of the channel (10 to 100 m) makes the crackle | **modelled**: between consecutive sources closer than 8 km, elements at random spacing 1 to 20 m with 3 m lateral scatter, seeded (`sub-resolution tortuosity modelled`) |
@@ -169,7 +169,7 @@ BS.1770 loudness (K-weighting, gated): **-21 LUFS integrated**, a transparent lo
 attack that never lets a peak through, a 120 ms exponential release run at 1 kHz so a few peaks do not make the
 level pump), **true peak at most -1.5 dBFS** (4x oversampled), 2 s fade in and 2.5 s out, no clipping, deterministic
 (seeded). Mono compatibility is reported. Output 48 kHz stereo WAV (24 or 16 bit with seeded TPDF dither). The limiter
-barely acts (0.4 dB at most, for under 0.1 % of the film).
+barely acts (0.24 dB at most, for 0.04 % of the film).
 
 **Thunder is the foreground.** The other layers are trimmed (or raised) together until the *median voiced thunder
 stands 17 dB above the rest of the mix* (rms over its first 4 s; `master.bed_trim_db`,
@@ -273,11 +273,11 @@ clip, each with its `_report.json` and `plots_v5_*`):
 | by class near / mid / far | 25 / 34 / 18 | 20 / 29 / 11 |
 | voiced per 10 s | 0, 2, 11, 7, 5, 10, 5, 7, 8, 8, 8, 6 (median 7) | 6, 6, 6, 6, 5, 7, 7, 9, 3 (median 6) |
 | voiced flashes on screen | 54 (of 872 on-screen flashes heard) | 36 (of 884) |
-| median thunder over the rest of the mix | 17.0 dB (10th percentile 12.5) | 17.0 dB (9.7) |
-| median thunder over the rain / the tornado roar | 27.8 dB / 20.0 dB (min 12.2) | 28.6 dB / 19.1 dB (min 9.0) |
-| integrated loudness, true peak | -21.0 LUFS, -1.59 dBFS | -21.0 LUFS, -1.95 dBFS |
-| thunder layer rms, peak | -21.5, -1.6 dBFS | -20.9, -2.0 dBFS |
-| limiter | 0.38 dB at most, 0.08 % of the film | not needed |
+| median thunder over the rest of the mix | 17.0 dB (10th percentile 12.7) | 17.0 dB (9.6) |
+| median thunder over the rain / the tornado roar | 27.8 dB / 19.9 dB (min 11.0) | 28.7 dB / 18.8 dB (min 9.2) |
+| integrated loudness, true peak | -21.0 LUFS, -1.59 dBFS | -21.0 LUFS, -1.87 dBFS |
+| thunder layer rms, peak | -21.4, -1.6 dBFS | -21.0, -2.0 dBFS |
+| limiter | 0.24 dB at most, 0.04 % of the film | not needed |
 
 The first 13.5 s of the film (the wide shot 100 km from the line) have no flash that can have arrived: ambient only,
 by physics; the focus clip starts near the storm and has thunder from the first second (some of it the sound of
