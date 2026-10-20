@@ -260,14 +260,23 @@ begin
   perform public.t_expect(true, '... and fine again once they are older than a day');
   reset role;
 
-  -- the total cap: 100 rows
+  -- the cap on "on record" rows: 200 that are active or ended in the last 30 days
   delete from public.api_tokens where user_id = a;
   insert into public.api_tokens (user_id, name, hint, token_hash, created_at, expires_at, revoked_at)
     select a, 'old' || i, 'abcd', sha256(convert_to('bulk' || i, 'UTF8')), now() - interval '10 days', now() + interval '30 days', now() - interval '5 days'
-      from generate_series(1, 100) i;
+      from generate_series(1, 200) i;
   perform public.t_as_user(a);
-  perform public.t_expect(public.t_refused($s$select public.create_api_token('101st', 30)$s$, 'too many access tokens'),
-    'more than 100 tokens on record is refused');
+  perform public.t_expect(public.t_refused($s$select public.create_api_token('201st', 30)$s$, 'too many access tokens'),
+    '200 tokens made or ended in the last 30 days is refused, and the error says so');
+  perform public.t_expect(public.t_refused($s$select public.create_api_token('201st', 30)$s$, 'last 30 days'), '... naming the real window');
+  reset role;
+  -- the lockout the review found: old rows that ended long ago must not count (users cannot delete them)
+  update public.api_tokens set created_at = now() - interval '300 days', expires_at = now() - interval '200 days',
+    revoked_at = now() - interval '250 days' where user_id = a;
+  perform public.t_as_user(a);
+  perform public.create_api_token('after a long time', 30);
+  perform public.t_expect(true, 'rows that ended more than 30 days ago do not count against the user');
+  perform public.t_expect((select count(*) from public.api_tokens where user_id = a) = 201, '... and nothing was deleted');
   reset role;
   -- and another user is unaffected by A's limits
   perform public.t_as_user(b);
@@ -300,6 +309,42 @@ begin
   perform public.t_as_service();
   perform public.t_expect(public.api_token_rate_hit('ip:test', 3, 60), 'a new window starts after it elapsed');
   reset role;
+
+  -- ---------------------------------------------------------------- peek: reads, never counts
+  perform public.t_as_service();
+  perform public.t_expect(public.api_token_rate_peek('fail:x', 2, 60), 'an unused bucket is under its limit');
+  perform public.t_expect(public.api_token_rate_peek('fail:x', 2, 60), '... peeking does not count');
+  perform public.api_token_rate_hit('fail:x', 2, 60);
+  perform public.api_token_rate_hit('fail:x', 2, 60);
+  perform public.t_expect(not public.api_token_rate_peek('fail:x', 2, 60), 'a bucket at its limit is not under it');
+  perform public.t_expect(public.t_refused($s$select public.api_token_rate_peek('', 0, 60)$s$, '22023'), 'peek refuses bad arguments');
+  reset role;
+  update public.api_token_rate set window_start = now() - interval '2 minutes' where bucket = 'fail:x';
+  perform public.t_as_service();
+  perform public.t_expect(public.api_token_rate_peek('fail:x', 2, 60), 'a bucket whose window elapsed is under its limit again');
+  reset role;
+  perform public.t_as_user(a);
+  perform public.t_expect(public.t_refused($s$select public.api_token_rate_peek('k', 1, 60)$s$, '42501'), 'a signed-in user cannot call peek');
+  reset role;
+  perform public.t_expect((select count(*) from pg_indexes where tablename = 'api_token_rate' and indexdef like '%window_start%') = 1,
+    'the rate table has an index on window_start (its cleanup never scans the table)');
+
+  -- ---------------------------------------------------------------- a password change revokes the tokens
+  delete from public.api_tokens where user_id = b;
+  perform public.t_as_user(b);
+  perform public.create_api_token('before reset', 30);
+  perform public.create_api_token('another', 30);
+  reset role;
+  update auth.users set raw_user_meta_data = '{"x":1}'::jsonb where id = b;
+  perform public.t_expect((select count(*) from public.api_tokens where user_id = b and revoked_at is null) = 2,
+    'a change that is not a password change leaves the tokens alone');
+  update auth.users set encrypted_password = 'new-hash' where id = b;
+  perform public.t_expect((select count(*) from public.api_tokens where user_id = b and revoked_at is null) = 0,
+    'changing the password revokes every token of the account');
+  perform public.t_expect((select count(*) from public.api_tokens where user_id = b) = 2, '... and deletes nothing');
+  update auth.users set encrypted_password = 'new-hash' where id = b;
+  perform public.t_expect(true, 'the same value again is not a change');
+  perform public.t_expect((select count(*) from public.api_tokens where user_id = a and revoked_at is null) > 0, 'another account''s tokens are untouched');
 
   -- ---------------------------------------------------------------- retention
   perform public.t_as_service();

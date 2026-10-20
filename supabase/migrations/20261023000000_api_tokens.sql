@@ -9,8 +9,12 @@
 --     plus row-level security, and a view for convenience). Nobody but the SECURITY DEFINER
 --     functions below can insert, update or delete: no client privilege, no policy.
 --   * A token has a name, an expiry (default 90 days, at most 365), last_used_at and revoked_at.
---     Revoking deletes nothing (the audit trail stays). At most 10 ACTIVE tokens per user, 100 rows
---     in all, 20 creations per 24 hours.
+--     Revoking deletes nothing (the audit trail stays). At most 10 ACTIVE tokens per user, 200
+--     rows that are active or ended in the last 30 days (older ended rows do not count, so an old
+--     record can never lock someone out), 20 creations per 24 hours.
+--   * Changing the password revokes every token of the account (a trigger on auth.users): a
+--     stolen password reset must not leave a token behind. "Sign out everywhere" does NOT revoke
+--     tokens (GoTrue has no hook for it): revoke them in the app.
 --   * The only way to turn a token into anything is the Edge Function `exchange-api-token`
 --     (supabase/functions/), which holds the service-role key and calls use_api_token(). The
 --     answer is a short-lived entitlement token that is NOT a database token: row-level security
@@ -82,7 +86,7 @@ declare
   new_id uuid;
   new_expiry timestamptz;
   active_count int;
-  total_count int;
+  recent_count_all int;
   recent_count int;
 begin
   -- a real signed-in account only: not anonymous, not the service role, not another database role
@@ -101,16 +105,18 @@ begin
   -- one creation at a time per user, so the limits below cannot be raced past
   perform pg_advisory_xact_lock(hashtextextended('api_token:' || uid::text, 0));
 
+  -- "on record" means active, or ended (revoked or expired) within the last 30 days: users cannot
+  -- delete rows, so rows that ended long ago must not count against them
   select count(*) filter (where revoked_at is null and expires_at > now()),
-         count(*),
+         count(*) filter (where least(expires_at, coalesce(revoked_at, expires_at)) > now() - interval '30 days'),
          count(*) filter (where created_at > now() - interval '24 hours')
-    into active_count, total_count, recent_count
+    into active_count, recent_count_all, recent_count
     from public.api_tokens where user_id = uid;
   if active_count >= 10 then
     raise exception 'at most 10 active access tokens: revoke one first' using errcode = '54000';
   end if;
-  if total_count >= 100 then
-    raise exception 'too many access tokens on record: revoke or let old ones lapse'
+  if recent_count_all >= 200 then
+    raise exception 'too many access tokens made or ended in the last 30 days (limit 200): try again when older ones have aged out'
       using errcode = '54000';
   end if;
   if recent_count >= 20 then
@@ -215,6 +221,7 @@ create table public.api_token_rate (
   window_start timestamptz not null default now(),
   hits         int not null default 0
 );
+create index api_token_rate_window_idx on public.api_token_rate (window_start);
 alter table public.api_token_rate enable row level security;
 revoke all on public.api_token_rate from public, anon, authenticated;
 
@@ -238,8 +245,10 @@ begin
         hits = case when r.window_start < now() - make_interval(secs => p_window_s)
                     then 1 else r.hits + 1 end
   returning hits into n;
-  if random() < 0.01 then  -- tidy up now and then
-    delete from public.api_token_rate where window_start < now() - interval '1 day';
+  if random() < 0.02 then  -- tidy up now and then: an index range scan, a bounded batch
+    delete from public.api_token_rate
+     where bucket in (select bucket from public.api_token_rate
+                       where window_start < now() - interval '1 day' limit 200);
   end if;
   return n <= p_limit;
 end;
@@ -247,6 +256,31 @@ $$;
 
 revoke all on function public.api_token_rate_hit(text, int, int) from public, anon, authenticated;
 grant execute on function public.api_token_rate_hit(text, int, int) to service_role;
+
+-- is the bucket still under its limit? (reads, never counts: for limits on FAILURES, which are
+-- checked before the work and counted after it)
+create or replace function public.api_token_rate_peek(p_bucket text, p_limit int, p_window_s int)
+returns boolean
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  r record;
+begin
+  if p_bucket is null or char_length(p_bucket) > 100 or p_limit < 1 or p_window_s < 1 then
+    raise exception 'bad rate-limit arguments' using errcode = '22023';
+  end if;
+  select window_start, hits into r from public.api_token_rate where bucket = p_bucket;
+  if not found or r.window_start < now() - make_interval(secs => p_window_s) then
+    return true;
+  end if;
+  return r.hits < p_limit;
+end;
+$$;
+
+revoke all on function public.api_token_rate_peek(text, int, int) from public, anon, authenticated;
+grant execute on function public.api_token_rate_peek(text, int, int) to service_role;
 
 -- ---------------------------------------------------------------------------------------------
 -- retention: tokens that ended (revoked or expired) more than `days` ago may be removed. The owner
@@ -273,3 +307,32 @@ $$;
 
 revoke all on function public.purge_api_tokens(int) from public, anon, authenticated;
 grant execute on function public.purge_api_tokens(int) to service_role;
+
+-- ---------------------------------------------------------------------------------------------
+-- a password change (a reset included) revokes every token of the account. The trigger can never
+-- block the password change itself: a failure here is swallowed.
+
+create or replace function public.revoke_api_tokens_on_password_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  begin
+    update public.api_tokens set revoked_at = now()
+     where user_id = new.id and revoked_at is null;
+  exception when others then
+    null;
+  end;
+  return new;
+end;
+$$;
+
+revoke all on function public.revoke_api_tokens_on_password_change() from public, anon, authenticated;
+
+create trigger api_tokens_revoke_on_password_change
+  after update of encrypted_password on auth.users
+  for each row
+  when (old.encrypted_password is distinct from new.encrypted_password)
+  execute function public.revoke_api_tokens_on_password_change();
