@@ -36,8 +36,11 @@ computation that runs on our servers). The list of ways around it is in
   computers; **Activity**: the list of the last 100 events your account has sent, exactly as stored (see
   [The activity log](#the-activity-log)); sign out; delete the account (everything is removed, typed confirmation).
 - **Terminal and Python:** `rxd login` once (e-mail, password typed without echo), then every `rxd` command and
-  `import rxd` works. `rxd whoami` shows the account, `rxd logout` signs out. Creating the account itself happens
-  in the app (or its sign-up screen), where the e-mail code is entered.
+  `import rxd` works. `rxd whoami` shows the account and which program renews the sign-in, `rxd logout` signs out.
+  Creating the account itself happens in the app (or its sign-up screen), where the e-mail code is entered.
+  If you cannot type a password: `rxd login --password-stdin` (one line of standard input), `rxd login --browser`
+  (Google, Apple, Facebook; a browser on the same computer), and for batch jobs, cron, CI and clusters an
+  [access token](#access-tokens-for-automation) (see {doc}`CLI`).
 - **Sharing:** after an image or movie is saved a "Share" bar appears. It opens X, Facebook, LinkedIn or
   Bluesky with a caption filled in and shows the file so it can be attached; for Instagram it copies the
   caption and shows the file. radarx never posts on anyone's behalf.
@@ -86,6 +89,55 @@ bits do not apply: the file inherits the private permissions of your profile fol
   its own); only when the server cannot be reached does the 30-day offline rule below apply.
 * **Signing out** in the app, or `rxd logout`, removes the file for everyone; `rxd logout` also ends the
   session on the server.
+* **The file holds one sign-in at a time**, whichever program wrote last: `rxd login` replaces an app sign-in in the
+  file (the app keeps its own, in its own storage), and the app handing over a newer token replaces an `rxd` one. When
+  the sign-in in the file was made by the app and has expired while the app is closed, `rxd` and `import rxd` say
+  exactly that and offer the two ways out (open the app, or `rxd login`); `rxd whoami` shows `made by the
+  radarx-desktop app` or `made by 'rxd login'`, and `renewed_by` in `--json`. The two are deliberately **not merged**.
+
+### Ways to sign in on the command line
+
+| Method | For | Notes |
+|---|---|---|
+| `rxd login` | a person at a keyboard | e-mail and password, typed without echo |
+| `rxd login --email E --password-stdin` | scripts that hold the password | ONE line of standard input, never argv or the environment (so not in `ps`, shell history or `/proc/PID/environ`); refused on a keyboard, when empty or longer than 1024 characters; the password is never printed, logged, stored or shown by `--print-command` (tested) |
+| `rxd login --browser --provider P` | accounts made with Google, Apple, Facebook | PKCE with a one-shot listener on `127.0.0.1` (random port, 5 minutes, per-connection deadline, only a request with `code` or `error` ends the wait, a `Host` check, fixed messages only, never provider text). Needs a browser **on the same computer**: over SSH, on a cluster login node or in a container the redirect cannot reach the listener, so use an access token there |
+| an access token | batch jobs, cron, CI, clusters | see [Access tokens](#access-tokens-for-automation) |
+
+Why `--browser` has no `state` parameter: the project's redirect allow-list is matched against the whole redirect address
+(`http://127.0.0.1:*/auth/callback`), so a `?state=...` on it would not match and the server would send the code to the
+site address instead. What `state` would stop here (login CSRF: somebody makes your browser deliver *their* code to your
+listener) is stopped by PKCE itself: the server only accepts a code together with the secret verifier whose hash started
+that sign-in, so a foreign code fails at the exchange and nothing is stored (tested). Not verified against a real provider.
+
+### Renewal under parallelism
+
+Supabase rotates refresh tokens: **each may be used once**, and a second use is treated as theft and ends the whole
+session. Hundreds of jobs starting together on a shared home folder must therefore renew the session exactly once. The
+renewal (`engine/account/store.py`, `core.py`) holds three locks in this order: an in-process lock (Linux NFS emulates
+`flock` per *process*, so threads need their own), an **exclusively created lock file** `session.refresh.lock`
+(`O_CREAT|O_EXCL`, atomic on local disks and on NFS v3+; it records host, process id, time and a random token), and the
+ordinary `flock` on `session.lock`. A lock left by a dead process on the same host is taken over at once, otherwise after
+60 seconds (a renewal makes one network call that is cut off after 5 s; across computers only the age can tell); waiting
+uses a random back-off and gives up after 20 s, in which case the stored session is used as it is and **nothing is
+deleted**. After getting the lock the file is read again and a token somebody else already renewed is used. The rotated
+tokens are written to disk **before** anything else is done with them. A refusal from the server removes the session only
+if the file still holds exactly the refresh token that was refused. After a network failure a small marker
+(`session.netdown`) makes the other processes sharing the folder skip the network for 15 seconds instead of each waiting
+out the same timeout.
+
+Measured with `python/tests/test_account_refresh_stress.py` against a mock account server that implements rotation with
+reuse detection: 8 processes, 32 threads in one process, and 8 processes x 4 threads (also with `flock` replaced by a
+function that does nothing, like an NFS mount without a lock daemon): **exactly one server renewal per expiry, no reuse,
+no revocation**. The same herd against the code before this change, with a `flock` that does nothing: the server saw the
+token reused and revoked the session (7 of 8 processes were told "signed out").
+
+`refresh_token_reuse_interval` in `supabase/config.toml` stays at **10 seconds** (Supabase's default). Raising it would
+make the server forgive a second use for longer, which hides the race instead of removing it and gives a thief with a copy
+of the token a longer window; the single renewal above makes it unnecessary. Limits that remain: NFS caching can show a
+reader a stale file for a moment (`open` revalidates it, which is what the re-read after the lock relies on), a lock file
+can be taken over from a holder that merely stalled for more than 60 seconds, and a crash or a full disk exactly between
+the server rotating the token and the new one reaching the disk loses the session (sign in again). Windows is not tested.
 
 Checking a session is the same on every surface (`python/engine/account/`): the access token (a signed JWT) is
 verified **offline** against the project's public signing key (ES256). That key is **built into the program**
@@ -109,7 +161,7 @@ edited. What applies when:
 | Situation | Result |
 |---|---|
 | access token not yet expired | accepted (no network needed) |
-| expired, `rxd login` session (has a refresh token) | renewed online; if the server **answers with its own refusal** (GoTrue's `invalid_grant`, `refresh_token_not_found`, ... ) the session is removed; if it cannot be reached, or a proxy / portal / outage answers something else (403, 404, 407, 408, 429, 5xx, HTML), the session is **kept** and the 30-day rule applies |
+| expired, `rxd login` session (has a refresh token) | renewed online (once, however many jobs start together: see Renewal under parallelism); if the server **answers with its own refusal** (GoTrue's `invalid_grant`, `refresh_token_not_found`, ... ) the session is removed; if it cannot be reached, or a proxy / portal / outage answers something else (403, 404, 407, 408, 429, 5xx, HTML), the session is **kept** and the 30-day rule applies |
 | expired, app session | the app renews its own token and hands it over. If the server is **reachable** (a short probe, at most 2 s) and nobody renewed it: refused ("open the app or sign in again"). If it is **not reachable**: accepted until 30 days after the token's `iat` |
 | the app (engine WebSocket, desktop) with an expired token | accepted on the same 30-day rule (a ship has no network); the app renews and hands over a fresh token when it can |
 | the public web service | **only an unexpired token** is accepted, and it is re-checked on every message: the service is always online, so no offline allowance applies; the browser renews its token about hourly and presents it again |
@@ -182,6 +234,11 @@ example monthly with `select public.purge_old_activity(365);`), and the view `pu
 owner one row per account (e-mail, first and last seen, counts per surface); only the service role can read it.
 `supabase/tests/activity_rls.sql` and `accounts_hardening.sql` test this (the checks name the error they expect, so a
 typo cannot pass as "refused").
+
+## Access tokens for automation
+
+Batch jobs, cron, CI and cluster nodes cannot type a password and often have no browser. Personal access tokens for
+them are added in a later step of this change; until then use `rxd login --password-stdin` from a secret store.
 
 ## The web service
 

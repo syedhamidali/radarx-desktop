@@ -8,6 +8,7 @@ through ``engine.account.http.request_json`` (tests replace it).
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlencode
 
 from engine.account import config, http
 from engine.account.errors import AccountServerError
@@ -51,6 +52,40 @@ def refresh(refresh_token: str, *, timeout: float = config.HTTP_TIMEOUT_S) -> di
         timeout=timeout,
     )
     return _session(out)
+
+
+def exchange_code(auth_code: str, code_verifier: str) -> dict[str, Any]:
+    """Finish a PKCE sign-in: trade the code from the provider's redirect plus the secret verifier
+    for a session. A code made for another verifier (a forged or injected redirect) is refused."""
+    out = http.request_json(
+        "POST",
+        f"{config.project_url()}/auth/v1/token?grant_type=pkce",
+        headers=_headers(),
+        body={"auth_code": auth_code, "code_verifier": code_verifier},
+    )
+    return _session(out)
+
+
+def authorize_url(provider: str, redirect_to: str, code_challenge: str) -> str:
+    """The page a browser opens to sign in with ``provider`` (PKCE, S256). Nothing secret is in it:
+    the challenge is a hash of the verifier, which never leaves this machine until the exchange."""
+    query = urlencode(
+        {
+            "provider": provider,
+            "redirect_to": redirect_to,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "s256",
+        }
+    )
+    return f"{config.project_url()}/auth/v1/authorize?{query}"
+
+
+def enabled_providers(*, timeout: float = 5.0) -> frozenset[str]:
+    """The sign-in providers the project has switched on (from the public auth settings)."""
+    external = settings(timeout=timeout).get("external")
+    if not isinstance(external, dict):
+        return frozenset()
+    return frozenset(str(k) for k, v in external.items() if v is True)
 
 
 def settings(*, timeout: float = 2.0) -> Any:

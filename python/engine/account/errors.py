@@ -27,6 +27,11 @@ class AccountRequired(Exception):  # noqa: N818 - the documented public name
     ``revoked``, ``not_entitled``); ``str(exc)`` is a complete, friendly sentence.
     """
 
+    #: True when the session that expired belongs to the desktop app (which renews it itself).
+    app_owned: bool = False
+    #: A shorter first sentence for a terminal that adds its own instructions below it.
+    headline: str | None = None
+
     def __init__(self, reason: str = "no_session", message: str | None = None) -> None:
         self.reason = reason
         text = message or REASONS.get(reason, REASONS["unavailable"])

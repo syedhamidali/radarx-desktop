@@ -38,6 +38,36 @@ and exits with **code 5**. With no network a sign-in keeps working for 30 days a
 The deprecated `xrd` command behaves identically. (`RADARX_AUTH_DISABLED=1` switches the check off in a source
 checkout for developers; installers ignore it.)
 
+### Other ways to sign in
+
+| You are... | Use |
+|---|---|
+| at a keyboard, with an e-mail and password account | `rxd login` |
+| a script that has the password in a file or a secret store | `rxd login --email EMAIL --password-stdin` |
+| signed up with Google, Apple or Facebook (no password) | `rxd login --browser --provider google` (needs a browser on this same computer) |
+| a batch job, cron, CI or a cluster node | an access token: see {doc}`ACCOUNTS` (`RADARX_TOKEN`, `rxd login --token`) |
+
+**`--password-stdin`** reads **one** line from standard input (like `docker login --password-stdin`). The password is
+never taken from the command line or the environment, where other users' `ps` or a shell history could see it. The
+trailing newline is removed and nothing else is trimmed; an empty line, a line longer than 1024 characters, or a keyboard
+(the typing would be shown) is refused with exit code 2. It needs `--email`.
+
+```bash
+pass show radarx | rxd login --email you@example.org --password-stdin
+```
+
+**`--browser`** signs in with the provider in your web browser, the same way the app does (PKCE; a one-shot listener on
+`127.0.0.1` at a random port catches the answer and waits at most 5 minutes). `--provider google|apple|facebook` picks
+the provider (asked for in a terminal when left out); a provider the project has not switched on gets a friendly message.
+The address is also printed, and `--no-open` only prints it. The browser has to run **on the same computer** as `rxd`,
+because the answer comes back to a port on `127.0.0.1` there. Over **SSH, on a cluster login node, or in a container** it
+does not work: use an access token instead. Provider messages are never shown, only fixed sentences.
+
+Which program keeps a sign-in alive is shown by `rxd whoami` (and `renewed_by` in `--json`): a sign-in made by
+`rxd login` is renewed by `rxd` and Python; one made by the **app** is renewed only by the app while it is open (the
+two must not share one refresh token, see {doc}`ACCOUNTS`). When an app sign-in has expired and the app is closed, every
+command says so and offers the two ways out: open the app, or `rxd login`.
+
 ## Quick start
 
 The six commands most people need (replace the file name with yours):

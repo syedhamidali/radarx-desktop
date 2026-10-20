@@ -122,7 +122,9 @@ def test_login_never_takes_the_password_from_the_command_line(gate_on, capsys, t
     parser = cli.build_parser()
     login = cli._subparsers(parser)["login"]
     options = {o for a in login._actions for o in a.option_strings}
-    assert not any("pass" in o for o in options)
+    # the only password option is the flag that says "read ONE line of standard input"; no option
+    # takes the password as a value (tests/test_account_login_methods.py)
+    assert {o for o in options if "pass" in o} == {"--password-stdin"}
     code, out, err = run(capsys, "login", "--password", "hunter2")
     assert code == 2 and "hunter2" not in err + out  # unknown option, and it is not echoed back
 
