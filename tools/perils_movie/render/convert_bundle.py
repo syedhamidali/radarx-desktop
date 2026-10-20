@@ -33,6 +33,14 @@ from convert_extras import (  # noqa: F401
     convert_tornadoes,
     convert_winds,
 )
+from convert_focus import (
+    SHEAR_LIM,
+    VSR_LIM,
+    echo_context,
+    focus_step,
+    vortex_sample,
+    wind_context,
+)
 
 VMIN, VMAX = -10.0, 70.0
 # hydrometeor class ids of the data bundle (docs/PERILS_BUNDLE.md); hail = the "hail" class of the
@@ -77,12 +85,23 @@ class Geo:
     def xy(self, lat, lon):
         phi = np.radians(np.asarray(lat, float))
         dlam = np.radians(np.asarray(lon, float)) - self._lam0
-        cos_c = np.clip(math.sin(self._phi0) * np.sin(phi) + math.cos(self._phi0) * np.cos(phi) * np.cos(dlam), -1.0, 1.0)
+        cos_c = np.clip(
+            math.sin(self._phi0) * np.sin(phi) + math.cos(self._phi0) * np.cos(phi) * np.cos(dlam),
+            -1.0,
+            1.0,
+        )
         c = np.arccos(cos_c)
         with np.errstate(invalid="ignore", divide="ignore"):
             k = np.where(c < 1e-12, 1.0, c / np.sin(c))
         x = R_EARTH_M * k * np.cos(phi) * np.sin(dlam)
-        y = R_EARTH_M * k * (math.cos(self._phi0) * np.sin(phi) - math.sin(self._phi0) * np.cos(phi) * np.cos(dlam))
+        y = (
+            R_EARTH_M
+            * k
+            * (
+                math.cos(self._phi0) * np.sin(phi)
+                - math.sin(self._phi0) * np.cos(phi) * np.cos(dlam)
+            )
+        )
         return x / 1000.0, y / 1000.0
 
     def latlon(self, x, y):
@@ -92,9 +111,13 @@ class Geo:
         c = rho / R_EARTH_M
         with np.errstate(invalid="ignore", divide="ignore"):
             sin_c, cos_c = np.sin(c), np.cos(c)
-            frac = np.where(rho < 1e-9, 0.0, y * sin_c * math.cos(self._phi0) / np.where(rho < 1e-9, 1.0, rho))
+            frac = np.where(
+                rho < 1e-9, 0.0, y * sin_c * math.cos(self._phi0) / np.where(rho < 1e-9, 1.0, rho)
+            )
             phi = np.arcsin(np.clip(cos_c * math.sin(self._phi0) + frac, -1.0, 1.0))
-            lam = self._lam0 + np.arctan2(x * sin_c, rho * math.cos(self._phi0) * cos_c - y * math.sin(self._phi0) * sin_c)
+            lam = self._lam0 + np.arctan2(
+                x * sin_c, rho * math.cos(self._phi0) * cos_c - y * math.sin(self._phi0) * sin_c
+            )
         lam = np.where(rho < 1e-9, self._lam0, lam)
         return np.degrees(phi), np.degrees(lam)
 
@@ -359,10 +382,17 @@ def sounding_levels(csv_text: str, max_levels: int = 450) -> dict:
 # ── the conversion ──────────────────────────────────────────────────────────
 
 
-def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict:
+def convert(
+    bundle: Path,
+    out: Path,
+    *,
+    hail_cap: int = 5000,
+    log=print,
+    manifest_name: str = "manifest.json",
+) -> dict:
     bundle, out = Path(bundle), Path(out)
     out.mkdir(parents=True, exist_ok=True)
-    man = json.loads((bundle / "manifest.json").read_text())
+    man = json.loads((bundle / manifest_name).read_text())
     g = man["grid"]
     xs, ys, zs = (np.asarray(g[k], float) for k in ("x_km", "y_km", "z_km"))
     lat0, lon0 = float(g["origin_lat"]), float(g["origin_lon"])
@@ -392,6 +422,11 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         )
 
     colmax: list[np.ndarray] = []
+    focus_keep: list[dict] = []
+    has_quality = False
+    pm0 = man.get("pattern_motion") or {}
+    motion_uv = (float(pm0.get("u_ms", 0.0)), float(pm0.get("v_ms", 0.0)))
+    radar_xy = [(r["x_m"] / 1000.0, r["y_m"] / 1000.0) for r in rsites]
     msteps = []
     hail_pts, tds_pts, layers_meta, zdrcol = [], [], [], []
     hail_ids, _grau_ids = hid_classes(man)
@@ -435,6 +470,25 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         colmax.append(np.where(cm > -90, cm, np.nan))
         # the plan-view panel: the column maximum as 8-bit codes (same code book as the volume)
         (out / f"colmax_{k}.bin").write_bytes(encode_dbz(colmax[-1]).tobytes())
+        # reflectivity merge v2: the quality (0..100) of the voxel that makes the column maximum, for the opacity of the plan views
+        if "quality" in z.files:
+            kmax = np.argmax(np.where(np.isfinite(dbz), dbz, -1e9), axis=0)
+            q2 = np.take_along_axis(z["quality"], kmax[None], axis=0)[0]
+            q2 = np.where(np.isfinite(colmax[-1]), q2, 0).astype(np.uint8)
+            (out / f"qual_{k}.bin").write_bytes(np.ascontiguousarray(q2).tobytes())
+            has_quality = True
+        # the tornado-focus products: storm-relative radial velocity and azimuthal shear of the lowest levels
+        fs = focus_step(z, xs, ys, radar_xy, motion_uv)
+        (out / f"vsr_{k}.bin").write_bytes(fs["vsr_codes"].tobytes())
+        (out / f"shear_{k}.bin").write_bytes(fs["shear_codes"].tobytes())
+        focus_keep.append(
+            {
+                "rot": fs["rot"].astype(np.float32),
+                "vrot": fs["vrot"].astype(np.float32),
+                "src": fs["vel_src"],
+                "cmax": fs["cmax"].astype(np.float32),
+            }
+        )
         # extras of this step (all optional)
         hid = z["hid"] if "hid" in z.files else None
         if hid is not None:
@@ -618,8 +672,20 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
         "layers": layers_meta,
         "zdrColumns": zdrcol,
         "colmax": [
-            {"bin": f"colmax_{k}.bin", "nx": len(xs), "ny": len(ys)} for k in range(len(steps))
+            {
+                "bin": f"colmax_{k}.bin",
+                "nx": len(xs),
+                "ny": len(ys),
+                **({"qual": f"qual_{k}.bin"} if has_quality else {}),
+            }
+            for k in range(len(steps))
         ],
+        "echo": {
+            "manifest": manifest_name,
+            "spec_version": man.get("spec_version"),
+            "quality": has_quality,
+            "reflectivity_v2": bool(man.get("reflectivity_v2")),
+        },
     }
     for r in rsites:
         p["radars"].append(
@@ -724,6 +790,17 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     p["vortex"] = convert_vortex(
         _load_json(bundle / man["vortex_kinematics"]) if man.get("vortex_kinematics") else None, rel
     )
+    p["focus"] = convert_focus(
+        focus_keep,
+        p["tornadoes"],
+        xs,
+        ys,
+        [r["name"] for r in rsites],
+        times_s,
+        motion_uv,
+        len(steps),
+        [bundle / st["winds"] if st.get("winds") else None for st in steps],
+    )
     # MRMS composites
     p["mrms"] = []
     p["surface"] = []
@@ -734,6 +811,53 @@ def convert(bundle: Path, out: Path, *, hail_cap: int = 5000, log=print) -> dict
     (out / "perils.json").write_text(json.dumps(p))
     log(f"wrote {out} ({len(steps)} steps, {sum(1 for m in p['mrms'] if m)} MRMS frames)")
     return p
+
+
+def convert_focus(
+    keep, tornadoes, xs, ys, radar_names, times_s, motion_uv, n_steps, winds_paths=None
+) -> dict | None:
+    """The inset products of the tornado-focus sequence: image files (written in the step loop) and the rotation series.
+
+    ``series[k]`` is the OBSERVED low-level azimuthal shear / Vrot maximum within ``RADIUS_KM`` of the SURVEYED position
+    of the tornado at step ``k`` (clamped to the survey's ends before touchdown and after the end), where that maximum
+    is (offset in km and bearing from the surveyed position) and which radar saw it.
+    """
+    tors = [t for t in tornadoes if len(t.get("path", [])) >= 2]
+    winds_paths = winds_paths or [None] * n_steps
+    series = []
+    if tors:
+        path = tors[0]["path"]
+        pt = np.array([q["t"] for q in path])
+        px = np.array([q["x"] for q in path])
+        py = np.array([q["y"] for q in path])
+        for k in range(n_steps):
+            t = times_s[k]
+            ref = (float(np.interp(t, pt, px)), float(np.interp(t, pt, py)))
+            sm = vortex_sample(keep[k]["rot"], keep[k]["vrot"], keep[k]["src"], xs, ys, ref)
+            sm.update(echo_context(keep[k]["cmax"], xs, ys, ref))
+            wc = wind_context(winds_paths[k], ref) if winds_paths[k] else None
+            sm["sr_wind"] = {k2: round(v, 3) for k2, v in wc.items()} if wc else None
+            ri = sm.pop("radar_index", None)
+            sm["radar"] = radar_names[ri - 1] if ri and 1 <= ri <= len(radar_names) else None
+            sm.update(
+                t=t,
+                ref_x=ref[0],
+                ref_y=ref[1],
+                phase="before" if t < pt[0] else ("after" if t > pt[-1] else "on"),
+            )
+            series.append(
+                {k2: (round(v, 5) if isinstance(v, float) else v) for k2, v in sm.items()}
+            )
+    return {
+        "vsr": [{"bin": f"vsr_{k}.bin", "nx": len(xs), "ny": len(ys)} for k in range(n_steps)],
+        "shear": [{"bin": f"shear_{k}.bin", "nx": len(xs), "ny": len(ys)} for k in range(n_steps)],
+        "vsrLim": VSR_LIM,
+        "shearLim": SHEAR_LIM,
+        "motion_ms": list(motion_uv),
+        "radiusKm": 3.0,
+        "series": series,
+        "note": "storm-relative radial velocity: OBSERVED radial velocity of the best radar of each voxel (0.5 - 1 km above sea level) minus the beam component of the echo-pattern motion; azimuthal shear: the bundle's rotation_ll; the series is the maximum within 3 km of the SURVEYED tornado position",
+    }
 
 
 def convert_vortex(vk: dict | None, rel) -> dict | None:
@@ -976,10 +1100,15 @@ def main(argv=None) -> None:
     )
     ap.add_argument("--bundle", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument(
+        "--manifest",
+        default="manifest.json",
+        help="manifest.json (reflectivity merge v1) or manifest_v2.json (merge v2, with quality)",
+    )
     a = ap.parse_args(argv)
-    if not (Path(a.bundle) / "manifest.json").exists():
-        sys.exit(f"{a.bundle}/manifest.json not found")
-    convert(Path(a.bundle), Path(a.out))
+    if not (Path(a.bundle) / a.manifest).exists():
+        sys.exit(f"{a.bundle}/{a.manifest} not found")
+    convert(Path(a.bundle), Path(a.out), manifest_name=a.manifest)
 
 
 if __name__ == "__main__":
