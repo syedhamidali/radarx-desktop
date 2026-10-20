@@ -81,8 +81,8 @@ tornado > hail > rain > wind**, then the convective rumble and the ambient bed. 
     range class, channel extent, level, margins over the bed / rain / tornado, `n_pulses`, `n_reflections`,
     `n_tortuosity_points`, `n_bridge_elements`, `rendered_duration_30db_s`, `spectral_centroid_hz`.
   - *A flash that cannot be heard yet is not voiced*: sound that has not arrived by the end of the clip is
-    `outside_clip`; in the first seconds of a clip whose camera is 100 km from the line no flash can have arrived (the
-    nearest flash at 60 km needs 175 s of data time, 22 s of clip at 8x): the opening is ambient only, by physics.
+    `outside_clip`; while the camera is 100 km from the line (the wide shot) no flash can have arrived (the nearest flash at 60 km
+    needs 175 s of data time, 22 s of clip at 8x): that opening is ambient only, by physics.
 
 * **Rain**. A Poisson stream of drop impacts per size class. With a drop spectrum the rate of each
   class is proportional to its number flux (`N(D) v(D) dD`), the amplitude to the mass^(2/3) of the
@@ -143,11 +143,12 @@ real-air nonlinear propagation beyond the two power laws. It remains synthesis, 
 a single source is its distance / 343 / speedup to 1 ms; the spread of the arrivals is `(r_max - r_min) / 343` whatever
 the speed-up; the duration grows with the extent; the spectral centroid falls with the distance (800 m, 3, 12, 40
 km); a close channel has energy at 0.5 to 5 kHz and a 40 km one peaks below 150 Hz; the N-wave has no net impulse;
-the render is deterministic; no clipping. The previous synthesis (a filtered noise per direction sector under an
-envelope) was diagnosed with the same tools: a stationary noise bed whose centroid hardly moved with the distance
-(135, 125, 114, 101 Hz for 5, 10, 16, 44 km), a slow attack, no individual cracks, no structure: that is why it
-sounded fake. The new one: centroid 95, 64, 54, 40 Hz, an attack of a few ms, bursts of 10 to 20 dB inside the
-rumble (`audio/plots_v4/thunder_isolated_v3_vs_v4.png`).
+the render is deterministic; no clipping. The previous synthesis (a filtered noise per direction sector under a smooth envelope) was diagnosed with the same
+tools: a stationary noise bed with a smooth hump of an envelope, a spectral centroid that hardly moved with the
+distance (127, 125, 104, 106 Hz for 6, 12, 30, 35 km), no individual arrivals, no structure: that is why it sounded
+fake. The new one, for the same four flashes: centroid 81, 55, 45, 42 Hz, an onset on the arrival time, bursts of 10
+to 30 dB inside the rumble where the channel's branches arrive, the spectrum's upper edge falling from about 3 kHz
+(6 km) to 700 Hz (35 km) (`audio/plots_v4/thunder_isolated_v3_vs_v4.png`).
 
 *Option, not done*: a hybrid with real thunder recordings (CC0 / public-domain: for example freesound.org
 sounds marked CC0, or the Wikimedia Commons public-domain thunder files) could add the natural broadband character
@@ -236,19 +237,19 @@ to 9.4, mean 8; its `camera_path.json` and `events.json`):
   sensor hit in the window.
 * Loudness -23.0 LUFS integrated, true peak -3.4 dBFS, no clipped sample, mono loss 1.0 dB, deterministic
   (two renders give the same SHA-1).
-* Thunder (the `perils_audio_v4` render, thunder built per source, level compressed for audibility): **47 flashes
-  voiced** of 3236 (12 by the guarantee, 35 by score): 14 near (< 10 km), 16 mid (10 to 30 km), 17 far (> 30 km).
-  4303 channel elements (real LMA sources) rendered with 4300 ground reflections, 16 012 modelled tortuosity points
-  and 13 857 modelled bridge elements. First voiced arrival 29.4 s, then never more than 4.6 s apart. Not voiced:
-  261 beyond 150 km, 587 arrive after the clip, 2341 heard but dropped (2251 voices, 87 masked, 3 density). Of the 15
-  windows of 8 s, 12 have a flash in range and **all 12 are voiced**; the first three (0 to 24 s) have no flash that
-  can arrive (physical delay). Thunder layer: rms -24.4 dBFS, peak -2.5 dBFS; the median voiced thunder is 12.1 dB above
-  the rest of the mix. Median spectral centroid by class: near 89 Hz, mid 53 Hz, far 41 Hz.
-* Other layers (rms in the final mix): tornado roar -39 dBFS, rain -42, wind -43, convective bed -41,
-  ambient -47, hail silent (no evidence). The tornado is 5.5 km from the listener at the nearest. Rain is
-  from the radar echo for 60 % of the clip (`radar_zr`), from instruments near the listener for 2 %, silent
-  for 37 % (nothing near). Wind (max 8 m/s observed, 12 m/s with the observed gust) from StickNet 0223A,
-  0102A, 0107A, 0217A, 0222A and mesonet SCOUT2.
+* Thunder (the `perils_audio_v4` render, thunder built per source, level compressed for audibility): **54 flashes
+  voiced** of 3236 (13 by the guarantee, 41 by score): 20 near (< 10 km), 24 mid (10 to 30 km), 10 far (> 30 km).
+  6893 channel elements (real LMA sources) rendered with 6890 ground reflections, 34 721 modelled tortuosity points
+  and 11 228 modelled bridge elements. First voiced arrival 16.8 s, then never more than 5.6 s apart. Not voiced:
+  285 beyond 150 km, 459 arrive after the clip, 2438 heard but dropped (2226 voices, 85 masked, 127 density). Of the
+  15 windows of 8 s, 13 have a flash in range and **all 13 are voiced**; the first two (0 to 16 s, the wide shot) have
+  no flash that can have arrived (physical delay). Thunder layer: rms -23.9 dBFS, peak -4.0 dBFS; the median voiced
+  thunder is 12.0 dB above the rest of the mix. Median spectral centroid by class: near 88 Hz, mid 57 Hz, far 42 Hz.
+* Other layers (rms in the final mix): tornado roar -38 dBFS, rain -43, wind -43, convective bed -40,
+  ambient -48, hail -56 (only the radar hail class over the listener at 21 to 24 s, with an assumed diameter; no
+  station hail event or sensor hit in the window). Rain is from the radar echo for most of the clip (`radar_zr`) and
+  silent where nothing is near. Wind (max 8 m/s observed, 12 m/s with the observed gust) from the nearest StickNet and
+  mesonet stations.
 * The gust fronts the data contain are weak (rises of 5 to 6 m/s in 2 minutes, pressure rises of 0.8 to
   2.8 hPa): the swell is as small as the data say.
 
