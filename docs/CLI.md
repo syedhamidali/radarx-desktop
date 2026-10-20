@@ -56,8 +56,10 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 
 ## Install
 
+`rxd` comes with the Python package of the source tree, not with the installers; the steps (a virtual environment,
+`pip install -e .`, `rxd login`) are on the {doc}`installation` page. Then:
+
 ```bash
-pip install -e python/            # the engine and the `rxd` command   (python -m engine works too)
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```

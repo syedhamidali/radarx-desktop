@@ -1,10 +1,10 @@
 # Installation
 
-## The installers (nothing else to install)
+## Download
 
-Download the file for your system from the [download page](https://radarx.labshope.com/#download). The
-installers include the Python engine, so there is no Python or library to install. You need a free Radarx
-account to use the app (see {doc}`ACCOUNTS`).
+Get the installer for your system from the [download page](https://radarx.labshope.com/#download) (one file,
+nothing else to install: the installers include the Python engine). Or fetch it from a terminal, as below. You
+need a free Radarx account to use the app: see {doc}`ACCOUNTS`.
 
 | System | File |
 |---|---|
@@ -14,16 +14,76 @@ account to use the app (see {doc}`ACCOUNTS`).
 | Ubuntu / Debian | `radarx-desktop_<version>_amd64.deb` |
 | Fedora / Red Hat | `radarx-desktop-<version>-1.x86_64.rpm` |
 
-The builds are not code-signed, so the first launch shows a warning:
+### Download with curl
 
-- **macOS:** drag the app to Applications. If macOS says it cannot be opened or is "damaged", open
-  *System Settings → Privacy & Security* and click *Open Anyway*, or run
-  `xattr -cr /Applications/radarx-desktop.app` once.
-- **Windows:** click *More info → Run anyway*.
-- **Linux:** `sudo apt install ./radarx-desktop_*.deb` (or `sudo dnf install ./*.rpm`).
+Every release is a folder on the download host, `https://downloads.labshope.com/radarx/v<version>/`, and
+`https://downloads.labshope.com/radarx/releases.json` lists the released versions, newest first, with the
+address, size and SHA-256 checksum of each file. To fetch the newest installer for your system (macOS and Linux;
+needs `curl` and `jq`):
+
+```bash
+OS=macos ARCH=aarch64 KIND=dmg     # macos|windows|linux   aarch64|x86_64   dmg|exe|deb|rpm
+URL=$(curl -fsS https://downloads.labshope.com/radarx/releases.json |
+      jq -r --arg o "$OS" --arg a "$ARCH" --arg k "$KIND" \
+        '.releases[0].assets[] | select(.os == $o and .arch == $a and .kind == $k) | .url')
+echo "$URL"
+curl -fLO "$URL"
+```
+
+Typical values: `macos aarch64 dmg` (Apple silicon), `macos x86_64 dmg` (Intel Mac), `linux x86_64 deb`,
+`linux x86_64 rpm`, `windows x86_64 exe`. If you know the version, the address is built from it:
+
+```bash
+V=0.3.0
+curl -fLO https://downloads.labshope.com/radarx/v$V/radarx-desktop_${V}_aarch64.dmg
+```
+
+**Check the download.** The folder has a `SHA256SUMS` file in the usual format. A file that does not match must
+not be installed:
+
+```bash
+curl -fsS "$(dirname "$URL")/SHA256SUMS" | grep " $(basename "$URL")\$" | shasum -a 256 -c -     # macOS
+curl -fsS "$(dirname "$URL")/SHA256SUMS" | grep " $(basename "$URL")\$" | sha256sum -c -        # Linux
+```
+
+On **Windows** (PowerShell), where `curl.exe` and `Invoke-WebRequest` are built in:
+
+```powershell
+$r = (Invoke-RestMethod https://downloads.labshope.com/radarx/releases.json).releases[0]
+$a = $r.assets | Where-Object { $_.os -eq "windows" -and $_.kind -eq "exe" } | Select-Object -First 1
+Invoke-WebRequest $a.url -OutFile $a.name
+(Get-FileHash $a.name -Algorithm SHA256).Hash.ToLower() -eq $a.sha256     # must print True
+```
+
+## Install
+
+The builds are not code-signed yet, so the first launch shows a warning.
+
+**macOS**
+
+```bash
+open radarx-desktop_*_aarch64.dmg          # drag the app onto Applications
+open /Applications/radarx-desktop.app
+```
+
+If macOS says the app cannot be opened or is "damaged", open *System Settings → Privacy & Security* and click
+*Open Anyway*, or run `xattr -cr /Applications/radarx-desktop.app` once and open it again.
+
+**Windows:** run the downloaded `radarx-desktop_<version>_x64-setup.exe` (or `.\radarx-desktop_*_x64-setup.exe`
+in PowerShell). If SmartScreen warns, click *More info → Run anyway*.
+
+**Linux**
+
+```bash
+sudo apt install ./radarx-desktop_*_amd64.deb         # Ubuntu / Debian
+sudo dnf install ./radarx-desktop-*.x86_64.rpm        # Fedora / Red Hat
+radarx-desktop                                          # or start it from the application menu
+```
 
 The first launch can take up to a minute while the system scans the app; after that it starts in about a
-second. See {doc}`BUNDLING` for how the installers are built.
+second. The window then asks you to create your free account or sign in (a code is sent to your e-mail; see
+{doc}`ACCOUNTS`). Installed apps check for updates themselves ({doc}`UPDATES`); to move to a new version by hand,
+download and install it the same way over the old one. See {doc}`BUNDLING` for how the installers are built.
 
 ## Open files from the file manager
 
@@ -31,18 +91,27 @@ Right-click a radar file and choose *Open With → radarx-desktop*. NetCDF/CfRad
 numbered copies such as `file.nc.1` are registered by extension. On macOS the app is also offered for files with
 no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`).
 
-## From source (engine only, for scripts and the command line)
+## The command line (`rxd`)
 
-For contributors who have been given the source. In the checkout:
+The installers contain the engine for the app; they do not put the `rxd` command on your `PATH`. The command and
+the Python API (`import rxd`) come with the Python package in the source tree, for contributors who have it.
+Python 3.10 or newer is needed (3.12 or newer for the optional radarx algorithms).
 
 ```bash
-cd python
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[radarx]"        # radarx needs Python >= 3.12
+cd radarx-desktop/python                      # the python folder of your checkout
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -e .                               # the engine and the `rxd` command
+pip install -U radarx                          # optional: mosaics, winds and the radarx_* algorithms
+rxd --version
+rxd login                                      # the same free account as the app
+rxd examples                                   # a guided tour of copy-paste commands
 ```
 
-This gives the Python API (`import rxd`) and the `rxd` command; both need a signed-in account like the app
-({doc}`ACCOUNTS`). The desktop app itself additionally needs Node.js 20+ and Rust; see {doc}`contributing`.
+`pip install -e` (an editable install) is what makes the shipped algorithms in `python/modules/` visible.
+Tab completion: `source <(rxd completion zsh)`, or `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`.
+Every command, with examples and the exit codes, is in {doc}`CLI`; the Python side is in {doc}`API`. Both need
+a signed-in account like the app ({doc}`ACCOUNTS`). The desktop app itself additionally needs Node.js 20+ and
+Rust to build; see {doc}`contributing`.
 
 ## On the web
 
