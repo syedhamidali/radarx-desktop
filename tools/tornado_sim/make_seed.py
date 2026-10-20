@@ -30,6 +30,12 @@ def km_between(lat1, lon1, lat2, lon2):
     return math.hypot((lat1 - lat2) * 111.2, (lon1 - lon2) * 111.2 * math.cos(math.radians(lat1)))
 
 
+def vol_path(man: dict, k: int) -> str:
+    """The volume file of step ``k`` as the manifest names it (volumes/ or volumes_v2/)."""
+    st = man["steps"][k]
+    return st["volume"] if isinstance(st, dict) and "volume" in st else f"volumes/step_{k:04d}.npz"
+
+
 def station_series(st, key, t0, t1):
     se = st["series"]
     t = np.array(se["t_s"], dtype=float)
@@ -48,6 +54,28 @@ def main() -> None:
         help="data-clock seconds of the shot (stations, echo and flashes are taken here)",
     )
     ap.add_argument("--echo-half-km", type=float, default=8.0)
+    ap.add_argument(
+        "--manifest",
+        default="manifest.json",
+        help="manifest.json or manifest_v2.json of the bundle",
+    )
+    ap.add_argument(
+        "--ramp-form",
+        type=float,
+        default=0.0,
+        help="seconds the simulated tornado takes to reach full intensity after the surveyed begin time (0: the simulation's default of 25 s)",
+    )
+    ap.add_argument(
+        "--ramp-decay",
+        type=float,
+        default=40.0,
+        help="seconds it takes to die away before the surveyed end time",
+    )
+    ap.add_argument(
+        "--echo-series",
+        action="store_true",
+        help="also write the echo of every step of the survey's life (echoSeries) and the pattern motion",
+    )
     args = ap.parse_args()
     movie = Path(args.movie).expanduser()
     bundle = movie / "bundle"
@@ -132,14 +160,14 @@ def main() -> None:
         )
 
     # radar echo: lowest reliable level of the merged volume nearest to the shot time, a box around the tornado
-    man = json.loads((bundle / "manifest.json").read_text())
+    man = json.loads((bundle / args.manifest).read_text())
     steps = man["steps"]
     k = (
         min(range(len(steps)), key=lambda i: abs(steps[i]["t_s"] - tm))
         if isinstance(steps[0], dict) and "t_s" in steps[0]
         else round(tm / 60.0)
     )
-    vol = np.load(bundle / "volumes" / f"step_{k:04d}.npz")
+    vol = np.load(bundle / vol_path(man, k))
     g = man["grid"]
     xs = np.array(g["x_km"])
     ys = np.array(g["y_km"])
@@ -167,6 +195,35 @@ def main() -> None:
         "t": float(k * 60.0),
     }
 
+    # the echo through the survey's life: every observed step, on one grid that covers the whole track, so that the simulation's rain
+    # follows the radar echo as it moves and changes (motion-compensated between the steps, see src/lib/utils/tornado/echoField.ts)
+    series = []
+    if args.echo_series:
+        mid_x, mid_y = 0.5 * (bx + ex), 0.5 * (by + ey)
+        hh = 0.5 * math.hypot(ex - bx, ey - by) + args.echo_half_km
+        jx = np.where((xs >= mid_x - hh) & (xs <= mid_x + hh))[0]
+        jy = np.where((ys >= mid_y - hh) & (ys <= mid_y + hh))[0]
+        for kk, st in enumerate(steps):
+            ts = st["t_s"] if isinstance(st, dict) and "t_s" in st else kk * 60.0
+            if ts < track[0]["t"] - 150.0 or ts > track[-1]["t"] + 150.0:
+                continue
+            v2 = np.load(bundle / vol_path(man, kk))
+            sub2 = v2["dbz"][zi][np.ix_(jy, jx)]
+            series.append(
+                {
+                    "x0": float((xs[jx[0]] - bx) * 1000.0),
+                    "y0": float((ys[jy[0]] - by) * 1000.0),
+                    "dx": 500.0,
+                    "nx": len(jx),
+                    "ny": len(jy),
+                    "dbz": [
+                        None if not np.isfinite(q) else round(float(q), 1) for q in sub2.ravel()
+                    ],
+                    "t": float(ts),
+                }
+            )
+    pm = man.get("pattern_motion") or {}
+
     seed = {
         "ef": tor["rating"],
         "width": tor["width_m"],
@@ -183,12 +240,21 @@ def main() -> None:
         ),
         "lightningFlashes": flashes,
         "echo": echo,
+        **(
+            {
+                "echoSeries": series,
+                "echoMotion": [float(pm.get("u_ms", 0.0)), float(pm.get("v_ms", 0.0))],
+            }
+            if series
+            else {}
+        ),
         "survey": {
             "id": tor["id"],
             "source": "NWS damage survey (NCEI Storm Events, SPC) EF2 event 1035605: rating, width, begin/end and times",
             "narrative": tor.get("survey_narrative_start"),
         },
         "epochUtc": man["window"]["start"],
+        **({"ramp": {"form": args.ramp_form, "decay": args.ramp_decay}} if args.ramp_form else {}),
     }
     notes = {
         "origin": "first track point (survey begin) unless the seed names one",
@@ -211,7 +277,13 @@ def main() -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"seed": seed, "notes": notes}, indent=1))
     print(
-        f"wrote {out}: {len(flashes)} flashes, echo {echo['nx']}x{echo['ny']}, nearest station {near['id']} ({near['km']:.1f} km, T {near['T']:.1f} Td {near['Td']:.1f}), warm {warm['id']} ({warm['km']:.1f} km)"
+        f"wrote {out}: {len(flashes)} flashes, echo {echo['nx']}x{echo['ny']}"
+        + (
+            f" and a series of {len(series)} steps {series[0]['nx']}x{series[0]['ny']}"
+            if series
+            else ""
+        )
+        + f", nearest station {near['id']} ({near['km']:.1f} km, T {near['T']:.1f} Td {near['Td']:.1f}), warm {warm['id']} ({warm['km']:.1f} km)"
     )
 
 

@@ -84,6 +84,11 @@ export interface SeedData {
   lcl?: number;
   lightningFlashes?: FlashSeed[];
   echo?: EchoSeed;
+  /** The echo of every observed volume of the survey's life on one grid, and the echo pattern's motion (m/s east, north): the rain follows the echo. */
+  echoSeries?: EchoSeed[];
+  echoMotion?: [number, number];
+  /** How long the tornado takes to reach full intensity after the survey's begin time and to die away before its end time (s): MODELLED (the survey gives only the times). Default 25 and 40. */
+  ramp?: { form: number; decay: number };
   /** Credits and the like, shown in the labels. */
   survey?: { id?: string; source?: string; narrative?: string };
 }
@@ -113,6 +118,8 @@ export interface ResolvedSeed {
   coreSource: 'given' | 'survey-swath';
   flashes: (FlashSeed & { x: number; y: number; z: number })[];
   echo: EchoSeed | null;
+  echoSeries: EchoSeed[];
+  echoMotion: [number, number];
   credits: string[];
   summary: SeedSummary;
 }
@@ -195,9 +202,9 @@ export function resolveSeed(seed: SeedData): ResolvedSeed {
     'funnel shape (from the cyclostrophic pressure deficit), debris, noise detail, rain curtains',
   ];
   return {
-    origin, vortex, meso, condition, cloudCondition, nearCondition, span, ramp: { form: 25, decay: 40 },
+    origin, vortex, meso, condition, cloudCondition, nearCondition, span, ramp: { form: seed.ramp?.form ?? 25, decay: seed.ramp?.decay ?? 40 },
     track, translation, headingDeg, speed, width: seed.width, ef: seed.ef, vt, rm, coreSource,
-    flashes, echo: seed.echo ?? null, credits, summary: { observed, modelled },
+    flashes, echo: seed.echo ?? null, echoSeries: seed.echoSeries ?? [], echoMotion: seed.echoMotion ?? [0, 0], credits, summary: { observed, modelled },
   };
 }
 

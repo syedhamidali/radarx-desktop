@@ -29,6 +29,7 @@ import { loadGroundTiles, type GroundTileResult } from './groundTiles.ts';
 import { treeState, type TreeState } from './treeDamage.ts';
 import { makeFlashEnv, flashLight, flashEnd, type FlashEnv } from './flashes.ts';
 import { sunPosition } from '../sunPosition.ts';
+import { makeEchoSeries, echoRainAt, type EchoSeries } from './echoField.ts';
 import {
   program, buffer, makeTex2D, basis, viewProj, type Program, type Vec3,
 } from './glUtil.ts';
@@ -61,6 +62,11 @@ export interface SceneOptions {
   renderScale?: number;
   /** Wall-cloud lowering (m) and radius (m): modelled. */
   wallCloud?: { lowerM: number; radiusM: number };
+  /** Half width (m) of the landscape and of the ground mosaic around the shot's focus (default 3600) and its raster size (default 1536). */
+  landHalf?: number;
+  landSize?: number;
+  /** How far around the focus trees are generated (m, default 2200). */
+  treeRadius?: number;
 }
 
 export interface FrameStats {
@@ -78,6 +84,10 @@ const AMBIENT: Record<AmbientPreset, { amb: Vec3; glow: number; fog: Vec3; expos
   night: { amb: [0.0016, 0.0020, 0.0030], glow: 0.0, fog: [0.0035, 0.0045, 0.0065], exposure: 2.6, label: 'night (physical light level)' },
   overcast: { amb: [0.14, 0.155, 0.18], glow: 0.2, fog: [0.16, 0.18, 0.21], exposure: 1.6, label: 'overcast day' },
 };
+
+/** A forward jump of the time longer than this (s) restarts the debris with a warm-up of `WARMUP_S` seconds before the new time. */
+export const JUMP_S = 20;
+export const WARMUP_S = 12;
 
 /** Smoothing window of the flash light (s): the comfort limit on flicker. */
 export const FLASH_SMOOTH_S = 0.24;
@@ -157,6 +167,10 @@ export class TornadoScene {
   private echoGrid: [number, number, number, number] = [0, 0, 1, 1];
   private echoOn = false;
   private echoMean = 20;
+  private echoSeries: EchoSeries | null = null;
+  private echoRate: Float32Array | null = null;
+  private echoBytes: Uint8Array | null = null;
+  private echoT = NaN;
 
   private sim: DebrisSim | null = null;
   private simStart = 0;
@@ -460,6 +474,19 @@ export class TornadoScene {
 
   private echoFromSeed(): void {
     const gl = this.gl;
+    const rs = this.seed?.echoSeries ?? [];
+    this.echoSeries = rs.length ? makeEchoSeries(rs.map((g) => ({ ...g, t: g.t ?? 0 })), this.seed!.echoMotion) : null;
+    this.echoT = NaN;
+    if (this.echoSeries) {
+      // the echo through time: the grid is the series' (it covers the whole track), the texture is rewritten as the time moves
+      const g = this.echoSeries.grids[0];
+      this.echoGrid = [g.x0, g.y0, 1 / (g.nx * g.dx), 1 / (g.ny * g.dx)];
+      this.echoRate = new Float32Array(g.nx * g.ny);
+      this.echoBytes = new Uint8Array(g.nx * g.ny);
+      this.echoOn = true;
+      this.updateEcho(this.t);
+      return;
+    }
     const e = this.seed?.echo;
     if (!e) { this.echoOn = false; return; }
     const data = new Uint8Array(e.nx * e.ny);
@@ -478,6 +505,26 @@ export class TornadoScene {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, e.nx, e.ny, 0, gl.RED, gl.UNSIGNED_BYTE, data);
     this.echoGrid = [e.x0, e.y0, 1 / (e.nx * e.dx), 1 / (e.ny * e.dx)];
     this.echoOn = true;
+  }
+
+  /** Rewrite the rain-rate texture for data time `t` from the echo series (a no-op without one, or for the same time). */
+  private updateEcho(t: number): void {
+    const s = this.echoSeries;
+    if (!s || !this.echoRate || !this.echoBytes || t === this.echoT) return;
+    this.echoT = t;
+    const g = s.grids[0];
+    echoRainAt(s, t, this.echoRate);
+    let sum = 0, n = 0;
+    for (let i = 0; i < this.echoRate.length; i++) {
+      const R = Math.min(120, this.echoRate[i]);
+      this.echoBytes[i] = Math.round((R / 120) * 255);
+      if (R > 0.5) { sum += R; n++; }
+    }
+    this.echoMean = n ? sum / n : 10;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.echoTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, g.nx, g.ny, 0, gl.RED, gl.UNSIGNED_BYTE, this.echoBytes);
   }
 
   private uploadDebrisStatic(): void {
@@ -509,8 +556,8 @@ export class TornadoScene {
 
   private buildLand(radius: number): void {
     const gl = this.gl;
-    const half = 3600;
-    this.land = buildLandscape({ cx: this.landFocus[0], cy: this.landFocus[1], half, size: 1536, seed: 20220330, focus: this.landFocus, treeRadius: Math.min(2200, radius) });
+    const half = this.opts.landHalf ?? 3600;
+    this.land = buildLandscape({ cx: this.landFocus[0], cy: this.landFocus[1], half, size: this.opts.landSize ?? 1536, seed: 20220330, focus: this.landFocus, treeRadius: Math.min(this.opts.treeRadius ?? 2200, radius) });
     this.uploadLand();
     void gl;
   }
@@ -615,7 +662,7 @@ export class TornadoScene {
   async loadGround(): Promise<void> {
     if (!this.seed || this.opts.useTiles === false) return;
     const gl = this.gl;
-    const half = 3600;
+    const half = this.opts.landHalf ?? 3600;
     const res: GroundTileResult = await loadGroundTiles({
       origin: this.seed.origin, cx: this.landFocus[0], cy: this.landFocus[1], half,
       imagerySize: 2048, heightSize: 512, maxZoom: 15, base: this.opts.tileBase ?? '',
@@ -662,9 +709,13 @@ export class TornadoScene {
     if (!this.seed || !this.sim) return;
     if (t < this.sim.time - 1e-6 || t < this.simStart) {
       this.sim.reset(Math.min(this.simStart, t - 1));
+    } else if (t - this.sim.time > JUMP_S) {
+      // a jump forward (a time-lapse in the film): restart with the warm-up before `t`, a pure function of `t`, instead of stepping through all of it
+      this.sim.reset(t - WARMUP_S);
     }
     this.sim.stepTo(t);
     this.t = t;
+    this.updateEcho(t);
   }
 
   /** Is there evidence of a tornado at time t? (survey span) */
