@@ -66,8 +66,9 @@ def _time_first_cfradial2(path: Path) -> Path:
 class TestCfRadial2FirstDimension:
     """A time-first CfRadial2 volume gets the xradar model (``azimuth`` dimension) like every format.
 
-    xradar's CfRadial2 reader keeps ``time`` as first dimension unless asked for ``first_dim="auto"``:
-    the sweeps then had no ``azimuth`` dimension and every algorithm failed with ``KeyError: 'azimuth'``.
+    xradar's CfRadial2 reader keeps ``time`` as first dimension unless asked for
+    ``first_dim="auto"``: the sweeps then had no ``azimuth`` dimension and every algorithm
+    failed with ``KeyError: 'azimuth'``.
     """
 
     def test_sweeps_run_along_azimuth(self, tmp_path: Path) -> None:

@@ -309,7 +309,7 @@ class TestProvenance:
         ],
     )
     def test_iso_utc_converts_a_stated_offset(self, raw, want):
-        """A time with an offset is converted to UTC; it was returned unchanged as if it were UTC."""
+        """A time with an offset is converted to UTC (it was returned unchanged as if UTC)."""
         assert provenance.iso_utc(raw) == want
 
     def test_history_and_placeholders(self):
