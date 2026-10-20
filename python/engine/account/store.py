@@ -30,9 +30,13 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import random
 import re
+import secrets
+import socket
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -42,6 +46,11 @@ from typing import Any
 
 APP_FOLDER = "radarx-desktop"
 LOCK_TIMEOUT_S = 10.0
+#: How long a process waits for the right to renew the session (others may be renewing it).
+REFRESH_LOCK_TIMEOUT_S = 20.0
+#: A renewal lock file older than this is taken over. A renewal makes one network call that is cut
+#: off after 5 s, so a healthy holder is done long before; across machines only the age can tell.
+REFRESH_LOCK_STALE_S = 60.0
 
 
 def config_dir() -> Path:
@@ -152,6 +161,165 @@ class _FileLock:
             self._fh = None
 
 
+_process_locks: dict[str, threading.Lock] = {}
+_process_locks_guard = threading.Lock()
+
+
+def _process_lock(path: Path) -> threading.Lock:
+    """One in-process lock per lock file. ``flock`` is per open file on a local disk, but on a
+    network file system (Linux NFS emulates it with byte-range locks) it is per PROCESS, so the
+    threads of one process would not exclude each other."""
+    key = str(path)
+    with _process_locks_guard:
+        return _process_locks.setdefault(key, threading.Lock())
+
+
+def _pid_alive(pid: int) -> bool:
+    if os.name == "nt":  # os.kill(pid, 0) would TERMINATE a process there: age only
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # EPERM: it exists and belongs to someone else
+        return True
+    return True
+
+
+class _RefreshLock:
+    """The right to renew the session, held by ONE process (or thread) at a time, on one computer
+    or on many that share the folder (a home directory on a network file system).
+
+    Three layers, taken in this order:
+
+    1. an in-process lock (threads of one process);
+    2. an exclusively created lock file ``session.refresh.lock`` (``O_CREAT | O_EXCL`` is atomic on
+       local disks and on NFS v3 and later) holding the host name, process id, time and a random
+       token. This is what works where ``flock`` does not;
+    3. the ordinary ``flock`` on ``session.lock`` (:class:`_FileLock`), which also keeps the plain
+       writers of the session file out.
+
+    A lock file left by a process that died is taken over: at once when it names this host and a
+    process that no longer exists, otherwise when it is older than ``REFRESH_LOCK_STALE_S``. Waiting
+    uses a random back-off (jitter) so many waiters do not collide in step, and gives up with
+    ``TimeoutError`` after ``timeout`` seconds (the caller keeps the session and does not delete
+    anything).
+    """
+
+    def __init__(
+        self,
+        directory: Path,
+        timeout: float | None = None,
+        stale_after: float | None = None,
+    ) -> None:
+        self.dir = directory
+        self.path = directory / "session.refresh.lock"
+        self.timeout = REFRESH_LOCK_TIMEOUT_S if timeout is None else timeout
+        self.stale_after = REFRESH_LOCK_STALE_S if stale_after is None else stale_after
+        self._token = ""
+        self._mine: threading.Lock | None = None
+        self._flock: _FileLock | None = None
+        self._held = False
+
+    # -- the lock file -----------------------------------------------------------------------
+    def _create(self) -> bool:
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return False
+        info = {
+            "host": socket.gethostname(),
+            "pid": os.getpid(),
+            "time": time.time(),
+            "token": self._token,
+        }
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(info))
+        return True
+
+    def _read(self) -> dict[str, Any]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def _is_stale(self, info: dict[str, Any]) -> bool:
+        try:
+            age = time.time() - self.path.stat().st_mtime
+        except OSError:
+            return False  # gone: the next create will tell
+        pid = info.get("pid")
+        same_host = info.get("host") == socket.gethostname()
+        if same_host and isinstance(pid, int) and pid > 0 and not _pid_alive(pid):
+            return True
+        return age > self.stale_after
+
+    def _break_stale(self, seen: dict[str, Any]) -> None:
+        """Remove the stale lock that ``seen`` describes, without removing a fresh one by mistake:
+        move it aside first, check what was moved, and put it back if it was not the stale one."""
+        aside = self.path.with_name(f"{self.path.name}.stale.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            os.rename(self.path, aside)
+        except OSError:
+            return  # someone else got there first
+        try:
+            moved = json.loads(aside.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            moved = {}
+        if seen.get("token") and moved.get("token") != seen.get("token"):
+            with contextlib.suppress(OSError):  # not the stale one: give it back if still free
+                os.link(aside, self.path)
+        with contextlib.suppress(OSError):
+            aside.unlink()
+
+    # -- context manager ---------------------------------------------------------------------
+    def __enter__(self) -> _RefreshLock:
+        _make_private_dir(self.dir)
+        deadline = time.monotonic() + self.timeout
+        mine = _process_lock(self.path)
+        if not mine.acquire(timeout=max(0.0, self.timeout)):
+            raise TimeoutError(f"could not lock {self.path}")
+        self._mine = mine
+        try:
+            self._token = secrets.token_hex(8)
+            delay = 0.02
+            while not self._create():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"could not lock {self.path}")
+                info = self._read()
+                if self._is_stale(info):
+                    self._break_stale(info)
+                    continue
+                time.sleep(random.uniform(delay / 2, delay * 1.5))  # jitter
+                delay = min(delay * 1.5, 0.25)
+            self._held = True
+            left = max(0.05, deadline - time.monotonic())
+            self._flock = _FileLock(self.dir / "session.lock", timeout=left).__enter__()
+        except BaseException:
+            self._release()
+            raise
+        return self
+
+    def _release(self) -> None:
+        if self._flock is not None:
+            with contextlib.suppress(Exception):
+                self._flock.__exit__(None, None, None)
+            self._flock = None
+        if self._held:
+            # remove the file only while it is still OURS (it may have been taken over as stale)
+            if self._read().get("token") == self._token:
+                with contextlib.suppress(OSError):
+                    self.path.unlink()
+            self._held = False
+        if self._mine is not None:
+            self._mine.release()
+            self._mine = None
+
+    def __exit__(self, *exc: object) -> None:
+        self._release()
+
+
 def _make_private_dir(directory: Path) -> None:
     """Create ``directory`` (mode 0700). A folder that already exists is left as it is: it may be
     one the user chose with RADARX_CONFIG_DIR and shares with other things."""
@@ -228,6 +396,36 @@ class SessionStore:
         with _FileLock(self._lock_path):
             yield
 
+    @contextlib.contextmanager
+    def refresh_locked(self, timeout: float | None = None) -> Iterator[None]:
+        """Exclusive right to renew the session: one renewal at a time across threads, processes
+        and (via an exclusively created lock file) computers sharing the folder. Raises
+        ``TimeoutError`` when it cannot be had in time."""
+        with _RefreshLock(self.directory, timeout):
+            yield
+
+    # -- "the account server could not be reached" marker (shared by every process) -----------
+    @property
+    def _netdown_path(self) -> Path:
+        return self.directory / "session.netdown"
+
+    def mark_network_down(self, now: float) -> None:
+        """Note that renewing just failed for a network reason, so the other processes sharing this
+        folder do not each wait out the same timeout (a herd of jobs during an outage)."""
+        with contextlib.suppress(OSError):
+            write_private(self._netdown_path, repr(float(now)))
+
+    def network_down_recently(self, now: float, window: float) -> bool:
+        try:
+            marked = float(self._netdown_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            return False
+        return abs(now - marked) < window
+
+    def clear_network_down(self) -> None:
+        with contextlib.suppress(OSError):
+            self._netdown_path.unlink()
+
     def _write(self, session: StoredSession) -> None:
         session.saved_at = time.time()
         write_private(self.path, json.dumps(session.to_json(), indent=1))
@@ -251,6 +449,7 @@ class SessionStore:
     def clear(self) -> None:
         with self.locked():
             self._unlink()
+        self.clear_network_down()
 
     def _unlink(self) -> None:
         with contextlib.suppress(OSError):

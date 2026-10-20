@@ -36,6 +36,9 @@ from engine.account.store import SessionStore, StoredSession
 REFRESH_MARGIN_S = 120.0
 #: After the account server was unreachable, do not retry the network for this long (per process).
 NETWORK_RETRY_S = 60.0
+#: After one process found the account server unreachable, the others that share the session folder
+#: skip the network for this long (so a herd of jobs does not wait out the same timeout each).
+SHARED_NETDOWN_S = 15.0
 #: How long one successful check is reused inside a process (the API calls it on every function).
 CACHE_TTL_S = 30.0
 #: Network limits (seconds, in total) of the calls a command may make while checking the account.
@@ -85,6 +88,8 @@ def reset_runtime_state() -> None:
     with _state_lock:
         _cache.update(path=None, until=0.0, account=None)
         _net_down_until = 0.0
+    with contextlib.suppress(Exception):  # the shared "server unreachable" note goes too
+        SessionStore().clear_network_down()
 
 
 def _verify(token: str, at: float) -> tokens.Claims:
@@ -143,6 +148,7 @@ def _store_new_session(
         high_water=at,
     )
     store.save(stored)
+    store.clear_network_down()
     return stored, claims
 
 
@@ -160,7 +166,7 @@ def _refresh_stored(
     if time.monotonic() < _net_down_until:
         return None
     try:
-        with store.locked():
+        with store.refresh_locked():
             current = store.load()
             if current is None:
                 raise AccountRequired("no_session")
@@ -172,14 +178,25 @@ def _refresh_stored(
                 seen = current
             if not seen.refresh_token:
                 return None
+            if store.network_down_recently(now(), SHARED_NETDOWN_S):
+                _net_down_until = time.monotonic() + NETWORK_RETRY_S
+                return None  # another process just found the server unreachable: do not wait again
             try:
                 session = gotrue.refresh(seen.refresh_token, timeout=timeout)
             except AccountServerError as exc:
                 if exc.definite_refusal:
-                    store._unlink()
-                    raise AccountRequired("revoked") from exc
+                    # the server itself says this refresh token is finished. Delete the file only
+                    # while it still holds exactly the token that was refused: if somebody saved
+                    # a different one meanwhile (the file system was slow to show it), keep it.
+                    latest = store.load()
+                    if latest is None or latest.refresh_token == seen.refresh_token:
+                        store._unlink()
+                        raise AccountRequired("revoked") from exc
+                    return None
                 _net_down_until = time.monotonic() + NETWORK_RETRY_S
+                store.mark_network_down(now())
                 return None
+            store.clear_network_down()
             # the server just vouched for the account: save the rotated tokens first ...
             provisional = StoredSession(
                 access_token=session["access_token"],
@@ -271,11 +288,17 @@ def check_stored_session(
     elif claims.expired(at) and network and not can_refresh and server_reachable(probe_limit):
         # Nobody here can renew this token (the app owns its own sign-in) and the server IS
         # reachable: the 30-day offline allowance is for when it is not.
-        raise AccountRequired(
+        exc = AccountRequired(
             "expired",
-            "Your sign-in has expired. Open the radarx-desktop app (it renews its own sign-in) "
-            "or sign in again.",
+            "Your sign-in was made by the radarx-desktop app and has expired. The app renews "
+            "its own sign-in, and it has not been opened since. Open the app or sign in again.",
         )
+        exc.app_owned = True  # commands.sign_in_message adds the two ways out
+        exc.headline = (
+            "Your sign-in was made by the radarx-desktop app and has expired. The app renews "
+            "its own sign-in, and it has not been opened since."
+        )
+        raise exc
     if not claims.expired(at):
         return _account_from(claims, source, at)
     if _within_grace(claims, at):
@@ -332,6 +355,22 @@ def login_with_password(email: str, password: str, store: SessionStore | None = 
     store = store or SessionStore()
     at = now()
     session = gotrue.password_login(email.strip(), password)  # AccountServerError on failure
+    return _finish_login(store, session, at)
+
+
+def login_with_code(code: str, verifier: str, store: SessionStore | None = None) -> Account:
+    """``rxd login --browser``: finish a PKCE sign-in with a provider (Google, Apple, Facebook).
+
+    ``code`` came from the redirect, ``verifier`` never left this process; the server refuses a
+    code that was not made for this verifier.
+    """
+    store = store or SessionStore()
+    at = now()
+    session = gotrue.exchange_code(code, verifier)  # AccountServerError on failure
+    return _finish_login(store, session, at)
+
+
+def _finish_login(store: SessionStore, session: Mapping[str, Any], at: float) -> Account:
     stored, claims = _store_new_session(store, session, at)
     reset_runtime_state()
     return _account_from(claims, stored.source, at)

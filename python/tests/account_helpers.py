@@ -91,6 +91,14 @@ class FakeServer:
     activity_posts: int = 0
     #: a function that says whether the database refuses a posted activity row (a 400 for the batch)
     reject_row: Any = None
+    #: the providers the project has switched on (GET /auth/v1/settings, "external")
+    external: dict[str, bool] = field(
+        default_factory=lambda: {"email": True, "google": True, "apple": False, "facebook": True}
+    )
+    #: authorisation codes the "provider" handed out: code -> PKCE challenge (single use)
+    pkce_codes: dict[str, str] = field(default_factory=dict)
+    #: every body POSTed to the token endpoint, for "the password never leaks" checks
+    token_bodies: list[Any] = field(default_factory=list)
 
     def clock(self) -> float:
         return self.now
@@ -116,9 +124,24 @@ class FakeServer:
         if path.endswith("/auth/v1/settings"):
             if self.mode == "unreachable":
                 raise AccountServerError(0, "unreachable", "OSError")
-            return {"external": {}, "disable_signup": False}
+            return {"external": dict(self.external), "disable_signup": False}
         if self.mode == "unreachable" and "/rest/v1/" not in path:
             raise AccountServerError(0, "unreachable", "OSError")
+        if path.endswith("/auth/v1/token"):
+            self.token_bodies.append(body)
+        if path.endswith("/auth/v1/token") and "grant_type=pkce" in query:
+            import base64
+            import hashlib
+
+            code, verifier = (body or {}).get("auth_code"), (body or {}).get("code_verifier", "")
+            challenge = self.pkce_codes.pop(code, None)  # a code works once
+            digest = hashlib.sha256(str(verifier).encode("ascii", "replace")).digest()
+            if (
+                challenge is None
+                or base64.urlsafe_b64encode(digest).rstrip(b"=").decode() != challenge
+            ):
+                raise AccountServerError(400, "flow_state_not_found", "invalid flow state")
+            return self._session("ada@example.test")
         if path.endswith("/auth/v1/token") and "grant_type=password" in query:
             email, password = (body or {}).get("email"), (body or {}).get("password")
             if self.users.get(email) != password:
@@ -149,6 +172,41 @@ class FakeServer:
         raise AssertionError(f"unexpected request {method} {url}")
 
 
+def fake_browser(server: FakeServer, hit: dict | None = None, *, error: str | None = None):
+    """An ``opener`` for ``oauth_login.login``: plays the browser + provider. Reads the address the
+    command printed, then (in a thread) delivers the redirect to its loopback port, like Google
+    would after the user clicks "allow". Returns the function; ``hit`` collects what happened."""
+    hit = {} if hit is None else hit
+    import secrets
+    import threading
+    import urllib.request
+    from urllib.parse import parse_qs
+
+    def opener(url: str) -> bool:
+        query = parse_qs(urlparse(url).query)
+        hit["url"] = url
+        redirect = query["redirect_to"][0]
+        challenge = query["code_challenge"][0]
+        if error is not None:
+            target = f"{redirect}?error={error}&error_description=PROVIDER+TEXT+SHOULD+NOT+SHOW"
+        else:
+            code = secrets.token_hex(8)
+            server.pkce_codes[code] = challenge
+            hit["code"] = code
+            target = f"{redirect}?code={code}"
+
+        def deliver() -> None:
+            try:
+                urllib.request.urlopen(target, timeout=5).read()
+            except Exception as exc:  # recorded for the test, not raised in a thread
+                hit["deliver_error"] = repr(exc)
+
+        threading.Thread(target=deliver, daemon=True).start()
+        return True
+
+    return opener
+
+
 def new_user_id() -> str:
     return str(uuid.uuid4())
 
@@ -171,12 +229,12 @@ def run_python(args, *, env, timeout=120, **kw):
     return subprocess.run([sys.executable, *args], env=env, timeout=timeout, close_fds=False, **kw)
 
 
-def spawn_python(args, *, env):
+def spawn_python(args, *, env, **kw):
     """Like :func:`run_python` but returns the running ``Popen`` (see there for why no fork)."""
     import subprocess
     import sys
 
-    return subprocess.Popen([sys.executable, *args], env=env, close_fds=False)
+    return subprocess.Popen([sys.executable, *args], env=env, close_fds=False, **kw)
 
 
 class Blackhole:
