@@ -16,8 +16,9 @@ import {
 import type { ParentCirculation } from './perilsVortex.ts';
 import { PROV, chip, drawText, fit, measure, panel, provColour, rgba, ui } from './perilsStyle.ts';
 import { wrapText } from './perilsCaptions.ts';
+import type { Rect } from './perilsLayout.ts';
 import { tempColour } from './perilsSurface.ts';
-import { COLORMAP_DATA } from '../utils/colormaps';
+import { COLORMAP_DATA } from '../utils/colormaps.ts';
 
 export interface TornadoCard {
   rating: string;
@@ -81,35 +82,84 @@ function line(ctx: CanvasRenderingContext2D, x0: number, y0: number, x1: number,
   ctx.stroke();
 }
 
-/** A compact compass strip: the bearings in view, the heading in the middle. */
+/** Degrees the compass strip shows on each side of the heading. */
+const COMPASS_HALF_DEG = 42;
+
+/** The compass: the strip, and the marker with the heading read-out under its middle (two boxes of one card). */
+export function compassRect(w: number, u: number): Rect[] {
+  const stripW = Math.min(w * 0.22, 440 * u);
+  return [
+    { x: (w - stripW) / 2, y: 22 * u, w: stripW, h: 36 * u },
+    { x: w / 2 - 62 * u, y: 58 * u, w: 124 * u, h: 36 * u },
+  ];
+}
+
+/**
+ * A compass strip of the camera heading: a tick every 5 degrees, a longer one with the number every 15, the eight winds
+ * (N, NE, ...) at their ticks, a marker and the heading under it. The scale is linear in degrees (the strip shows
+ * +-42 degrees around the heading), so that the strip is the same in a wide and in a narrow view.
+ */
 export function drawCompass(ctx: CanvasRenderingContext2D, w: number, u: number, yaw: number, tanX: number): void {
-  const y0 = 22 * u;
-  const stripW = Math.min(w * 0.3, 560 * u);
-  const x0 = (w - stripW) / 2;
+  void tanX;
+  const r = compassRect(w, u)[0];
+  const y0 = r.y;
+  const stripH = 36 * u;
   const U = ui();
-  panel(ctx, x0, y0, stripW, 28 * u, u, 0.4);
+  const hd = ((yaw % 360) + 360) % 360;
+  const pxPerDeg = r.w / 2 / COMPASS_HALF_DEG;
+  panel(ctx, r.x, y0, r.w, stripH, u, 0.5);
   ctx.save();
   ctx.beginPath();
-  ctx.rect(x0, y0, stripW, 28 * u);
+  ctx.rect(r.x + 1 * u, y0, r.w - 2 * u, stripH);
   ctx.clip();
-  for (let b = Math.floor((yaw - 60) / 5) * 5; b <= yaw + 60; b += 5) {
-    const d = (((b - yaw) % 360) + 540) % 360 - 180;
-    const x = w / 2 + (Math.tan((d * Math.PI) / 180) / tanX) * (w / 2);
-    if (x < x0 || x > x0 + stripW) continue;
+  for (let b = Math.floor((yaw - COMPASS_HALF_DEG - 6) / 5) * 5; b <= yaw + COMPASS_HALF_DEG + 6; b += 5) {
+    const d = b - yaw;
+    const x = r.x + r.w / 2 + d * pxPerDeg;
     const bb = ((b % 360) + 360) % 360;
-    const major = bb % 45 === 0;
-    line(ctx, x, y0 + 28 * u, x, y0 + (major ? 13 : 21) * u, (major ? 2 : 1) * u, rgba(U.text, major ? 0.95 : 0.45));
-    if (major) drawText(ctx, compass16(bb), x, y0 + 12 * u, u, { size: 14, weight: 700, align: 'center', halo: 3 });
+    const wind = bb % 45 === 0;
+    const mid = bb % 15 === 0;
+    const len = (wind ? 17 : mid ? 12 : 7) * u;
+    line(ctx, x, y0 + stripH - 3 * u, x, y0 + stripH - 3 * u - len, (wind ? 2.2 : mid ? 1.6 : 1.2) * u, rgba(U.text, wind ? 0.98 : mid ? 0.85 : 0.6));
+    if (wind) drawText(ctx, compass16(bb), x, y0 + 15 * u, u, { size: 14, weight: 800, align: 'center', halo: 3 });
+    else if (mid) drawText(ctx, String(bb), x, y0 + 15 * u, u, { size: 11, weight: 600, align: 'center', halo: 2.4, color: rgba(U.dim, 1) });
   }
   ctx.restore();
+  // the marker of the heading: a triangle under the strip, pointing up at the middle tick
   ctx.fillStyle = rgba(U.caution, 0.95);
   ctx.beginPath();
-  ctx.moveTo(w / 2, y0 + 29 * u);
-  ctx.lineTo(w / 2 - 5 * u, y0 + 37 * u);
-  ctx.lineTo(w / 2 + 5 * u, y0 + 37 * u);
+  ctx.moveTo(w / 2, y0 + stripH + 1 * u);
+  ctx.lineTo(w / 2 - 5 * u, y0 + stripH + 9 * u);
+  ctx.lineTo(w / 2 + 5 * u, y0 + stripH + 9 * u);
   ctx.closePath();
   ctx.fill();
-  drawText(ctx, `${compass16(yaw)} ${Math.round(((yaw % 360) + 360) % 360)}°`, w / 2, y0 + 56 * u, u, { size: 15, align: 'center', color: rgba(U.caution, 1) });
+  drawText(ctx, `${compass16(hd)} ${Math.round(hd)}°`, w / 2, y0 + stripH + 27 * u, u, { size: 15, align: 'center', color: rgba(U.caution, 1) });
+}
+
+/** The lines of the top left block (title, subtitle, clock, speed-up, status), each as a box of its own: the card is these boxes, not their union. */
+export function topLeftRects(ctx: CanvasRenderingContext2D, u: number, m: HudModel): Rect[] {
+  const date = new Date(new Date(m.data.time0).getTime() + m.td * 1000);
+  const realTime = m.speedup <= 1.3;
+  const speedLine = `${date.toUTCString().slice(5, 16)} · ${realTime ? `REAL TIME ×${m.speedup.toFixed(1)} (not time-lapse)` : `time-lapse ×${m.speedup.toFixed(1)}`}`;
+  const x = 34 * u - 2 * u;
+  const box = (baseline: number, size: number, w: number): Rect => ({ x, y: (baseline - size * 0.95) * u, w: w + 4 * u, h: size * 1.25 * u });
+  const rects = [
+    box(52, 34, measure(ctx, m.title, u, { size: 34, weight: 700 })),
+    box(78, 17, measure(ctx, m.subtitle, u, { size: 17, weight: 500 })),
+    box(140, 54, measure(ctx, `${clockUtc(m.data.time0, m.td)} UTC`, u, { size: 54, weight: 700, mono: true })),
+    box(168, 18, measure(ctx, speedLine, u, { size: 18, weight: realTime ? 700 : 500 })),
+  ];
+  const y0 = 182;
+  if (m.observed >= 0) {
+    const st = m.data.steps[m.observed];
+    const lines = wrapText(st.radars.map((r) => `${r} ${fmtOffset(st.offsets_s[r] ?? 0)}`).join('  '), 54);
+    rects.push({ x, y: (y0 + 4) * u, w: 170 * u, h: 32 * u });
+    lines.forEach((ln, i) => rects.push(box(y0 + 44 + i * 19, 15, measure(ctx, ln, u, { size: 15, weight: 500, mono: true }))));
+  } else {
+    rects.push({ x, y: (y0 + 4) * u, w: 170 * u, h: 32 * u });
+    rects.push(box(y0 + 44, 15, 460 * u));
+    rects.push(box(y0 + 63, 14, measure(ctx, m.motionNote, u, { size: 14, weight: 500 })));
+  }
+  return rects;
 }
 
 /** Title, clock, speed-up and the observed / interpolated status. */
@@ -142,12 +192,16 @@ export function drawTopLeft(ctx: CanvasRenderingContext2D, u: number, m: HudMode
   }
 }
 
-/** Flash counter and a small time series of the real LMA flashes. */
-export function drawLmaPanel(ctx: CanvasRenderingContext2D, W: number, u: number, m: HudModel, a: number, y0 = 28 * u): number {
+export function lmaRect(W: number, u: number, y: number, x?: number): Rect {
+  return { x: x ?? W - 34 * u - 330 * u, y, w: 330 * u, h: 128 * u };
+}
+
+/** Flash counter and a small time series of the real LMA flashes (`x`: its left edge, the right-hand column by default). */
+export function drawLmaPanel(ctx: CanvasRenderingContext2D, W: number, u: number, m: HudModel, a: number, y0 = 28 * u, xLeft?: number): number {
   if (a <= 0.02) return y0;
   const w = 330 * u;
   const h = 128 * u;
-  const x = W - 34 * u - w;
+  const x = xLeft ?? W - 34 * u - w;
   const y = y0;
   ctx.save();
   ctx.globalAlpha = a;
@@ -183,6 +237,10 @@ export interface EnvPanel {
   note?: string;
 }
 
+export function envRect(W: number, u: number, y: number, env: EnvPanel): Rect {
+  return { x: W - 34 * u - 330 * u, y, w: 330 * u, h: (50 + env.rows.length * 21 + (env.note ? 18 : 0)) * u };
+}
+
 /** The environment of the storm (the radiosonde nearest in time and place, numbers from the engine's diagnostics), small. */
 export function drawEnvPanel(ctx: CanvasRenderingContext2D, W: number, u: number, y: number, env: EnvPanel | null, a: number): number {
   if (a <= 0.02 || !env || !env.rows.length) return y;
@@ -201,6 +259,10 @@ export function drawEnvPanel(ctx: CanvasRenderingContext2D, W: number, u: number
   if (env.note) drawText(ctx, env.note, x + 14 * u, y + h - 10 * u, u, { size: 11, weight: 500, color: rgba(ui().muted, 1), halo: 0 });
   ctx.restore();
   return y + h + 10 * u;
+}
+
+export function stationCardRect(H: number, u: number): Rect {
+  return { x: 34 * u, y: H - 200 * u - 176 * u, w: 360 * u, h: 176 * u };
 }
 
 /** The station nearest the camera: live read-outs and a small rain-rate strip with a "now" line. */
@@ -252,6 +314,10 @@ export function drawStationCard(ctx: CanvasRenderingContext2D, H: number, u: num
   ctx.restore();
 }
 
+export function tornadoCardRect(u: number, y: number): Rect {
+  return { x: 34 * u, y, w: 392 * u, h: (46 + 5 * 38) * u };
+}
+
 /**
  * The tornado card (wide shots): what the survey says, what the radars measured (the parent circulation) and that the
  * tornado itself is unresolved, the debris evidence (weak) and the estimated spin of the stylised funnel.
@@ -299,11 +365,10 @@ export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: Hud
  * tornado simulation on it says so first (SIMULATION seeded by observations) and gives the numbers of the model; it fades
  * down (not out) after a few seconds so that the view is left alone, while the honesty lines stay.
  */
-export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, u: number, m: HudModel, a: number): void {
+export function tornadoLowerThirdLines(m: HudModel): string[] {
   const t = m.tornado;
-  if (a <= 0.02 || !t || !t.active) return;
+  if (!t || !t.active) return [];
   const par = t.parent;
-  const real = m.speedup <= 1.3;
   const sim = t.sim;
   const radar = `Radars resolve only the parent circulation${par && par.medianVrotMs != null ? ` (Vrot ${par.medianVrotMs.toFixed(0)} m/s, couplet ${par.medianDiameterKm?.toFixed(1)} km)` : ''}: the ${t.widthM ? Math.round(t.widthM) : ''} m tornado is unresolved on a ${t.resolutionM ? Math.round(t.resolutionM) : 500} m grid.`;
   const raw: string[] = sim
@@ -319,12 +384,22 @@ export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, 
         radar,
         `Position from the survey (straight line, INTERPOLATED)${t.debris ? '; possible debris signature (weak evidence)' : ''}. Funnel and debris: STYLISED.`,
       ];
-  const cols = 150;
-  const lines = raw.flatMap((ln) => wrapText(ln, cols));
-  const w = 980 * u;
-  const h = (54 + lines.length * 18) * u;
-  const x = 34 * u;
-  const y = H - 172 * u - h;
+  return raw.flatMap((ln) => wrapText(ln, 150));
+}
+
+export function tornadoLowerThirdRect(H: number, u: number, m: HudModel): Rect {
+  const h = (54 + tornadoLowerThirdLines(m).length * 18) * u;
+  return { x: 34 * u, y: H - 172 * u - h, w: 980 * u, h };
+}
+
+/** The lower third of the immersive tornado shot (see `tornadoLowerThirdLines` for its text). */
+export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, u: number, m: HudModel, a: number): void {
+  const t = m.tornado;
+  if (a <= 0.02 || !t || !t.active) return;
+  const real = m.speedup <= 1.3;
+  const sim = t.sim;
+  const lines = tornadoLowerThirdLines(m);
+  const { x, y, w, h } = tornadoLowerThirdRect(H, u, m);
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u, 0.62);
@@ -348,9 +423,27 @@ export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, 
   ctx.restore();
 }
 
-/** The caption strip: the feature in view (data-derived label) and the science caption of the latest event. */
-export function drawCaption(ctx: CanvasRenderingContext2D, W: number, H: number, u: number, m: HudModel): void {
-  const a = m.vis('captions');
+/** The panel of the science caption (null when there is only the one-line "what you see" text or nothing). */
+export function captionRect(W: number, H: number, u: number, m: HudModel): Rect | null {
+  const c = m.caption;
+  if (!c || c.alpha <= 0.02) return null;
+  const w = Math.min(W * 0.56, 1060 * u);
+  const data = c.numbers ? wrapText(c.numbers, 112) : [];
+  const lines = wrapText(c.text, 112);
+  const h = (44 + (data.length + lines.length) * 21 + (data.length && lines.length ? 4 : 0)) * u;
+  return { x: W / 2 - w / 2, y: H - 150 * u - h, w, h };
+}
+
+/** The one-line "what you see" text under the science caption's place (null when the science caption is up or there is no text). */
+export function seesRect(ctx: CanvasRenderingContext2D, W: number, H: number, u: number, m: HudModel): Rect | null {
+  if (!m.sees || (m.caption && m.caption.alpha > 0.02)) return null;
+  const w = measure(ctx, m.sees, u, { size: 18, weight: 600 });
+  return { x: W / 2 - w / 2 - 3 * u, y: H - 156 * u - 18 * u, w: w + 6 * u, h: 26 * u };
+}
+
+/** The caption strip: the feature in view (data-derived label) and the science caption of the latest event. `gate` scales its opacity. */
+export function drawCaption(ctx: CanvasRenderingContext2D, W: number, H: number, u: number, m: HudModel, gate = 1): void {
+  const a = m.vis('captions') * gate;
   if (a <= 0.02) return;
   const cx = W / 2;
   const w = Math.min(W * 0.56, 1060 * u);
@@ -381,6 +474,18 @@ export function drawCaption(ctx: CanvasRenderingContext2D, W: number, H: number,
     drawText(ctx, m.sees, cx, baseY - 6 * u, u, { size: 18, weight: 600, align: 'center', color: rgba(ui().text, 0.95) });
   }
   ctx.restore();
+}
+
+/** The timeline: the bar with its end times and the shot's name above it. */
+export function timelineRect(W: number, H: number, u: number): Rect {
+  const bw = Math.min(W * 0.5, 960 * u);
+  return { x: (W - bw) / 2 - 4 * u, y: H - 118 * u - 32 * u, w: bw + 8 * u, h: 32 * u + 16 * u };
+}
+
+/** The legend chips, the two lines of notes and the credits at the bottom of the frame. */
+export function legendRect(W: number, H: number, u: number): Rect {
+  const w = Math.min(W * 0.9, 1500 * u);
+  return { x: (W - w) / 2, y: H - 74 * u, w, h: 70 * u };
 }
 
 /** Timeline: the data window, the observed volumes (ticks), the shots (segments) and the playhead. */
@@ -429,6 +534,12 @@ export function drawLegend(ctx: CanvasRenderingContext2D, W: number, H: number, 
  * The key of the ground colours: surface temperature (ANALYSIS), MRMS reflectivity outside the radar volume
  * (OBSERVED), and the rotation swath (RETRIEVED). Only the layers that are on and have data get a row.
  */
+export function groundKeyRect(u: number, m: HudModel, y: number): Rect | null {
+  const k = m.groundKey;
+  const rows = [k.temp && 'temp', k.mrms && 'mrms', k.swath && 'swath'].filter(Boolean).length;
+  return rows ? { x: 34 * u, y, w: 330 * u, h: (14 + rows * 40) * u } : null;
+}
+
 export function drawGroundKey(ctx: CanvasRenderingContext2D, u: number, m: HudModel, y: number, a: number): number {
   const k = m.groundKey;
   const rows = [k.temp && 'temp', k.mrms && 'mrms', k.swath && 'swath'].filter(Boolean) as string[];
@@ -480,6 +591,12 @@ export function drawGroundKey(ctx: CanvasRenderingContext2D, u: number, m: HudMo
  * The one lower third of the tornado focus: a title, two or three lines made from the data (perilsFocusData.focusCaption), the
  * badge that says whether the picture is the SIMULATION and whether the data clock is running in real time or in time-lapse.
  */
+export function focusLowerThirdRect(H: number, u: number, cap: { title: string; lines: string[] }): Rect {
+  const lines = cap.lines.flatMap((ln) => wrapText(ln, 122));
+  const h = (50 + lines.length * 19) * u;
+  return { x: 34 * u, y: H - 150 * u - h, w: 900 * u, h };
+}
+
 export function drawFocusLowerThird(
   ctx: CanvasRenderingContext2D, H: number, u: number, a: number, cap: { title: string; lines: string[] },
   badge: { sim: boolean; speedup: number }, rating: string,
@@ -524,6 +641,12 @@ export function endCardAlpha(tc: number, duration: number, span = 9): number {
  * The closing card: every data source and instrument of the manifest with its credit and class, and
  * what the six labels mean. It covers the right-hand part of the last seconds of the top-down shot.
  */
+export function endCardRect(W: number, u: number, m: HudModel): Rect {
+  const rows = Math.min((m.data.sources ?? []).length, 14);
+  const w = Math.min(W * 0.56, 1040 * u);
+  return { x: W - 34 * u - w, y: 200 * u, w, h: (86 + rows * 36 + 6 * 22 + 40) * u };
+}
+
 export function drawEndCard(ctx: CanvasRenderingContext2D, W: number, H: number, u: number, m: HudModel, tc: number, duration: number, span = 9): void {
   const a = endCardAlpha(tc, duration, span);
   if (a <= 0.01) return;

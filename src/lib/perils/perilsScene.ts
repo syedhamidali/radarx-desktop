@@ -14,6 +14,7 @@ import {
 } from './perilsData.ts';
 import { type RGB, drawText, measure, rgba, ui, provColour, chip, HAIL_COLOUR, TDS_COLOUR, ROTATION_COLOUR, ZDR_COLOUR, TORNADO_COLOUR } from './perilsStyle.ts';
 import { recentHail } from './perilsInsets.ts';
+import type { LabelReq } from './perilsLayout.ts';
 
 export interface SceneEnv {
   ctx: CanvasRenderingContext2D;
@@ -34,6 +35,8 @@ export interface SceneEnv {
   nearStep: number;
   /** Data seconds per clip second at this frame. */
   speedup: number;
+  /** Where the labels go: they are not drawn here but placed (cap, priority, no overlap) and drawn by the HUD (perilsLayout.ts). */
+  labels: { add(r: LabelReq): void };
 }
 
 /** Project a scene point (km, height km un-exaggerated) with a near plane of 20 m: [px, py, depth km] or null. */
@@ -96,7 +99,7 @@ export function drawRadars(e: SceneEnv, a: number): void {
     ctx.arc(top[0], top[1], 4.5 * u, 0, Math.PI * 2);
     ctx.fillStyle = rgba(col, 1);
     ctx.fill();
-    if (d < 260) drawText(ctx, r.name, top[0] + 8 * u, top[1] - 5 * u, u, { size: 15, color: rgba(col, 1) });
+    if (d < 260) e.labels.add({ id: `radar:${r.name}`, text: r.name, ax: top[0], ay: top[1], size: 15, colour: rgba(col, 1), priority: (mobile ? 50 : 45) - Math.min(20, d / 12), alpha: a });
     ctx.restore();
   }
 }
@@ -175,7 +178,7 @@ export function drawStations(e: SceneEnv, a: number): void {
       ctx.strokeStyle = rgba(HAIL_COLOUR, 0.9 * (1 - f));
       ctx.lineWidth = 3 * u;
       ctx.stroke();
-      if (top) drawText(ctx, `hail candidate · largest ${hail.maxD.toFixed(0)} mm`, top[0] + 10 * u, top[1] - 26 * u, u, { size: 14, color: rgba(HAIL_COLOUR, 1) });
+      if (top) e.labels.add({ id: `hail:${s.id}`, text: `hail candidate · largest ${hail.maxD.toFixed(0)} mm`, ax: top[0], ay: top[1] - 20 * u, size: 14, colour: rgba(HAIL_COLOUR, 1), priority: 65, alpha: a });
     }
     // pole and head
     if (top) {
@@ -199,7 +202,7 @@ export function drawStations(e: SceneEnv, a: number): void {
       if (d < 25 || near) {
         const short = s.id.slice(s.id.lastIndexOf('_') + 1);
         const txt = near && ro.rain != null ? `${short}  ${ro.rain.toFixed(1)} mm/h${ro.dm != null ? `  Dm ${ro.dm.toFixed(1)} mm` : ''}` : short;
-        drawText(ctx, txt, top[0] + 10 * u, top[1] - 6 * u, u, { size: near ? 17 : 14, color: rgba(col, 1) });
+        e.labels.add({ id: `station:${s.id}`, text: txt, ax: top[0], ay: top[1], size: near ? 17 : 14, colour: rgba(col, 1), priority: near ? 75 : 30 - Math.min(20, d), alpha: a * (near ? 1 : 0.85) });
       }
     }
     ctx.restore();
@@ -311,7 +314,7 @@ export function drawTornadoTrack(e: SceneEnv, a: number): void {
       ctx.arc(p[0], p[1], 5 * u, 0, Math.PI * 2);
       ctx.fillStyle = rgba(TORNADO_COLOUR, 1);
       ctx.fill();
-      drawText(ctx, text, p[0] + 9 * u, p[1] + 5 * u, u, { size: 15, color: rgba([255, 200, 200], 1) });
+      e.labels.add({ id: `track:${text.split(' ')[0]}`, text, ax: p[0], ay: p[1], size: 15, colour: rgba([255, 200, 200], 1), priority: text.includes('starts') ? 100 : 90, alpha: a, slide: true, offsets: (w) => [[9, 5], [9, -14], [-(w + 9), 5], [-(w + 9), -14], [-w / 2, -22], [-w / 2, 28]] });
     };
     const rating = tor.rating ?? 'tornado';
     lab(tor.path[0], `${rating} starts ${clockUtc(e.data.time0, tor.path[0].t)}`);
@@ -323,7 +326,7 @@ export function drawTornadoTrack(e: SceneEnv, a: number): void {
       const note = 'surveyed begin and end, path between them interpolated';
       if (onScreen(pm, cam.w, cam.h)) {
         const nx = Math.max(12 * u, Math.min(pm[0] - 100 * u, cam.w - 24 * u - measure(ctx, note, u, { size: 12, weight: 500 })));
-        drawText(ctx, note, nx, pm[1] + 32 * u, u, { size: 12, weight: 500, color: rgba([255, 205, 200], 0.95) });
+        e.labels.add({ id: 'track:note', text: note, ax: nx, ay: pm[1] + 32 * u, size: 12, weight: 500, colour: rgba([255, 205, 200], 0.95), priority: 15, alpha: a, offsets: [[0, 0], [0, 22], [0, -22], [0, 44]] });
       }
     }
     // the marker at the clip-time position
@@ -405,7 +408,7 @@ export function drawRotation(e: SceneEnv, a: number): void {
     const t = pj(cam, cur.x, cur.y, 1.6, e.ve);
     if (!onScreen(t, cam.w, cam.h)) continue;
     const sh = typeof cur.as === 'number' ? cur.as : null;
-    drawText(ctx, sh != null ? `vortex candidate · shear ${sh.toFixed(3)} s⁻¹` : 'vortex candidate', t[0] + 10 * u, t[1], u, { size: 15, color: rgba(ROTATION_COLOUR, 1) });
+    e.labels.add({ id: 'vortex', text: sh != null ? `vortex candidate · shear ${sh.toFixed(3)} s⁻¹` : 'vortex candidate', ax: t[0], ay: t[1] + 6 * u, size: 15, colour: rgba(ROTATION_COLOUR, 1), priority: 70, alpha: a });
   }
   ctx.restore();
 }
@@ -438,7 +441,7 @@ export function drawTds(e: SceneEnv, a: number): void {
   if (n > 3) {
     ctx.save();
     ctx.globalAlpha = a;
-    drawText(ctx, 'possible debris (weak evidence)', cx / n + 14 * u, cy / n - 12 * u, u, { size: 15, color: rgba(TDS_COLOUR, 1) });
+    e.labels.add({ id: 'debris', text: 'possible debris (weak evidence)', ax: cx / n + 4 * u, ay: cy / n - 6 * u, size: 15, colour: rgba(TDS_COLOUR, 1), priority: 60, alpha: a });
     ctx.restore();
   }
 }
@@ -480,7 +483,7 @@ export function drawHail(e: SceneEnv, a: number): void {
   if (n > 20) {
     ctx.save();
     ctx.globalAlpha = a;
-    drawText(ctx, 'hail class (weak evidence)', sx / n + 12 * u, sy / n - 10 * u, u, { size: 14, color: rgba(HAIL_COLOUR, 1) });
+    e.labels.add({ id: 'hailclass', text: 'hail class (weak evidence)', ax: sx / n + 2 * u, ay: sy / n - 4 * u, size: 14, colour: rgba(HAIL_COLOUR, 1), priority: 55, alpha: a });
     ctx.restore();
   }
 }
@@ -612,7 +615,7 @@ export function drawEventMarker(e: SceneEnv, a: number, x: number, y: number, la
     ctx.moveTo(base[0], base[1]);
     ctx.lineTo(top[0], top[1]);
     ctx.stroke();
-    drawText(ctx, label, top[0] + 10 * u, top[1] - 4 * u, u, { size: 16, weight: 700, color: rgba(colour, 1) });
+    e.labels.add({ id: 'event', text: label, ax: top[0], ay: top[1] + 2 * u, size: 16, weight: 700, colour: rgba(colour, 1), priority: 95, alpha: a, slide: true });
   }
   ctx.restore();
 }
@@ -645,7 +648,7 @@ export function drawColdPool(e: SceneEnv, a: number, segs: number[][]): void {
   }
   ctx.stroke();
   ctx.setLineDash([]);
-  if (last && onScreen(last, cam.w, cam.h)) drawText(ctx, 'cold-pool edge (surface analysis, 2 K cooler)', last[0] + 8 * u, last[1] - 8 * u, u, { size: 13, color: 'rgba(170,220,255,1)' });
+  if (last && onScreen(last, cam.w, cam.h)) e.labels.add({ id: 'coldpool', text: 'cold-pool edge (surface analysis, 2 K cooler)', ax: last[0] - 2 * u, ay: last[1] - 2 * u, size: 13, colour: 'rgba(170,220,255,1)', priority: 25, alpha: a });
   ctx.restore();
 }
 
@@ -721,7 +724,7 @@ export function drawIsotherms(e: SceneEnv, a: number, centre: [number, number], 
     ctx.stroke();
     ctx.setLineDash([]);
     const lp = pj(cam, centre[0] + radiusKm, centre[1], hk, e.ve);
-    if (lp && onScreen(lp, cam.w, cam.h)) drawText(ctx, `${name} ${hk.toFixed(1)} km`, lp[0] + 6 * u, lp[1] - 4 * u, u, { size: 13, color: 'rgba(225,235,250,0.95)' });
+    if (lp && onScreen(lp, cam.w, cam.h)) e.labels.add({ id: `iso:${name}`, text: `${name} ${hk.toFixed(1)} km`, ax: lp[0] - 4 * u, ay: lp[1] + 2 * u, size: 13, colour: 'rgba(225,235,250,0.95)', priority: 20, alpha: a * 0.7 });
   }
   ctx.restore();
 }

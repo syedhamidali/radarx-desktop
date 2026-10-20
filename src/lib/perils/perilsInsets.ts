@@ -56,7 +56,7 @@ function range(vals: (number | null)[][], pad = 0.08, minSpan = 1): [number, num
  * Pressure, temperature / dew point and wind (with gust) of the nearest station over the whole window.
  * OBSERVED (the series of the station). Charts without data are left out.
  */
-export function drawStripCharts(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, u: number, st: Station, td: number, win: number, a: number, eventTimes: number[] = []): number {
+export function drawStripCharts(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, u: number, st: Station, td: number, win: number, a: number, eventTimes: number[] = [], maxBottom = Infinity): number {
   if (a <= 0.02) return 0;
   const s = st.series ?? {};
   const ts = (s.t_s as number[] | undefined) ?? [];
@@ -74,6 +74,7 @@ export function drawStripCharts(ctx: CanvasRenderingContext2D, x: number, y: num
   if (!charts.length) return 0;
   const ch = 62 * u;
   const h = (44 + charts.length * (ch + 22 * u) / u) * u;
+  if (y + h > maxBottom) return 0; // does not fit in the column: not drawn
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
@@ -112,13 +113,14 @@ export function drawStripCharts(ctx: CanvasRenderingContext2D, x: number, y: num
  * rate and the largest drop. Below, if the station recorded hail candidates, the measured fall speed of the
  * large particles against the raindrop curve (a reference, not data).
  */
-export function drawDsdInset(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, u: number, st: Station, td: number, a: number): number {
+export function drawDsdInset(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, u: number, st: Station, td: number, a: number, maxBottom = Infinity): number {
   const dsd = st.dsd;
   if (!dsd || a <= 0.02) return 0;
   const j = dsdColumn(dsd, td, 40);
   const ev = (st.events ?? []).filter((e) => e.kind === 'hail_candidate' && typeof e.mean_d_large_mm === 'number' && typeof e.mean_fall_ms_large === 'number');
   const hh = 168 * u;
   const h = hh + (ev.length ? 150 * u : 0);
+  if (y + h > maxBottom) return 0;
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);
@@ -229,10 +231,11 @@ export function rampColour(f: number): RGB {
 }
 
 /** A time-height field above an instrument site with the "now" line (OBSERVED: the profiler's own data). */
-export function drawTimeHeight(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, u: number, name: string, th: TimeHeight, field: string, label: string, td: number, win: number, a: number, prov: ProvKind = 'observed'): number {
+export function drawTimeHeight(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, u: number, name: string, th: TimeHeight, field: string, label: string, td: number, win: number, a: number, prov: ProvKind = 'observed', maxBottom = Infinity): number {
   const f = th.fields[field];
   if (!f || a <= 0.02) return 0;
   const h = 172 * u;
+  if (y + h > maxBottom) return 0;
   ctx.save();
   ctx.globalAlpha = a;
   panel(ctx, x, y, w, h, u);

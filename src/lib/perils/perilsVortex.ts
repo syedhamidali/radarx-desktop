@@ -18,7 +18,7 @@
 import type { SceneEnv } from './perilsScene.ts';
 import { pj } from './perilsScene.ts';
 import { type TornadoRec, type VortexData, type VortexStep, tornadoAt } from './perilsData.ts';
-import { drawText, measure, rgba, ui } from './perilsStyle.ts';
+import { rgba, ui } from './perilsStyle.ts';
 
 const MPH = 0.44704;
 
@@ -416,12 +416,10 @@ export class ParticleTornado implements TornadoRenderer {
     if (f.immersion < 0.5) {
       const top = pj(cam, f.x, f.y, this.opts.cloudBaseKm, e.ve);
       if (top && top[0] > 0 && top[0] < cam.w) {
-        ctx.save();
-        ctx.globalAlpha = a * (1 - f.immersion * 2);
-        const txt = `stylised funnel · ${f.params.periodS.toFixed(0)} s per turn`;
-        const w = measure(ctx, txt, u, { size: 14, weight: 600 });
-        drawText(ctx, txt, Math.max(12 * u, Math.min(top[0] - w / 2, cam.w - 430 * u - w)), Math.max(24 * u, top[1] - 12 * u), u, { size: 14, weight: 600, color: rgba(ui().text, 0.95) });
-        ctx.restore();
+        e.labels.add({
+          id: 'funnel', text: `stylised funnel · ${f.params.periodS.toFixed(0)} s per turn`, ax: top[0], ay: top[1], size: 14, weight: 600, colour: rgba(ui().text, 0.95), priority: 85,
+          alpha: a * (1 - f.immersion * 2), offsets: (w) => [[-w / 2, -12], [-w / 2, -32], [10, -12], [-(w + 10), -12]],
+        });
       }
     }
   }
@@ -453,7 +451,7 @@ export function drawParentCirculation(e: SceneEnv, a: number, f: VortexFrame, la
     const t = pj(cam, f.x, f.y, 1.6, e.ve);
     if (t && t[0] > 0 && t[0] < cam.w && t[1] > 0 && t[1] < cam.h) {
       const v = par.medianVrotMs != null ? `Vrot ${par.medianVrotMs.toFixed(0)} m/s` : 'Vrot –';
-      drawText(ctx, `parent circulation (radar): ${v}, ${par.medianDiameterKm.toFixed(1)} km wide`, t[0] + 10 * u, t[1], u, { size: 13, weight: 600, color: 'rgba(255,235,90,1)' });
+      e.labels.add({ id: 'parent', text: `parent circulation (radar): ${v}, ${par.medianDiameterKm.toFixed(1)} km wide`, ax: t[0], ay: t[1] + 6 * u, size: 13, weight: 600, colour: 'rgba(255,235,90,1)', priority: 80, alpha: a });
     }
   }
   ctx.restore();

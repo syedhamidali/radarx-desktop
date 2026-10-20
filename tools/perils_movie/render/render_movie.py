@@ -182,7 +182,7 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
     dist = Path(a.app_dist).expanduser().resolve()
     if not (dist / "index.html").exists():
         sys.exit(f"{dist}/index.html not found: run `npm run build` first (or pass --app-dist)")
-    todo = [i for i in frames if a.redraw or frame_path(frames_dir, i) is None]
+    todo = [i for i in frames if a.redraw or a.no_shot or frame_path(frames_dir, i) is None]
     log(
         f"{len(frames)} frames wanted, {len(frames) - len(todo)} already on disk, {len(todo)} to draw"
     )
@@ -254,10 +254,16 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
         log(f"renderer ready at {st['w']}x{st['h']}")
         t0 = time.time()
         cams: dict = {}
+        lays: dict = {}
         for n, i in enumerate(todo):
             await page.evaluate("(i) => window.__xrClip.renderFrame(i)", i)
             if a.cam_dump:
                 cams[i] = await page.evaluate("() => window.__xrPerilsCam || null")
+            if a.layout_dump:
+                # what the frame's overlay drew and where (cards and labels), and the layout rules it broke: perilsLayout.ts
+                lays[i] = await page.evaluate("() => window.__xrPerilsLayout || null")
+            if a.no_shot:
+                continue
             ext = "jpg" if a.frame_format == "jpeg" else "png"
             shot = (
                 await page.screenshot(type="jpeg", quality=a.jpeg_quality)
@@ -276,6 +282,11 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
             dump = Path(a.cam_dump)
             old = json.loads(dump.read_text()) if dump.exists() else {}
             old.update({str(k): v for k, v in cams.items()})
+            dump.write_text(json.dumps(old))
+        if a.layout_dump:
+            dump = Path(a.layout_dump)
+            old = json.loads(dump.read_text()) if dump.exists() else {}
+            old.update({str(k): v for k, v in lays.items()})
             dump.write_text(json.dumps(old))
         rep = await page.evaluate("() => window.__xrClip.report()")
         (frames_dir.parent / "render_report.json").write_text(json.dumps(rep, indent=1))
@@ -468,6 +479,22 @@ def main(argv=None) -> None:
         default=None,
         help="write the camera of every drawn frame (JSON) for measure_rotation.py",
     )
+    ap.add_argument(
+        "--layout-dump",
+        default=None,
+        help="write the layout of every drawn frame (JSON): the items (cards, labels) with their boxes and the layout rules broken",
+    )
+    ap.add_argument(
+        "--no-shot",
+        action="store_true",
+        help="draw the frames but save no picture (with --layout-dump: a layout check)",
+    )
+    ap.add_argument(
+        "--frame-step",
+        type=int,
+        default=1,
+        help="with --frames or the whole film: every n-th frame only (a layout check)",
+    )
     ap.add_argument("--crf", type=int, default=17)
     ap.add_argument(
         "--style",
@@ -521,6 +548,8 @@ def main(argv=None) -> None:
         frames = parse_segments(a.preview, fps, duration)
     else:
         frames = list(range(n_all))
+    if a.frame_step > 1:
+        frames = frames[:: a.frame_step]
     frames_dir = work / "frames"
     frames_dir.mkdir(exist_ok=True)
     if not a.no_render:

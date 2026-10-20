@@ -24,13 +24,17 @@ import { projRaw, drawRadars, drawStations, drawTornadoTrack, drawSwath, drawRot
 import { type FocusCaption, type FocusInfo, focusCaption, focusNow, offsetStats, offsetText, bearingOf, SHEAR_CANDIDATE } from './perilsFocusData';
 import { drawFocusInset, drawRotSeries, insetHeight, type FocusInsetState } from './perilsFocusInset';
 import { drawStripCharts, drawDsdInset, drawTimeHeight, drawRainStreaks } from './perilsInsets';
-import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawTornadoLowerThird, drawFocusLowerThird, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey } from './perilsHud';
+import {
+  type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, type EnvPanel, drawStationCard, drawTornadoCard, drawTornadoLowerThird, drawFocusLowerThird, drawCaption, drawTimeline, drawLegend, drawEndCard, endCardAlpha, drawGroundKey,
+  compassRect, topLeftRects, lmaRect, envRect, stationCardRect, tornadoCardRect, tornadoLowerThirdRect, captionRect, seesRect, timelineRect, legendRect, groundKeyRect, focusLowerThirdRect, endCardRect,
+} from './perilsHud';
+import { FrameLayout, LabelPlacer, findViolations, firstFit, type LabelReq, type Rect } from './perilsLayout';
 import { activeCaption, captionAlpha, captionOf, scheduleCaptions, type ScheduledCaption, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
 import { drawMinimap, hfovFromTan, type MinimapState } from './perilsMinimap';
 import { SimTornado, simDistanceWeight, simSpeedWeight, simRainGain, type SimSeedFile, type SimGeoPose } from './perilsTornadoSim';
 import { ParticleTornado, drawParentCirculation, vortexFrame, type TornadoRenderer, type VortexFrame } from './perilsVortex';
-import { provColour, chip } from './perilsStyle';
+import { provColour, chip, drawText, FONT, measure } from './perilsStyle';
 import { fmtOffset, clockUtc } from './perilsData';
 
 export interface PerilsOptions {
@@ -112,6 +116,10 @@ export class PerilsExtras implements ClipExtras {
   simW = 0;
   private simPrev: { td: number; pose: SimGeoPose } | null = null;
   private hudCtx: CanvasRenderingContext2D | null = null;
+  /** The labels the scene asked for in this frame, the layout of the frame (cards and labels) and the placer that keeps the labels' fades. */
+  private labelReqs: LabelReq[] = [];
+  private layout: FrameLayout | null = null;
+  private placer: LabelPlacer | null = null;
   private vfCache: { td: number; imm: number; vf: VortexFrame | null } | null = null;
   groundMissing = true;
   private get endSpan(): number {
@@ -456,7 +464,9 @@ export class PerilsExtras implements ClipExtras {
     const centre = this.stormCentre(info.td);
     const env: SceneEnv = {
       ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, sounding: this.pair?.pre ?? null, nearStep: this.nearStep(info.td), speedup: this.director.speedup(info.t),
+      labels: { add: (r) => this.labelReqs.push(r) },
     };
+    this.labelReqs = [];
     const v = (id: LayerId) => this.vis.at(id, info.t);
     // the simulated tornado: its own render, drawn over the echo with an opacity that is zero away from the tornado
     this.simW = 0;
@@ -653,56 +663,156 @@ export class PerilsExtras implements ClipExtras {
     const u = H / 1080;
     const m = this.model(info, W, H);
     const imm = m.immersion;
-    ctx.save();
-    ctx.globalAlpha = 1 - imm;
+    const L = new FrameLayout(W, H, u);
+    this.layout = L;
     this.hudCtx = ctx;
-    drawCompass(ctx, W, u, info.yawDeg, this.lastTanX);
-    ctx.restore();
+    // The items are registered (and given their opacity) from the most to the least important; whatever overlaps an item
+    // that is already there gives way to it (perilsLayout.ts). Chrome first: the legend, the timeline, the title block.
+    const chromeA = 1 - 0.45 * imm;
+    const aLegend = L.card('legend', legendRect(W, H, u), chromeA);
+    const aTimeline = L.card('timeline', timelineRect(W, H, u), chromeA);
+    const aTitle = L.card('title', topLeftRects(ctx, u, m), 1 - 0.5 * imm);
     ctx.save();
-    ctx.globalAlpha = 1 - 0.5 * imm;
+    ctx.globalAlpha = aTitle;
     drawTopLeft(ctx, u, m);
     ctx.restore();
+    // the insets of the right-hand column (plan view and the two panels of the focus take turns)
     const mm = this.minimap(info, W, H, u, m);
     const fo = this.focusInset(info, W, H, u, m);
+    // the lower thirds and the caption of the shot
+    this.focusLower(ctx, info, W, H, u, m, fo.now);
+    const tShot = this.director.tl.shots.find((q) => q.name === 'tornado');
+    const calm = tShot ? Math.max(0, Math.min(1, (info.t - (tShot.t0 + 9)) / 5)) : 0;
+    const aTLT = L.card('tornadoLT', tornadoLowerThirdRect(H, u, m), m.tornado?.active ? imm * (1 - 0.72 * calm * calm * (3 - 2 * calm)) * (this.director.tl.focus ? 0 : 1) : 0);
+    drawTornadoLowerThird(ctx, H, u, m, aTLT);
+    const cr = captionRect(W, H, u, m);
+    const sr = cr ? null : seesRect(ctx, W, H, u, m);
+    const rr = cr ?? sr;
+    const wantCap = cr ? m.vis('captions') * m.caption!.alpha : sr ? m.vis('captions') * 0.95 : 0;
+    const aCap = rr ? L.card('caption', rr, wantCap) : 1;
+    drawCaption(ctx, W, H, u, m, rr && wantCap > 1e-6 ? aCap / wantCap : 1);
+    // the right-hand column below the insets: it keeps clear of the bottom of the frame (the credits are there)
+    const colBottom = H - 56 * u;
     let y = Math.max(mm.next, fo.next);
-    y = drawLmaPanel(ctx, W, u, m, m.vis('lmaPanel'), y);
-    y = drawEnvPanel(ctx, W, u, y, m.env, m.vis('envPanel'));
-    const win = this.data.steps[this.data.steps.length - 1].t_s;
     const ix = W - 34 * u - 330 * u;
+    const lmaA0 = m.vis('lmaPanel');
+    let lmaDone = lmaA0 <= 0.02;
+    const lmaH = 128 * u;
+    // left column, from the top: the ground key / tornado card (wide shots), the rotation series (focus)
+    const tcardOn = !!m.tornado?.active && m.vis('tornadoCard') > 0.02;
+    const yCard = 280 * u;
+    const yKey = yCard + (tcardOn ? tornadoCardRect(u, yCard).h + 10 * u : 0);
+    const keyR = groundKeyRect(u, m, yKey);
+    const yFree = yKey + (keyR && m.vis('captions') > 0.02 ? keyR.h + 10 * u : 0);
+    const rs = this.rotSeriesRect(yFree, u);
+    if (!lmaDone) {
+      // the counter goes under the insets of the right-hand column when it fits entirely above the credits; else to the left
+      // column, under the rotation series (or at the free place), where nothing is drawn but the lower thirds far below
+      const fit = firstFit(lmaH, [
+        { side: 'right', y, bottom: colBottom },
+        { side: 'left', y: rs ? rs.y + rs.h + 10 * u : yFree, bottom: 690 * u },
+      ]);
+      if (fit?.side === 'right') {
+        y = drawLmaPanel(ctx, W, u, m, L.card('lma', lmaRect(W, u, fit.y), lmaA0), fit.y);
+      } else if (fit) {
+        drawLmaPanel(ctx, W, u, m, L.card('lma', lmaRect(W, u, fit.y, 34 * u), lmaA0), fit.y, 34 * u);
+      }
+      lmaDone = true;
+    }
+    if (m.env && m.vis('envPanel') > 0.02) {
+      const r = envRect(W, u, y, m.env);
+      if (r.y + r.h <= colBottom) {
+        const a = L.card('env', r, m.vis('envPanel'));
+        y = drawEnvPanel(ctx, W, u, y, m.env, a);
+      }
+    }
+    const win = this.data.steps[this.data.steps.length - 1].t_s;
+    const stack = (id: string, y0: number, h: number, alpha: number): number => {
+      if (h > 0) L.card(id, { x: ix, y: y0, w: 330 * u, h }, alpha);
+      return h > 0 ? y0 + h + 10 * u : y0;
+    };
     if (m.station) {
       const gf = this.data.science.filter((e) => e.kind === 'gust_front' || e.kind === 'pressure_jump').map((e) => e.t_s);
       const sa = m.vis('stripCharts');
-      let h = drawStripCharts(ctx, ix, y, 330 * u, u, m.station.st, info.td, win, sa, gf);
-      if (h) y += h + 10 * u;
-      h = drawDsdInset(ctx, ix, y, 330 * u, u, m.station.st, info.td, m.vis('dsd'));
-      if (h) y += h + 10 * u;
+      y = stack('strip', y, drawStripCharts(ctx, ix, y, 330 * u, u, m.station.st, info.td, win, sa, gf, colBottom), sa);
+      y = stack('dsd', y, drawDsdInset(ctx, ix, y, 330 * u, u, m.station.st, info.td, m.vis('dsd'), colBottom), m.vis('dsd'));
     }
     const prof = this.data.profiles;
     const th = prof.mrr;
-    if (th && th.fields.dbz) {
-      const h = drawTimeHeight(ctx, ix, y, 330 * u, u, 'MRR above RaDAPS', th, 'dbz', 'reflectivity, dBZ', info.td, win, m.vis('timeHeight'));
-      if (h) y += h + 10 * u;
-    }
+    if (th && th.fields.dbz) y = stack('timeHeight', y, drawTimeHeight(ctx, ix, y, 330 * u, u, 'MRR above RaDAPS', th, 'dbz', 'reflectivity, dBZ', info.td, win, m.vis('timeHeight'), 'observed', colBottom), m.vis('timeHeight'));
     if (m.station && info.eye[2] / Math.max(info.vexag, 1e-3) < 0.05) {
       const ro = m.station.ro;
       this.rainStreaks = drawRainStreaks(ctx, W, H, u, ro.rain, ro.dm, info.t, m.vis('rainStreaks'));
     }
-    drawStationCard(ctx, H, u, m, m.vis('stationCard'));
-    const cardH = drawTornadoCard(ctx, u, m, m.vis('tornadoCard'), 280 * u);
-    const keyH = drawGroundKey(ctx, u, m, 280 * u + (cardH ? cardH + 10 * u : 0), m.vis('captions'));
-    drawCaption(ctx, W, H, u, m);
-    this.focusLeft(ctx, info, W, H, u, m, 280 * u + (cardH ? cardH + 10 * u : 0) + (keyH ? keyH + 10 * u : 0), fo.now);
-    // the one lower third of the immersive shot: in with the shot, and down to a quarter after its first seconds
-    const tShot = this.director.tl.shots.find((q) => q.name === 'tornado');
-    const calm = tShot ? Math.max(0, Math.min(1, (info.t - (tShot.t0 + 9)) / 5)) : 0;
-    drawTornadoLowerThird(ctx, H, u, m, imm * (1 - 0.72 * calm * calm * (3 - 2 * calm)) * (this.director.tl.focus ? 0 : 1));
+    // the left column: the station card (it gives way to the lower thirds that stand where it does), the tornado card, the key
+    if (m.station && m.vis('stationCard') > 0.02) drawStationCard(ctx, H, u, m, L.card('station', stationCardRect(H, u), m.vis('stationCard')));
+    if (tcardOn) drawTornadoCard(ctx, u, m, L.card('tornadoCard', tornadoCardRect(u, yCard), m.vis('tornadoCard')), yCard);
+    if (keyR) drawGroundKey(ctx, u, m, yKey, L.card('groundKey', keyR, m.vis('captions')));
+    this.focusSeries(ctx, info, u, m, rs, fo.now);
+    // the timeline and the legend were registered first: nothing gives way to them, they give way to nothing
     ctx.save();
-    ctx.globalAlpha = 1 - 0.45 * imm;
+    ctx.globalAlpha = aTimeline;
     drawTimeline(ctx, W, H, u, m);
+    ctx.globalAlpha = aLegend;
     drawLegend(ctx, W, H, u, m);
     ctx.restore();
     drawEndCard(ctx, W, H, u, m, info.t, this.director.duration, this.endSpan);
-    this.updateInset(info, 430 * u, m.vis('skewt'), u);
+    // the skew-T (a DOM element) and the compass: the least important, they give way to what is on screen
+    const skewA = m.vis('skewt');
+    const sk = this.insetRect(430 * u, u);
+    this.updateInset(info, 430 * u, sk ? L.card('skewt', sk, skewA) : skewA, u);
+    ctx.save();
+    ctx.globalAlpha = 1;
+    const cA = L.card('compass', compassRect(W, u), 1 - imm);
+    ctx.globalAlpha = cA;
+    drawCompass(ctx, W, u, info.yawDeg, this.lastTanX);
+    ctx.restore();
+    this.drawLabels(ctx, L, info.t, u);
+    if (typeof window !== 'undefined') {
+      // a measurement hook (tools/perils_movie/render): what the frame drew and where, and the rules it broke
+      (window as unknown as Record<string, unknown>).__xrPerilsLayout = {
+        t: info.t, W, H, items: L.items.map((i) => ({ id: i.id, kind: i.kind, alpha: +i.alpha.toFixed(3), x: +i.rect.x.toFixed(1), y: +i.rect.y.toFixed(1), w: +i.rect.w.toFixed(1), h: +i.rect.h.toFixed(1) })),
+        violations: findViolations(L.items, W, H),
+      };
+    }
+  }
+
+  /** Place this frame's labels (rank, avoid the cards and each other, fade) and draw them. */
+  private drawLabels(ctx: CanvasRenderingContext2D, L: FrameLayout, tc: number, u: number): void {
+    this.placer ??= new LabelPlacer((text, px, weight) => {
+      ctx.font = `${weight} ${px}px ${FONT}`;
+      return ctx.measureText(text).width;
+    }, 8);
+    const drawn = this.placer.place(this.labelReqs, L, tc);
+    this.labelReqs = [];
+    for (const d of drawn) {
+      ctx.save();
+      ctx.globalAlpha = d.alpha;
+      if (d.leader) {
+        // a label that had to move off its anchor (to clear a card) is tied to it by a thin line
+        ctx.strokeStyle = 'rgba(4,8,16,0.7)';
+        ctx.lineWidth = 3.2 * u;
+        ctx.beginPath();
+        ctx.moveTo(d.leader[0], d.leader[1]);
+        ctx.lineTo(d.leader[2], d.leader[3]);
+        ctx.stroke();
+        ctx.strokeStyle = d.colour;
+        ctx.lineWidth = 1.4 * u;
+        ctx.stroke();
+      }
+      drawText(ctx, d.text, d.x, d.y, u, { size: d.size, weight: d.weight, color: d.colour });
+      ctx.restore();
+    }
+  }
+
+  /** The rectangle of the Skew-T element at its place (null when it is not there). */
+  private insetRect(top: number, u: number): Rect | null {
+    const el = this.insetEl;
+    if (!el || !this.insetId) return null;
+    const sc = 0.93 * u;
+    const w = el.offsetWidth * sc;
+    const h = el.offsetHeight * sc;
+    return w > 0 && h > 0 ? { x: 34 * u, y: top, w, h } : null;
   }
 
   // ── plan-view inset ───────────────────────────────────────────────────────
@@ -790,6 +900,9 @@ export class PerilsExtras implements ClipExtras {
       clock: clockUtc(this.data.time0, info.td),
       title: 'Where the camera is',
     };
+    const size0 = st.size;
+    const rect: Rect = { x: st.x - 8 * u, y: st.y - 32 * u, w: size0 + 16 * u, h: size0 + 66 * u };
+    st.alpha = this.layout ? this.layout.card('minimap', rect, st.alpha) : st.alpha;
     drawMinimap(ctx, st);
     return { next };
   }
@@ -922,6 +1035,7 @@ export class PerilsExtras implements ClipExtras {
       clock: clockUtc(this.data.time0, info.td),
       compact: sizeF < 0.78,
     };
+    st.alpha = this.layout ? this.layout.card('focusInset', { x: st.x - 8 * u, y: st.y - 6 * u, w: size + 16 * u, h: insetHeight(size, u, st.compact) }, st.alpha) : st.alpha;
     drawFocusInset(this.hudCtx!, st, this.velocityLegend());
     return { next: st.y + insetHeight(size, u, st.compact) + 10 * u, now };
   }
@@ -961,28 +1075,44 @@ export class PerilsExtras implements ClipExtras {
     };
   }
 
-  /** Rotation series, simulation tag and the lower third of the focus (left side and bottom). */
-  private focusLeft(ctx: CanvasRenderingContext2D, info: FrameInfo, W: number, H: number, u: number, m: HudModel, yFree: number, now: ReturnType<typeof focusNow>): void {
+  /** The rectangle of the rotation series (focus plan), or null. */
+  private rotSeriesRect(yFree: number, u: number): Rect | null {
+    return this.data.focus && this.data.tornadoes.some((q) => q.path.length > 1) && this.director.tl.focus ? { x: 34 * u, y: Math.max(yFree, 300 * u), w: 330 * u, h: 118 * u } : null;
+  }
+
+  /** The rotation series (left side of the focus). */
+  private focusSeries(ctx: CanvasRenderingContext2D, info: FrameInfo, u: number, m: HudModel, r: Rect | null, now: ReturnType<typeof focusNow>): void {
+    const fd = this.data.focus;
+    const tor = this.data.tornadoes.find((q) => q.path.length > 1);
+    if (!fd || !tor || !r) return;
+    const aSer0 = m.vis('rotSeries') * (1 - endCardAlpha(info.t, this.director.duration, this.endSpan));
+    if (aSer0 <= 0.02) return;
+    const aSer = this.layout ? this.layout.card('rotSeries', r, aSer0) : aSer0;
+    const win = this.data.steps[this.data.steps.length - 1].t_s;
+    drawRotSeries(ctx, {
+      x: r.x, y: r.y, w: r.w, h: r.h, u, alpha: aSer, window: [this.data.steps[0].t_s, win],
+      life: [tor.path[0].t, tor.path[tor.path.length - 1].t], td: info.td,
+      pts: fd.series.map((q) => ({ t: q.t, as: q.as, vrot: q.vrot })), now: { as: now?.as ?? null, vrot: now?.vrot ?? null },
+      from: clockUtc(this.data.time0, this.data.steps[0].t_s).slice(0, 5), to: clockUtc(this.data.time0, win).slice(0, 5),
+    });
+  }
+
+  /** The simulation tag and the lower third of the focus (bottom left). */
+  private focusLower(ctx: CanvasRenderingContext2D, info: FrameInfo, W: number, H: number, u: number, m: HudModel, now: ReturnType<typeof focusNow>): void {
     const fd = this.data.focus;
     const tl = this.director.tl;
     const tor = this.data.tornadoes.find((q) => q.path.length > 1);
     if (!fd || !tor || !tl.focus) return;
+    void m;
     const t = info.t;
-    const aSer = m.vis('rotSeries') * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
-    if (aSer > 0.02) {
-      const win = this.data.steps[this.data.steps.length - 1].t_s;
-      drawRotSeries(ctx, {
-        x: 34 * u, y: Math.max(yFree, 300 * u), w: 330 * u, h: 118 * u, u, alpha: aSer, window: [this.data.steps[0].t_s, win],
-        life: [tor.path[0].t, tor.path[tor.path.length - 1].t], td: info.td,
-        pts: fd.series.map((q) => ({ t: q.t, as: q.as, vrot: q.vrot })), now: { as: now?.as ?? null, vrot: now?.vrot ?? null },
-        from: clockUtc(this.data.time0, this.data.steps[0].t_s).slice(0, 5), to: clockUtc(this.data.time0, win).slice(0, 5),
-      });
-    }
     // a small tag that the picture is a simulation, as long as the simulation is on screen
     if (this.simW > 0.3) {
+      const tagText = 'SIMULATION · seeded by observations';
+      const tw = measure(ctx, tagText, u, { size: 12, weight: 700, mono: true }) + 24 * u;
+      const a = this.layout ? this.layout.card('simTag', { x: W / 2 - 150 * u, y: 22 * u, w: tw, h: 24 * u }, Math.min(1, (this.simW - 0.3) / 0.4)) : Math.min(1, (this.simW - 0.3) / 0.4);
       ctx.save();
-      ctx.globalAlpha = Math.min(1, (this.simW - 0.3) / 0.4);
-      chip(ctx, 'stylised', W / 2 - 150 * u, 40 * u, u, 'SIMULATION · seeded by observations', 12);
+      ctx.globalAlpha = a;
+      chip(ctx, 'stylised', W / 2 - 150 * u, 40 * u, u, tagText, 12);
       ctx.restore();
     }
     // the lower third of the beat on screen: in over the first 0.8 s, out over the last 0.6 s
@@ -991,7 +1121,7 @@ export class PerilsExtras implements ClipExtras {
     if (j < 0) return;
     const b = beats[j];
     const nextT0 = j + 1 < beats.length ? beats[j + 1].t0 : b.t1;
-    const alpha = Math.max(0, Math.min(1, (t - b.t0) / 0.8 + 0.2, (nextT0 - t) / 0.6 + 0.1)) * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
+    const alpha0 = Math.max(0, Math.min(1, (t - b.t0) / 0.8 + 0.2, (nextT0 - t) / 0.6 + 0.1)) * (1 - endCardAlpha(t, this.director.duration, this.endSpan));
     const bt = tl.focus.beats.find((q) => q.name === b.name);
     const tn = this.tornadoNow(info.td);
     const ts = tor.path[0].t;
@@ -1007,6 +1137,8 @@ export class PerilsExtras implements ClipExtras {
       station: b.name === 'focus_low' ? this.tornadoStation(info.td) : null,
     };
     const cap: FocusCaption = focusCaption(b.name, now, finfo, offsetStats(fd));
+    if (alpha0 <= 0.02 || !cap.title) return;
+    const alpha = this.layout ? this.layout.card('focusLT', focusLowerThirdRect(H, u, cap), alpha0) : alpha0;
     drawFocusLowerThird(ctx, H, u, alpha, cap, { sim: this.simW > 0.3, speedup: this.director.speedup(t) }, finfo.rating);
   }
 
