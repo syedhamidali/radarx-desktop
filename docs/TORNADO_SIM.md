@@ -248,4 +248,4 @@ shot, with these additions to the scene (all optional, the earlier behaviour is 
 - **Land size**: `landHalf`, `landSize`, `treeRadius` (the film uses 4.5 km, 2048 px and 3.4 km) so that one landscape holds the
   chaser (1.7 km from the track) and the damage-path view 4 km along it.
 - **Rain gain**: `TornadoScene.rainGain` scales the extinction of the volume rain (default 1, the physical value for the echo's rain rate); the film
-  thins it from 1.2 km away (0.4) to nothing changed inside 0.55 km, so that a funnel is visible through 50 dBZ of rain.
+  thins it from 1.2 km away (0.12) to nothing changed inside 0.55 km, so that a funnel is visible through 50 dBZ of rain.

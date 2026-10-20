@@ -142,7 +142,7 @@ What the data say, and what the picture adds (`perilsVortex.ts`, `perilsTornadoS
   echo motion between the steps (`echoField.ts`), so the simulation's rain curtains follow the radar echo through time (they
   are the volume's rain rate at the same cells: checked against it at all 15 steps). The funnel forms over 8 s after the
   surveyed begin time (a modelled choice; the survey gives the time only). The extinction of the simulation's rain is drawn
-  at 40 % of the physical value from 1.2 km and beyond, rising to 100 % inside 0.55 km (`simRainGain`: a display choice, so that a
+  at 12 % of the physical value from 1.2 km and beyond, rising to 100 % inside 0.55 km (`simRainGain`: a display choice, so that a
   funnel can be seen through 50 dBZ of rain; the pattern of the rain is the radar's). The page draws the simulation on its own canvas over
   the echo render with an opacity that is the layer weight times the camera's nearness to the tornado in 3-D (full inside 1.8 km,
   none beyond 4.5 km) times the speed of the data clock (full to x6, none from x30: in the time-lapse stretches the simulation runs

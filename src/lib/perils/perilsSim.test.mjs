@@ -79,12 +79,12 @@ test('the simulation\'s rain is thinned only from far, and never thicker than th
   assert.equal(simRainGain(0.1), 1);
   assert.equal(simRainGain(0.465), 1); // the damage-path view
   assert.equal(simRainGain(0.55), 1);
-  assert.equal(simRainGain(1.2), 0.4);
-  assert.equal(simRainGain(5), 0.4);
+  assert.equal(simRainGain(1.2), 0.12);
+  assert.equal(simRainGain(5), 0.12);
   let prev = 1;
   for (let d = 0.55; d <= 1.2; d += 0.05) {
     const g = simRainGain(d);
-    assert.ok(g <= prev + 1e-12 && g >= 0.4 && g <= 1);
+    assert.ok(g <= prev + 1e-12 && g >= 0.12 && g <= 1);
     prev = g;
   }
 });

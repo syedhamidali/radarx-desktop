@@ -62,7 +62,7 @@ export function simDistanceWeight(distKm: number, near = 1.8, far = 4.5): number
  */
 /**
  * Extinction of the simulation's rain relative to the physical value, from the camera's distance to the tornado (km): 1 inside 0.55 km,
- * 0.4 beyond 1.2 km. From far, 50 dBZ of rain would hide the whole funnel; the film draws the rain thinner there so that the funnel can
+ * 0.12 beyond 1.2 km. From far, 50 dBZ of rain would hide the whole funnel; the film draws the rain thinner there so that the funnel can
  * be seen (a display choice, said in docs/PERILS_MOVIE.md); the pattern of the rain is the radar's either way.
  */
 export function simRainGain(distKm: number, near = 0.55, far = 1.2, floor = 0.12): number {
