@@ -100,6 +100,7 @@
   let unsubOpened: (() => void) | null = null;
   let unsubError: (() => void) | null = null;
   let unsubDrop: (() => void) | null = null;
+  let unsubStationsConn: (() => void) | null = null;
   let unsubWebUi: (() => void) | null = null;
 
   /** Welcome screen (web): switch to the real-time tab and fetch the latest scan. */
@@ -163,13 +164,15 @@
       if (s !== 'connected' && cloudOp) endCloudOp('Connection to the sidecar was lost');
     });
 
-    // Auto-fetch station list once connected
-    const unsubConn = connectionStatus.subscribe((s) => {
-      if (s === 'connected' && stations.length === 0) {
-        loadingStations = true;
-        wsManager.send({ type: 'list_nexrad_stations' });
-        unsubConn();
-      }
+    // Auto-fetch the station list once connected. The first callback runs inside subscribe() when the
+    // engine is already connected (the usual case: this panel loads after the first paint), so the
+    // subscription must not be unsubscribed from inside it: its handle does not exist yet.
+    let stationsRequested = false;
+    unsubStationsConn = connectionStatus.subscribe((s) => {
+      if (stationsRequested || s !== 'connected' || stations.length > 0) return;
+      stationsRequested = true;
+      loadingStations = true;
+      wsManager.send({ type: 'list_nexrad_stations' });
     });
   });
 
@@ -179,6 +182,7 @@
     unsubWebUi?.();
     if (cloudOp) cancelOp(cloudOp.id);
     unsubStations?.();
+    unsubStationsConn?.();
     unsubFiles?.();
     unsubArco?.();
     unsubOpened?.();

@@ -136,6 +136,23 @@ def main():
             finally:
                 eng.kill()
 
+        # 7. a panel that mounts after the engine connected must not throw (Cloud Data subscribed to the
+        #    connection status and unsubscribed from inside the first, synchronous callback: TDZ error)
+        ctx2 = b.new_context(viewport={"width": 1500, "height": 950})
+        page2 = ctx2.new_page()
+        page2.add_init_script(f"window.__XRADAR_PORT__ = {a.engine_port};")
+        page_errors = []
+        page2.on("pageerror", lambda e: page_errors.append(str(e)))
+        page2.on("console", lambda m: page_errors.append(m.text[:200]) if m.type == "error" and "initialization" in m.text else None)
+        page2.route("**/CloudDataPanel-*.js", lambda route: (time.sleep(2.5), route.continue_()))
+        page2.goto(a.url)
+        page2.wait_for_function("window.__xr && window.__xr.wsManager.isConnected", timeout=30000)
+        page2.wait_for_timeout(6000)
+        check("Cloud Data panel mounted after the connection: no page error", not page_errors, "; ".join(page_errors[:2]))
+        stations = page2.evaluate("document.querySelectorAll('#cdp-station option').length")
+        check("... and it still fetched the station list", stations > 1, str(stations))
+        ctx2.close()
+
         b.close()
     print("FAILED" if fails else "ALL OK")
     return 1 if fails else 0
