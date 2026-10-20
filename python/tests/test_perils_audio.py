@@ -1592,7 +1592,7 @@ def test_a_thunder_is_guaranteed_in_every_4_5_s_window_within_150_km():
     assert prm.max_voices >= 4
     assert prm.max_coverage == 0.85
     tl = Timeline.constant(60.0, 1.0)
-    # one flash per window, at 100 km: its sound arrives 291 s later in real time: put the flashes earlier
+    # one flash per window at 100 km: the sound arrives 291 s later, so the flashes are put earlier
     flashes = [
         flash_at(0.0, 100000.0, alt=0.0, t=4.5 * w + 2.0 - 291.0, fid=f"w{w}", n=20)
         for w in range(12)
