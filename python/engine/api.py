@@ -52,6 +52,10 @@ Conventions
   NEXRAD split-cut volume); give a number to be explicit.
 * A :class:`Volume` owns its derived variables; there is no global state between volumes.
 * Plots are matplotlib figures drawn with the non-interactive Agg backend (headless safe).
+* An account is required (docs/ACCOUNTS.md): ``import rxd`` always works, but every function that
+  touches data raises :class:`AccountRequired` unless a user is signed in (``rxd login``, or the
+  desktop app). ``RADARX_AUTH_DISABLED=1`` switches the check off in a source checkout (tests and
+  developers); installer builds ignore it.
 * Problems you can fix (unknown module, bad parameter, missing variable) raise
   :class:`XrdArgumentError`; a missing or unreadable file raises :class:`XrdInputError`; a
   missing optional package :class:`XrdDependencyError`; everything else that goes wrong while
@@ -62,6 +66,7 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import functools
 import inspect
 import json
 import math
@@ -75,6 +80,7 @@ import numpy as np
 import xarray as xr
 
 from engine import derived, plugins, varmap
+from engine.account import AccountRequired, activity, require_account
 from engine.api_results import (
     CellsResult,
     ModuleResult,
@@ -97,6 +103,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "EXPORT_FORMATS",
+    "AccountRequired",
     "CellsResult",
     "ModuleResult",
     "Mosaic",
@@ -2631,3 +2638,104 @@ def export(
     >>> api.export("KTLX20130520_201643_V06.gz", out="ktlx.zarr")  # doctest: +SKIP
     """
     return open(file).export(fmt, out, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# The account gate (docs/ACCOUNTS.md)
+#
+# One place decides which functions need a signed-in account: every public function that touches
+# data, and every public method of Volume. They call ``require_account()`` first and raise
+# AccountRequired without one. Importing this module never fails and never needs an account.
+# ``API_UNGATED`` lists the pure helpers that deliberately stay open (they read no radar data and
+# only turn strings into values); tests/test_account_api.py checks that nothing else is missed.
+# ---------------------------------------------------------------------------
+
+API_UNGATED = frozenset(
+    {
+        "AccountRequired",
+        "EXPORT_FORMATS",
+        "CellsResult",
+        "ModuleResult",
+        "Mosaic",
+        "PipelineResult",
+        "TrackingResult",
+        "Volume",
+        "Winds",
+        "XrdArgumentError",
+        "XrdDependencyError",
+        "XrdError",
+        "XrdInputError",
+        "check_params",
+        "coerce_user_params",
+        "format_module",
+        "user_errors",
+    }
+)
+
+
+def _gated(
+    func: Callable[..., Any], event: str | None = None, detail: Callable[..., Any] | None = None
+):
+    """``func`` with ``require_account()`` first and, after a success, one activity event."""
+    signature = inspect.signature(func)
+
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        require_account()
+        result = func(*args, **kwargs)
+        if event is not None:
+            try:
+                bound = signature.bind_partial(*args, **kwargs).arguments
+                info = detail(bound, result) if detail else {}
+            except Exception:
+                info = {}
+            if info is not None:
+                activity.record(event, **info)
+        return result
+
+    wrapper.__radarx_gated__ = True  # type: ignore[attr-defined]
+    return wrapper
+
+
+def _opened_detail(bound: Mapping[str, Any], result: Any) -> dict[str, str] | None:
+    if isinstance(bound.get("path"), (Volume, xr.DataTree)):
+        return None  # nothing was opened from disk
+    return {"format": activity.format_family(getattr(result, "format", None))}
+
+
+def _run_detail(bound: Mapping[str, Any], result: Any) -> dict[str, str]:
+    spec = find_module(str(bound.get("module")))
+    return {"module": activity.module_label(spec.id, spec.source)}
+
+
+def _export_detail(bound: Mapping[str, Any], result: Any) -> dict[str, str]:
+    return {"format": _export_format(bound.get("fmt"), bound.get("out"))}
+
+
+_GATED_EVENTS: dict[str, tuple[str, Callable[..., Any]]] = {
+    "open": ("file_opened", _opened_detail),
+    "mosaic": ("mosaic_run", lambda b, r: {"type": str(b.get("product", "composite"))}),
+    "winds": ("winds_run", lambda b, r: {"type": str(b.get("method", "analytic"))}),
+    "qpe": ("qpe_run", lambda b, r: {}),
+}
+
+for _name in __all__:
+    if _name in API_UNGATED:
+        continue
+    _fn = globals()[_name]
+    _event, _detail = _GATED_EVENTS.get(_name, (None, None))
+    globals()[_name] = _gated(_fn, _event, _detail)
+
+for _name, _member in list(vars(Volume).items()):
+    if _name.startswith("__") and _name != "__init__":
+        continue
+    if _name in ("close", "_check_sweep"):
+        continue
+    if isinstance(_member, classmethod):
+        setattr(Volume, _name, classmethod(_gated(_member.__func__)))
+    elif isinstance(_member, property) and _name == "tree":
+        setattr(Volume, _name, property(_gated(_member.fget)))
+    elif inspect.isfunction(_member) and (not _name.startswith("_") or _name == "__init__"):
+        _ev = {"run": ("module_run", _run_detail), "export": ("export", _export_detail)}.get(_name)
+        setattr(Volume, _name, _gated(_member, *(_ev or (None, None))))
+del _name, _fn, _event, _detail, _member
