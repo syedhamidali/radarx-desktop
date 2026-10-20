@@ -70,6 +70,7 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 | Name | Licence | Where used | Attribution / terms | Link |
 | --- | --- | --- | --- | --- |
 | CPython runtime (Python.framework / libpython) | PSF-2.0 | the frozen engine |  | https://docs.python.org/3/license.html |
+| SecretStorage 3.5, jeepney 0.9 (Linux), pywin32-ctypes 0.2 (Windows) | BSD-3-Clause / MIT / BSD-3-Clause | keyring's platform backends for the Secret Service and Windows Credential Manager, bundled into the Linux and Windows engines only (the notices are generated on macOS, where pip does not install them) |  | https://github.com/jaraco/keyring |
 | HDF5, netCDF-C, HDF4 (libdf, libmfhdf) | BSD-style (HDF Group / UCAR) | file I/O for NetCDF/CfRadial/ODIM |  | https://github.com/HDFGroup/hdf5/blob/develop/COPYING |
 | PROJ | MIT | pyproj (map projections) |  | https://proj.org/en/stable/about.html#license |
 | zlib, zstd, lz4, blosc, snappy, libaec (szip), liblzma, bzip2, brotli | Zlib / BSD / 0BSD / public-domain style | compression in NetCDF, Zarr and PNG |  |  |
@@ -86,7 +87,7 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 
 Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and the packages the PyInstaller spec collects, with everything they require, in the environment the file was generated in. Versions of platform-specific wheels can differ in a release build.
 
-70 packages. Licences: MIT (22), BSD-3-Clause (21), Apache-2.0 (13), PSF-2.0 (3), Apache-2.0 OR BSD-3-Clause (2), Apache-2.0 AND MIT (1), MPL-2.0 (1), MIT-0 (1), CC-BY-4.0 (1), CC0-1.0 (1), BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (1), Apache-2.0 OR BSD-2-Clause (1), MIT-CMU (1), BSD-2-Clause (1).
+75 packages. Licences: MIT (27), BSD-3-Clause (21), Apache-2.0 (13), PSF-2.0 (3), Apache-2.0 OR BSD-3-Clause (2), Apache-2.0 AND MIT (1), MPL-2.0 (1), MIT-0 (1), CC-BY-4.0 (1), CC0-1.0 (1), BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (1), Apache-2.0 OR BSD-2-Clause (1), MIT-CMU (1), BSD-2-Clause (1).
 
 | Package | Version | Licence | Identified by | Link |
 | --- | --- | --- | --- | --- |
@@ -120,11 +121,16 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 | h5py | 3.16.0 | BSD-3-Clause |  | https://www.h5py.org/ |
 | icechunk | 2.0.4 | Apache-2.0 | licence file LICENSE (detected) | https://icechunk.io |
 | idna | 3.13 | BSD-3-Clause |  | https://github.com/kjd/idna |
+| jaraco.classes | 3.4.0 | MIT | classifier | https://github.com/jaraco/jaraco.classes |
+| jaraco.context | 6.1.2 | MIT |  | https://github.com/jaraco/jaraco.context |
+| jaraco.functools | 4.6.0 | MIT |  | https://github.com/jaraco/jaraco.functools |
 | jmespath | 1.1.0 | MIT | classifier | https://github.com/jmespath/jmespath.py |
+| keyring | 25.7.0 | MIT |  | https://github.com/jaraco/keyring |
 | kiwisolver | 1.5.0 | BSD-3-Clause | classifier | https://github.com/nucleic/kiwi |
 | lat_lon_parser | 1.3.1 | CC0-1.0 | override: classifier 'CC0 1.0 Universal'; LICENSE file is the CC0 1.0 legal code |  |
 | locket | 1.0.0 | BSD-3-Clause | classifier | http://github.com/mwilliamson/locket.py |
 | matplotlib | 3.10.9 | PSF-2.0 | classifier | https://matplotlib.org |
+| more-itertools | 11.2.1 | MIT |  | https://more-itertools.readthedocs.io/en/stable/ |
 | multidict | 6.7.1 | Apache-2.0 | License field | https://github.com/aio-libs/multidict |
 | netCDF4 | 1.7.4 | MIT |  | https://unidata.github.io/netcdf4-python/ |
 | numcodecs | 0.16.5 | MIT |  | https://numcodecs.readthedocs.io/ |

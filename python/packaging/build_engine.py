@@ -118,12 +118,38 @@ def smoke_test(exe: Path, timeout: float = 120.0) -> None:
             raise SystemExit(f"engine did not report READY (exit code {proc.poll()})")
         print(f"engine ready after {time.monotonic() - start:.1f}s")
         _check_engine(port, token)
+        _check_keychain(exe)
     finally:
         proc.terminate()
         try:
             proc.wait(10)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+def _check_keychain(exe: Path) -> None:
+    """The packaged engine can use this system's keychain (docs/ACCOUNTS.md). A computer WITHOUT a
+    keychain is fine (the 0600 file is the fallback); a build that could not even import the keyring
+    backend is not."""
+    import json
+
+    out = subprocess.run(
+        [str(exe), "--keychain-check"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=dict(os.environ, RADARX_SECRET_STORE="auto"),
+    )
+    if out.returncode != 0:
+        raise SystemExit(f"--keychain-check failed: {out.stderr.strip()[-400:]}")
+    info = json.loads(out.stdout.strip().splitlines()[-1])
+    print(f"  keychain: {info}")
+    if info["import_error"]:
+        raise SystemExit(f"the keyring backend is not bundled correctly: {info['import_error']}")
+    if sys.platform in ("darwin", "win32") and not info["usable"]:
+        raise SystemExit(
+            f"the system keychain should work on this OS but does not: {info['reason']}"
+        )
 
 
 def _synthetic_volume(path: Path) -> None:

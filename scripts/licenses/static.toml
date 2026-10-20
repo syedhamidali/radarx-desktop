@@ -152,6 +152,13 @@ url = "https://docs.python.org/3/license.html"
 
 [[entry]]
 kind = "native"
+name = "SecretStorage 3.5, jeepney 0.9 (Linux), pywin32-ctypes 0.2 (Windows)"
+license = "BSD-3-Clause / MIT / BSD-3-Clause"
+where = "keyring's platform backends for the Secret Service and Windows Credential Manager, bundled into the Linux and Windows engines only (the notices are generated on macOS, where pip does not install them)"
+url = "https://github.com/jaraco/keyring"
+
+[[entry]]
+kind = "native"
 name = "HDF5, netCDF-C, HDF4 (libdf, libmfhdf)"
 license = "BSD-style (HDF Group / UCAR)"
 where = "file I/O for NetCDF/CfRadial/ODIM"

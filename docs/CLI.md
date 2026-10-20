@@ -31,8 +31,10 @@ Signed in as ada@example.org
 $ rxd logout
 ```
 
-The password is typed without echo, never goes on the command line and is never stored; the session is kept in a
-private file in your user configuration folder, shared with the app and with `import rxd`. Without a session every
+The password is typed without echo, never goes on the command line and is never stored; the session is kept in the
+operating system's keychain when there is a working one (macOS Keychain, Windows Credential Manager, Secret Service),
+otherwise in a private file in your user configuration folder, shared with the app and with `import rxd`. `rxd whoami`
+and `rxd login` say which; `RADARX_SECRET_STORE=file` switches the keychain off (see {doc}`ACCOUNTS`). Without a session every
 command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help` and `--version` prints how to sign in
 and exits with **code 5**. With no network a sign-in keeps working for 30 days after the server last checked it.
 The deprecated `xrd` command behaves identically. (`RADARX_AUTH_DISABLED=1` switches the check off in a source

@@ -65,6 +65,32 @@ hiddenimports += ["scipy.spatial", "scipy.ndimage", "scipy.sparse.csgraph", "PIL
 hiddenimports += collect_submodules("jwt")
 hiddenimports += ["cryptography.hazmat.primitives.asymmetric.ec", "cryptography.hazmat.primitives.asymmetric.rsa"]
 datas += collect_data_files("certifi")
+# The sign-in in the operating system's keychain (engine/account/vault.py) imports exactly one keyring
+# backend by name per platform (never keyring's entry-point discovery), so PyInstaller cannot see it:
+# name the backends and what they need. Each is imported lazily and only when its platform runs, so the
+# ones for other systems are simply absent (try/except around them).
+for _name in (
+    "keyring",
+    "keyring.backends.macOS",
+    "keyring.backends.macOS.api",
+    "keyring.backends.Windows",
+    "keyring.backends.SecretService",
+    "jaraco.classes",
+    "jaraco.functools",
+    "jaraco.context",
+    "more_itertools",
+    "secretstorage",
+    "jeepney",
+    "win32ctypes",
+):
+    try:
+        hiddenimports += collect_submodules(_name)
+    except Exception:  # not installed on this platform: nothing to bundle
+        pass
+try:
+    datas += copy_metadata("keyring")  # keyring reads its own version at import
+except Exception:
+    pass
 # matplotlib picks its output backend by name at savefig() time, which PyInstaller cannot see: without
 # these, SVG and PDF export failed in the packaged engine ("No module named backend_svg").
 hiddenimports += [

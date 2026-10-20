@@ -72,10 +72,9 @@ The Supabase session lives in **one file per user**, in the operating system's u
 
 `RADARX_CONFIG_DIR` replaces the folder (containers, tests). The file is written with mode `0600` through a
 temporary file and an atomic rename, and every read-modify-write holds a lock file, so the app's engine and a
-terminal can run at the same moment. It holds tokens and the e-mail, **never the password**. Storing the tokens
-in the operating system's keychain (macOS Keychain, Windows Credential Manager, Secret Service) instead of a
-file is a follow-up; until then the protection is the file mode and your user account. On Windows the mode
-bits do not apply: the file inherits the private permissions of your profile folder.
+terminal can run at the same moment. It holds the e-mail and, **when there is no keychain**, the tokens too;
+**never the password**. Where there is a working operating-system keychain the tokens live there instead (next
+section). On Windows the mode bits do not apply: the file inherits the private permissions of your profile folder.
 
 * **`rxd login`** signs in with e-mail and password (typed without echo, never on the command line, never
   stored) and writes a `cli` session: the access token (one hour) **and** the refresh token, which `rxd` and
@@ -97,6 +96,56 @@ bits do not apply: the file inherits the private permissions of your profile fol
   the sign-in in the file was made by the app and has expired while the app is closed, `rxd` and `import rxd` say
   exactly that and offer the two ways out (open the app, or `rxd login`); `rxd whoami` shows `made by the
   radarx-desktop app` or `made by 'rxd login'`, and `renewed_by` in `--json`. The two are deliberately **not merged**.
+
+### Where the sign-in is kept: the keychain, with the file as fallback
+
+| System | Keychain used (through the `keyring` package) |
+|---|---|
+| macOS | Keychain (login keychain) |
+| Windows | Credential Manager |
+| Linux | Secret Service (GNOME Keyring, KWallet) over D-Bus |
+
+* **What goes where.** With a working keychain the secrets (the access token, the refresh token and an access token
+  for automation) are stored there, split into chunks of 800 characters (Windows Credential Manager holds about 1280
+  characters per item and a Supabase access token can be longer), one entry per configuration folder. The session
+  file then holds only what is not secret (user id, e-mail, `source`, times, `"storage": "keychain"`): **the file alone
+  is no longer a credential**. Without a keychain the file keeps everything with mode 0600, exactly as before.
+* **No keychain** (a headless Linux box, a container, an HPC node, `ssh` into a locked Mac): there is nothing to try.
+  The file stays the fallback, fully supported, and **is never chosen silently**: `rxd whoami` says where the
+  sign-in is kept (`kept in the macOS Keychain; the session file holds no token`, or `kept in a private file; the
+  keychain is not used: <reason>`; `storage`, `storage_backend` and `storage_note` in `--json`), and so does
+  `rxd login`.
+* **Whether a keychain works is a real test**: once per process the program writes, reads back and deletes a
+  throw-away item, with a **5-second limit** on that and on every later keychain call (a locked collection waiting
+  for a password nobody can type must not hang a command; after one timeout the keychain is not tried again in that
+  process). The backend is the one for the platform, chosen by name, **never discovered**, so a plug-in backend that
+  keeps secrets in a plain file (`keyrings.alt`) can never be picked up.
+* **Moving an existing session.** A session in the file moves into the keychain on first use, **only if the keychain
+  works**: write, read back, compare, and only then rewrite the file without the secrets. Any failure leaves the file
+  exactly as it was (and removes the unverified copy). A rotated refresh token that cannot be written to the keychain
+  is written to the file instead (the old token is spent, losing the new one would end the session) and the note says so.
+* **Sign-out** removes the entry and the file. If the keychain will not give the entry up (locked) the file is kept,
+  `rxd logout` exits with 1 and says why, and signing out can simply be run again.
+* **`RADARX_SECRET_STORE=file`** switches the keychain off (containers, or if you prefer the file); it is a choice, not a
+  bypass, so installer builds honour it too. Signing in again with it set moves the secrets back into the file and
+  removes the keychain entry. `RADARX_TOKEN` never touches the keychain (memory only).
+* **The locks stay files** (`session.lock`, `session.refresh.lock`): the renewal lock still works across processes and
+  network file systems with the keychain in use (tested with 8 processes x 4 threads sharing a fake keychain).
+* **What the keychain protects, and what not.** It protects the tokens at rest (a copied or backed-up folder, another
+  user of the computer, a stolen disk) and keeps them out of the file. It does **not** protect against a program running
+  as you: on Windows and with the Secret Service any program in your session can read an item, and on macOS only the
+  **first** program to read it is trusted silently.
+* **macOS: the app and `rxd` are different programs.** An item is created trusting only the program that wrote it, so
+  the first time the *other* one (the app's engine, or `rxd` run from Python) reads it, macOS shows a prompt ("... wants
+  to use your confidential information stored in radarx-desktop in your keychain"). Choose **Always Allow**; it asks again
+  when that program's identity changes (every update of an unsigned or ad-hoc-signed build, each Python upgrade). With
+  nobody to click (cron, `ssh`) the prompt cannot be answered: after 5 seconds the command stops with "your sign-in is kept
+  in the system keychain and it cannot be read now" and the sign-in is untouched. For unattended use prefer an access
+  token (`RADARX_TOKEN`) or `RADARX_SECRET_STORE=file`. Not tested with a Developer-ID-signed installer.
+* **Older programs** reading the new file see no token and report "not signed in"; they never crash and never see a
+  secret. **Not tested:** Windows and Linux keychains (the code for them is `keyring`'s own backends, selected by name and
+  bundled for them in the PyInstaller spec), a keychain that asks for the password mid-run on Linux, the macOS prompt in a
+  signed installer.
 
 ### Ways to sign in on the command line
 
@@ -363,7 +412,11 @@ protection. Everything below is real, including what is not worth fixing:
   session file survives.
 * **Tokens at rest**: the session file holds a one-hour access token (and, for `rxd login`, a refresh token; for
   `rxd login --token`, the long-lived access token itself) with mode 0600 only; anything running as the same user can
-  read it. Keychain storage is a follow-up.
+  read it. With a working keychain the tokens are not in the file at all (see "Where the sign-in is kept"), but any
+  program running as you can still ask the keychain (macOS prompts for a program other than the one that wrote the
+  item; Windows and Linux do not).
+* **The keychain is optional**: `RADARX_SECRET_STORE=file` (or no keychain at all) keeps the tokens in the 0600 file, which
+  any program running as you can read. This is reported by `rxd whoami`, never silent.
 * **Access tokens** (see their section for the full list): a revoked token keeps working up to 1 hour online and up to 30
   days (never past its own expiry date) when the server cannot be reached; `RADARX_TOKEN` is visible to the user's other
   processes; whoever holds the signing secret can mint entitlement tokens that pass the gate (not the database); the
