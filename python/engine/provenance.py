@@ -26,7 +26,7 @@ import os
 import platform
 import re
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,10 @@ PROVENANCE_SCHEMA = 1
 _LIBRARIES = ("xradar", "xarray", "numpy", "netCDF4", "zarr", "pyproj", "radarx")
 
 _ENV_VERSION = "XRADAR_DESKTOP_VERSION"
+_OFFSET_TIME = re.compile(
+    r"(?P<stamp>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?"
+    r"(?P<sign>[+-])(?P<oh>\d{2}):?(?P<om>\d{2})"
+)
 _PLACEHOLDERS = {"none", "nan", "null", "n/a", "unknown"}
 
 
@@ -165,6 +169,12 @@ def iso_utc(value: Any) -> str:
             return text.split(".")[0] + "Z"
         if text.endswith("+00:00"):
             return text[: -len("+00:00")].split(".")[0] + "Z"
+        offset = _OFFSET_TIME.fullmatch(text)
+        if offset:  # a local time with its UTC offset: convert, do not pass it off as UTC
+            sign = -1 if offset["sign"] == "-" else 1
+            delta = timedelta(hours=int(offset["oh"]), minutes=int(offset["om"]))
+            local = datetime.strptime(offset["stamp"], "%Y-%m-%dT%H:%M:%S")
+            return utc_stamp((local - sign * delta).replace(tzinfo=timezone.utc))
         return text
     except Exception:
         return ""

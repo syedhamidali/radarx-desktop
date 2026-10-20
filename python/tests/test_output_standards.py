@@ -297,6 +297,21 @@ class TestProvenance:
         """A URL is the origin of the data: it was cut to ``https:x`` and lost its host."""
         assert provenance.redact_path(raw) == want
 
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("2013-05-20T20:16:43+02:00", "2013-05-20T18:16:43Z"),
+            ("2013-05-20 20:16:43-05:00", "2013-05-21T01:16:43Z"),
+            ("2013-05-20T20:16:43.5+0530", "2013-05-20T14:46:43Z"),
+            ("2013-05-20T00:30:00+01:00", "2013-05-19T23:30:00Z"),
+            ("2013-05-20T20:16:43+00:00", "2013-05-20T20:16:43Z"),
+            ("2013-05-20T20:16:43Z", "2013-05-20T20:16:43Z"),
+        ],
+    )
+    def test_iso_utc_converts_a_stated_offset(self, raw, want):
+        """A time with an offset is converted to UTC; it was returned unchanged as if it were UTC."""
+        assert provenance.iso_utc(raw) == want
+
     def test_history_and_placeholders(self):
         assert provenance.append_history("None", "x") == "x"
         assert provenance.append_history("a", "b") == "a\nb"
