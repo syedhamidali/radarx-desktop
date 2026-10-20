@@ -4000,7 +4000,7 @@ class ConnectionHandler(EnvironmentMessages):
                         f"content exceeds {WEB_SAVE_TEXT_MAX_BYTES // (1024 * 1024)} MB"
                     )
                 self.session.check_quota(len(data))
-                web_target = self.session.export_target(path, ext="txt", prefix="xradar_file_")
+                web_target = self.session.export_target(path, ext="txt", prefix="radarx_file_")
             except web.WebError as exc:
                 await self.send_error(f"save_text_file: {exc}")
                 return

@@ -160,7 +160,7 @@ more than 16 requests in flight: `code:"busy"`. Server paths inside messages are
 | Plug-in modules | Only `python/modules`; `~/.xradar-desktop/modules` and `XRADAR_MODULES_DIR` are never read, `list_modules {reload}` is ignored, server paths are hidden. |
 | Recipes | Kept in `<session>/recipes` (max 50), never in `~`; `XRADAR_RECIPES_DIR` is ignored. |
 | Variable mappings | In memory per session; `variable_maps.json` is neither read nor written. |
-| Exporter default folder (`~/Downloads/xradar-exports`) | Disabled. |
+| Exporter default folder (`~/Downloads/radarx-exports`) | Disabled. |
 
 ## Isolation
 

@@ -8,7 +8,7 @@ is added to the repository's dependencies. See ``docs/STORM_CLIP.md``::
     npm run build                                   # the app (dist/) is served by this script
     python/.venv/bin/python tools/storm_clip/clipdata.py --case <case dir> --out /tmp/bundle
     /tmp/clipenv/bin/python tools/storm_clip/render_clip.py --bundle /tmp/bundle \
-        --out ~/Downloads/xradar-exports/storm3d.mp4
+        --out ~/Downloads/radarx-exports/storm3d.mp4
 
 Frames are drawn deterministically: the page renders frame i for the clip time i / fps (no real
 time clock), the script grabs the pixels and PyAV encodes them (yuv420p, +faststart).

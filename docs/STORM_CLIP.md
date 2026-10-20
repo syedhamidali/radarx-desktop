@@ -20,8 +20,8 @@ The same clip on terrain with satellite imagery and the stylised storm look
 (`docs/REALISTIC_3D.md` has the sources, terms and the look):
 ```
 /tmp/clipenv/bin/python tools/storm_clip/render_clip.py --bundle /tmp/storm_bundle --realistic \
-    --out ~/Downloads/xradar-exports/storm3d_realistic_mayfield.mp4 \
-    --stills ~/Downloads/xradar-exports/storm3d_realistic_stills
+    --out ~/Downloads/radarx-exports/storm3d_realistic_mayfield.mp4 \
+    --stills ~/Downloads/radarx-exports/storm3d_realistic_stills
 ```
 `--ground map|realistic` and `--storm-style scientific|realistic` choose each part on its own
 (`--realistic` sets both); `--tile-cache DIR` and `--offline` control the tile cache. The camera,
@@ -160,8 +160,8 @@ npm run build
 # 3. the clip: a scratch environment OUTSIDE the repository
 python -m venv /tmp/clipenv && /tmp/clipenv/bin/pip install playwright av pillow
 /tmp/clipenv/bin/python tools/storm_clip/render_clip.py --bundle /tmp/storm_bundle \
-    --out ~/Downloads/xradar-exports/storm3d_mayfield.mp4 \
-    --title "Mayfield case: strongest storm in 3D" --stills ~/Downloads/xradar-exports/storm3d_stills
+    --out ~/Downloads/radarx-exports/storm3d_mayfield.mp4 \
+    --title "Mayfield case: strongest storm in 3D" --stills ~/Downloads/radarx-exports/storm3d_stills
 ```
 Options: `--width/--height` (1920x1080), `--fps` (30), `--duration` (36 s), `--vexag` (4),
 `--map-theme dark|light`, `--basemap`, `--crf`, `--stills-at`, `--every N` (a fast preview that renders

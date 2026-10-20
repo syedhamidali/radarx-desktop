@@ -57,8 +57,8 @@
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  function exportJson() { download(lookToJson(look, matched ?? (saveName.trim() || 'my look')), 'xradar-look.json', 'application/json'); }
-  function exportToml() { download(lookToToml(look), 'xradar-look.toml', 'text/plain'); }
+  function exportJson() { download(lookToJson(look, matched ?? (saveName.trim() || 'my look')), 'radarx-look.json', 'application/json'); }
+  function exportToml() { download(lookToToml(look), 'radarx-look.toml', 'text/plain'); }
   async function importFile(e: Event) {
     const f = (e.target as HTMLInputElement).files?.[0];
     if (!f) return;

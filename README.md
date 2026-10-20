@@ -224,7 +224,7 @@ sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
 </details>
 
 In development the app uses `python/.venv` automatically. Set `XRADAR_PYTHON=/path/to/python` to use another
-interpreter. Exports go to `~/Downloads/xradar-exports` unless you choose a folder.
+interpreter. Exports go to `~/Downloads/radarx-exports` unless you choose a folder.
 
 ## Development
 

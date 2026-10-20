@@ -109,7 +109,7 @@ class TestImageExport:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """No destination goes to $XRADAR_EXPORT_DIR (default ~/Downloads/xradar-exports)."""
+        """No destination goes to $XRADAR_EXPORT_DIR (default ~/Downloads/radarx-exports)."""
         monkeypatch.setenv("XRADAR_EXPORT_DIR", str(tmp_path / "exports"))
         exporter = RadarExporter()
         first = exporter.export(
@@ -126,7 +126,7 @@ class TestImageExport:
 
         monkeypatch.delenv("XRADAR_EXPORT_DIR", raising=False)
         d = default_export_dir()
-        assert d.name == "xradar-exports"
+        assert d.name == "radarx-exports"
         assert str(Path(tempfile.gettempdir()).resolve()) not in str(d.resolve())
 
     def test_progress_callback_called(
