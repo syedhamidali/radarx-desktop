@@ -238,15 +238,15 @@ to 9.4, mean 8; its `camera_path.json` and `events.json`):
 * Loudness -23.0 LUFS integrated, true peak -3.4 dBFS, no clipped sample, mono loss 1.0 dB, deterministic
   (two renders give the same SHA-1).
 * Thunder (the `perils_audio_v4` render, thunder built per source, level compressed for audibility): **54 flashes
-  voiced** of 3236 (13 by the guarantee, 41 by score): 20 near (< 10 km), 24 mid (10 to 30 km), 10 far (> 30 km).
-  6893 channel elements (real LMA sources) rendered with 6890 ground reflections, 34 721 modelled tortuosity points
-  and 11 228 modelled bridge elements. First voiced arrival 16.8 s, then never more than 5.6 s apart. Not voiced:
-  285 beyond 150 km, 459 arrive after the clip, 2438 heard but dropped (2226 voices, 85 masked, 127 density). Of the
+  voiced** of 3236 (13 by the guarantee, 41 by score): 22 near (< 10 km), 24 mid (10 to 30 km), 8 far (> 30 km).
+  6697 channel elements (real LMA sources) rendered with 6695 ground reflections, 33 042 modelled tortuosity points
+  and 10 696 modelled bridge elements. First voiced arrival 16.8 s, then never more than 8.4 s apart. Not voiced:
+  285 beyond 150 km, 459 arrive after the clip, 2438 heard but dropped (2188 voices, 83 masked, 167 density). Of the
   15 windows of 8 s, 13 have a flash in range and **all 13 are voiced**; the first two (0 to 16 s, the wide shot) have
-  no flash that can have arrived (physical delay). Thunder layer: rms -23.9 dBFS, peak -4.0 dBFS; the median voiced
-  thunder is 12.0 dB above the rest of the mix. Median spectral centroid by class: near 88 Hz, mid 57 Hz, far 42 Hz.
-* Other layers (rms in the final mix): tornado roar -38 dBFS, rain -43, wind -43, convective bed -40,
-  ambient -48, hail -56 (only the radar hail class over the listener at 21 to 24 s, with an assumed diameter; no
+  no flash that can have arrived (physical delay). Thunder layer: rms -23.8 dBFS, peak -3.9 dBFS; the median voiced
+  thunder is 12.0 dB above the rest of the mix. Median spectral centroid by class: near 88 Hz, mid 56 Hz, far 43 Hz.
+* Other layers (rms in the final mix): tornado roar -39 dBFS, rain -43, wind -43, convective bed -40,
+  ambient -48, hail -62 (only the radar hail class over the listener at 21 to 24 s, with an assumed diameter; no
   station hail event or sensor hit in the window). Rain is from the radar echo for most of the clip (`radar_zr`) and
   silent where nothing is near. Wind (max 8 m/s observed, 12 m/s with the observed gust) from the nearest StickNet and
   mesonet stations.
