@@ -6,14 +6,12 @@
    */
   import { onMount } from 'svelte';
   import type { Component } from 'svelte';
-  import { auth, initAuth, profileIncomplete } from '../stores/auth';
+  import { auth, initAuth, appMayOpen } from '../stores/auth';
   import AuthGate from './AuthGate.svelte';
 
   let App: Component | null = $state(null);
 
-  const open = $derived(
-    ($auth.gate === 'open' || $auth.gate === 'open-offline') && !profileIncomplete($auth) && $auth.profileState !== 'loading',
-  );
+  const open = $derived(appMayOpen($auth));
 
   onMount(() => {
     void initAuth();

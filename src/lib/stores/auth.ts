@@ -3,6 +3,7 @@ import type { Session } from '@supabase/supabase-js';
 import { getClient, STORAGE_KEY } from '../auth/client';
 import { signInWithProvider, cancelOAuth } from '../auth/oauth';
 import { AUTH_DISABLED, OFFLINE_GRACE_DAYS, type OAuthProvider } from '../auth/config';
+import { initialProfileState, profileMissing, appMayOpen as mayOpen } from '../auth/openRule';
 import { friendlyAuthError, type GateState } from '../auth/gate';
 import { parseStoredSession, planStartup, tokenIssuedAt, isDefiniteAuthFailure, isValidDeviceId, type StoredSession } from '../auth/startup';
 import { startEngineLink, engineSignedIn, engineSignedOut, engineTokenRefreshed, hasPendingSignOut } from '../auth/engineLink';
@@ -79,7 +80,7 @@ export const auth = writable<AuthState>({
   gate: AUTH_DISABLED ? 'open' : 'needs-account',
   email: null,
   profile: null,
-  profileState: 'loading',
+  profileState: initialProfileState(AUTH_DISABLED),
   lastVerifiedAt: null,
   busy: false,
   error: null,
@@ -224,7 +225,7 @@ async function openWithStoredSession(stored: StoredSession, gate: 'open-offline'
 /** Decide the first screen: a stored session opens the app (online or inside the offline allowance). */
 export async function initAuth(): Promise<void> {
   if (AUTH_DISABLED) {
-    patch({ ready: true, gate: 'open' });
+    patch({ ready: true, gate: 'open', profileState: 'ready' });
     return;
   }
   if (started) return;
@@ -474,10 +475,12 @@ export async function deleteAccount(): Promise<boolean> {
 
 /** True when the profile still lacks what sign-up asks for (OAuth users skip the sign-up form). */
 export function profileIncomplete(s: AuthState): boolean {
-  const p = s.profile;
-  // only once the profile has really been read: while it loads, or when it could not be read (offline,
-  // server trouble), nobody is held at "One more step" (the Account dialog offers a retry)
-  return s.gate === 'open' && !!s.email && s.profileState === 'ready' && (!p || !p.affiliation || p.terms_version !== TERMS_VERSION);
+  return profileMissing(s, TERMS_VERSION);
+}
+
+/** May the app open (instead of the sign-in screen)? */
+export function appMayOpen(s: AuthState): boolean {
+  return mayOpen(s, TERMS_VERSION);
 }
 
 export const authSnapshot = () => get(auth);
