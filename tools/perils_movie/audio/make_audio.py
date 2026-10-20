@@ -49,6 +49,12 @@ def main(argv: list[str] | None = None) -> int:
         default=500.0,
         help="the listener is the camera's ground track, at most this high above the ground (m; 0 = the camera's own altitude)",
     )
+    ap.add_argument(
+        "--thunder-peak",
+        type=float,
+        default=0.0,
+        help="loudest thunder peak in the final mix, dBFS (the thunder gets the headroom; 0 = no calibration)",
+    )
     ap.add_argument("--stems", help="also write one WAV per layer into this folder")
     ap.add_argument(
         "--synthetic", metavar="DIR", help="write and use a SYNTHETIC demo bundle in DIR"
@@ -86,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
             target_lufs=a.target_lufs,
             stems_dir=a.stems,
             max_listener_height_m=a.max_listener_height or None,
+            thunder_peak_dbfs=a.thunder_peak or None,
         )
         m = rep["master"]
         print(

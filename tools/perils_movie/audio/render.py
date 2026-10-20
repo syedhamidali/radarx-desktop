@@ -14,6 +14,7 @@ import numpy as np
 from . import LABEL
 from .acoustics import SPEED_OF_SOUND_MS
 from .bundle import Bundle, load_bundle, parse_events
+from .geo import enu
 from .layers import render_ambient, render_convective, render_tornado
 from .mix import PRIORITY, level_env_db, lufs, master, write_wav
 from .scene import Scene
@@ -57,6 +58,8 @@ def render_mix(
     thunder: ThunderParams | None = None,
     layers: set[str] | None = None,
     max_listener_height_m: float | None = 500.0,
+    thunder_peak_dbfs: float | None = None,
+    thunder_margin_db: float | None = 12.0,
 ):
     """Render in memory. Returns (stereo (2, N) float array, report dict, stems dict)."""
     sr = int(sample_rate)
@@ -82,6 +85,7 @@ def render_mix(
 
     # thunder
     rows = [plan_flash(f, tl, cam, dur, prm) for f in b.flashes]
+    _tornado_bonus(b, rows, prm)
     counts = select_flashes(rows, prm, dur)
     th = np.zeros((2, n))
     if "thunder" in on:
@@ -119,7 +123,22 @@ def render_mix(
     else:
         raw["ambient"], info["ambient"] = np.zeros((2, n)), {}
 
-    y, minfo, stems = master({k: raw[k] for k in LAYER_NAMES}, sr, target_lufs)
+    # thunder has priority and a set margin: the other layers are trimmed (or raised) together until the median
+    # voiced thunder stands ``thunder_margin_db`` above the rest of the mix (rms over its first 4 s)
+    trim_db = 0.0
+    for it in range(6):
+        lay = {k: raw[k] * (1.0 if k == "thunder" else 10 ** (trim_db / 20.0)) for k in LAYER_NAMES}
+        y, minfo, stems = master(lay, sr, target_lufs, thunder_peak_dbfs=thunder_peak_dbfs)
+        _audit_thunder(rows, stems, sr, prm)
+        margins = [r["margin_over_bed_db"] for r in rows if "margin_over_bed_db" in r]
+        if not margins or thunder_margin_db is None or it == 5:
+            break
+        med = float(np.median(margins))
+        if abs(med - thunder_margin_db) < 1.5:
+            break
+        trim_db = float(np.clip(trim_db - (thunder_margin_db - med), -24.0, 18.0))
+    minfo["bed_trim_db"] = trim_db
+    minfo["thunder_median_margin_over_bed_db"] = float(np.median(margins)) if margins else None
 
     per_layer = {}
     for k in LAYER_NAMES:
@@ -139,7 +158,15 @@ def render_mix(
         {
             k: v
             for k, v in _public(r).items()
-            if k in ("id", "status", "n_sources", "t_flash_clip_s", "dist_nearest_m")
+            if k
+            in (
+                "id",
+                "status",
+                "n_sources",
+                "t_flash_clip_s",
+                "dist_nearest_m",
+                "delay_nearest_clip_s",
+            )
         }
         if r["status"] in ("skipped_out_of_range", "outside_clip")
         else _public(r)
@@ -180,6 +207,14 @@ def render_mix(
             "counts": counts,
             "rendered": counts.get("rendered", 0),
             "skipped": {k: v for k, v in counts.items() if k != "rendered"},
+            "selection": _selection_summary(rows, prm, dur),
+            "loudest_events": _loudest(rows, 10),
+            "level_model": (
+                "level compressed for audibility (12 dB per decade of range instead of 20); the delay is "
+                "physical (distance / 343 / speedup); every thunder is one real LMA flash"
+                if prm.level_model == "audibility"
+                else "physical 1/r level"
+            ),
             "flashes": shown,
         },
         "provenance": provenance,
@@ -194,6 +229,125 @@ def render_mix(
         ],
     }
     return y, report, stems
+
+
+def _tornado_bonus(b: Bundle, rows: list[dict], prm: ThunderParams) -> None:
+    """Score bonus for flashes within 10 km of a tornado that exists at the time of the flash."""
+    for f, row in zip(b.flashes, rows, strict=True):
+        row["near_tornado_km"] = None
+        if row["status"] != "pending" or not np.isfinite(f.centroid[0]):
+            continue
+        best = None
+        for t in b.tornadoes:
+            la, lo, ex = t.position(f.t_start_s)
+            if bool(ex):
+                e, n, _ = enu(float(la), float(lo), 0.0, f.centroid[0], f.centroid[1], 0.0)
+                d = float(np.hypot(e, n)) / 1000.0
+                best = d if best is None else min(best, d)
+        row["near_tornado_km"] = best
+        if best is not None and best < 10.0:
+            row["score_db"] += prm.tornado_bonus_db
+
+
+def _audit_thunder(rows: list[dict], stems: dict, sr: int, prm: ThunderParams) -> None:
+    """What each voiced thunder is in the final mix: its peak and level over the first seconds, and by how
+    much it stands above everything else (the bed) in the same seconds."""
+    th = stems["thunder"]
+    bed = sum(v for k, v in stems.items() if k != "thunder")
+    n = th.shape[1]
+    for r in rows:
+        if r["status"] != "rendered":
+            continue
+        a = max(0, int(r["first_arrival_clip_s"] * sr))
+        z = min(n, int((min(r["first_arrival_clip_s"] + 4.0, r["last_arrival_clip_s"] + 2.0)) * sr))
+        z = max(z, a + sr // 4)
+        seg, bseg = th[:, a:z], bed[:, a:z]
+        if seg.size == 0:
+            continue
+        rms_t = float(np.sqrt(np.mean(seg**2)))
+        rms_b = float(np.sqrt(np.mean(bseg**2)))
+        r["final_peak_dbfs"] = float(20 * np.log10(max(np.abs(seg).max(), 1e-12)))
+        r["final_rms_dbfs"] = float(20 * np.log10(max(rms_t, 1e-12)))
+        for name in ("rain", "tornado"):
+            seg_o = stems[name][:, a:z]
+            rms_o = float(np.sqrt(np.mean(seg_o**2)))
+            r[f"margin_over_{name}_db"] = float(
+                20 * np.log10(max(rms_t, 1e-12) / max(rms_o, 1e-12))
+            )
+        r["margin_over_bed_db"] = float(20 * np.log10(max(rms_t, 1e-12) / max(rms_b, 1e-12)))
+
+
+def _selection_summary(rows: list[dict], prm: ThunderParams, dur: float) -> dict:
+    """Which real flashes were voiced and how many were not, and the audibility guarantee per window."""
+    heard = [
+        r for r in rows if r["status"] not in ("skipped_out_of_range", "outside_clip", "no_sources")
+    ]
+    voiced = [r for r in rows if r["status"] == "rendered"]
+    w = prm.guarantee_window_s
+    wins = []
+    for i in range(int(np.ceil(dur / w))):
+        lo, hi = i * w, (i + 1) * w
+        inwin = [r for r in heard if lo <= r["first_arrival_clip_s"] < hi]
+        near = [r for r in inwin if r["dist_nearest_m"] <= prm.guarantee_range_m]
+        v = [r for r in voiced if lo <= r["first_arrival_clip_s"] < hi]
+        wins.append(
+            {
+                "clip_s": [lo, min(hi, dur)],
+                "flashes_heard": len(inwin),
+                "flashes_within_guarantee_range": len(near),
+                "voiced": len(v),
+                "best_voiced_margin_over_bed_db": max(
+                    (x.get("margin_over_bed_db", -99.0) for x in v), default=None
+                ),
+            }
+        )
+    return {
+        "real_flashes_in_bundle": len(rows),
+        "voiced": len(voiced),
+        "voiced_by": {
+            k: sum(1 for r in voiced if r.get("selection") == k)
+            for k in ("guaranteed", "guaranteed_distant", "score")
+        },
+        "heard_in_clip_and_range_but_not_voiced": len(heard) - len(voiced),
+        "not_heard": len(rows) - len(heard),
+        "guarantee": {
+            "window_s": w,
+            "range_m": prm.guarantee_range_m,
+            "windows": wins,
+            "windows_with_a_flash_in_range": sum(
+                1 for x in wins if x["flashes_within_guarantee_range"]
+            ),
+            "windows_with_a_flash_in_range_and_voiced": sum(
+                1 for x in wins if x["flashes_within_guarantee_range"] and x["voiced"]
+            ),
+            "windows_without_any_flash_heard": [
+                x["clip_s"] for x in wins if x["flashes_heard"] == 0
+            ],
+        },
+    }
+
+
+def _loudest(rows: list[dict], n: int) -> list[dict]:
+    voiced = sorted(
+        (r for r in rows if r["status"] == "rendered"),
+        key=lambda r: -r.get("final_peak_dbfs", -999.0),
+    )
+    keys = (
+        "id",
+        "first_arrival_clip_s",
+        "t_flash_clip_s",
+        "dist_nearest_m",
+        "delay_nearest_clip_s",
+        "n_sources",
+        "final_peak_dbfs",
+        "final_rms_dbfs",
+        "margin_over_bed_db",
+        "margin_over_rain_db",
+        "margin_over_tornado_db",
+        "selection",
+        "near_tornado_km",
+    )
+    return [{k: r.get(k) for k in keys} for r in voiced[:n]]
 
 
 def _provenance(b: Bundle, info: dict, scene: Scene, rows: list[dict]) -> dict:
@@ -322,6 +476,7 @@ def render_audio(
     thunder: ThunderParams | None = None,
     stems_dir=None,
     max_listener_height_m: float | None = 500.0,
+    thunder_peak_dbfs: float | None = None,
 ) -> dict:
     """Render the soundtrack to a 48 kHz stereo WAV (16 or 24 bit) aligned to the clip, and write
     ``audio_report.json`` next to it (or at ``report_path``). Returns the report.
@@ -339,6 +494,7 @@ def render_audio(
         target_lufs=target_lufs,
         thunder=thunder,
         max_listener_height_m=max_listener_height_m,
+        thunder_peak_dbfs=thunder_peak_dbfs,
     )
     out = Path(out_wav)
     out.parent.mkdir(parents=True, exist_ok=True)

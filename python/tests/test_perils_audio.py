@@ -1074,33 +1074,6 @@ def test_renderers_events_json_dict_is_parsed_and_gates_the_tornado_without_a_tr
     assert np.all(out == 0.0)  # the repeated station hail event is counted only through the station
 
 
-def test_thunder_coverage_and_voice_limits_keep_the_mix_readable():
-    prm = ThunderParams(max_voices=2, max_coverage=0.3)
-    tl = Timeline.constant(60.0, 5.0)
-    rows = [
-        plan_flash(
-            flash_at(0.0, 4000.0 + 3000.0 * i, alt=0.0, t=50.0 + 10.0 * i, fid=f"f{i}"),
-            tl,
-            cam(0.0, 60.0),
-            60.0,
-            prm,
-        )
-        for i in range(30)
-    ]
-    counts = select_flashes(rows, prm, 60.0)
-    assert counts["rendered"] >= 1
-    assert counts.get("skipped_coverage", 0) + counts.get("skipped_voices", 0) > 0
-    assert sum(counts.values()) == 30
-    occupied = np.zeros(601, bool)
-    for r in rows:
-        if r["status"] == "rendered":
-            occupied[
-                int(r["first_arrival_clip_s"] * 10) : int(r["last_arrival_clip_s"] * 10) + 1
-            ] = True
-    window = np.convolve(occupied.astype(float), np.ones(100) / 100, mode="valid")
-    assert window.max() <= 0.3 + 1e-9  # in any 10 s of the clip
-
-
 # ---------------------------------------------- radar rain, listener height
 
 
@@ -1171,3 +1144,140 @@ def test_listener_is_the_camera_ground_track_capped_in_height():
     _, rep_nocap, _ = render_mix(b, tl, high, layers={"rain", "wind"}, max_listener_height_m=None)
     assert rep["layers"]["rain"]["coverage"] > 0.5
     assert rep_nocap["layers"]["rain"]["coverage"] < 0.01
+
+
+# ----------------------------------- audibility: compressed level, physical delay, selection
+
+
+def test_level_is_compressed_for_audibility_and_still_monotonic():
+    from perils_movie.audio.acoustics import audibility_gain, distance_gain
+
+    r = np.array([1500.0, 3000.0, 5000.0, 10000.0, 20000.0, 50000.0, 100000.0])
+    a, _ = audibility_gain(r)
+    assert np.all(np.diff(a) < 0)  # farther is quieter
+    db_step = 20 * np.log10(a[2] / a[5])  # 5 km -> 50 km, one decade
+    assert db_step == pytest.approx(12.0, abs=0.1)  # 12 dB per decade, not the 20 of 1/r
+    phys, _ = distance_gain(r)
+    assert a[-1] / a[2] > phys[-1] / phys[2]  # a far flash is relatively louder than with 1/r
+    a_close, _ = audibility_gain(np.array([10.0, 1000.0]))
+    assert a_close[0] == a_close[1]  # no louder than the minimum range
+
+
+def test_far_flash_is_still_well_audible_while_its_delay_stays_physical():
+    tl = Timeline.constant(120.0, 8.0)
+    prm = ThunderParams()
+    near = plan_flash(flash_at(0.0, 4000.0, alt=0.0, t=80.0, n=60), tl, cam(0.0, 120.0), 120.0, prm)
+    far = plan_flash(flash_at(0.0, 40000.0, alt=0.0, t=80.0, n=60), tl, cam(0.0, 120.0), 120.0, prm)
+    assert 8.0 < 20 * np.log10(near["peak_amp"] / far["peak_amp"]) < 14.0  # 12 dB, not 20
+    assert far["delay_nearest_clip_s"] == pytest.approx(40000.0 / 343.0 / 8.0, rel=2e-3)  # physical
+    assert near["delay_nearest_clip_s"] == pytest.approx(4000.0 / 343.0 / 8.0, rel=2e-3)
+
+
+def test_selection_prefers_the_audible_flash_and_the_tornado_flash():
+    tl = Timeline.constant(
+        120.0, 1.0
+    )  # real time: the far one is emitted earlier to arrive together
+    prm = ThunderParams(max_voices=1, guarantee_window_s=1000.0)
+    flashes = [
+        flash_at(3000.0, 0.0, alt=0.0, t=50.0, fid="near", n=100),
+        flash_at(-30000.0, 0.0, alt=0.0, t=50.0 - 27000.0 / 343.0, fid="far", n=100),
+    ]
+    rows = [plan_flash(f, tl, cam(0.0, 120.0), 120.0, prm) for f in flashes]
+    assert abs(rows[0]["first_arrival_clip_s"] - rows[1]["first_arrival_clip_s"]) < 0.3
+    # the guarantee takes the best of the window (the near one), the far one finds no free voice
+    counts = select_flashes(rows, prm, 120.0)
+    by = {r["id"]: r for r in rows}
+    assert by["near"]["status"] == "rendered"
+    assert by["near"]["selection"] == "guaranteed"
+    assert by["far"]["status"] != "rendered"
+    assert counts["rendered"] == 1
+    # a tornado bonus lifts an otherwise weaker flash above a stronger one
+    weak, strong = rows[1], rows[0]
+    weak["score_db"] = strong["score_db"] - 2.0
+    weak["score_db"] += prm.tornado_bonus_db
+    assert weak["score_db"] > strong["score_db"]
+
+
+def test_every_window_with_a_flash_in_range_gets_a_voiced_thunder():
+    prm = ThunderParams(guarantee_window_s=8.0, max_voices=1)
+    tl = Timeline.constant(64.0, 1.0)  # real time: arrival = flash time + distance / 343
+    # a burst of loud flashes at clip ~10 s, then isolated weak distant ones in the 8 s windows
+    flashes = [
+        flash_at(3000.0 + 100.0 * i, 0.0, alt=0.0, t=10.0, fid=f"b{i}", n=300) for i in range(20)
+    ]
+    for w in range(8):
+        flashes.append(
+            flash_at(0.0, 40000.0, alt=0.0, t=8.0 * w + 0.5 - 116.0 + 0.0, fid=f"w{w}", n=4)
+        )
+    rows = [plan_flash(f, tl, cam(0.0, 64.0), 64.0, prm) for f in flashes]
+    select_flashes(rows, prm, 64.0)
+    voiced = [r for r in rows if r["status"] == "rendered"]
+    heard = [r for r in rows if r["status"] not in ("outside_clip", "skipped_out_of_range")]
+    for w in range(8):
+        lo, hi = 8.0 * w, 8.0 * (w + 1)
+        inwin = [r for r in heard if lo <= r["first_arrival_clip_s"] < hi]
+        if inwin:
+            assert any(lo <= r["first_arrival_clip_s"] < hi for r in voiced), (w, len(inwin))
+    assert len(voiced) < len(heard)  # the rest of the burst is counted, not voiced
+
+
+def test_overlapping_rolls_are_allowed_up_to_the_voice_limit():
+    prm = ThunderParams(max_voices=3, window_cap=10, guarantee_window_s=1000.0)
+    tl = Timeline.constant(60.0, 5.0)
+    ang = np.radians(np.arange(8) * 45.0)
+    flashes = [
+        flash_at(
+            6000.0 * np.sin(a), 6000.0 * np.cos(a), alt=0.0, t=50.0 + 0.5 * i, fid=f"f{i}", n=100
+        )
+        for i, a in enumerate(ang)
+    ]
+    rows = [plan_flash(f, tl, cam(0.0, 60.0), 60.0, prm) for f in flashes]
+    counts = select_flashes(rows, prm, 60.0)
+    assert counts["rendered"] == 3  # busy, not a wall
+    assert counts.get("skipped_voices", 0) == 5
+
+
+def test_thunder_is_clearly_above_the_rain_at_its_events(storm):
+    _, _, _, _, rep, stems = storm
+    voiced = [f for f in rep["thunder"]["flashes"] if f["status"] == "rendered"]
+    assert voiced
+    over_rain = [f["margin_over_rain_db"] for f in voiced if "margin_over_rain_db" in f]
+    assert np.median(over_rain) > 6.0
+    assert rep["master"]["thunder_median_margin_over_bed_db"] == pytest.approx(12.0, abs=2.0)
+    # the thunder uses the headroom: its loudest peak is high in the mix, true peak below -1 dBFS
+    peak = 20 * np.log10(np.abs(stems["thunder"]).max())
+    assert peak > -12.0
+    assert rep["master"]["true_peak_dbfs"] < -1.0
+    assert peak > 20 * np.log10(np.abs(stems["rain"]).max()) + 6.0
+
+
+def test_every_voiced_thunder_is_a_real_flash_with_a_complete_report_row(storm):
+    b, _, _, _, rep, _ = storm
+    ids = {f.id for f in b.flashes}
+    voiced = [f for f in rep["thunder"]["flashes"] if f["status"] == "rendered"]
+    assert {f["id"] for f in voiced} <= ids
+    for f in voiced:
+        for key in (
+            "t_flash_clip_s",
+            "dist_nearest_m",
+            "delay_nearest_clip_s",
+            "final_peak_dbfs",
+            "selection",
+        ):
+            assert key in f
+        assert f["delay_nearest_clip_s"] == pytest.approx(
+            f["dist_nearest_m"] / 343.0 / f["speedup_at_flash"], rel=2e-2
+        )
+    sel = rep["thunder"]["selection"]
+    assert sel["voiced"] == len(voiced)
+    assert sel["real_flashes_in_bundle"] == len(b.flashes)
+    assert (
+        sel["guarantee"]["windows_with_a_flash_in_range_and_voiced"]
+        == sel["guarantee"]["windows_with_a_flash_in_range"]
+    )
+    loud = rep["thunder"]["loudest_events"]
+    assert len(loud) == min(10, len(voiced))
+    assert [e["final_peak_dbfs"] for e in loud] == sorted(
+        (e["final_peak_dbfs"] for e in loud), reverse=True
+    )
+    assert "audibility" in rep["thunder"]["level_model"]

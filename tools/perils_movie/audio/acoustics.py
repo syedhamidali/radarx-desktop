@@ -58,6 +58,21 @@ def distance_gain(r_m, a1: float = 0.35, r0_m: float = 300.0, floor_db: float = 
     return np.maximum(a, lo), a < lo
 
 
+def audibility_gain(
+    r_m,
+    a_ref: float = 0.35,
+    r_ref_m: float = 5000.0,
+    k_db_per_decade: float = 12.0,
+    r_min_m: float = 1000.0,
+):
+    """Amplitude of a flash heard at range r, COMPRESSED FOR AUDIBILITY (the delay stays physical):
+    ``L_ref - k log10(r / r_ref)`` with k = 12 dB per decade instead of the 20 of 1/r, no louder than at
+    ``r_min_m``. Returns (amplitude, False); same signature shape as ``distance_gain``."""
+    r = np.maximum(np.asarray(r_m, float), r_min_m)
+    a = a_ref * 10 ** (-k_db_per_decade * np.log10(r / r_ref_m) / 20.0)
+    return a, np.zeros(np.shape(a), bool)
+
+
 def db(x, floor=1e-12):
     return 20.0 * np.log10(np.maximum(np.abs(x), floor))
 
