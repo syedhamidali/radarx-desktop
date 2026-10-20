@@ -2024,9 +2024,11 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
       </div>
     {/if}
 
-    <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div class="canvas-wrap" bind:this={container}
          tabindex="0"
+         role="application"
+         aria-label="3D radar volume: drag to orbit, scroll to zoom; arrow keys orbit, plus and minus zoom, R resets the camera"
          onmousedown={onMouseDown}
          onmousemove={onMouseMove}
          onmouseup={onMouseUp}

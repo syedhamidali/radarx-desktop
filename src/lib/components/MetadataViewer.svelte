@@ -228,6 +228,7 @@
 
 {#if visible}
 <!-- On <body>: the sidebar this is declared in has a backdrop-filter, which would trap the fixed overlay. -->
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="meta-overlay" use:portal on:click|self={close}>
   <div class="meta-panel" role="dialog" aria-modal="true" aria-label="Metadata tree">
     <div class="meta-header">
@@ -257,7 +258,7 @@
         class="meta-search-input"
       />
       {#if searchQuery}
-        <button class="meta-clear-btn" on:click={() => { searchQuery = ''; }}>
+        <button class="meta-clear-btn" on:click={() => { searchQuery = ''; }} aria-label="Clear the search" title="Clear the search">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>

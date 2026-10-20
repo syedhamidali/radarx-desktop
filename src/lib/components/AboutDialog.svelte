@@ -44,8 +44,7 @@
 <svelte:window on:keydown={handleKeyDown} />
 
 {#if visible}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="about-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
     <div class="about-dialog brackets-4" role="dialog" aria-modal="true" aria-label="About radarx desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
       <!-- Logo area: the mark over a slow scope -->
