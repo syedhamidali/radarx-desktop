@@ -1,6 +1,6 @@
 # Design language
 
-xradar looks like mission-control software for weather radar: a deep space-navy canvas, hairline
+Radarx looks like mission-control software for weather radar: a deep space-navy canvas, hairline
 cyan borders, tracked small-caps labels and crisp monospace readouts. It is a tool people watch for
 hours, so the rule is **clarity first: the style serves the data**. Nothing decorative ever sits
 behind or animates over the radar canvas.
