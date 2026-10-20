@@ -18,6 +18,7 @@
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import { updater } from './lib/stores/updater';
+  import { reportIssueOpen, openReportIssue, closeReportIssue } from './lib/stores/reportIssue';
   import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
@@ -57,6 +58,7 @@
   const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
   const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
+  const reportDialog = lazy(() => import('./lib/components/ReportIssueDialog.svelte'));
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
@@ -132,7 +134,7 @@
   let settingsOpen = $state(false);
   /** Any modal layer open: global plain-key shortcuts must not act behind it. */
   const modalOpen = $derived(
-    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible,
+    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible || $reportIssueOpen,
   );
   // Fetch the chunks the current state needs (idempotent; see the `lazy(...)` declarations above).
   $effect(() => { if (filePath) { radarViewer.load(); timeline.load(); } });
@@ -147,6 +149,7 @@
   $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
+  $effect(() => { if ($reportIssueOpen) reportDialog.load(); });
   $effect(() => { whenIdle(() => envDialog.load()); });
   // Not needed for the first paint: fetched when idle (so its fade-in plays), or at once if it is asked for.
   $effect(() => { whenIdle(() => updateDialog.load()); });
@@ -1144,6 +1147,7 @@
     else if (type === 'show-shortcuts') shortcutsSheetVisible = true;
     else if (type === 'show-tour') onboardingVisible = true;
     else if (type === 'about') aboutDialogVisible = true;
+    else if (type === 'report-issue') openReportIssue();
     else if (type === 'export') showPanel('export');
     else if (type === 'data-check') openDataCheck();
   }} />
@@ -1154,6 +1158,7 @@
   {#if crossDialog.component}<crossDialog.component />{/if}
   {#if envDialog.component}<envDialog.component />{/if}
   {#if shareHost.component}<shareHost.component />{/if}
+  {#if $reportIssueOpen && reportDialog.component}<reportDialog.component onclose={closeReportIssue} />{/if}
   {#if settingsOpen && settingsDialog.component}
     <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}

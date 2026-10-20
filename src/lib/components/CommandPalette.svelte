@@ -115,6 +115,13 @@
         action: () => dispatch('action', { type: 'show-tour' }),
       },
       {
+        id: 'report-issue',
+        label: 'Report an Issue...',
+        category: 'App',
+        icon: '\u2691',
+        action: () => dispatch('action', { type: 'report-issue' }),
+      },
+      {
         id: 'about',
         label: 'About radarx desktop',
         category: 'App',

@@ -113,9 +113,15 @@ test('submit: no token means sign in, with no request', async () => {
 
 test('submit: offline means no request and the offline sentence', async () => {
   let called = false;
-  const r = await submitReport({ url: 'u', apiKey: 'k', token: 't', payload: buildPayload(draft(), env()), online: false, fetchFn: async () => ((called = true), null) });
+  const r = await submitReport({ url: 'u', apiKey: 'k', token: 't', payload: buildPayload(draft(), env()), isOnline: () => false, fetchFn: async () => ((called = true), null) });
   assert.equal(r.kind, 'offline');
   assert.equal(called, false);
+});
+
+test('submit: a request that fails while the device has gone offline says so', async () => {
+  let online = true;
+  const r = await submitReport({ url: 'u', apiKey: 'k', token: 't', payload: buildPayload(draft(), env()), isOnline: () => online, fetchFn: async () => { online = false; throw new TypeError('Failed to fetch'); } });
+  assert.equal(r.kind, 'offline');
 });
 
 test('submit: every kind of failure comes back as a result, never a throw', async () => {

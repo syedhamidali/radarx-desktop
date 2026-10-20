@@ -4,6 +4,7 @@
   import { auth, saveProfile, retryProfile, signOut, deleteAccount, listDevices, removeDevice, listActivity, deviceId, USE_CASES, type DeviceRow, type ActivityRow } from '../stores/auth';
   import { focusTrap } from '../utils/focusTrap';
   import { addToast } from '../stores/toasts';
+  import { openReportIssue } from '../stores/reportIssue';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -142,7 +143,10 @@
         <button class="danger-btn" disabled={confirmText !== 'DELETE' || a.busy} onclick={wipe}>Delete permanently</button>
       </div>
     {/if}
-    <div class="row"><button onclick={onclose}>Close</button></div>
+    <div class="row between">
+      <button class="linkish" onclick={() => { onclose(); openReportIssue(); }}>Report an issue</button>
+      <button onclick={onclose}>Close</button>
+    </div>
   </div>
 </div>
 

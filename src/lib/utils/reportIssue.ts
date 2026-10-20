@@ -157,11 +157,13 @@ export async function submitReport(opts: {
   token: string | null;
   payload: ReportPayload;
   fetchFn: FetchLike;
-  online?: boolean;
+  /** Asked before sending and again if the request fails; false = the device is offline. */
+  isOnline?: () => boolean;
   timeoutMs?: number;
 }): Promise<SubmitResult> {
   if (!opts.token) return describeFailure(401, null);
-  if (opts.online === false) return describeFailure(null, null, 'offline');
+  const online = () => (opts.isOnline ? opts.isOnline() : true);
+  if (!online()) return describeFailure(null, null, 'offline');
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), opts.timeoutMs ?? 20000);
   try {
@@ -182,7 +184,7 @@ export async function submitReport(opts: {
     if (res.ok) return describeFailure(500, null);
     return describeFailure(res.status, body);
   } catch {
-    return describeFailure(null, null, ctl.signal.aborted ? 'timeout' : opts.online === false ? 'offline' : 'network');
+    return describeFailure(null, null, ctl.signal.aborted ? 'timeout' : !online() ? 'offline' : 'network');
   } finally {
     clearTimeout(timer);
   }
