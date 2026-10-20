@@ -171,6 +171,9 @@ python scripts/perf/smoke.py --url http://127.0.0.1:4174/ --engine-port ... --fi
 # colour-bar limits, settings labels, no 'unhandled message' log noise, engine restart; --engine-cmd enables the last)
 python scripts/perf/regress_ui.py --url http://127.0.0.1:4174/ --engine-port ... --file volume.gz
 
+# pixel check of the 2D renderer between two builds (identical hashes = identical output)
+python scripts/perf/ppi_hash.py --url http://127.0.0.1:4174/ --engine-port ... --file volume.gz
+
 # diagnosing: CPU profile, retained DOM, element growth
 PERF_NOMINIFY=1 PERF_OUT=dist-prof npx vite build -c scripts/perf/vite.perf.config.ts
 python scripts/perf/profile.py ...   python scripts/perf/detached.py ...   python scripts/perf/domdiff.py ...
