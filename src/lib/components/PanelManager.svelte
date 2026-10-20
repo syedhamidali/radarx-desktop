@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy, setContext } from 'svelte';
+  import { onMount, onDestroy, setContext, tick } from 'svelte';
   import { workspaceStore, currentWorkspace } from '../stores/workspace';
   import { lazy, whenIdle } from '../utils/lazy.svelte';
   import { movePanel } from '../utils/panelOrder';
@@ -157,6 +157,10 @@
     if (next.every((p, i) => p === panelOrder[i])) return;
     panelOrder = next;
     workspaceStore.updateCurrentConfig({ rightPanelOrder: panelOrder });
+    // Moving the element in the DOM drops focus: put it back so the next Alt+Arrow keeps working.
+    void tick().then(() => {
+      document.querySelector<HTMLElement>(`[data-panel-id="${id}"] .managed-panel-toggle`)?.focus();
+    });
   }
 
   function handleDragEnd() {
