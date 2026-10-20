@@ -105,16 +105,26 @@ section). On Windows the mode bits do not apply: the file inherits the private p
 | Windows | Credential Manager |
 | Linux | Secret Service (GNOME Keyring, KWallet) over D-Bus |
 
+* **Default: the keychain on Windows and Linux, the private file on macOS.** On macOS the app's engine and `rxd` are
+  different programs and a keychain item trusts only the program that wrote it (see the macOS note below), so the
+  default there is the 0600 file; **`RADARX_SECRET_STORE=keychain` opts in** (on any system), `RADARX_SECRET_STORE=file`
+  forces the file everywhere, `auto` or nothing means the platform default. A session that already lives in the
+  keychain stays readable and writable there on macOS too (unless the file was chosen explicitly).
 * **What goes where.** With a working keychain the secrets (the access token, the refresh token and an access token
   for automation) are stored there, split into chunks of 800 characters (Windows Credential Manager holds about 1280
   characters per item and a Supabase access token can be longer), one entry per configuration folder. The session
   file then holds only what is not secret (user id, e-mail, `source`, times, `"storage": "keychain"`): **the file alone
   is no longer a credential**. Without a keychain the file keeps everything with mode 0600, exactly as before.
-* **No keychain** (a headless Linux box, a container, an HPC node, `ssh` into a locked Mac): there is nothing to try.
-  The file stays the fallback, fully supported, and **is never chosen silently**: `rxd whoami` says where the
-  sign-in is kept (`kept in the macOS Keychain; the session file holds no token`, or `kept in a private file; the
+* **No keychain** (a headless Linux box, a container, an HPC node, `ssh` into a locked Mac) or the macOS default: there
+  is nothing to try. The file is the fallback, fully supported, and **is never chosen silently**: `rxd whoami` says where
+  the sign-in is kept (`kept in the macOS Keychain; the session file holds no token`, or `kept in a private file; the
   keychain is not used: <reason>`; `storage`, `storage_backend` and `storage_note` in `--json`), and so does
   `rxd login`.
+* **A keychain that fails while the program is writing is never a silent downgrade.** A rotated refresh token that
+  cannot be written goes to the file (the old one is spent: losing the new one would end the session) and **every**
+  command that does this prints `warning: the sign-in is now kept in the private file: <why>` on stderr. An **access
+  token** (the long-lived secret of automation) that already lives in the keychain is **not** moved into the file by a
+  failed write: the write is refused and the session stays where it was.
 * **Whether a keychain works is a real test**: once per process the program writes, reads back and deletes a
   throw-away item, with a **5-second limit** on that and on every later keychain call (a locked collection waiting
   for a password nobody can type must not hang a command; after one timeout the keychain is not tried again in that
@@ -125,10 +135,16 @@ section). On Windows the mode bits do not apply: the file inherits the private p
   exactly as it was (and removes the unverified copy). A rotated refresh token that cannot be written to the keychain
   is written to the file instead (the old token is spent, losing the new one would end the session) and the note says so.
 * **Sign-out** removes the entry and the file. If the keychain will not give the entry up (locked) the file is kept,
-  `rxd logout` exits with 1 and says why, and signing out can simply be run again.
+  `rxd logout` exits with 1 and says why, and signing out can simply be run again. Parts of the stored value that cannot
+  be deleted are retried three times, then **reported** (`N part(s) of the saved sign-in could not be removed`) and
+  remembered in the entry's header so that the next write or sign-out removes them: unreferenced parts would otherwise
+  keep a long-lived token in the keychain.
 * **`RADARX_SECRET_STORE=file`** switches the keychain off (containers, or if you prefer the file); it is a choice, not a
   bypass, so installer builds honour it too. Signing in again with it set moves the secrets back into the file and
-  removes the keychain entry. `RADARX_TOKEN` never touches the keychain (memory only).
+  removes the keychain entry. **Set after a keychain sign-in** it makes that session unreadable (the secrets are in the
+  keychain, which you switched off): every command says so plainly ("this sign-in is kept in the system keychain, which
+  RADARX_SECRET_STORE=file switches off: unset it ..."), and `rxd logout` (and the app's sign-out) still works: it removes
+  the file and removes the keychain entry on a best-effort basis. `RADARX_TOKEN` never touches the keychain.
 * **The locks stay files** (`session.lock`, `session.refresh.lock`): the renewal lock still works across processes and
   network file systems with the keychain in use (tested with 8 processes x 4 threads sharing a fake keychain).
 * **What the keychain protects, and what not.** It protects the tokens at rest (a copied or backed-up folder, another
@@ -169,10 +185,22 @@ session. Hundreds of jobs starting together on a shared home folder must therefo
 renewal (`engine/account/store.py`, `core.py`) holds three locks in this order: an in-process lock (Linux NFS emulates
 `flock` per *process*, so threads need their own), an **exclusively created lock file** `session.refresh.lock`
 (`O_CREAT|O_EXCL`, atomic on local disks and on NFS v3+; it records host, process id, time and a random token), and the
-ordinary `flock` on `session.lock`. A lock left by a dead process on the same host is taken over at once, otherwise after
-60 seconds (a renewal makes one network call that is cut off after 5 s; across computers only the age can tell); waiting
-uses a random back-off and gives up after 20 s, in which case the stored session is used as it is and **nothing is
-deleted**. After getting the lock the file is read again and a token somebody else already renewed is used. The rotated
+ordinary `flock` on `session.lock`. The lock file records host, process id, **PID namespace**, time and a random token.
+A lock left by a dead process is taken over at once **only when it names this host and this PID namespace** (containers
+that share a folder and a host name are not judged by a pid that means something else); otherwise it is taken over when
+it is older than 90 seconds by **both** clocks that can be asked, the file's modification time (kept by the file server)
+and the time the holder wrote into it, so one computer with a wrong clock cannot make a live lock look old. Waiters that
+find a stale lock take it over **one at a time** (a second exclusive `.break` file) and read the lock again under it, so
+two of them can never both delete and re-create it (the reviewer's reproduction showed 28 of 30 rounds with two holders
+before this, and none after). A renewal makes one network call cut off after 15 s, so a healthy holder is long done.
+Waiting uses a random back-off, **checks without a lock whether somebody else has already renewed** (so N waiters do not
+each take a hand-off just to find out) and gives up after 30 s, in which case the stored session is used as it is and
+**nothing is deleted**. After getting the lock the file is read again and a token somebody else already renewed is used.
+**A renewal is never started with less than 10 seconds to spare** (a refresh token is spent by the server the moment it
+is used; giving up half way would leave the spent one on disk): a command that is about to exit uses the stored session
+as it is instead. If a reply nevertheless arrives after the client's deadline, it is kept: the late answer is written
+(under the lock) while the file still holds the spent token. A session that cannot be **read** (a locked keychain) is
+never treated as gone: nothing is deleted, replaced or renewed. The rotated
 tokens are written to disk **before** anything else is done with them. A refusal from the server removes the session only
 if the file still holds exactly the refresh token that was refused. After a network failure a small marker
 (`session.netdown`) makes the other processes sharing the folder skip the network for 15 seconds instead of each waiting
@@ -188,8 +216,10 @@ token reused and revoked the session (7 of 8 processes were told "signed out").
 make the server forgive a second use for longer, which hides the race instead of removing it and gives a thief with a copy
 of the token a longer window; the single renewal above makes it unnecessary. Limits that remain: NFS caching can show a
 reader a stale file for a moment (`open` revalidates it, which is what the re-read after the lock relies on), a lock file
-can be taken over from a holder that merely stalled for more than 60 seconds, and a crash or a full disk exactly between
-the server rotating the token and the new one reaching the disk loses the session (sign in again). Windows is not tested.
+can be taken over from a holder that merely stalled for more than 90 seconds (or, on a network file system, when both
+clocks are more than that apart from a live lock's age), a late reply is lost if the process exits before it arrives,
+and a crash or a full disk exactly between the server rotating the token and the new one reaching the disk loses the
+session (sign in again). Windows is not tested.
 
 Checking a session is the same on every surface (`python/engine/account/`): the access token (a signed JWT) is
 verified **offline** against the project's public signing key (ES256). That key is **built into the program**
@@ -293,13 +323,16 @@ Batch jobs, cron, CI and cluster nodes cannot type a password and often have no 
 **access token** in the app (*Account > Access tokens*: a name, an expiry of 7 days to 1 year, default 90). The token
 (`rxd_pat_` followed by 43 URL-safe characters, 256 random bits) is shown **once**, with a copy button; the server keeps
 only its SHA-256, so a lost token cannot be shown again and you make a new one. You can have at most **10 active**
-tokens; the list shows name, creation, expiry and **last use**, and **Revoke** ends one (nothing is deleted: the record
-stays for audit).
+tokens (and at most 200 that are active or ended in the last 30 days, 20 made per day: rows that ended longer ago do
+not count, so old records can never lock anybody out); the list shows name, creation, expiry and **last use**, and
+**Revoke** ends one (nothing is deleted: the record stays for audit). **Changing your password revokes all your
+tokens** (a database trigger; a failure in it can never block the password change). **"Sign out everywhere" does not**:
+GoTrue has no hook for it, so revoke tokens in the app.
 
 | How | For | What happens |
 |---|---|---|
 | `rxd login --token < token.txt` | a machine you log in to (a login node, a laptop) | the token is read from standard input (a hidden prompt on a keyboard), exchanged once to check it, and kept in the private session file (mode 0600); every later `rxd` / `import rxd` renews the one-hour sign-in from it |
-| `RADARX_TOKEN=rxd_pat_...` in the environment | CI, one job that should leave nothing behind | exchanged at the first use, the one-hour sign-in kept **in memory only**, renewed hourly; no session file, no queue file. It wins over a stored session. `rxd logout` reminds you that the variable still signs you in |
+| `RADARX_TOKEN=rxd_pat_...` in the environment | CI, a loop of commands, dask workers, a Slurm array | the access token is **never written anywhere**. The one-hour entitlement token it is exchanged for is kept in memory **and in a cache file** `env-token-<hash of the token>.json` (mode 0600) in the configuration folder, so a loop of `rxd` commands or an array of hundreds of tasks exchanges **once per token lifetime** instead of once per process; processes that start together exchange once (the renewal lock). No session file, no activity queue file. `RADARX_TOKEN_CACHE=0` keeps it in memory only (then every process exchanges, which a large array should not do). It wins over a stored session. `rxd logout` reminds you that the variable still signs you in |
 
 `rxd whoami` shows `access token 'NAME', expires DATE`, where it came from (`RADARX_TOKEN` or the session file) and
 `session: pat`; `rxd logout` removes a stored token **from this computer only** (revoking is done in the app). A bad
@@ -313,7 +346,9 @@ which.
    valid for **one hour** (or until the access token expires, if sooner), with the claims `iss` (a fixed string that is
    not Supabase's: `radarx-desktop/entitlement/v1`), `aud` `radarx-cli`, `sub` (your user id), `src: "pat"`, `jti`,
    `iat`, `exp`, your e-mail, the token's id, name and expiry date (`pat_exp`) and a `kid` in the header. It is signed with
-   a private key that is **only** the Edge Function secret `ENTITLEMENT_PRIVATE_KEY`.
+   a private key kept as the Edge Function secret `ENTITLEMENT_PRIVATE_KEY`; the activity function verifies with the
+   separate **public** secret `ENTITLEMENT_PUBLIC_JWK` and never reads the private one (a private JWK pasted there is
+   refused).
 2. It is **not a Supabase token**: a different issuer, audience and key, so row-level security never accepts it and it
    reads or writes nothing in the database by itself. The program verifies it **offline** against a public key built into
    the code (`ENTITLEMENT_SEED_JWKS` in `jwks_seed.py`, with a `kid`; rotation = add a key). The two token kinds are kept
@@ -321,10 +356,17 @@ which.
    pinned to ES256 before any key is looked at, different issuer and audience, and the stored session says which kind it
    holds, so a Supabase token cannot pass as an entitlement token or the reverse (tested, including the worst case of
    one key in both sets).
-3. Renewal is **single-flight** like every other renewal (see above): many jobs on one session file exchange once, because
-   the function rate-limits per client address (300 per 10 minutes) and per token hash (600 per hour), counted *before*
-   the lookup. Unknown, revoked, expired and malformed tokens and the tokens of banned or deleted accounts all get the
-   **same** answer (`401 invalid_token`); a server or database problem is a `503` and never read as "the token is bad".
+3. Renewal is **single-flight** like every other renewal (see above): many jobs on one session file, and many `RADARX_TOKEN`
+   processes on one machine, exchange once (the renewal lock plus the cache above). **Limits** (`exchange.ts`, chosen so that
+   the main use is never limited while guessing is): *failed* attempts are limited per client address (30 per 10 minutes,
+   only when the platform gives a trustworthy address) and per presented string (20 per hour), counted after the work and
+   checked before it, so a valid token is never touched by anybody's failures; *successful* exchanges are limited per token
+   (5000 per hour) and in all (100000 per hour) as a ceiling for cost and for a leaked token, and only successes count
+   there, so someone without a valid token cannot use them to deny service. Unknown, revoked, expired and malformed tokens
+   and the tokens of banned or deleted accounts all get the **same** answer (`401 invalid_token`); a server or database
+   problem is a `503` and never read as "the token is bad". A `429` is **retried with a jittered back-off** (what
+   `Retry-After` says, otherwise 2, 4, 8 ... seconds; at most 40 seconds in total), and when it still stands the command
+   says "the account server is limiting access-token exchanges right now" (never "cannot reach the server").
 4. **Offline rule.** The same 30 days counted from the newest entitlement token's `iat`, with the same clock rules, **and
    one stricter limit**: the token's own expiry date `pat_exp` is signed into every entitlement token and holds even
    offline (a token given 2 days stops after 2 days, not after the 30-day allowance). Written reason for deviating from
@@ -345,7 +387,8 @@ which.
   tokens and cannot delete the account. **It is nevertheless as sensitive as a password**: keep it in a secret store, a
   file readable only by you, or your CI's secret variables (with output masking); never in a repository, a chat or a
   job log. `RADARX_TOKEN` is visible to every process of the same user (and to root) through the environment; a stored
-  token sits in the session file with mode 0600.
+  token sits in the session file with mode 0600 (or in the keychain). The cache file of `RADARX_TOKEN` holds only the
+  one-hour entitlement token, also mode 0600.
 * **Revocation is not instant.** After you revoke a token, a job that already holds an entitlement token keeps working
   for up to its remaining life, **at most 1 hour (plus the 1-minute clock leeway)**, while the server is reachable; at the
   next renewal the server says "invalid" and the stored session is removed. When the server **cannot be reached** a
@@ -355,16 +398,25 @@ which.
   that can, in the shared home folder: the compute nodes then read the stored session **offline for up to 30 days** after
   its last renewal, so schedule `rxd whoami` (it renews) on the login node, for example hourly, and see the Slurm example
   in {doc}`CLI`. `RADARX_TOKEN` alone needs the server on every node, once an hour.
-* **The signing key** exists as a Supabase function secret. Whoever obtains it can mint entitlement tokens for any user
-  id, which passes the gate for those users and writes events to their log; it still cannot touch their data, but rotate
-  it at once (below). The two functions run with the service-role key (provided to them by Supabase, never in this
+* **The signing key** exists as a Supabase function secret. **Supabase secrets are project-wide: every Edge Function of the
+  project can read `ENTITLEMENT_PRIVATE_KEY`, including `send-auth-email` and any function added later**, so a bug or a
+  careless dependency in any of them exposes it (only the activity function was moved to the public half). Keep the
+  project's functions few and reviewed. Whoever obtains the key can mint entitlement tokens for any user id, which passes
+  the gate for those users and writes events to their log; it still cannot touch their data, but rotate it at once (below). The two functions run with the service-role key (provided to them by Supabase, never in this
   repository): `use_api_token` only looks a hash up and sets `last_used_at`, and `log-activity` only inserts the checked
   rows; it accepts only an entitlement token, never a Supabase one.
 * **Rotating the key:** run `scripts/make_entitlement_key.py` again, ADD the new public key to `ENTITLEMENT_SEED_JWKS`,
   release, set the new secret, and remove the old public key once its last token (1 hour) and the offline allowance
   (30 days) have passed. Until a release with the new key reaches a machine, that machine refuses the new tokens.
-* The per-address limit trusts the platform's `cf-connecting-ip` header (else the last `x-forwarded-for` entry): not
-  verified on a real deployment. A very large array job behind one address can hit it (`429`, retried by the next run).
+* **Client address.** The per-address failure limit uses only `cf-connecting-ip` (the functions run behind Cloudflare, which
+  sets it itself); `x-forwarded-for` is never used (its first entries are whatever the caller wrote), and a missing or
+  malformed value means **no per-address limit** for that request (never one bucket shared by everybody, which would let
+  one caller lock out all). **Release gate, not verified here:** on the deployed function, check that the header is present
+  and that one forged by a caller is replaced; until then guessing is limited per presented string only (which, for 256-bit
+  tokens, is a cost limit, not a security one).
+* **Request bodies** are read from the stream with a byte cap (2 KB for the exchange, 64 KB for the activity batch) and
+  refused with `413` as soon as the cap is passed; `Content-Length` (missing, wrong, NaN, or absent for a chunked body) is
+  never trusted.
 * A job that uses the app's own storage on the same machine: the app **never replaces or ends** a stored access-token
   session (it keeps its own sign-in), and `rxd login` with a password replaces it.
 * **Not verified here:** a real run of the Edge Functions (Deno is not installed on the development machine: the logic is
@@ -420,7 +472,9 @@ protection. Everything below is real, including what is not worth fixing:
 * **Access tokens** (see their section for the full list): a revoked token keeps working up to 1 hour online and up to 30
   days (never past its own expiry date) when the server cannot be reached; `RADARX_TOKEN` is visible to the user's other
   processes; whoever holds the signing secret can mint entitlement tokens that pass the gate (not the database); the
-  function's per-address limit trusts a platform header; and, like every check here, the entitlement verification runs on
+  function's per-address limit trusts one platform header (a release gate); every Edge Function of the project can read the
+  signing key (Supabase secrets are project-wide); tokens survive "sign out everywhere" (a password change does revoke
+  them); and, like every check here, the entitlement verification runs on
   the user's machine and can be removed from source-available code.
 * **The page's script policy keeps `'unsafe-inline'`** (`script-src`) in both the desktop and the web build because
   the UI is built with inline scripts and styles; a content-injection bug in the UI would therefore not be stopped by
@@ -500,12 +554,18 @@ protection. Everything below is real, including what is not worth fixing:
    repository):
 
    ```bash
-   python scripts/make_entitlement_key.py --out ~/radarx-entitlement-private.pem   # prints the PUBLIC key; writes the private one (0600)
+   python scripts/make_entitlement_key.py --out ~/radarx-entitlement-private.pem   # prints the PUBLIC key; writes the private one and an env file (0600)
    # add the printed public JSON to ENTITLEMENT_SEED_JWKS in python/engine/account/jwks_seed.py, release
-   supabase secrets set ENTITLEMENT_PRIVATE_KEY="$(cat ~/radarx-entitlement-private.pem)"
-   rm -P ~/radarx-entitlement-private.pem                                           # Linux: shred -u
+   supabase secrets set --env-file ~/radarx-entitlement-private.pem.env             # sets ENTITLEMENT_PRIVATE_KEY and ENTITLEMENT_PUBLIC_JWK
+   rm ~/radarx-entitlement-private.pem ~/radarx-entitlement-private.pem.env
    supabase functions deploy exchange-api-token log-activity --no-verify-jwt
    ```
+
+   The env file keeps the key off the command line (with `supabase secrets set NAME="$(cat file)"` the key is visible in
+   the process list of your own computer while the command runs). **Deleting a file is not erasing it**: on APFS, SSDs
+   and journaling file systems the blocks may survive (`rm -P` and `shred` do not help there), so keep the files on an
+   encrypted disk, and rotate the key if you suspect it was exposed. Keep a copy of the private key in your password
+   manager if you want to be able to set the secret again.
 
    Then create a token in the app and check it with `printf '%s\n' "$TOKEN" | rxd login --token` and `rxd whoami`.
    Optionally schedule `select public.purge_api_tokens(400);` (removes tokens that ended over 400 days ago). The details

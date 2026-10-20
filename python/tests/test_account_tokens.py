@@ -14,7 +14,7 @@ import jwt
 import pytest
 
 from engine import cli
-from engine.account import activity, core, entitlement, jwks_seed, tokens
+from engine.account import activity, core, entitlement, jwks_seed, pat, tokens
 from engine.account.errors import AccountRequired
 from engine.account.store import SessionStore, StoredSession
 from tests.account_helpers import ENT_KID, EntitlementKeys, KeyPair, new_pat
@@ -24,11 +24,17 @@ NOW = time.time()
 
 
 def files_left(directory: Path) -> list[str]:
-    """What a run left in the config folder, apart from the random install id (device_id), which
-    is not a secret and is kept so an install counts as one computer."""
+    """What a run left in the config folder that could be a sign-in: not the random install id
+    (device_id, no secret), not lock files, and not the one-hour entitlement-token cache of
+    RADARX_TOKEN (``env-token-*.json``: named by a hash, never holding the access token)."""
     if not directory.exists():
         return []
-    return sorted(p.name for p in directory.rglob("*") if p.is_file() and p.name != "device_id")
+    ignore = ("device_id", "session.lock", "session.refresh.lock", "session.netdown")
+    return sorted(
+        p.name
+        for p in directory.rglob("*")
+        if p.is_file() and p.name not in ignore and not p.name.startswith("env-token-")
+    )
 
 
 def run(capsys, *argv):
@@ -305,8 +311,12 @@ def test_the_answers_for_unknown_revoked_and_expired_look_the_same(gate_on, caps
 
 
 def test_a_server_problem_is_not_called_a_bad_token(gate_on, capsys, monkeypatch):
+    monkeypatch.setattr(pat, "RETRY_BUDGET_S", 0.0)  # (the retrying has its own tests)
     token = gate_on.create_pat()
-    for mode, expect in (("rate_limited", "Too many"), ("bad_gateway", "Cannot reach")):
+    for mode, expect in (
+        ("rate_limited", "limiting access-token exchanges"),
+        ("bad_gateway", "Cannot reach"),
+    ):
         gate_on.exchange_mode = mode
         stdin(monkeypatch, token + "\n")
         code, _o, err = run(capsys, "login", "--token")

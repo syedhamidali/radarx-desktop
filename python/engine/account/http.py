@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ssl
 import threading
 import urllib.error
@@ -13,6 +14,8 @@ from engine.account.config import HTTP_TIMEOUT_S
 from engine.account.errors import AccountServerError
 
 _USER_AGENT = "radarx-desktop-account/1"
+#: How long a request that was given up (see ``late``) may still wait for its answer.
+LATE_WINDOW_S = 30.0
 _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
@@ -71,7 +74,12 @@ def _request(
                 )
         except Exception:  # an unparseable error body is still an error
             pass
-        raise AccountServerError(exc.code, code, msg) from None
+        retry_after = None
+        try:
+            retry_after = max(0.0, min(float(exc.headers.get("Retry-After") or ""), 3600.0))
+        except (TypeError, ValueError, AttributeError):
+            retry_after = None
+        raise AccountServerError(exc.code, code, msg, retry_after) from None
     except (urllib.error.URLError, TimeoutError, OSError, ssl.SSLError) as exc:
         raise AccountServerError(0, "unreachable", type(exc).__name__) from None
     if not raw:
@@ -91,6 +99,7 @@ def request_json(
     headers: dict[str, str] | None = None,
     body: Any = None,
     timeout: float = HTTP_TIMEOUT_S,
+    late: Any = None,
 ) -> Any:
     """One HTTPS request with a JSON body; returns the decoded JSON (None for an empty answer).
 
@@ -98,6 +107,10 @@ def request_json(
     answer within ``timeout`` seconds in TOTAL: connect, TLS and read together, not per step),
     otherwise
     the HTTP status with the server's ``error_code`` / ``msg`` when it sent them.
+
+    ``late``, when given, is called with the decoded answer if the request OUTLIVES the deadline
+    and then succeeds (in the worker thread): a request that is not safe to repeat (a refresh
+    token the server has already spent) uses it to keep the answer that the caller gave up on.
     """
     import json
 
@@ -107,19 +120,34 @@ def request_json(
     data = None if body is None else json.dumps(body).encode("utf-8")
     box: dict[str, Any] = {}
 
+    gate = threading.Lock()
+    # With ``late`` the request is allowed to outlive the deadline (its sockets wait longer), so
+    # that an answer that is merely slow can still be handed over.
+    socket_timeout = max(timeout, LATE_WINDOW_S) if late is not None else timeout
+
     def work() -> None:
         try:
-            box["value"] = _request(method, url, dict(headers or {}), data, timeout)
+            value = _request(method, url, dict(headers or {}), data, socket_timeout)
         except BaseException as exc:  # handed to the caller below
-            box["error"] = exc
+            with gate:
+                box["error"] = exc
+            return
+        with gate:
+            box["value"] = value
+            abandoned = bool(box.get("abandoned"))
+        if abandoned and late is not None:
+            with contextlib.suppress(Exception):  # keeping a late answer is best effort
+                late(value)
 
     # A socket timeout limits each step, not the sum (a server that accepts and trickles bytes, or
     # a slow TLS handshake, can take several times as long): the deadline is enforced from outside.
     worker = threading.Thread(target=work, name="radarx-account-http", daemon=True)
     worker.start()
     worker.join(timeout + 0.25)
-    if worker.is_alive():
-        raise AccountServerError(0, "unreachable", "timeout")
+    with gate:
+        if worker.is_alive() and "value" not in box and "error" not in box:
+            box["abandoned"] = True
+            raise AccountServerError(0, "unreachable", "timeout")
     if "error" in box:
         raise box["error"]
     return box.get("value")

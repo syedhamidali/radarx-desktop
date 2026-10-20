@@ -56,12 +56,32 @@ from engine.account import vault
 APP_FOLDER = "radarx-desktop"
 #: The fields of a session that are secrets (kept in the keychain when there is one).
 SECRET_FIELDS = ("access_token", "refresh_token", "pat_token")
+
+#: Things the user should be told once about where the secrets went (printed by the command line
+#: after a command): a keychain that failed while a session was being written.
+_storage_warnings: list[str] = []
+
+
+def _warn_storage(message: str) -> None:
+    if message not in _storage_warnings:
+        _storage_warnings.append(message)
+
+
+def take_storage_warnings() -> list[str]:
+    """The pending storage warnings (and forget them)."""
+    out = list(_storage_warnings)
+    _storage_warnings.clear()
+    return out
+
+
 LOCK_TIMEOUT_S = 10.0
 #: How long a process waits for the right to renew the session (others may be renewing it).
 REFRESH_LOCK_TIMEOUT_S = 20.0
-#: A renewal lock file older than this is taken over. A renewal makes one network call that is cut
-#: off after 5 s, so a healthy holder is done long before; across machines only the age can tell.
-REFRESH_LOCK_STALE_S = 60.0
+#: A renewal lock file older than this (by both clocks, see _RefreshLock) is taken over. A renewal
+#: makes one network call that is cut off after 15 s, so a healthy holder is done long before.
+REFRESH_LOCK_STALE_S = 90.0
+#: The exclusive "break" file that serialises the takeover of a stale lock ages out after this.
+BREAK_LOCK_STALE_S = 30.0
 
 
 def config_dir() -> Path:
@@ -212,6 +232,23 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _pid_namespace() -> str:
+    """An id of this process's PID namespace (Linux), so a lock file written by another container
+    that shares the folder and the host name is not judged by a pid that means something else."""
+    try:
+        return os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return ""
+
+
+class LockNotNeeded(Exception):  # noqa: N818 - control flow, not an error
+    """Raised while waiting for the renewal lock when ``skip`` says somebody else did the work."""
+
+    def __init__(self, value: Any) -> None:
+        super().__init__("not needed")
+        self.value = value
+
+
 class _RefreshLock:
     """The right to renew the session, held by ONE process (or thread) at a time, on one computer
     or on many that share the folder (a home directory on a network file system).
@@ -220,16 +257,20 @@ class _RefreshLock:
 
     1. an in-process lock (threads of one process);
     2. an exclusively created lock file ``session.refresh.lock`` (``O_CREAT | O_EXCL`` is atomic on
-       local disks and on NFS v3 and later) holding the host name, process id, time and a random
-       token. This is what works where ``flock`` does not;
+       local disks and on NFS v3 and later) holding the host name, process id, PID namespace, time
+       and a random token. This is what works where ``flock`` does not;
     3. the ordinary ``flock`` on ``session.lock`` (:class:`_FileLock`), which also keeps the plain
        writers of the session file out.
 
-    A lock file left by a process that died is taken over: at once when it names this host and a
-    process that no longer exists, otherwise when it is older than ``REFRESH_LOCK_STALE_S``. Waiting
-    uses a random back-off (jitter) so many waiters do not collide in step, and gives up with
-    ``TimeoutError`` after ``timeout`` seconds (the caller keeps the session and does not delete
-    anything).
+    A lock file left by a process that died is taken over: at once when it names this host AND this
+    PID namespace and a process that no longer exists, otherwise when it is older than
+    ``REFRESH_LOCK_STALE_S`` by BOTH clocks that can be asked (the file's modification time, kept
+    by the file server, and the time the holder wrote into it): a computer whose clock is wrong
+    cannot make a live lock look old. Waiters that find a stale lock take it over ONE at a time (a
+    second exclusive "break" file), re-reading the lock under it, so two of them can never both
+    delete and re-create it. Waiting uses a random back-off (jitter), checks ``skip`` (somebody
+    else may have done the work) and gives up with ``TimeoutError`` after ``timeout`` seconds (the
+    caller keeps the session and does not delete anything).
     """
 
     def __init__(
@@ -237,11 +278,14 @@ class _RefreshLock:
         directory: Path,
         timeout: float | None = None,
         stale_after: float | None = None,
+        skip: Callable[[], Any] | None = None,
     ) -> None:
         self.dir = directory
         self.path = directory / "session.refresh.lock"
+        self.break_path = directory / "session.refresh.lock.break"
         self.timeout = REFRESH_LOCK_TIMEOUT_S if timeout is None else timeout
         self.stale_after = REFRESH_LOCK_STALE_S if stale_after is None else stale_after
+        self.skip = skip
         self._token = ""
         self._mine: threading.Lock | None = None
         self._flock: _FileLock | None = None
@@ -256,6 +300,7 @@ class _RefreshLock:
         info = {
             "host": socket.gethostname(),
             "pid": os.getpid(),
+            "pidns": _pid_namespace(),
             "time": time.time(),
             "token": self._token,
         }
@@ -276,56 +321,79 @@ class _RefreshLock:
         except OSError:
             return False  # gone: the next create will tell
         pid = info.get("pid")
-        same_host = info.get("host") == socket.gethostname()
-        if same_host and isinstance(pid, int) and pid > 0 and not _pid_alive(pid):
+        same_place = (
+            info.get("host") == socket.gethostname() and info.get("pidns", "") == _pid_namespace()
+        )
+        if same_place and isinstance(pid, int) and pid > 0 and not _pid_alive(pid):
             return True
-        return age > self.stale_after
+        ages = [age]
+        written = info.get("time")
+        if isinstance(written, (int, float)):
+            ages.append(time.time() - float(written))
+        return min(ages) > self.stale_after
 
     def _break_stale(self, seen: dict[str, Any]) -> None:
-        """Remove the stale lock that ``seen`` describes, without removing a fresh one by mistake:
-        move it aside first, check what was moved, and put it back if it was not the stale one."""
-        aside = self.path.with_name(f"{self.path.name}.stale.{os.getpid()}.{secrets.token_hex(4)}")
+        """Remove the stale lock that ``seen`` describes. Only one waiter at a time may do this (an
+        exclusive ``.break`` file); under it the lock is read again and removed only if it is still
+        the same stale one, so a lock that a faster waiter has just re-created is never removed."""
         try:
-            os.rename(self.path, aside)
-        except OSError:
-            return  # someone else got there first
+            fd = os.open(self.break_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            with contextlib.suppress(OSError):  # a breaker that died: its file ages out
+                if time.time() - self.break_path.stat().st_mtime > BREAK_LOCK_STALE_S:
+                    self.break_path.unlink()
+            return
+        os.close(fd)
         try:
-            moved = json.loads(aside.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            moved = {}
-        if seen.get("token") and moved.get("token") != seen.get("token"):
-            with contextlib.suppress(OSError):  # not the stale one: give it back if still free
-                os.link(aside, self.path)
-        with contextlib.suppress(OSError):
-            aside.unlink()
+            current = self._read()
+            if current.get("token") == seen.get("token") and self._is_stale(current):
+                with contextlib.suppress(OSError):
+                    self.path.unlink()
+        finally:
+            with contextlib.suppress(OSError):
+                self.break_path.unlink()
 
     # -- context manager ---------------------------------------------------------------------
     def __enter__(self) -> _RefreshLock:
         _make_private_dir(self.dir)
         deadline = time.monotonic() + self.timeout
         mine = _process_lock(self.path)
-        if not mine.acquire(timeout=max(0.0, self.timeout)):
-            raise TimeoutError(f"could not lock {self.path}")
-        self._mine = mine
         try:
-            self._token = secrets.token_hex(8)
-            delay = 0.02
-            while not self._create():
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"could not lock {self.path}")
-                info = self._read()
-                if self._is_stale(info):
-                    self._break_stale(info)
-                    continue
-                time.sleep(random.uniform(delay / 2, delay * 1.5))  # jitter
-                delay = min(delay * 1.5, 0.25)
-            self._held = True
-            left = max(0.05, deadline - time.monotonic())
-            self._flock = _FileLock(self.dir / "session.lock", timeout=left).__enter__()
+            self._wait_for(mine, deadline)
         except BaseException:
             self._release()
             raise
         return self
+
+    def _check_skip(self) -> None:
+        if self.skip is not None:
+            value = self.skip()
+            if value:
+                raise LockNotNeeded(value)
+
+    def _wait_for(self, mine: threading.Lock, deadline: float) -> None:
+        delay = 0.02
+        while not mine.acquire(timeout=0.05):  # (checked often: see skip)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"could not lock {self.path}")
+            self._check_skip()
+        self._mine = mine
+        self._token = secrets.token_hex(8)
+        while True:
+            self._check_skip()
+            if self._create():
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"could not lock {self.path}")
+            info = self._read()
+            if self._is_stale(info):
+                self._break_stale(info)
+                continue
+            time.sleep(random.uniform(delay / 2, delay * 1.5))  # jitter
+            delay = min(delay * 1.5, 0.25)
+        self._held = True
+        left = max(0.05, deadline - time.monotonic())
+        self._flock = _FileLock(self.dir / "session.lock", timeout=left).__enter__()
 
     def _release(self) -> None:
         if self._flock is not None:
@@ -418,6 +486,12 @@ class SessionStore:
         except ValueError:
             return None
         if isinstance(data, dict) and data.get("storage") == "keychain":
+            if vault.explicit_file():
+                raise vault.VaultError(
+                    "this sign-in is kept in the system keychain, which "
+                    f"{vault.MODE_VARIABLE}=file switches off: unset it to use the sign-in, "
+                    "or sign in again to keep it in a file"
+                )
             # the secrets are in the keychain; VaultError (an OSError) means "could not read it"
             raw = vault.read(self.account)
             if raw is None:
@@ -446,11 +520,14 @@ class SessionStore:
             yield
 
     @contextlib.contextmanager
-    def refresh_locked(self, timeout: float | None = None) -> Iterator[None]:
+    def refresh_locked(
+        self, timeout: float | None = None, skip: Callable[[], Any] | None = None
+    ) -> Iterator[None]:
         """Exclusive right to renew the session: one renewal at a time across threads, processes
         and (via an exclusively created lock file) computers sharing the folder. Raises
-        ``TimeoutError`` when it cannot be had in time."""
-        with _RefreshLock(self.directory, timeout):
+        ``TimeoutError`` when it cannot be had in time, and :class:`LockNotNeeded` (with the value
+        ``skip`` returned) when, while waiting, ``skip()`` says somebody else did the work."""
+        with _RefreshLock(self.directory, timeout, skip=skip):
             yield
 
     # -- "the account server could not be reached" marker (shared by every process) -----------
@@ -475,42 +552,59 @@ class SessionStore:
         with contextlib.suppress(OSError):
             self._netdown_path.unlink()
 
+    def _keychain_permitted(self, marker: str) -> bool:
+        """May this session's secrets go to the keychain? New ones, where the mode says so; one that
+        already lives there stays there unless the file was chosen explicitly."""
+        if vault.explicit_file():
+            return False
+        return vault.mode() == "auto" or marker == "keychain"
+
     def _write(self, session: StoredSession, *, allow_keychain: bool = True) -> None:
         """Write the session: the secrets to the keychain when one works (then the file holds none
-        of them), otherwise into the 0600 file. A keychain that fails while writing NEVER costs the
-        tokens: they go to the file instead, and ``storage_note`` says why."""
+        of them), otherwise into the 0600 file. A keychain that fails while writing NEVER costs a
+        rotated refresh token: it goes to the file instead and the user is told (``storage_note``,
+        a warning from the command line). An access token (the long-lived secret of automation)
+        that already lives in the keychain is NOT moved into the file by a failed write: the write
+        is refused (``VaultError``) and the session stays where it was."""
         session.saved_at = time.time()
         data = session.to_json()
         every = {name: data.get(name) for name in SECRET_FIELDS}  # (None for the ones not set)
         secret = {name: value for name, value in every.items() if value}
         for name in SECRET_FIELDS:
             data.pop(name, None)
+        marker = self._storage_marker()
         note = ""
         where = "file"
         self._handle = None
-        if vault.mode() == "file":
+        if vault.explicit_file():
             note = "by your choice (RADARX_SECRET_STORE=file)"
-        elif allow_keychain:
-            usable, _name, reason = vault.status()
+        elif allow_keychain and self._keychain_permitted(marker):
+            usable, _name, reason = vault.status(force=True)
+            failure = reason
             if usable:
                 try:
-                    self._handle = vault.write(self.account, json.dumps(secret))
+                    self._handle = vault.write(self.account, json.dumps(secret), force=True)
                     where = "keychain"
                 except vault.VaultError as exc:
-                    note = f"the keychain could not be written ({exc}); the file is used instead"
-            else:
-                note = reason
+                    failure = f"the keychain could not be written ({exc})"
+            if where == "file":
+                if session.pat_token and marker == "keychain":
+                    raise vault.VaultError(f"{failure}; the access token stays where it is")
+                note = f"{failure}; the file is used instead"
+                if marker == "keychain" or session.refresh_token:
+                    _warn_storage(f"the sign-in is now kept in the private file: {failure}")
+        else:
+            note = vault.status()[2]
         data["storage"] = where
         if where == "file":
             data.update(every)  # exactly the file as it always was (secret keys present)
             data["storage_note"] = note
-        had_entry = self._storage_marker() == "keychain"
         write_private(self.path, json.dumps(data, indent=1))
         session.storage, session.storage_note = where, note
-        if where == "file" and had_entry and vault.mode() == "file":
+        if where == "file" and marker == "keychain" and vault.explicit_file():
             # switched to the file by choice: do not leave a copy in the keychain behind
             with contextlib.suppress(OSError):
-                vault.delete(self.account, even_if_off=True)
+                vault.delete(self.account, ignore_choice=True)
 
     def save(self, session: StoredSession) -> None:
         with self.locked():
@@ -519,9 +613,11 @@ class SessionStore:
     def update(
         self, change: Callable[[StoredSession | None], StoredSession | None]
     ) -> StoredSession | None:
-        """Read, change and write back under the lock. ``change`` may return None to clear."""
+        """Read, change and write back under the lock. ``change`` may return None to clear. A
+        session that cannot be READ (a locked keychain) is never overwritten or removed: the error
+        (an ``OSError``) is raised instead of being taken for "no session"."""
         with self.locked():
-            new = change(self.load())
+            new = change(self.load_strict())
             if new is None:
                 self._unlink()
             else:
@@ -530,24 +626,23 @@ class SessionStore:
 
     def clear(self) -> None:
         """Remove the session (file and keychain entry). A keychain entry that cannot be removed
-        raises (the file is kept, so signing out can be tried again)."""
+        raises (the file is kept, so signing out can be tried again) - except when the file was
+        chosen explicitly (``RADARX_SECRET_STORE=file``): then the keychain entry is removed on a
+        best-effort basis and the file always goes, so signing out can always be done."""
         with self.locked():
-            self._remove_keychain_entry(strict=True)
+            chosen = vault.explicit_file()
+            self._remove_keychain_entry(strict=not chosen, ignore_choice=chosen)
             self._unlink_file()
         self.clear_network_down()
 
-    def _remove_keychain_entry(self, *, strict: bool, even_if_off: bool = False) -> None:
+    def _remove_keychain_entry(self, *, strict: bool, ignore_choice: bool = False) -> None:
         """Remove this session's keychain entry (if there is a keychain and an entry). With
         ``strict`` a failure to remove an entry the file points to raises ``VaultError``."""
         marker = self._storage_marker()
-        if (
-            marker != "keychain"
-            and not even_if_off
-            and not (vault.mode() == "auto" and vault.available())
-        ):
+        if marker != "keychain" and not (vault.mode() == "auto" and vault.available()):
             return
         try:
-            vault.delete(self.account, even_if_off=even_if_off)
+            vault.delete(self.account, ignore_choice=ignore_choice)
         except vault.VaultError:
             if strict and marker == "keychain":
                 raise
@@ -573,10 +668,16 @@ class SessionStore:
 
     def migrate_to_keychain(self) -> bool:
         """Move a file session into the keychain, once, and only if the keychain works: write it
-        there, read it back, compare, and only then rewrite the file without the secrets. Any
-        failure leaves the file exactly as it was. Returns True when the session moved."""
+        there, read it back, compare, and only then is the file without the secrets the truth. On
+        ANY failure (a write, a read-back that is refused or wrong, an exception) the file is put
+        back byte for byte and the unverified copy is removed. A session that already lives in the
+        keychain is recognised without taking any lock. Returns True when the session moved."""
         if vault.mode() != "auto":
             return False
+        seen = self.peek()
+        if seen is None or seen.get("storage") == "keychain":
+            return False
+        original = b""
         try:
             with self.locked():
                 current = self.load_strict()
@@ -584,16 +685,20 @@ class SessionStore:
                     return False
                 before = {name: getattr(current, name) for name in SECRET_FIELDS}
                 original = self.path.read_bytes()
-                self._write(current)
-                if current.storage != "keychain":
-                    return False
-                back = self.load_strict()
-                if back is None or {name: getattr(back, name) for name in SECRET_FIELDS} != before:
-                    write_private(self.path, original.decode("utf-8"))  # undo: exactly as it was
+                try:
+                    self._write(current)
+                    if current.storage != "keychain":
+                        raise vault.VaultError("the keychain was not used")
+                    back = self.load_strict()
+                    if back is None or {n: getattr(back, n) for n in SECRET_FIELDS} != before:
+                        raise vault.VaultError("the keychain did not return what was stored")
+                    return True
+                except BaseException:
+                    if self.path.read_bytes() != original:
+                        write_private(self.path, original.decode("utf-8"))  # exactly as it was
                     if self._handle is not None:
                         vault.discard(self.account, self._handle)
-                    return False
-                return True
+                    raise
         except (OSError, TimeoutError):
             return False
 

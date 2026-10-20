@@ -47,7 +47,8 @@ The check reads the same session file as the app and `rxd` (it is renewed automa
 **Without a typed password** (batch jobs, notebooks on a cluster, CI): create an access token in the app (*Account >
 Access tokens*) and either run `rxd login --token < token.txt` once (the session file is then shared with Python), or
 set `RADARX_TOKEN` in the environment of the job: `import rxd` then signs in by itself, exchanging the token at the first
-call, keeping the one-hour sign-in in memory only and renewing it hourly; nothing is written to disk.
+call, keeping the one-hour sign-in in memory and in a small 0600 cache file (so a loop of scripts or workers exchanges once an
+hour; `RADARX_TOKEN_CACHE=0` turns the file off) and renewing it hourly; the access token itself is never written.
 
 ```python
 import os, rxd

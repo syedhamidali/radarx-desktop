@@ -108,7 +108,7 @@ def test_a_proxy_or_outage_answer_on_refresh_keeps_the_session(gate_on, monkeypa
     gate_on.now += 2 * 3600
     core.reset_runtime_state()
 
-    def proxy(refresh_token, timeout=5.0):
+    def proxy(refresh_token, timeout=5.0, late=None):
         raise AccountServerError(status, "", "Forbidden by corporate proxy")
 
     monkeypatch.setattr(gotrue, "refresh", proxy)
@@ -132,7 +132,7 @@ def test_only_the_servers_own_refusal_ends_the_session(gate_on, monkeypatch, sta
     gate_on.now += 2 * 3600
     core.reset_runtime_state()
 
-    def refused(refresh_token, timeout=5.0):
+    def refused(refresh_token, timeout=5.0, late=None):
         raise AccountServerError(status, code, "gone")
 
     monkeypatch.setattr(gotrue, "refresh", refused)
@@ -151,7 +151,7 @@ def test_rotated_tokens_are_saved_before_they_are_checked(gate_on, monkeypatch):
     other = KeyPair(kid="rotated-key")
     real = gotrue.refresh
 
-    def rotated(refresh_token, timeout=5.0):
+    def rotated(refresh_token, timeout=5.0, late=None):
         session = real(refresh_token, timeout=timeout)
         session["access_token"] = other.token(iat=gate_on.now)  # signed with a key we cannot find
         return session

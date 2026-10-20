@@ -13,7 +13,9 @@ a session made by ``rxd login --token``, and only in memory for ``RADARX_TOKEN``
 from __future__ import annotations
 
 import os
+import random
 import re
+import time
 from typing import Any
 
 from engine.account import config, http
@@ -60,6 +62,42 @@ def exchange(token: str, *, timeout: float = config.HTTP_TIMEOUT_S) -> dict[str,
     return out
 
 
+#: How long a rate-limited exchange keeps retrying (seconds in total), and the longest single wait.
+RETRY_BUDGET_S = 40.0
+RETRY_MAX_WAIT_S = 15.0
+
+
+def exchange_with_retry(
+    token: str,
+    *,
+    timeout: float = config.HTTP_TIMEOUT_S,
+    budget: float = RETRY_BUDGET_S,
+    sleep: Any = time.sleep,
+) -> dict[str, Any]:
+    """:func:`exchange`, retried while the server answers ``429`` (rate limited) or ``503``: the
+    wait is what the server asked for (``Retry-After``) or an exponential back-off, with jitter so
+    a herd of jobs does not come back in step, and the whole retrying stays within ``budget``
+    seconds. Anything else (a refusal of the token, no network) is raised at once. The last
+    ``429`` is raised when the budget is used up: the caller says "rate limited", not "cannot
+    reach the server"."""
+    started = time.monotonic()
+    waited = 0.0
+    attempt = 0
+    while True:
+        try:
+            return exchange(token, timeout=timeout)
+        except AccountServerError as exc:
+            if exc.status not in (429, 503):
+                raise
+            wait = exc.retry_after if exc.retry_after is not None else 2.0 * (2**attempt)
+            wait = min(max(wait, 0.5), RETRY_MAX_WAIT_S) * random.uniform(1.0, 1.4)
+            if max(time.monotonic() - started, waited) + wait > budget:
+                raise
+            attempt += 1
+            waited += wait
+            sleep(wait)
+
+
 def definite_refusal(exc: AccountServerError) -> bool:
     """The exchange function itself answered ``401 invalid_token``: this token is finished. A 401
     from a gateway in front of it (a different body) is not this."""
@@ -74,7 +112,11 @@ def friendly_error(exc: AccountServerError) -> str:
             "Create a new one in the radarx-desktop app (Account > Access tokens)."
         )
     if exc.status == 429:
-        return "Too many requests with this token or from this address. Wait a minute and retry."
+        wait = f" (the server asks to wait {exc.retry_after:.0f} s)" if exc.retry_after else ""
+        return (
+            "The account server is limiting access-token exchanges right now"
+            f"{wait}. Nothing is wrong with the token: wait a little and run the command again."
+        )
     if exc.status == 404:
         return "Access tokens are not available on the account server yet."
     return "Cannot reach the account server. Check your internet connection and try again."

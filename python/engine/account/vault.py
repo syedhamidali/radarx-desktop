@@ -53,9 +53,25 @@ _state: dict[str, Any] = {
 }
 
 
+def explicit_file() -> bool:
+    """The user chose the file (``RADARX_SECRET_STORE=file``): the keychain is never touched."""
+    return os.environ.get(MODE_VARIABLE, "").strip().lower() == "file"
+
+
 def mode() -> str:
-    """``"auto"`` (use the keychain when there is one) or ``"file"`` (never)."""
-    return "file" if os.environ.get(MODE_VARIABLE, "").strip().lower() == "file" else "auto"
+    """Where NEW secrets may go: ``"auto"`` (the keychain, when there is a working one) or
+    ``"file"``. ``RADARX_SECRET_STORE`` is ``file``, ``keychain`` (use it on any system) or
+    ``auto``/unset: the platform default, which is the keychain on Windows and Linux and the
+    private FILE on macOS, because on macOS a second program (the app's engine and ``rxd``) that
+    reads an item the first one wrote raises a permission prompt that a short-lived command
+    cannot answer. A session that already lives in the keychain stays readable and writable
+    there unless the file was chosen explicitly (see :func:`status`, ``force``)."""
+    word = os.environ.get(MODE_VARIABLE, "").strip().lower()
+    if word == "file":
+        return "file"
+    if word == "keychain":
+        return "auto"
+    return "file" if sys.platform == "darwin" else "auto"
 
 
 #: What went wrong importing the backend of this platform, for :func:`diagnose` (a packaged build
@@ -154,10 +170,19 @@ def _probe(backend: Any) -> None:
             _call("probe delete", backend.delete_password, SERVICE, name)
 
 
-def status() -> tuple[bool, str, str]:
-    """``(usable, backend name, reason)``. ``reason`` explains why the keychain is not used."""
-    if mode() == "file":
+def status(force: bool = False) -> tuple[bool, str, str]:
+    """``(usable, backend name, reason)``. ``reason`` explains why the keychain is not used.
+    ``force`` looks past the macOS default (never past an explicit ``file`` choice): it is for a
+    session that already lives in the keychain."""
+    if explicit_file():
         return False, "", f"by your choice ({MODE_VARIABLE}=file)"
+    if mode() == "file" and not force:
+        return (
+            False,
+            "",
+            f"macOS keeps the sign-in in the private file by default ({MODE_VARIABLE}=keychain "
+            "uses the Keychain)",
+        )
     with _lock:
         if _state["checked"]:
             return bool(_state["usable"]), str(_state["name"]), str(_state["reason"])
@@ -201,15 +226,16 @@ def available() -> bool:
     return status()[0]
 
 
-def _backend(*, even_if_off: bool = False) -> Any:
-    """The working backend. ``even_if_off`` (only for removing an old entry after the keychain was
-    switched off by choice) skips the mode check and the probe."""
-    if even_if_off and mode() == "file":
+def _backend(*, force: bool = False, ignore_choice: bool = False) -> Any:
+    """The working backend. ``force``: look past the macOS default (an entry that already exists
+    must be reachable). ``ignore_choice`` (only to remove an old entry after the file was chosen)
+    skips the explicit-file check and the probe as well."""
+    if ignore_choice:
         backend = backend_factory()
         if backend is None:
             raise VaultError("no system keychain is available")
         return backend
-    usable, _name, reason = status()
+    usable, _name, reason = status(force=force)
     if not usable:
         raise VaultError(reason or "no system keychain is available")
     with _lock:
@@ -219,8 +245,20 @@ def _backend(*, even_if_off: bool = False) -> Any:
 # -- values of any size, in chunks -------------------------------------------------------------
 
 
-def _header(version: str, count: int) -> str:
-    return json.dumps({"v": 1, "id": version, "n": count}, separators=(",", ":"))
+def _header(version: str, count: int, stale: list[dict[str, Any]] | None = None) -> str:
+    head: dict[str, Any] = {"v": 1, "id": version, "n": count}
+    if stale:
+        head["stale"] = stale[:8]  # old versions whose parts could not be removed yet
+    return json.dumps(head, separators=(",", ":"))
+
+
+def _check_part(item: Any) -> bool:
+    return (
+        isinstance(item, dict)
+        and isinstance(item.get("id"), str)
+        and isinstance(item.get("n"), int)
+        and 1 <= item["n"] <= 64
+    )
 
 
 def _read_header(backend: Any, account: str) -> dict[str, Any] | None:
@@ -231,13 +269,10 @@ def _read_header(backend: Any, account: str) -> dict[str, Any] | None:
         head = json.loads(raw)
     except ValueError:
         raise VaultError("the keychain entry is not one of ours") from None
-    ok = (
-        isinstance(head, dict)
-        and isinstance(head.get("id"), str)
-        and isinstance(head.get("n"), int)
-    )
-    if not ok or not 1 <= head["n"] <= 64:
+    if not _check_part(head):
         raise VaultError("the keychain entry is not one of ours")
+    stale = head.get("stale")
+    head["stale"] = [x for x in stale if _check_part(x)] if isinstance(stale, list) else []
     return head
 
 
@@ -245,11 +280,12 @@ def _chunk_name(account: str, version: str, index: int) -> str:
     return f"{account}#{version}#{index}"
 
 
-def write(account: str, text: str) -> dict[str, Any]:
+def write(account: str, text: str, *, force: bool = False) -> dict[str, Any]:
     """Store ``text`` under ``account`` and return a handle for :func:`discard`. The previous value
     stays readable until the new one is complete (new chunks first, then the header that points at
-    them, then the old chunks go)."""
-    backend = _backend()
+    them, then the old chunks go). Old parts that cannot be removed are listed in the new header,
+    so a later write or :func:`delete` removes them (they hold secrets)."""
+    backend = _backend(force=force)
     try:
         old = _read_header(backend, account)
     except VaultError:
@@ -258,9 +294,12 @@ def write(account: str, text: str) -> dict[str, Any]:
     chunks = [text[i : i + CHUNK_CHARS] for i in range(0, len(text), CHUNK_CHARS)] or [""]
     for i, chunk in enumerate(chunks):
         _call("write", backend.set_password, SERVICE, _chunk_name(account, version, i), chunk)
-    _call("write", backend.set_password, SERVICE, account, _header(version, len(chunks)))
+    stale: list[dict[str, Any]] = []
     if old is not None:
-        _drop_chunks(backend, account, old)
+        for part in [{"id": old["id"], "n": old["n"]}, *old["stale"]]:
+            if _drop_chunks(backend, account, part):
+                stale.append(part)
+    _call("write", backend.set_password, SERVICE, account, _header(version, len(chunks), stale))
     return {"v": 1, "id": version, "n": len(chunks)}
 
 
@@ -268,22 +307,40 @@ def discard(account: str, handle: dict[str, Any]) -> None:
     """Remove what a :func:`write` stored, by its handle (for a copy that could not be verified,
     when reading the header back is the very thing that failed). Never raises."""
     with contextlib.suppress(VaultError):
-        backend = _backend()
+        backend = _backend(force=True)
         _drop_chunks(backend, account, handle)
         _call("delete", backend.delete_password, SERVICE, account)
 
 
-def _drop_chunks(backend: Any, account: str, head: dict[str, Any]) -> None:
-    for i in range(head["n"]):
-        # an orphan chunk is harmless and unreadable without its header
-        with contextlib.suppress(VaultError):
-            _call("delete", backend.delete_password, SERVICE, _chunk_name(account, head["id"], i))
+def _gone(backend: Any, name: str) -> bool:
+    try:
+        return _call("check", backend.get_password, SERVICE, name) is None
+    except VaultError:
+        return False
+
+
+def _drop_chunks(backend: Any, account: str, part: dict[str, Any]) -> int:
+    """Delete the parts of one version, retrying each; returns how many are still there."""
+    left = 0
+    for i in range(part["n"]):
+        name = _chunk_name(account, part["id"], i)
+        for attempt in range(3):
+            try:
+                _call("delete", backend.delete_password, SERVICE, name)
+                break
+            except VaultError:
+                if _gone(backend, name):  # "no such item": already removed
+                    break
+                time.sleep(0.05 * (attempt + 1))
+        else:
+            left += 1
+    return left
 
 
 def read(account: str) -> str | None:
     """The value stored under ``account``, or None when there is none. Raises :class:`VaultError`
     when the keychain cannot be used or the entry is damaged."""
-    backend = _backend()
+    backend = _backend(force=True)
     for attempt in (0, 1):
         head = _read_header(backend, account)
         if head is None:
@@ -302,9 +359,10 @@ def read(account: str) -> str | None:
     raise VaultError("the keychain entry is incomplete")
 
 
-def delete(account: str, *, even_if_off: bool = False) -> None:
-    """Remove the value (and its chunks). Nothing to remove is not an error."""
-    backend = _backend(even_if_off=even_if_off)
+def delete(account: str, *, ignore_choice: bool = False) -> None:
+    """Remove the value (and its chunks). Nothing to remove is not an error; parts that cannot be
+    removed raise :class:`VaultError` and leave the header, so removing can be tried again."""
+    backend = _backend(force=True, ignore_choice=ignore_choice)
     try:
         head = _read_header(backend, account)
     except VaultError as exc:
@@ -315,7 +373,13 @@ def delete(account: str, *, even_if_off: bool = False) -> None:
         with contextlib.suppress(VaultError):
             _call("delete", backend.delete_password, SERVICE, account)
         return
-    _drop_chunks(backend, account, head)
+    left = _drop_chunks(backend, account, head)
+    for part in head["stale"]:
+        left += _drop_chunks(backend, account, part)
+    if left:
+        raise VaultError(
+            f"{left} part(s) of the saved sign-in could not be removed from the keychain"
+        )
     try:
         _call("delete", backend.delete_password, SERVICE, account)
     except VaultError as exc:

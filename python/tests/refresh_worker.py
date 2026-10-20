@@ -44,7 +44,9 @@ def main() -> None:
         import contextlib
 
         @contextlib.contextmanager
-        def no_lock(self, timeout=None):  # the control: what the code was before the lock
+        def no_lock(
+            self, timeout=None, skip=None
+        ):  # the control: what the code was before the lock
             yield
 
         store.SessionStore.refresh_locked = no_lock  # type: ignore[method-assign]

@@ -24,17 +24,21 @@ One decision procedure serves every surface (see docs/ACCOUNTS.md for the rules 
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import json
 import math
+import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from engine.account import config, gotrue, pat, tokens, vault
 from engine.account.entitlement import entitlement_allows
 from engine.account.errors import AccountRequired, AccountServerError
-from engine.account.store import SessionStore, StoredSession
+from engine.account.store import LockNotNeeded, SessionStore, StoredSession
 
 #: Refresh a ``rxd login`` token this long before it expires (so it does not lapse mid-command).
 REFRESH_MARGIN_S = 120.0
@@ -46,12 +50,18 @@ SHARED_NETDOWN_S = 15.0
 #: How long one successful check is reused inside a process (the API calls it on every function).
 CACHE_TTL_S = 30.0
 #: Network limits (seconds, in total) of the calls a command may make while checking the account.
-REFRESH_TIMEOUT_S = 5.0
+#: A refresh token is spent by the server the moment it is used: a refresh that is given up half
+#: way (the answer lost) leaves the stored token spent. So one is never STARTED with less than
+#: ``MIN_REFRESH_BUDGET_S`` to spare (the session in the file is used as it is instead), and its
+#: answer is kept even when it arrives after ``REFRESH_TIMEOUT_S`` (see ``_persist_late``).
+REFRESH_TIMEOUT_S = 15.0
+MIN_REFRESH_BUDGET_S = 10.0
 PROBE_TIMEOUT_S = 2.0
 #: A token issued this recently (by the server's clock) agrees with the local clock closely
 #: enough to
 #: reset the "latest clock reading" mark (see check_stored_session).
 FRESH_TOKEN_S = 600.0
+DAY_S = float(config.DAY_S)
 
 
 def now() -> float:
@@ -186,22 +196,80 @@ def _store_new_session(
     return stored, claims
 
 
+def _skip_when_renewed(
+    store: SessionStore, seen: StoredSession, at: float, source: str
+) -> Callable[[], tuple[StoredSession, tokens.Claims, bool] | None]:
+    """For the renewal lock: while waiting, notice (without taking any lock) that somebody else has
+    already renewed the session, so N waiters do not each take a hand-off just to find that out."""
+    state = {"saved": seen.saved_at}
+
+    def check() -> tuple[StoredSession, tokens.Claims, bool] | None:
+        meta = store.peek()
+        if meta is None:
+            return None
+        try:
+            saved = float(meta.get("saved_at") or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if saved == state["saved"]:
+            return None
+        state["saved"] = saved
+        try:
+            current = store.load_strict()
+            if current is None or current.access_token == seen.access_token:
+                return None
+            claims = _verify(current.access_token, at, current.source)
+        except (OSError, AccountRequired):
+            return None
+        if current.source == source and not _near_end(claims, at):
+            return current, claims, False
+        return None
+
+    return check
+
+
+def _persist_late(store: SessionStore, spent: str, session: Mapping[str, Any]) -> None:
+    """The server answered a refresh AFTER the caller gave up: that answer holds the only valid
+    refresh token (the one we sent is spent), so keep it, under the renewal lock, if the file still
+    holds the spent one. Best effort (the process may exit first)."""
+    try:
+        with store.refresh_locked(timeout=15.0):
+            current = store.load_strict()
+            if current is None or current.source != "cli" or current.refresh_token != spent:
+                return
+            store._write(
+                StoredSession(
+                    access_token=session["access_token"],
+                    refresh_token=session["refresh_token"],
+                    user_id=current.user_id,
+                    email=current.email,
+                    source="cli",
+                    issued_at=current.issued_at,
+                    high_water=current.high_water,
+                )
+            )
+    except Exception:  # best effort
+        pass
+
+
 def _refresh_stored(
     store: SessionStore, seen: StoredSession, at: float, wall: float, timeout: float
 ) -> tuple[StoredSession, tokens.Claims, bool] | None:
-    """Refresh a ``rxd login`` session under the file lock. None = the server was unreachable.
+    """Refresh a ``rxd login`` session under the renewal lock. None = not renewed (the server was
+    unreachable, the session could not be read, or somebody else is renewing).
 
     Raises ``AccountRequired('revoked')`` only when the server itself says the refresh token is
     finished (GoTrue's own error codes); a proxy, portal or outage answering anything else is
     "unreachable" and keeps the session. The rotated tokens are saved BEFORE the new access token
-    is verified, so a verification problem can never throw away the only valid refresh token.
+    is verified, so a verification problem can never throw away the only valid refresh token. A
+    session that cannot be READ (a locked keychain) is never treated as "gone".
     """
     global _net_down_until
     if time.monotonic() < _net_down_until:
         return None
     try:
-        with store.refresh_locked():
-            current = store.load()
+        with store.refresh_locked(skip=_skip_when_renewed(store, seen, at, "cli")):
+            current = store.load_strict()
             if current is None:
                 raise AccountRequired("no_session")
             if current.access_token != seen.access_token:
@@ -215,14 +283,19 @@ def _refresh_stored(
             if store.network_down_recently(now(), SHARED_NETDOWN_S):
                 _net_down_until = time.monotonic() + NETWORK_RETRY_S
                 return None  # another process just found the server unreachable: do not wait again
+            spent = seen.refresh_token
             try:
-                session = gotrue.refresh(seen.refresh_token, timeout=timeout)
+                session = gotrue.refresh(
+                    spent,
+                    timeout=timeout,
+                    late=lambda late_session: _persist_late(store, spent, late_session),
+                )
             except AccountServerError as exc:
                 if exc.definite_refusal:
                     # the server itself says this refresh token is finished. Delete the file only
                     # while it still holds exactly the token that was refused: if somebody saved
                     # a different one meanwhile (the file system was slow to show it), keep it.
-                    latest = store.load()
+                    latest = store.load_strict()
                     if latest is None or latest.refresh_token == seen.refresh_token:
                         store._unlink()
                         raise AccountRequired("revoked") from exc
@@ -255,11 +328,16 @@ def _refresh_stored(
             )
             store._write(stored)
             return stored, claims, True
+    except LockNotNeeded as done:
+        return done.value
     except TimeoutError:
-        again = store.load()
-        if again is None:
+        try:
+            again = store.load_strict()
+            return (again, _verify(again.access_token, at), False) if again else None
+        except OSError:
             return None
-        return again, _verify(again.access_token, at), False
+    except OSError:  # a session that cannot be read or written is left exactly as it is
+        return None
 
 
 # -- personal access tokens (rxd login --token, RADARX_TOKEN) -----------------------------------
@@ -320,19 +398,25 @@ def _check_token_session(
     raise AccountRequired("offline_expired")
 
 
+def _retry_budget(timeout: float) -> float:
+    """Rate-limited exchanges are retried for a while, unless the caller has only a short time."""
+    return pat.RETRY_BUDGET_S if timeout >= REFRESH_TIMEOUT_S else 0.0
+
+
 def _refresh_token_session(
     store: SessionStore, seen: StoredSession, at: float, wall: float, timeout: float
 ) -> tuple[StoredSession, tokens.Claims, bool] | None:
     """Exchange the stored access token for a new entitlement token, once for all the processes that
     share the session file (the same lock as the other renewals; the server rate-limits exchanges).
-    None = the server could not be reached. Raises ``AccountRequired('revoked')`` only when the
-    exchange function itself says the token is unknown, revoked or expired."""
+    None = not renewed (the server could not be reached or is limiting exchanges, or the session
+    could not be read). Raises ``AccountRequired('revoked')`` only when the exchange function
+    itself says the token is unknown, revoked or expired."""
     global _net_down_until
     if time.monotonic() < _net_down_until:
         return None
     try:
-        with store.refresh_locked():
-            current = store.load()
+        with store.refresh_locked(skip=_skip_when_renewed(store, seen, at, "pat")):
+            current = store.load_strict()
             if current is None:
                 raise AccountRequired("no_session")
             if current.source != "pat" or current.pat_token != seen.pat_token:
@@ -345,10 +429,12 @@ def _refresh_token_session(
                 _net_down_until = time.monotonic() + NETWORK_RETRY_S
                 return None
             try:
-                answer = pat.exchange(str(current.pat_token), timeout=timeout)
+                answer = pat.exchange_with_retry(
+                    str(current.pat_token), timeout=timeout, budget=_retry_budget(timeout)
+                )
             except AccountServerError as exc:
                 if pat.definite_refusal(exc):
-                    latest = store.load()
+                    latest = store.load_strict()
                     if latest is None or latest.pat_token == current.pat_token:
                         store._unlink()
                         raise _revoked_token_error() from exc
@@ -369,20 +455,78 @@ def _refresh_token_session(
             )
             store._write(stored)
             return stored, claims, True
+    except LockNotNeeded as done:
+        return done.value
     except TimeoutError:
-        again = store.load()
-        if again is None or again.source != "pat":
+        try:
+            again = store.load_strict()
+            if again is None or again.source != "pat":
+                return None
+            return again, _verify(again.access_token, at, "pat"), False
+        except OSError:
             return None
-        return again, _verify(again.access_token, at, "pat"), False
+    except OSError:  # unreadable or unwritable (a locked keychain): left exactly as it is
+        return None
 
 
 _env_lock = threading.Lock()
 _env_state: dict[str, Any] = {"pat": None, "token": None, "down_until": 0.0}
 
 
+def _env_cache_path(store: SessionStore, token: str) -> Path:
+    """Where the one-hour entitlement token of ``RADARX_TOKEN`` is cached, named by a hash of the
+    access token (never the access token itself)."""
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return store.directory / f"env-token-{digest[:16]}.json"
+
+
+def _env_cache_enabled() -> bool:
+    return os.environ.get("RADARX_TOKEN_CACHE", "").strip().lower() not in {"0", "off", "no"}
+
+
+def _read_env_cache(store: SessionStore, token: str, at: float) -> tuple[str, tokens.Claims] | None:
+    """A cached, still-fresh entitlement token for this access token, or None."""
+    if not _env_cache_enabled():
+        return None
+    try:
+        data = json.loads(_env_cache_path(store, token).read_text(encoding="utf-8"))
+        held = data["entitlement_token"]
+        claims = _verify(held, at, "pat")
+    except (OSError, ValueError, KeyError, TypeError, AccountRequired):
+        return None
+    return (held, claims) if not _near_end(claims, at) else None
+
+
+def _write_env_cache(store: SessionStore, token: str, held: str) -> None:
+    """Keep the entitlement token (mode 0600) so the next process of a loop or an array exchanges
+    nothing. Best effort: an unwritable folder just means no cache."""
+    if not _env_cache_enabled():
+        return
+    try:
+        from engine.account.store import write_private
+
+        write_private(
+            _env_cache_path(store, token),
+            json.dumps({"entitlement_token": held, "saved_at": time.time()}),
+        )
+        for old in store.directory.glob("env-token-*.json"):  # tokens that lapsed long ago
+            if time.time() - old.stat().st_mtime > 2 * DAY_S:
+                old.unlink()
+    except OSError:
+        pass
+
+
+def _rate_limited_error(exc: AccountServerError) -> AccountRequired:
+    return AccountRequired("unavailable", pat.friendly_error(exc))
+
+
 def _env_token_account(token: str) -> Account:
-    """``RADARX_TOKEN``: exchange on first use, keep the entitlement token ONLY in memory and
-    renew it hourly. Nothing is written to disk, so a CI job leaves no session behind."""
+    """``RADARX_TOKEN``: a one-hour entitlement token is obtained once and shared. It is kept in
+    memory, and in a small cache file (mode 0600, named by a hash of the access token; the access
+    token itself is never written) in the configuration folder, so a loop of ``rxd`` commands, a
+    dask cluster or a Slurm array exchanges once per token lifetime instead of once per process;
+    ``RADARX_TOKEN_CACHE=0`` keeps it in memory only. Processes that start together exchange once
+    (the renewal lock), and a rate-limited exchange is retried with a back-off."""
     if not pat.valid_format(token):
         raise AccountRequired(
             "invalid",
@@ -402,30 +546,68 @@ def _env_token_account(token: str) -> Account:
         if claims is not None and not _near_end(claims, wall):
             _check_pat_expiry(claims, wall)
             return _account_from(claims, "pat", wall, "env")
+        store = SessionStore()
+        cached = _read_env_cache(store, token, wall)
+        if cached is not None:
+            _check_pat_expiry(cached[1], wall)
+            _env_state.update(pat=token, token=cached[0])
+            return _account_from(cached[1], "pat", wall, "env")
+        limited: AccountServerError | None = None
         if time.monotonic() >= _env_state["down_until"]:
             try:
-                answer = pat.exchange(token, timeout=REFRESH_TIMEOUT_S)
+                got = _exchange_env_token(store, token, wall)
             except AccountServerError as exc:
                 if pat.definite_refusal(exc):
                     _env_state.update(pat=None, token=None)
+                    with contextlib.suppress(OSError):
+                        _env_cache_path(store, token).unlink()
                     raise _revoked_token_error() from exc
                 _env_state["down_until"] = time.monotonic() + NETWORK_RETRY_S
+                if exc.status == 429:
+                    limited = exc
             else:
-                new_claims = _verify(answer["entitlement_token"], wall, "pat")
-                _env_state.update(pat=token, token=answer["entitlement_token"])
-                return _account_from(new_claims, "pat", wall, "env")
-        # The account server cannot be reached. A token this process already holds keeps working
-        # inside the offline allowance; with none there is nothing to stand on.
+                _env_state.update(pat=token, token=got[0])
+                return _account_from(got[1], "pat", wall, "env")
+        # The account server cannot be reached (or is limiting exchanges). A token this process
+        # already holds keeps working inside the offline allowance; with none there is nothing
+        # to stand on.
         if claims is not None:
             _check_pat_expiry(claims, wall)
             if _within_grace(claims, wall):
                 return _account_from(claims, "pat", wall, "env")
+        if limited is not None:
+            raise _rate_limited_error(limited)
         raise AccountRequired(
             "unavailable",
             "RADARX_TOKEN needs the account server once an hour and it cannot be reached. On a "
             "machine without internet, run `rxd login --token` on one that has it: the session "
             "file is then valid offline for 30 days.",
         )
+
+
+def _exchange_env_token(store: SessionStore, token: str, wall: float) -> tuple[str, tokens.Claims]:
+    """Exchange ``token`` for an entitlement token, once for every process that is starting at the
+    same moment: the renewal lock is taken, and a token another process cached while we waited is
+    used instead. Raises ``AccountServerError``."""
+
+    def cached_meanwhile() -> tuple[str, tokens.Claims] | None:
+        return _read_env_cache(store, token, now())
+
+    try:
+        with store.refresh_locked(skip=cached_meanwhile):
+            again = cached_meanwhile()
+            if again is not None:
+                return again
+            answer = pat.exchange_with_retry(token, timeout=REFRESH_TIMEOUT_S)
+            claims = _verify(answer["entitlement_token"], wall, "pat")
+            _write_env_cache(store, token, answer["entitlement_token"])
+            return answer["entitlement_token"], claims
+    except LockNotNeeded as done:
+        return done.value
+    except OSError:  # no folder to lock in, or no turn in time: exchange without sharing
+        answer = pat.exchange_with_retry(token, timeout=REFRESH_TIMEOUT_S)
+        claims = _verify(answer["entitlement_token"], wall, "pat")
+        return answer["entitlement_token"], claims
 
 
 def env_token_credentials() -> tuple[str, str] | None:
@@ -517,12 +699,14 @@ def _check_stored_session(
     )
     probe_limit = PROBE_TIMEOUT_S if net_timeout is None else min(net_timeout, PROBE_TIMEOUT_S)
     network = allow_network and (net_timeout is None or net_timeout >= 0.2)
-    if source == "pat":
+    if source == "pat":  # (an exchange can be repeated safely: a short budget is fine)
         return _check_token_session(store, stored, claims, at, wall, network, refresh_limit)
 
     can_refresh = source == "cli" and bool(stored.refresh_token)
     near_end = claims.expired(at) or claims.exp - at < REFRESH_MARGIN_S
-    if near_end and network and can_refresh:
+    # a refresh token cannot be used twice: never start one that may have to be given up
+    may_refresh = allow_network and (net_timeout is None or net_timeout >= MIN_REFRESH_BUDGET_S)
+    if near_end and may_refresh and can_refresh:
         refreshed = _refresh_stored(store, stored, at, wall, refresh_limit)
         if refreshed is not None:
             stored, claims, vouched = refreshed
@@ -632,7 +816,7 @@ def login_with_token(token: str, store: SessionStore | None = None) -> Account:
         )
     store = store or SessionStore()
     at = now()
-    answer = pat.exchange(token)  # AccountServerError on failure
+    answer = pat.exchange_with_retry(token)  # AccountServerError on failure
     claims = _verify(answer["entitlement_token"], at, "pat")
     _check_pat_expiry(claims, at)
     store.save(
@@ -716,18 +900,26 @@ def verify_presented_token(
     """
     store = store or SessionStore()
     wall = now()
-    stored = store.load() if persist else None
     claims = _verify(access_token, wall)
+    # What is already on file matters for the clock rule only (its latest clock reading and the
+    # time of its newest token). Those are not secrets: read them from the file itself, so a
+    # keychain that cannot be read right now never makes the rule vanish.
+    meta = store.peek() if persist else None
     reset_mark = False
-    if stored is not None:
+    high_water = 0.0
+    if meta is not None:
+        try:
+            high_water = float(meta.get("high_water") or 0.0)
+            previous = float(meta.get("issued_at") or 0.0) or None
+        except (TypeError, ValueError):
+            previous = None
         # A token issued just now (by the server's clock) that is newer than the one on file is
         # proof of the current time: it clears a latest-reading mark that a wrong clock pushed
         # into the future, which would otherwise refuse every valid token.
-        previous = _safe_iat(stored.access_token)
         reset_mark = abs(claims.iat - wall) <= FRESH_TOKEN_S and (
             previous is None or claims.iat > previous
         )
-    at = wall if (stored is None or reset_mark) else max(wall, stored.high_water)
+    at = wall if (meta is None or reset_mark) else max(wall, high_water)
     account = _account_from(claims, "app", at)
     if account.stale:
         if not persist:
@@ -777,10 +969,17 @@ def _safe_iat(token: str) -> float | None:
 
 def end_presented_session(store: SessionStore | None = None) -> None:
     """The app signed out: remove the shared file (one credential for every surface), unless it
-    holds an access-token session, which the app does not own."""
+    holds an access-token session, which the app does not own. Which kind it is comes from the
+    file's own non-secret ``source`` field, so a keychain that cannot be read right now never
+    makes an access-token session look like "nothing to protect": a file that cannot be
+    understood is left alone."""
     store = store or SessionStore()
-    stored = store.load()
-    if stored is None or stored.source != "pat":
+    meta = store.peek()
+    if meta is None:
+        if not store.path.exists():
+            reset_runtime_state()
+        return  # unreadable or damaged: never delete what cannot be told apart from a token session
+    if meta.get("source") != "pat":
         try:
             store.clear()
         except OSError:  # the keychain would not give the entry up: the app's token lives an hour

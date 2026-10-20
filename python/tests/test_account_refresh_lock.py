@@ -164,8 +164,8 @@ def test_a_timeout_on_the_lock_keeps_the_session_and_calls_nobody(gate_on):
     holder_ready.wait(5)
     real = _RefreshLock.__init__
 
-    def short(self, directory, timeout=None, stale_after=None):
-        real(self, directory, 0.3, stale_after)
+    def short(self, directory, timeout=None, stale_after=None, skip=None):
+        real(self, directory, 0.3, stale_after, skip)
 
     _RefreshLock.__init__ = short  # type: ignore[method-assign]
     try:
@@ -213,11 +213,11 @@ def test_a_refusal_deletes_the_session_only_if_the_file_still_holds_the_refused_
     store = expired_cli_session(gate_on, refresh="not-a-token")
     real = core.gotrue.refresh
 
-    def refuse_and_meanwhile_replace(token, timeout=0):
+    def refuse_and_meanwhile_replace(token, timeout=0, late=None):
         newer = store.load()
         newer.refresh_token = "refresh-7"
         store._write(newer)  # (we already hold the lock here, standing in for another computer)
-        return real(token, timeout=timeout)
+        return real(token, timeout=timeout, late=late)
 
     core.gotrue.refresh = refuse_and_meanwhile_replace
     try:

@@ -2420,6 +2420,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _STATE["no_color"] = saved_color
         if activity.queued_count():
             activity.flush(timeout=2.5)  # best effort; never delays or fails the command
+        from engine.account import store as account_store
+
+        for note in account_store.take_storage_warnings():  # a keychain that failed mid-command
+            print(f"warning: {note}", file=sys.stderr)
         activity.set_background(saved_background)
         activity.reset_surface(surface_token)
 

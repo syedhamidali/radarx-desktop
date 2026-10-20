@@ -61,7 +61,7 @@ def test_the_key_script_writes_a_private_file_and_prints_only_the_public_key(tmp
     jwk = public_jwk(proc.stdout)
     assert jwk["kty"] == "EC" and jwk["crv"] == "P-256" and "d" not in jwk
     assert jwk["kid"] and jwk["alg"] == "ES256"
-    assert "supabase secrets set ENTITLEMENT_PRIVATE_KEY" in proc.stdout
+    assert "supabase secrets set --env-file" in proc.stdout
     assert str(out) in proc.stdout  # the path, never the content
 
 
@@ -122,6 +122,7 @@ const rows = new Map([[await sha256Hex(token), {
 const out = await handleExchange({ method: 'POST', body: { token }, clientAddress: '203.0.113.5' }, {
   lookup: async (h) => rows.get(h) ?? null,
   rateHit: async () => true,
+  rateCheck: async () => true,
   sign: (claims) => signEntitlement(claims, key),
   nowSeconds: () => now,
   newId: () => crypto.randomUUID(),
@@ -171,3 +172,35 @@ def test_a_token_from_the_function_logic_verifies_in_the_engine(tmp_path, monkey
     monkeypatch.setenv("RADARX_ENTITLEMENT_JWKS", json.dumps({"keys": [public_jwk(other.stdout)]}))
     with pytest.raises(tokens.TokenInvalid):
         tokens.verify_entitlement_token(token, now=time.time())
+
+
+def test_the_env_file_holds_both_secrets_privately_and_the_command_line_holds_none(tmp_path):
+    out, proc = make_key(tmp_path)
+    env_file = out.with_name(out.name + ".env")
+    assert oct(env_file.stat().st_mode & 0o777) == "0o600"
+    text = env_file.read_text()
+    assert text.startswith('ENTITLEMENT_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\n')
+    assert "ENTITLEMENT_PUBLIC_JWK='" in text
+    public = json.loads(text.split("ENTITLEMENT_PUBLIC_JWK='", 1)[1].split("'", 1)[0])
+    assert public["kid"] == public_jwk(proc.stdout)["kid"] and "d" not in public
+    assert "supabase secrets set --env-file" in proc.stdout
+    assert 'ENTITLEMENT_PRIVATE_KEY="$(cat' not in proc.stdout  # never the key on argv
+    assert "BEGIN PRIVATE KEY" not in proc.stdout + proc.stderr
+
+
+def test_the_key_script_gives_friendly_errors_not_tracebacks(tmp_path):
+    env = {"PATH": "/usr/bin:/bin"}
+    missing = run_python([str(SCRIPT), "--out", str(tmp_path / "nope" / "key.pem")], env=env)
+    assert missing.returncode == 2 and "does not exist" in missing.stderr
+    assert "Traceback" not in missing.stderr
+    dangling = tmp_path / "dangling.pem"
+    dangling.symlink_to(tmp_path / "nowhere")
+    done = run_python([str(SCRIPT), "--out", str(dangling)], env=env)
+    assert done.returncode == 2 and "exists already" in done.stderr
+    assert "Traceback" not in done.stderr
+    assert not (tmp_path / "nowhere").exists(), "the script followed the link"
+    linked = tmp_path / "linked.pem"
+    (tmp_path / "target.pem").write_text("x")
+    linked.symlink_to(tmp_path / "target.pem")
+    done = run_python([str(SCRIPT), "--out", str(linked)], env=env)
+    assert done.returncode == 2 and (tmp_path / "target.pem").read_text() == "x"

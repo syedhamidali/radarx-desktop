@@ -9,6 +9,7 @@ import getpass
 import io
 import json
 import os
+import sys
 import time
 
 import pytest
@@ -359,7 +360,7 @@ def test_the_probe_is_a_real_round_trip_and_leaves_nothing_behind(keychain):
 
 
 def test_no_keychain_means_the_file_and_it_says_why(gate_on, monkeypatch, login, capsys):
-    monkeypatch.setenv("RADARX_SECRET_STORE", "auto")
+    monkeypatch.setenv("RADARX_SECRET_STORE", "keychain")
     monkeypatch.setattr(vault, "backend_factory", lambda: None)
     vault.reset()
     login()
@@ -389,10 +390,13 @@ def test_a_keychain_that_never_answers_does_not_hang_a_command(gate_on, monkeypa
 def test_the_mode_variable(monkeypatch):
     monkeypatch.setenv("RADARX_SECRET_STORE", "FILE")
     assert vault.mode() == "file"
-    monkeypatch.setenv("RADARX_SECRET_STORE", "keychain")  # unknown words mean auto, never "force"
+    monkeypatch.setenv("RADARX_SECRET_STORE", "keychain")  # the keychain on any system
     assert vault.mode() == "auto"
+    monkeypatch.setenv("RADARX_SECRET_STORE", "whatever")  # unknown words mean the default
+    default = "file" if sys.platform == "darwin" else "auto"
+    assert vault.mode() == default
     monkeypatch.delenv("RADARX_SECRET_STORE")
-    assert vault.mode() == "auto"
+    assert vault.mode() == default
     monkeypatch.setenv("RADARX_SECRET_STORE", "file")
     ok, _name, reason = vault.status()
     assert not ok and "RADARX_SECRET_STORE=file" in reason

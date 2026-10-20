@@ -63,10 +63,14 @@ REFUSAL_CODES = frozenset(
 class AccountServerError(Exception):
     """The account server answered with an error (``status``: HTTP status, 0 = unreachable)."""
 
-    def __init__(self, status: int, code: str = "", message: str = "") -> None:
+    def __init__(
+        self, status: int, code: str = "", message: str = "", retry_after: float | None = None
+    ) -> None:
         self.status = status
         self.code = code
         self.message = message
+        #: seconds the server asked us to wait (``Retry-After``), when it said so
+        self.retry_after = retry_after
         super().__init__(message or code or f"HTTP {status}")
 
     @property

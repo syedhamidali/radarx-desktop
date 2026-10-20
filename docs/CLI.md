@@ -32,7 +32,8 @@ $ rxd logout
 ```
 
 The password is typed without echo, never goes on the command line and is never stored; the session is kept in the
-operating system's keychain when there is a working one (macOS Keychain, Windows Credential Manager, Secret Service),
+operating system's keychain on Windows and Linux when there is a working one (Credential Manager, Secret Service), and in a
+private file on macOS and wherever there is no keychain (`RADARX_SECRET_STORE=keychain` opts in on macOS),
 otherwise in a private file in your user configuration folder, shared with the app and with `import rxd`. `rxd whoami`
 and `rxd login` say which; `RADARX_SECRET_STORE=file` switches the keychain off (see {doc}`ACCOUNTS`). Without a session every
 command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help` and `--version` prints how to sign in
@@ -67,8 +68,12 @@ does not work: use an access token instead. Provider messages are never shown, o
 
 **`--token`** reads an access token from standard input (a hidden prompt on a keyboard), exchanges it once to check it and
 keeps it in the private session file; `rxd whoami` then shows its name and expiry. Alternatively set **`RADARX_TOKEN`**
-in the environment: it is exchanged at the first use, the one-hour sign-in is kept in memory only, nothing is written to
-disk, and it wins over a stored session. The token is as sensitive as a password (see {doc}`ACCOUNTS`).
+in the environment: the token itself is never written anywhere; the one-hour sign-in it is exchanged for is kept in memory
+and in a small cache file (mode 0600, in the configuration folder, named by a hash of the token), so a loop of `rxd`
+commands, dask workers or a Slurm array exchange **once per hour** instead of once per process (`RADARX_TOKEN_CACHE=0`
+turns the file off). Processes that start together exchange once. If the server is limiting exchanges (`429`) the command
+retries with a back-off for up to 40 seconds, then says "the account server is limiting access-token exchanges" (exit
+code 5). `RADARX_TOKEN` wins over a stored session. The token is as sensitive as a password (see {doc}`ACCOUNTS`).
 
 Which program keeps a sign-in alive is shown by `rxd whoami` (and `renewed_by` in `--json`): a sign-in made by
 `rxd login` is renewed by `rxd` and Python; one made by the **app** is renewed only by the app while it is open (the

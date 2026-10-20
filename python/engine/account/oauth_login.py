@@ -49,8 +49,9 @@ PROVIDER_NAMES = {"google": "Google", "apple": "Apple", "facebook": "Facebook"}
 WAIT_S = 300.0
 #: How long one connection may take to send its request line and headers (seconds, in total).
 READ_TIMEOUT_S = 1.0
-#: At most this many connections are served at once; more are dropped.
-MAX_CONNECTIONS = 16
+#: At most this many connections are served at once; beyond that the OLDEST (an idle one: every
+#: connection is cut off after READ_TIMEOUT_S) is closed to make room, never the newest.
+MAX_CONNECTIONS = 64
 _MAX_REQUEST = 8192
 
 _PAGE = (
@@ -119,7 +120,7 @@ class LoopbackListener:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self._sock.bind(("127.0.0.1", 0))
-            self._sock.listen(MAX_CONNECTIONS)
+            self._sock.listen(2 * MAX_CONNECTIONS)
             self._sock.settimeout(0.1)
         except OSError:
             self._sock.close()
@@ -127,8 +128,10 @@ class LoopbackListener:
         self.port: int = self._sock.getsockname()[1]
         self._lock = threading.Lock()
         self._active = 0
+        self._open: dict[socket.socket, float] = {}
         self._result: dict[str, str] | None = None
         self._done = threading.Event()
+        self._deadline: float | None = None
 
     # -- one connection ----------------------------------------------------------------------
     def _serve(self, conn: socket.socket) -> None:
@@ -170,10 +173,20 @@ class LoopbackListener:
                 conn.close()
             with self._lock:
                 self._active -= 1
+                self._open.pop(conn, None)
+
+    def rearm(self) -> None:
+        """Forget the redirect that was received and wait for another (the time limit is the same):
+        for a redirect that turned out not to belong to this sign-in."""
+        with self._lock:
+            self._result = None
+            self._done.clear()
 
     def wait_for_redirect(self, cancelled: Callable[[], bool] | None = None) -> dict[str, str]:
         """Block until the real redirect arrives. Raises :class:`OAuthFailed` on timeout/cancel."""
-        deadline = time.monotonic() + self.wait
+        if self._deadline is None:
+            self._deadline = time.monotonic() + self.wait
+        deadline = self._deadline
         while not self._done.is_set():
             if cancelled is not None and cancelled():
                 raise OAuthFailed("The sign-in was cancelled.")
@@ -189,10 +202,12 @@ class LoopbackListener:
             except OSError:
                 break
             with self._lock:
-                if self._active >= MAX_CONNECTIONS:
-                    conn.close()
-                    continue
+                if self._active >= MAX_CONNECTIONS and self._open:
+                    oldest = min(self._open, key=self._open.__getitem__)
+                    with contextlib.suppress(OSError):
+                        oldest.close()  # its thread sees the error and ends
                 self._active += 1
+                self._open[conn] = time.monotonic()
             threading.Thread(target=self._serve, args=(conn,), daemon=True).start()
         with self._lock:
             result = self._result
@@ -297,15 +312,25 @@ def login(
             "instead (rxd login --token, see docs/ACCOUNTS.md).\n"
             f"Waiting up to {int(listener.wait)} seconds (Ctrl-C to cancel) ..."
         )
-        answer = listener.wait_for_redirect()
-    if "error" in answer:
-        raise OAuthFailed(failure_message(answer["error"]))
-    try:
-        return core.login_with_code(answer["code"], verifier, store)
-    except AccountServerError as exc:
-        if exc.status == 400 or exc.status == 422:
-            raise OAuthFailed(
-                "The account server did not accept the sign-in code (it may have expired). "
-                "Please try again."
-            ) from None
-        raise OAuthFailed(gotrue.friendly_login_error(exc)) from None
+        for attempt in range(3):
+            answer = listener.wait_for_redirect()
+            if "error" in answer:
+                raise OAuthFailed(failure_message(answer["error"]))
+            try:
+                return core.login_with_code(answer["code"], verifier, store)
+            except AccountServerError as exc:
+                if exc.status in (400, 422):
+                    # a redirect that is not for THIS sign-in (a stray or forged one: PKCE makes it
+                    # useless): ignore it and keep waiting for the real one
+                    if attempt < 2:
+                        listener.rearm()
+                        say(
+                            "Ignored a redirect that did not belong to this sign-in; still waiting."
+                        )
+                        continue
+                    raise OAuthFailed(
+                        "The account server did not accept the sign-in code (it may have "
+                        "expired). Please try again."
+                    ) from None
+                raise OAuthFailed(gotrue.friendly_login_error(exc)) from None
+    raise OAuthFailed("The sign-in did not finish.")  # (not reached)

@@ -42,14 +42,18 @@ def password_login(email: str, password: str) -> dict[str, Any]:
     return _session(out)
 
 
-def refresh(refresh_token: str, *, timeout: float = config.HTTP_TIMEOUT_S) -> dict[str, Any]:
-    """Exchange a refresh token for a new session (the old refresh token is spent)."""
+def refresh(
+    refresh_token: str, *, timeout: float = config.HTTP_TIMEOUT_S, late: Any = None
+) -> dict[str, Any]:
+    """Exchange a refresh token for a new session (the old refresh token is spent). ``late`` gets
+    the session if the answer arrives after ``timeout`` (see ``http.request_json``)."""
     out = http.request_json(
         "POST",
         f"{config.project_url()}/auth/v1/token?grant_type=refresh_token",
         headers=_headers(),
         body={"refresh_token": refresh_token},
         timeout=timeout,
+        late=(lambda value: late(_session(value))) if late is not None else None,
     )
     return _session(out)
 

@@ -266,8 +266,9 @@ def test_a_code_made_for_another_verifier_is_refused_and_stores_nothing(
 
     monkeypatch.setattr(oauth_login, "open_system_browser", opener)
     monkeypatch.setattr(oauth_login, "has_display", lambda: True)
+    monkeypatch.setattr(oauth_login, "WAIT_S", 1.5)  # (it keeps waiting for the real redirect)
     code, _out, err = run(capsys, "login", "--browser", "--provider", "google")
-    assert code == 1 and "did not accept" in err
+    assert code == 1 and "Ignored a redirect" in err and "Timed out" in err
     assert not SessionStore().path.exists()
 
 

@@ -109,6 +109,6 @@ def install(monkeypatch: Any, fake: Any) -> None:
     """Make ``engine.account.vault`` use ``fake`` as the system keychain."""
     from engine.account import vault
 
-    monkeypatch.setenv("RADARX_SECRET_STORE", "auto")
+    monkeypatch.setenv("RADARX_SECRET_STORE", "keychain")
     monkeypatch.setattr(vault, "backend_factory", lambda: fake)
     vault.reset()

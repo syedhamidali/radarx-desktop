@@ -256,7 +256,7 @@ class FakeServer:
         self.log_rows.extend({**row, "user_id": claims["sub"]} for row in events)
         return {"inserted": len(events)}
 
-    def request(self, method: str, url: str, *, headers=None, body=None, timeout=0):
+    def request(self, method: str, url: str, *, headers=None, body=None, timeout=0, late=None):
         path = urlparse(url).path
         query = urlparse(url).query
         self.calls.append((method, path + ("?" + query if query else "")))

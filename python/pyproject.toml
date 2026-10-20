@@ -25,10 +25,12 @@ dependencies = [
     # The account gate (docs/ACCOUNTS.md): offline verification of the sign-in token's signature.
     "PyJWT>=2.8,<3.0",
     "cryptography>=42.0,<60",
-    # The sign-in in the operating system's keychain (engine/account/vault.py). Pure Python; the file
+    # The sign-in in the operating system's keychain (engine/account/vault.py). The lower bound is the
+# version the backends were verified with (25.7: the macOS backend, the platform-named import
+# paths the PyInstaller spec lists); older ones were not tested. Pure Python; the file
     # remains the fallback where there is no keychain. On Linux it pulls SecretStorage and jeepney, on
     # Windows pywin32-ctypes (environment markers of keyring itself).
-    "keyring>=24.3,<26.0",
+    "keyring>=25.7,<26.0",
 ]
 
 [project.optional-dependencies]

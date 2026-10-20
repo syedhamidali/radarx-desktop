@@ -131,6 +131,8 @@ def read_password_line(stream: Any) -> str:
     Reads at most ``MAX_PASSWORD_CHARS`` plus the line ending: a longer line, an empty one, or
     bytes that are not text are refused, and none of them is ever echoed in a message.
     """
+    if stream is None:  # standard input is closed (`<&-`)
+        raise cli_usage("standard input is closed: give the password (or token) on it")
     try:
         line = stream.readline(MAX_PASSWORD_CHARS + 3)
     except (UnicodeError, ValueError, OSError):
@@ -148,6 +150,23 @@ def read_password_line(stream: Any) -> str:
     return line
 
 
+def _stdin_is_tty() -> bool:
+    """True for a keyboard. A closed standard input (``sys.stdin`` is None) is not one."""
+    stream = sys.stdin
+    try:
+        return bool(stream is not None and stream.isatty())
+    except (ValueError, OSError):  # a closed file object
+        return False
+
+
+def _ask(prompt: str, *, hidden: bool = False) -> str:
+    """A prompt on the keyboard; the end of input (Ctrl-D) is a usage error, not a crash."""
+    try:
+        return getpass.getpass(prompt) if hidden else input(prompt)
+    except EOFError:
+        raise cli_usage("no input (end of input at the prompt): nothing was changed") from None
+
+
 def cmd_login(args: argparse.Namespace, out: Any) -> int:
     if args.token:
         return _login_token(args, out)
@@ -159,7 +178,7 @@ def cmd_login(args: argparse.Namespace, out: Any) -> int:
     if args.password_stdin:
         if not email:
             raise cli_usage("--password-stdin needs --email")
-        if sys.stdin.isatty():
+        if _stdin_is_tty():
             raise cli_usage(
                 "--password-stdin reads a pipe or a file, not a keyboard (it would be shown as "
                 "you type). Run 'rxd login' without it to type the password hidden."
@@ -167,12 +186,16 @@ def cmd_login(args: argparse.Namespace, out: Any) -> int:
         password = read_password_line(sys.stdin)
     else:
         if not email:
-            if not sys.stdin.isatty():
+            if not _stdin_is_tty():
                 raise cli_usage("give your e-mail with --email (and type the password when asked)")
-            email = input("E-mail: ").strip()
+            email = _ask("E-mail: ").strip()
         if not email:
             raise cli_usage("an e-mail is needed")
-        password = getpass.getpass("Password (not shown): ")
+        if sys.stdin is None:
+            raise cli_usage(
+                "there is no standard input to type the password on; use --password-stdin"
+            )
+        password = _ask("Password (not shown): ", hidden=True)
         if not password:
             raise cli_usage("a password is needed")
     try:
@@ -221,8 +244,8 @@ def _signed_in(account: core.Account, out: Any) -> int:
 def _login_token(args: argparse.Namespace, out: Any) -> int:
     if args.email or args.password_stdin or args.browser or args.provider or args.no_open:
         raise cli_usage("--token does not go with --email, --password-stdin or --browser")
-    if sys.stdin.isatty():
-        token = getpass.getpass("Access token (not shown): ").strip()
+    if _stdin_is_tty():
+        token = _ask("Access token (not shown): ", hidden=True).strip()
     else:
         token = read_password_line(sys.stdin).strip()
     if not pat.valid_format(token):
@@ -268,12 +291,12 @@ def _date(epoch: float | None) -> str:
 def _choose_provider(args: argparse.Namespace) -> str:
     if args.provider:
         return str(args.provider)
-    if not sys.stdin.isatty():
+    if not _stdin_is_tty():
         raise cli_usage("--browser needs --provider google|apple|facebook")
     names = oauth_login.PROVIDERS
     for i, name in enumerate(names, 1):
         print(f"  {i}. {oauth_login.PROVIDER_NAMES[name]}", file=sys.stderr)
-    choice = input("Sign in with (number or name): ").strip().lower()
+    choice = _ask("Sign in with (number or name): ").strip().lower()
     if choice.isdigit() and 1 <= int(choice) <= len(names):
         return names[int(choice) - 1]
     if choice in names:
