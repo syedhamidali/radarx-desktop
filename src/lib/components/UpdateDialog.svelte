@@ -99,7 +99,7 @@
 
       {#if manual}
         <p class="upd-note">
-          {u.status?.install.note ?? 'This installation cannot update itself. Download the new version from the release page.'}
+          {u.status?.install.note ?? 'This installation cannot update itself. Download the new version from the download page.'}
         </p>
       {/if}
 
@@ -110,7 +110,7 @@
       <footer class="upd-actions">
         {#if manual}
           {#if u.status?.releasesUrl}
-            <button class="primary upd-primary" onclick={() => openExternal(u.status!.releasesUrl!)}>Open the release page</button>
+            <button class="primary upd-primary" onclick={() => openExternal(u.status!.releasesUrl!)}>Open the download page</button>
           {/if}
         {:else if u.engineStopped}
           <button class="primary upd-primary" onclick={() => restartApp()}>Restart now</button>

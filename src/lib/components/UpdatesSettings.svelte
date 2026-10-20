@@ -38,7 +38,7 @@
     <p class="hint">Reading the update status...</p>
   {:else if !configured}
     <p class="hint">Updates are not configured in this build.</p>
-    <p class="hint small">This is normal for a development or self-built copy. Install a release from the project's releases page to get updates.</p>
+    <p class="hint small">This is normal for a development or self-built copy. Install a release from the download page to get updates.</p>
   {:else}
     <div class="row">
       <span class="label">Current version</span>
@@ -46,7 +46,7 @@
     </div>
     <div class="row">
       <span class="label">Channel</span>
-      <span class="value">Stable releases (GitHub)</span>
+      <span class="value">Stable releases</span>
     </div>
     <div class="row">
       <span class="label">Last checked</span>
@@ -82,7 +82,7 @@
     {#if manual}
       <p class="hint small">{u.status?.install.note}</p>
       {#if u.status?.releasesUrl}
-        <p class="hint small"><button class="link" onclick={() => openExternal(u.status!.releasesUrl!)}>Open the releases page</button></p>
+        <p class="hint small"><button class="link" onclick={() => openExternal(u.status!.releasesUrl!)}>Open the download page</button></p>
       {/if}
     {/if}
 

@@ -6,9 +6,11 @@
  * there. Instagram has no compose link at all, so it gets the caption on the clipboard and the file
  * revealed in the file manager. Pure functions only (tested in share.test.mjs).
  */
+import { WEBSITE_URL } from './brand.ts';
+
 export type ShareTarget = 'x' | 'facebook' | 'linkedin' | 'bluesky';
 
-export const SHARE_URL = 'https://github.com/syedhamidali/xradar-desktop';
+export const SHARE_URL = WEBSITE_URL;
 const IMAGE = ['png', 'jpg', 'jpeg', 'gif', 'webp'];
 const VIDEO = ['mp4', 'mov', 'webm'];
 
