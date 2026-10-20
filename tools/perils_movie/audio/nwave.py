@@ -25,10 +25,11 @@ def n_wave_params(r_m: float) -> tuple[float, float]:
     return rise, dur
 
 
-def n_wave(sr: int, r_m: float) -> np.ndarray:
+def n_wave(sr: int, r_m: float, dur_scale: float = 1.0) -> np.ndarray:
     """One N-wave sampled at ``sr``: rises to +1 over the rise time, falls linearly to -1 over the duration,
     returns to 0 over the rise time. Zero net area."""
     rise, dur = n_wave_params(r_m)
+    dur *= dur_scale  # element-to-element variation: no two shocks have exactly the same length
     nr = max(1, round(rise * sr))
     nd = max(2, round(dur * sr))
     up = np.linspace(0.0, 1.0, nr, endpoint=False)

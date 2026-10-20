@@ -54,12 +54,12 @@ def render_mix(
     events=None,
     sample_rate: int = 48000,
     seed: int = 1,
-    target_lufs: float = -23.0,
+    target_lufs: float = -21.0,
     thunder: ThunderParams | None = None,
     layers: set[str] | None = None,
     max_listener_height_m: float | None = 500.0,
     thunder_peak_dbfs: float | None = None,
-    thunder_margin_db: float | None = 12.0,
+    thunder_margin_db: float | None = 17.0,
 ):
     """Render in memory. Returns (stereo (2, N) float array, report dict, stems dict)."""
     sr = int(sample_rate)
@@ -68,6 +68,9 @@ def render_mix(
     tl = load_timeline(timeline, b.window_start)
     cam = load_camera(camera_path)
     cam_alt_max = float(cam.alt.max())
+    view_cam = (
+        cam  # the camera as it films (true altitude and field of view): which flashes are on screen
+    )
     ground = float(np.median([s.alt_m for s in b.stations])) if b.stations else 0.0
     if max_listener_height_m:
         # sound does not reach a camera 58 km up: the listener is heard from the ground below the camera,
@@ -84,7 +87,7 @@ def render_mix(
     info: dict[str, dict] = {}
 
     # thunder
-    rows = [plan_flash(f, tl, cam, dur, prm) for f in b.flashes]
+    rows = [plan_flash(f, tl, cam, dur, prm, view_cam) for f in b.flashes]
     _tornado_bonus(b, rows, prm)
     counts = select_flashes(rows, prm, dur)
     th = np.zeros((2, n))
@@ -292,6 +295,10 @@ def _selection_summary(rows: list[dict], prm: ThunderParams, dur: float) -> dict
     ]
     voiced = [r for r in rows if r["status"] == "rendered"]
     w = prm.guarantee_window_s
+    per10 = [
+        sum(1 for r in voiced if 10.0 * i <= r["first_arrival_clip_s"] < 10.0 * (i + 1))
+        for i in range(int(np.ceil(dur / 10.0)))
+    ]
     wins = []
     for i in range(int(np.ceil(dur / w))):
         lo, hi = i * w, (i + 1) * w
@@ -317,6 +324,11 @@ def _selection_summary(rows: list[dict], prm: ThunderParams, dur: float) -> dict
             for k in ("guaranteed", "guaranteed_distant", "score")
         },
         "heard_in_clip_and_range_but_not_voiced": len(heard) - len(voiced),
+        "voiced_per_10s": per10,
+        "voiced_per_10s_min": int(min(per10)) if per10 else 0,
+        "voiced_per_10s_median": float(np.median(per10)) if per10 else 0.0,
+        "voiced_on_screen": sum(1 for r in voiced if r.get("visible_on_screen")),
+        "flashes_on_screen_heard": sum(1 for r in heard if r.get("visible_on_screen")),
         "not_heard": len(rows) - len(heard),
         "guarantee": {
             "window_s": w,
@@ -342,6 +354,7 @@ def _loudest(rows: list[dict], n: int) -> list[dict]:
     )
     keys = (
         "id",
+        "visible_on_screen",
         "first_arrival_clip_s",
         "t_flash_clip_s",
         "dist_nearest_m",
@@ -480,7 +493,7 @@ def render_audio(
     sample_rate: int = 48000,
     bits: int = 24,
     seed: int = 1,
-    target_lufs: float = -23.0,
+    target_lufs: float = -21.0,
     thunder: ThunderParams | None = None,
     stems_dir=None,
     max_listener_height_m: float | None = 500.0,

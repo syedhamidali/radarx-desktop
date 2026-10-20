@@ -127,6 +127,7 @@ class CameraPath:
             np.unwrap(np.radians([float(k.get("heading_deg", 0.0)) for k in keys]))
         )
         self.pitch = np.array([float(k.get("pitch_deg", 0.0)) for k in keys])
+        self.fov = np.array([float(k.get("fov_deg") or 60.0) for k in keys])  # vertical, degrees
 
     def capped(self, max_alt_m: float) -> CameraPath:
         """A copy whose altitude never exceeds ``max_alt_m`` (the listener: see render_mix)."""
@@ -143,6 +144,7 @@ class CameraPath:
             "alt_m": np.interp(t, self.t, self.alt),
             "heading_deg": np.interp(t, self.t, self.heading) % 360.0,
             "pitch_deg": np.interp(t, self.t, self.pitch),
+            "fov_deg": np.interp(t, self.t, self.fov),
         }
 
 

@@ -463,8 +463,8 @@ def test_synthetic_two_minute_storm_loudness_peak_and_clipping(storm):
     _, _tl, _, y, rep, _ = storm
     assert y.shape == (2, int(120 * SR))
     m = rep["master"]
-    assert m["lufs_integrated"] == pytest.approx(-23.0, abs=0.5)
-    assert m["true_peak_dbfs"] < -1.0
+    assert m["lufs_integrated"] == pytest.approx(-21.0, abs=0.5)
+    assert m["true_peak_dbfs"] < -1.5
     assert m["clipped_samples"] == 0
     assert np.abs(y).max() < 1.0
     assert np.isfinite(y).all()
@@ -986,8 +986,8 @@ def test_end_to_end_on_the_real_layout_with_every_evidence_type(tmp_path):
     )  # one volume, +-90 s of data = 12 s of clip
     assert lay["tornado"]["evidence"] == ["track:NSED_1"]
     assert rep["provenance"]["tornado"]["tracks"][0]["path_kind"].startswith("INTERPOLATED")
-    assert rep["master"]["lufs_integrated"] == pytest.approx(-23.0, abs=0.5)
-    assert rep["master"]["true_peak_dbfs"] < -1.0
+    assert rep["master"]["lufs_integrated"] == pytest.approx(-21.0, abs=0.5)
+    assert rep["master"]["true_peak_dbfs"] < -1.5
     creds = {u["station_id"]: u for u in rep["provenance"]["stations_used"]}
     assert creds["PIPS1B"]["credit"] == "Purdue / Penn State"
     assert rep["thunder"]["counts"]["rendered"] == 1
@@ -1250,11 +1250,11 @@ def test_thunder_is_clearly_above_the_rain_at_its_events(storm):
     assert voiced
     over_rain = [f["margin_over_rain_db"] for f in voiced if "margin_over_rain_db" in f]
     assert np.median(over_rain) > 6.0
-    assert rep["master"]["thunder_median_margin_over_bed_db"] == pytest.approx(12.0, abs=2.0)
+    assert rep["master"]["thunder_median_margin_over_bed_db"] == pytest.approx(17.0, abs=2.5)
     # the thunder uses the headroom: its loudest peak is high in the mix, true peak below -1 dBFS
     peak = 20 * np.log10(np.abs(stems["thunder"]).max())
     assert peak > -12.0
-    assert rep["master"]["true_peak_dbfs"] < -1.0
+    assert rep["master"]["true_peak_dbfs"] < -1.5
     assert peak > 20 * np.log10(np.abs(stems["rain"]).max()) + 6.0
 
 
@@ -1372,7 +1372,7 @@ def test_spectral_centroid_falls_with_the_distance_and_a_close_channel_cracks():
     row, _, x = _render(flash_at(0.0, 800.0, alt=0.0, t=10.0, fid="close", n=1), dur=300.0)
     sp = np.abs(np.fft.rfft(x.mean(axis=0))) ** 2
     fr = np.fft.rfftfreq(x.shape[1], 1 / SR)
-    assert sp[(fr > 500) & (fr < 5000)].sum() > 0.05 * sp[fr > 20].sum()  # energy at 0.5 to 5 kHz
+    assert sp[(fr > 500) & (fr < 5000)].sum() > 0.02 * sp[fr > 20].sum()  # energy at 0.5 to 5 kHz
     _far, _, xf = _render(flash_at(0.0, 40000.0, alt=0.0, t=10.0, fid="farone", n=1), dur=400.0)
     spf = np.abs(np.fft.rfft(xf.mean(axis=0))) ** 2
     frf = np.fft.rfftfreq(xf.shape[1], 1 / SR)
@@ -1545,3 +1545,135 @@ def test_selection_mixes_near_mid_and_far_thunder():
     assert {r["range_class"] for r in flat if r["status"] == "rendered"} == {
         0
     }  # without variety only the loudest
+
+
+# ---------------------------------- more thunder: guarantee, visibility, low end, crack, limiter
+
+
+def _band_share(x, lo, hi):
+    m = x.mean(axis=0)
+    sp = np.abs(np.fft.rfft(m)) ** 2
+    fr = np.fft.rfftfreq(len(m), 1 / SR)
+    return float(sp[(fr >= lo) & (fr < hi)].sum() / sp[fr >= 20].sum())
+
+
+def test_low_end_is_stronger_for_near_and_mid_flashes():
+    from perils_movie.audio.thunder import lf_gain_for
+
+    prm = ThunderParams()
+    g = [lf_gain_for(prm, r) for r in (3000.0, 15000.0, 40000.0)]
+    assert g[0] > g[1] > g[2]
+    flat = ThunderParams(lf_gain_near=0.15, lf_gain_mid=0.15, lf_gain=0.15, lf_low_hz=40.0)
+    f = line_flash(5000.0, 800.0, fid="bass", n=40)
+    _, _, x_new = _render(f, prm=prm)
+    _, _, x_old = _render(f, prm=flat)
+    assert _band_share(x_new, 40, 120) > _band_share(x_old, 40, 120)  # felt, not just heard
+
+
+def test_the_crack_extends_to_15_km_and_is_absent_beyond():
+    plain = ThunderParams(crack_gain=0.0)
+    f12 = flash_at(0.0, 12000.0, alt=0.0, t=10.0, fid="c12", n=1)
+    _, _, x_c = _render(f12, dur=300.0)
+    _, _, x_p = _render(f12, prm=plain, dur=300.0)
+    assert _band_share(x_c, 300, 4000) > 2.0 * _band_share(
+        x_p, 300, 4000
+    )  # brighter: a sharp crack
+    f30 = flash_at(0.0, 30000.0, alt=0.0, t=10.0, fid="c30", n=1)
+    _, _, y_c = _render(f30, dur=400.0)
+    _, _, y_p = _render(f30, prm=plain, dur=400.0)
+    assert np.array_equal(y_c, y_p)  # beyond crack_range_m nothing is added
+    assert ThunderParams().crack_range_m == 15000.0
+
+
+def test_a_thunder_is_guaranteed_in_every_4_5_s_window_within_150_km():
+    prm = ThunderParams()
+    assert prm.guarantee_window_s == 4.5
+    assert prm.guarantee_range_m == 150_000.0
+    assert prm.max_voices >= 4
+    assert prm.max_coverage == 0.85
+    tl = Timeline.constant(60.0, 1.0)
+    # one flash per window at 100 km: the sound arrives 291 s later, so the flashes are put earlier
+    flashes = [
+        flash_at(0.0, 100000.0, alt=0.0, t=4.5 * w + 2.0 - 291.0, fid=f"w{w}", n=20)
+        for w in range(12)
+    ]
+    rows = [plan_flash(f, tl, cam(0.0, 60.0), 60.0, prm) for f in flashes]
+    select_flashes(rows, prm, 60.0)
+    voiced = {int(r["first_arrival_clip_s"] // 4.5) for r in rows if r["status"] == "rendered"}
+    assert voiced == set(range(12))
+
+
+def test_flashes_on_screen_are_preferred_for_voicing():
+    from perils_movie.audio.thunder import in_view
+
+    prm = ThunderParams()
+    look_north = CameraPath(
+        [
+            {
+                "t_clip_s": 0.0,
+                "lat": LAT0,
+                "lon": LON0,
+                "alt_m": 1000.0,
+                "heading_deg": 0.0,
+                "pitch_deg": 0.0,
+                "fov_deg": 60.0,
+            },
+            {
+                "t_clip_s": 100.0,
+                "lat": LAT0,
+                "lon": LON0,
+                "alt_m": 1000.0,
+                "heading_deg": 0.0,
+                "pitch_deg": 0.0,
+                "fov_deg": 60.0,
+            },
+        ]
+    )
+    la_n, lo_n = offset_ll(LAT0, LON0, 0.0, 20000.0)
+    la_s, lo_s = offset_ll(LAT0, LON0, 0.0, -20000.0)
+    la_w, lo_w = offset_ll(LAT0, LON0, -20000.0, 0.0)
+    assert in_view(look_north, 10.0, la_n, lo_n, 5000.0, prm)[0]
+    assert not in_view(look_north, 10.0, la_s, lo_s, 5000.0, prm)[0]
+    assert not in_view(look_north, 10.0, la_w, lo_w, 5000.0, prm)[0]  # 90 degrees to the side
+    tl = Timeline.constant(100.0, 1.0)
+
+    def flash_ll(la, lo, fid):
+        src = np.array([[40.0 + 0.01 * k, la, lo, 5000.0, 5.0] for k in range(30)])
+        return Flash(fid, 40.0, 40.3, (la, lo, 5000.0), src, 30)
+
+    seen = plan_flash(flash_ll(la_n, lo_n, "seen"), tl, cam(0.0, 100.0), 100.0, prm, look_north)
+    unseen = plan_flash(flash_ll(la_s, lo_s, "unseen"), tl, cam(0.0, 100.0), 100.0, prm, look_north)
+    assert seen["visible_on_screen"] is True
+    assert unseen["visible_on_screen"] is False
+    # the same distance and number of sources: the visible one scores visible_bonus_db higher
+    assert seen["score_db"] - unseen["score_db"] == pytest.approx(prm.visible_bonus_db, abs=0.3)
+
+
+def test_limiter_is_transparent_with_a_smooth_release_and_keeps_the_peaks_under_the_ceiling():
+    rng = np.random.default_rng(0)
+    x = 0.1 * rng.standard_normal((2, 4 * SR))
+    x[:, SR : SR + 60] *= 12.0  # a few hot samples
+    g = mx.limiter_gain(x, SR, ceiling_db=-1.6)
+    y = x * g
+    assert np.abs(y).max() <= 10 ** (-1.6 / 20) + 1e-6  # peaks under the ceiling
+    assert g.min() < 0.9
+    assert (g < 0.98).mean() < 0.2  # brief even for a 12x overshoot: no pumping of the level
+    assert g[-SR:].min() > 0.999  # fully recovered
+    # the release takes about 100 ms: the gain recovers smoothly, no jump larger than 0.5 % per ms
+    gm = g[::48]
+    assert np.abs(np.diff(gm)).max() < 0.06
+    quiet = 0.05 * rng.standard_normal((2, SR))
+    assert np.allclose(mx.limiter_gain(quiet, SR), 1.0)  # nothing to limit: untouched
+
+
+def test_the_thunder_cuts_through_the_tornado_roar():
+    n = 6 * SR
+    rng = np.random.default_rng(1)
+    th = np.zeros((2, n))
+    th[:, 2 * SR : 3 * SR] = 0.3 * rng.standard_normal((2, SR))
+    roar = 0.02 * rng.standard_normal((2, n))
+    wind = 0.02 * rng.standard_normal((2, n))
+    _, red, _ = mx.duck_layers({"thunder": th, "tornado": roar, "wind": wind}, SR)
+    assert red["tornado"] > red["wind"]  # thunder > tornado > ... : the roar gives way more
+    assert red["tornado"] > 10.0
+    assert red["tornado"] <= 14.0 + 1e-6

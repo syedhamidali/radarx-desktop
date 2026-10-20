@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--report", help="audio_report.json (default: next to the WAV)")
     ap.add_argument("--bits", type=int, default=24, choices=(16, 24))
     ap.add_argument("--seed", type=int, default=1)
-    ap.add_argument("--target-lufs", type=float, default=-23.0)
+    ap.add_argument("--target-lufs", type=float, default=-21.0)
     ap.add_argument(
         "--max-listener-height",
         type=float,
