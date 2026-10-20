@@ -655,7 +655,7 @@ class WebSocketManager {
 
           // Register in the multi-file manager if we got a file_id
           if (fileId && openedPath) {
-            const filename = openedPath.split('/').pop() ?? openedPath;
+            const filename = basename(openedPath);
             const entry: FileEntry = {
               id: fileId,
               path: openedPath,

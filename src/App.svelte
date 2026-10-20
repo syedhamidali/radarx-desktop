@@ -32,7 +32,7 @@
   import { startUiHealth, stopUiHealth } from './lib/utils/uiHealth';
   import { addToast } from './lib/stores/toasts';
   import { workspaceStore, type WorkspaceConfig } from './lib/stores/workspace';
-  import { isWebMode } from './lib/utils/env';
+  import { isWebMode, basename } from './lib/utils/env';
   import { webUi, engineState, engineStatusMessage } from './lib/stores/webInfo';
   import { uploadFiles } from './lib/utils/upload';
   import { applyThemeMode } from './lib/utils/theme';
@@ -606,7 +606,7 @@
 
   function beginOpenOp(path: string) {
     if (openOp) { const prev = openOp; openOp = null; cancelOp(prev.id); }
-    const name = path.split('/').pop() ?? path;
+    const name = basename(path);
     const op: OpHandle = beginOp({
       kind: 'open',
       label: `Opening ${name}`,
@@ -668,7 +668,7 @@
 
   /** Request a file open. Returns false when the file is already open (its tab is activated). */
   function sendOpenFile(path: string): boolean {
-    const name = path.split('/').pop() ?? path;
+    const name = basename(path);
     const existing = get(openFiles).find((f) => f.path === path);
     if (existing) {
       // A second reader of the same file would only duplicate its memory and its timeline entry.
@@ -1097,7 +1097,7 @@
     <div class="statusbar-center">
       {#if filePath}
         <span class="hud-label sb-key">FILE</span>
-        <span class="file-path mono" title={filePath}>{filePath.split('/').pop() ?? filePath}</span>
+        <span class="file-path mono" title={filePath}>{basename(filePath)}</span>
         {#if variableCount > 0}<span class="statusbar-divider">/</span><span class="mono sb-dim">{variableCount} vars</span>{/if}
       {:else}
         <span class="sb-dim">No file loaded. Drag and drop, or {typeof navigator !== 'undefined' && navigator.platform?.includes('Mac') ? '\u2318' : 'Ctrl'}+O</span>
