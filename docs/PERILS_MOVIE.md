@@ -171,7 +171,7 @@ radar products), `src/lib/perils/perilsFocusData.ts` / `perilsFocusInset.ts` (th
 | angle | where | what it shows |
 |---|---|---|
 | wide | 14 to 9 km south of the tornado (the inflow side, 170 degrees), 2.5 to 2 km high, 60 degree lens, time-lapse | the strong band above the tornado, outside the echo, with the lightning |
-| chaser | 1.25 km at 151 degrees (right of the track, a little south), 12 m high, 44 degree lens, x1 | the touchdown at 01:08:00 (the camera starts 3 s before it) and the funnel forming under the echo (a chaser at 1.7 to 2.3 km sees nothing of the funnel through the simulated rain of the v2 echo; 1.25 km is the farthest at which it is seen), the storm crossing the frame |
+| chaser | 1.0 km at 151 degrees (right of the track, a little south), 12 m high, 40 degree lens, x1 | the touchdown at 01:08:00 (the camera starts 3 s before it) and the funnel forming under the echo (from 1.25 to 2.3 km nothing of the simulated funnel is seen through the rain of the v2 echo: 1.0 km is the farthest at which it is), the storm crossing the frame |
 | close, side-on | 450 m to the right of the track, 2 m, 62 degree lens, x1 | the funnel passing across the frame |
 | low | 360 m, 2 m, 68 degree lens looking up 31 degrees, x1 | the wall cloud and funnel from below |
 | damage path | 465 m behind and 200 m to the right, 90 m high, 62 degree lens, x1 | the path just made, the trees the simulation lays down, the funnel ahead |

@@ -53,10 +53,10 @@ WIDE_AIM_NORTH_KM = (
     0.5,
 )  # the aim point is this far north of the tornado (the echo above it), start and end
 WIDE_AIM_Z_KM = (3.0, 2.5)  # and this high, km
-CHASER_DIST_KM = 1.25
+CHASER_DIST_KM = 1.0
 CHASER_BEARING_OFF = 15.0  # degrees south of the right-hand perpendicular: the strong echo (north) stays in the frame
 CHASER_ALT_M = 12.0
-CHASER_FOV = 44.0
+CHASER_FOV = 40.0
 CHASER_FOLLOW = 0.75  # share of the tornado's motion the observer pans after
 CLOSE_DIST_KM = 0.45
 CLOSE_ALT_M = 2.0
@@ -261,7 +261,7 @@ def focus_shots(
         n = len(t)
         P = np.broadcast_to(P_c, (n, 2)).copy()
         look = T_c[None, :] + CHASER_FOLLOW * (rig.T(t) - T_c[None, :])
-        return P, _col(CHASER_ALT_M / 1000.0, n), look, _col(0.32 + 0.02 * np.sin(0.2 * t), n)
+        return P, _col(CHASER_ALT_M / 1000.0, n), look, _col(0.28 + 0.02 * np.sin(0.2 * t), n)
 
     c0, c1 = beats["focus_close"]
     tm_x = 0.5 * (c0 + c1)
