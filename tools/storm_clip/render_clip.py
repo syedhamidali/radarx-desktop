@@ -483,7 +483,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument(
         "--tile-cache",
         default=None,
-        help="folder of cached tiles (default ~/.cache/xradar-desktop/tiles)",
+        help="folder of cached tiles (default ~/.cache/radarx-desktop/tiles)",
     )
     ap.add_argument("--offline", action="store_true", help="use cached tiles only, no network")
     ap.add_argument("--crf", type=int, default=18, help="x264 quality (lower = better)")

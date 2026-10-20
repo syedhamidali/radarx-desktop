@@ -115,7 +115,7 @@ def add_parser(
     g.add_argument(
         "--cache-dir",
         metavar="DIR",
-        help="gridded volumes and frames (default ~/.cache/xradar-desktop/animate, or XRADAR_ANIMATE_CACHE)",
+        help="gridded volumes and frames (default ~/.cache/radarx-desktop/animate, or XRADAR_ANIMATE_CACHE)",
     )
     g.add_argument("--fresh", action="store_true", help="ignore the cache and grid again")
 
@@ -237,7 +237,7 @@ def add_parser(
     g.add_argument(
         "--tile-cache",
         metavar="DIR",
-        help="folder of cached map tiles (default ~/.cache/xradar-desktop/tiles)",
+        help="folder of cached map tiles (default ~/.cache/radarx-desktop/tiles)",
     )
     g.add_argument("--offline", action="store_true", help="use cached tiles only, no network")
     g.add_argument(
