@@ -40,7 +40,8 @@ export function tokenIssuedAt(jwt: string): number | null {
   try {
     const part = jwt.split('.')[1];
     const b64 = part.replace(/-/g, '+').replace(/_/g, '/');
-    const json = typeof atob === 'function' ? atob(b64) : Buffer.from(b64, 'base64').toString('utf8');
+    // atob exists in every browser and in Node 16+; no Node-only fallback (the web build has no Node types)
+    const json = atob(b64 + '='.repeat((4 - (b64.length % 4)) % 4));
     const iat = JSON.parse(json).iat;
     return typeof iat === 'number' && Number.isFinite(iat) ? iat : null;
   } catch {
