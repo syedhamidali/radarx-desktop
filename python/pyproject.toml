@@ -22,6 +22,9 @@ dependencies = [
     "matplotlib>=3.8,<4.0",
     "colorcet>=3.0,<4.0",
     "cmweather>=0.3,<1.0",
+    # The account gate (docs/ACCOUNTS.md): offline verification of the sign-in token's signature.
+    "PyJWT>=2.8,<3.0",
+    "cryptography>=42.0,<60",
 ]
 
 [project.optional-dependencies]

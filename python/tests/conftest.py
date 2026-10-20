@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 import xarray as xr
+
+# The account gate (engine/account, docs/ACCOUNTS.md) is OFF for the test suite: this is the
+# documented development bypass, honoured only when the code is not frozen. Tests of the gate itself
+# (tests/test_account_*.py) switch it on with the ``gate_on`` fixture and use a locally made test
+# key, a mocked key document and a mocked account server, never the real network or a real account.
+os.environ["RADARX_AUTH_DISABLED"] = "1"
 
 # ---------------------------------------------------------------------------
 # Synthetic radar data
@@ -156,3 +163,57 @@ def fake_arco(monkeypatch: pytest.MonkeyPatch) -> Any:
 def _isolated_export_dir(tmp_path_factory, monkeypatch):
     """Exports without an explicit path must never write into the developer's real ~/Downloads."""
     monkeypatch.setenv("XRADAR_EXPORT_DIR", str(tmp_path_factory.mktemp("xradar-exports")))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_account_dir(tmp_path_factory, monkeypatch):
+    """No test may read or write the developer's real session file, key cache or activity queue."""
+    monkeypatch.setenv("RADARX_CONFIG_DIR", str(tmp_path_factory.mktemp("radarx-config")))
+
+
+# ---------------------------------------------------------------------------
+# The account gate switched ON, against a mocked account server (tests/test_account_*.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def gate_on(monkeypatch, tmp_path):
+    """The gate ON with a local test key and a mocked account server; the real network is blocked.
+
+    Yields a ``FakeServer`` (``.keys.token(...)`` makes tokens, ``.now`` is the clock, ``.calls``,
+    ``.activity_rows`` show what the code sent). The sender thread is off; tests flush explicitly.
+    """
+    import socket
+
+    from engine.account import activity, core, http, tokens
+    from tests.account_helpers import TEST_URL, FakeServer, KeyPair
+
+    monkeypatch.delenv("RADARX_AUTH_DISABLED", raising=False)
+    monkeypatch.delenv("RADARX_WEB_REQUIRE_ACCOUNT", raising=False)
+    monkeypatch.setenv("RADARX_SUPABASE_URL", TEST_URL)
+    monkeypatch.setenv("RADARX_SUPABASE_KEY", "sb_publishable_test_only")
+    monkeypatch.setenv("RADARX_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delattr("sys.frozen", raising=False)
+
+    real_connect = socket.socket.connect
+
+    def no_network(self, address, *args, **kwargs):  # only this machine may be talked to
+        host = address[0] if isinstance(address, tuple) else address
+        if host not in ("127.0.0.1", "::1", "localhost") and not str(host).startswith("/"):
+            raise AssertionError(f"a test tried to open a real network connection to {host}")
+        return real_connect(self, address, *args, **kwargs)
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+
+    fake = FakeServer(keys=KeyPair())
+    monkeypatch.setattr(http, "request_json", fake.request)
+    monkeypatch.setattr(core, "now", fake.clock)
+    tokens.reset_cache()
+    core.reset_runtime_state()
+    activity.set_background(False)
+    activity._recent.clear()
+    activity._memory_only.clear()
+    yield fake
+    activity.set_background(True)
+    tokens.reset_cache()
+    core.reset_runtime_state()
