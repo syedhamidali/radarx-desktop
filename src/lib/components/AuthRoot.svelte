@@ -11,7 +11,9 @@
 
   let App: Component | null = $state(null);
 
-  const open = $derived(($auth.gate === 'open' || $auth.gate === 'open-offline') && !profileIncomplete($auth));
+  const open = $derived(
+    ($auth.gate === 'open' || $auth.gate === 'open-offline') && !profileIncomplete($auth) && $auth.profileState !== 'loading',
+  );
 
   onMount(() => {
     void initAuth();

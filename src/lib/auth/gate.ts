@@ -64,3 +64,14 @@ export function friendlyAuthError(message: string | undefined | null): string {
   if (m.includes('provider is not enabled') || m.includes('unsupported provider')) return 'This sign-in method is not switched on yet.';
   return message as string;
 }
+
+/**
+ * The text shown when the provider's redirect carries an `error`. Only a fixed sentence is ever shown:
+ * `error_description` is text chosen by whoever built the redirect (anything that can reach the loopback
+ * port can build one), so it must not reach the screen.
+ */
+export function oauthFailureMessage(errorParam: string | null | undefined): string {
+  return (errorParam ?? '').toLowerCase() === 'access_denied'
+    ? 'Sign-in was cancelled.'
+    : 'The sign-in was not completed. Please try again.';
+}

@@ -60,6 +60,11 @@ for pkg in (
         pass
 
 hiddenimports += ["scipy.spatial", "scipy.ndimage", "scipy.sparse.csgraph", "PIL.Image"]
+# The account gate (engine/account/tokens.py) imports PyJWT and, through it, cryptography on first use;
+# certifi's CA bundle is what the sign-in HTTPS calls trust.
+hiddenimports += collect_submodules("jwt")
+hiddenimports += ["cryptography.hazmat.primitives.asymmetric.ec", "cryptography.hazmat.primitives.asymmetric.rsa"]
+datas += collect_data_files("certifi")
 # matplotlib picks its output backend by name at savefig() time, which PyInstaller cannot see: without
 # these, SVG and PDF export failed in the packaged engine ("No module named backend_svg").
 hiddenimports += [

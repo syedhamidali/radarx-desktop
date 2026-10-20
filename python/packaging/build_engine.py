@@ -93,7 +93,7 @@ def smoke_test(exe: Path, timeout: float = 120.0) -> None:
     """Start the frozen engine, wait for READY, then drive it through a real workflow."""
     port = _free_port()
     token = "smoke-test-token"
-    env = dict(os.environ, XRADAR_SESSION_TOKEN=token)
+    env = dict(os.environ, XRADAR_SESSION_TOKEN=token, RADARX_AUTH_DISABLED="1")  # must be ignored
     start = time.monotonic()
     proc = subprocess.Popen(
         [str(exe), "--port", str(port)],
@@ -135,12 +135,25 @@ def _synthetic_volume(path: Path) -> None:
 
 
 def _check_engine(port: int, token: str) -> None:
-    """Drive the frozen engine like the app: open a file, fetch a sweep, export, run a module."""
+    """Check the frozen engine: the account gate always; the full workflow when an account is given.
+
+    The engine needs a signed-in account (docs/ACCOUNTS.md) and an installer build ignores the
+    development bypass, so the workflow (open a file, fetch a sweep, export, run a module) can only
+    run with a real session: set ``RADARX_SMOKE_ACCESS_TOKEN`` to the access token of a test account
+    (for example a CI secret). Without it the smoke test proves what can be proven offline: the gate
+    is closed and ignores the bypass, and the packaged sign-in check (PyJWT, cryptography, the
+    built-in public key) works.
+    """
     import asyncio
     import json
     import tempfile
 
     import websockets
+
+    session = os.environ.get("RADARX_SMOKE_ACCESS_TOKEN", "").strip()
+    if not session:
+        asyncio.run(_check_gate(port, token))
+        return
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         volume = Path(tmp) / "synthetic_cfrad.nc"
@@ -163,6 +176,12 @@ def _check_engine(port: int, token: str) -> None:
 
         async def run() -> None:
             async with websockets.connect(f"ws://127.0.0.1:{port}", max_size=None) as ws:
+                await request(
+                    ws,
+                    {"type": "auth_session", "access_token": session, "reason": "start"},
+                    "auth_ok",
+                )
+                print("  signed in with the test account")
                 modules = await request(ws, {"type": "list_modules"}, "modules_list")
                 if len(modules["modules"]) < 5 or modules["errors"]:
                     raise SystemExit(f"plugin modules not bundled correctly: {modules['errors']}")
@@ -218,6 +237,47 @@ def _check_engine(port: int, token: str) -> None:
                 )
 
         asyncio.run(run())
+
+
+async def _check_gate(port: int, token: str) -> None:
+    """The gate of the frozen engine (no account needed): closed, bypass ignored, crypto bundled."""
+    import base64
+    import json
+
+    import websockets
+
+    def b64(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    async def ask(ws, msg: dict) -> dict:
+        await ws.send(json.dumps({**msg, "token": token}))
+        while True:
+            raw = await ws.recv()
+            if not isinstance(raw, bytes):
+                reply = json.loads(raw)
+                if reply.get("type") != "progress":
+                    return reply
+
+    async with websockets.connect(f"ws://127.0.0.1:{port}", max_size=None) as ws:
+        if (await ask(ws, {"type": "ping"}))["type"] != "pong":
+            raise SystemExit("ping was not answered")
+        refused = await ask(ws, {"type": "list_modules"})
+        if refused.get("type") != "auth_required" or refused.get("reason") != "no_session":
+            raise SystemExit(f"the frozen engine did not close its gate: {refused}")
+        print("  gate closed (RADARX_AUTH_DISABLED is ignored in this build)")
+        # A well-formed ES256 token with a made-up signature: it must be rejected as invalid, which
+        # needs PyJWT, cryptography and the built-in public key to load (a missing package would say
+        # reason=dependency instead).
+        header = {"alg": "ES256", "typ": "JWT", "kid": "a87a7630-4b20-46b5-87b1-56c24eb27295"}
+        claims = {"iss": "x", "aud": "authenticated", "sub": "u", "role": "authenticated"}
+        forged = f"{b64(header)}.{b64(claims)}.{b64({'sig': 'x'})}"
+        reply = await ask(ws, {"type": "auth_session", "access_token": forged})
+        if reply.get("type") != "auth_required" or reply.get("reason") != "invalid":
+            raise SystemExit(f"the sign-in check is not working in the frozen build: {reply}")
+        print("  sign-in check works (forged token refused)")
+        print(
+            "  (set RADARX_SMOKE_ACCESS_TOKEN to a test account's token to run the full workflow)"
+        )
 
 
 if __name__ == "__main__":

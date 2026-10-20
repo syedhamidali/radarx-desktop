@@ -29,7 +29,9 @@ and every command uses the same options::
 Exit codes: 0 success; 1 the processing failed (module could not run on this data ...);
 2 the command was used wrongly (unknown option, module, variable ...); 3 an input file is
 missing or unreadable; 4 an optional Python package is missing (the message says how to install
-it); 70 an unexpected internal error (re-run with ``-vv`` for the traceback); 130 interrupted.
+it); 5 no signed-in account (``rxd login``; every command except ``login``, ``logout``, ``whoami``,
+``examples``, ``completion`` and ``--help`` / ``--version`` needs one); 70 an unexpected internal
+error (re-run with ``-vv`` for the traceback); 130 interrupted.
 
 This module imports only the standard library at start-up; the engine is imported by the
 command that needs it, so ``rxd --help`` is instant and the sidecar server never loads it.
@@ -57,6 +59,7 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_INPUT = 3
 EXIT_DEPENDENCY = 4
+EXIT_ACCOUNT = 5
 EXIT_INTERNAL = 70
 EXIT_INTERRUPTED = 130
 
@@ -70,6 +73,9 @@ NON_RADAR_SUFFIXES = {
 }  # fmt: skip
 
 COMMANDS = (
+    "login",
+    "logout",
+    "whoami",
     "info",
     "check",
     "plot",
@@ -382,6 +388,9 @@ GROUPS = (
     ("Hydrology", (("qpe", "rain rate / accumulation with uncertainty, gauges (docs/HYDROLOGY.md)"),
                    ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
+    ("Account", (("login", "sign in with your free radarx account (needed once; most commands require it)"),
+                 ("logout", "sign out and remove the saved session"),
+                 ("whoami", "who is signed in, and for how long"))),
     ("Help", (("examples", "a guided tour of copy-paste commands"),
               ("completion", "shell completion script for bash, zsh or fish"))),
 )  # fmt: skip
@@ -397,6 +406,8 @@ def overview() -> str:
         for i, (name, text) in enumerate(items):
             lines.append(f"  {title if i == 0 else '':<8}{name:<12}{text}")
     lines += [
+        "",
+        f"First time: an account is needed (free). Sign in once with  {PROG} login  (create it in the app).",
         "",
         "Try these (replace the file name with yours):",
         f"  rxd info -i {SAMPLE}                      what is in the file",
@@ -442,7 +453,8 @@ def build_parser() -> argparse.ArgumentParser:
             "  rxd mosaic -i KHPX20211211_015357_V06 KNQA20211211_015018_V06 -o mosaic.nc -p map.png -v\n"
             "\n"
             "exit codes: 0 ok, 1 processing failed, 2 wrong usage, 3 input file problem,\n"
-            "4 missing Python package, 70 internal error.   'rxd examples' shows more."
+            "4 missing Python package, 5 not signed in (rxd login), 70 internal error.\n"
+            "'rxd examples' shows more."
         ),
     )
     parser.add_argument("--version", action="store_true", help="print the version and exit")
@@ -459,6 +471,11 @@ def build_parser() -> argparse.ArgumentParser:
             allow_abbrev=False,
             **kw,
         )
+
+    # -- login / logout / whoami (the account; engine/account/commands.py) -----------------
+    from engine.account import commands as account_commands
+
+    account_commands.register(command, sys.modules[__name__])
 
     # -- info ----------------------------------------------------------------------------
     p = command(
@@ -2317,8 +2334,30 @@ def main_xrd(argv: Sequence[str] | None = None) -> int:
     return main(argv)
 
 
+def _account_gate(args: argparse.Namespace) -> int | None:
+    """Every command except the exempt ones needs a signed-in account (docs/ACCOUNTS.md).
+
+    Returns None to go on, or the exit code (5) after printing how to sign in.
+    """
+    from engine.account import commands as account_commands
+    from engine.account.core import require_account
+    from engine.account.errors import AccountRequired
+
+    if args.command in account_commands.EXEMPT:
+        return None
+    try:
+        require_account()
+    except AccountRequired as exc:
+        print(
+            f"{_err_label(sys.stderr)} {account_commands.sign_in_message(PROG, exc)}",
+            file=sys.stderr,
+        )
+        return EXIT_ACCOUNT
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point of ``rxd``. Returns the exit code (0 ok, 1 failed, 2 usage, 3 input, 4 package, 70 bug)."""
+    """Entry point of ``rxd``. Returns the exit code (0 ok, 1 failed, 2 usage, 3 input, 4 package, 5 no account, 70 bug)."""
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     try:
@@ -2350,12 +2389,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_OK
     args.extra = list(extras)
     args.argv = list(argv)
+    refused = _account_gate(args)
+    if refused is not None:
+        return refused
     if args.command == "pipeline":  # bare words are recipe words (RECIPE, or list / script RECIPE)
         args.recipe_words, args.extra = args.extra, []
     if getattr(args, "debug", False):
         args.verbose = max(args.verbose, 2)
     import logging
 
+    from engine.account import activity
+
+    surface_token = activity.set_surface("cli")
+    saved_background = activity.set_background(False)  # a short-lived process flushes once, below
+    activity.record("command", command=args.command)
     saved_logging = logging.root.manager.disable
     saved_color = _STATE["no_color"]
     _STATE["no_color"] = bool(getattr(args, "no_color", False))
@@ -2371,6 +2418,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         logging.lastResort.removeFilter(no_traceback)
         logging.disable(saved_logging)
         _STATE["no_color"] = saved_color
+        if activity.queued_count():
+            activity.flush(timeout=2.5)  # best effort; never delays or fails the command
+        activity.set_background(saved_background)
+        activity.reset_surface(surface_token)
 
 
 def _equivalent_command(args: argparse.Namespace, out: Out) -> str:
@@ -2388,12 +2439,14 @@ def _execute(args: argparse.Namespace) -> int:
     out = Out(args)
     _quiet_libraries(out.verbose)
     from engine import api  # lazy: keeps `rxd --help` instant
+    from engine.account import activity
 
     user_errors = api.user_errors()
     debug = out.verbose >= 2
     started = time.perf_counter()
 
     def fail(exc: BaseException, code: int) -> int:
+        activity.record_error(exc)
         if debug:
             raise exc
         print(f"{_err_label(sys.stderr)} {api.error_message(exc)}", file=sys.stderr)
@@ -2417,6 +2470,7 @@ def _execute(args: argparse.Namespace) -> int:
         needs_package = isinstance(exc, ImportError) or "pip install" in api.error_message(exc)
         code = fail(exc, EXIT_DEPENDENCY if needs_package else EXIT_FAILED)
     except Exception as exc:
+        activity.record_error(exc)
         if debug:
             raise
         print(

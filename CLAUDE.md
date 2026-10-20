@@ -34,7 +34,10 @@ See `ARCHITECTURE.md` for the system diagram, data flow and design decisions.
   - **Apache Arrow** is optional (`engine/arrow_bridge.py`, extra `arrow`): the app itself sends raw binary
     chunks over the WebSocket, so pyarrow is neither installed by default nor bundled
 - **CLI and API**: `rxd` (`engine/cli.py`), `engine.api` / `import rxd`; docs `docs/CLI.md`, `docs/API.md`
-- **Web mode**: the same engine as an anonymous web service (`docs/WEB.md`)
+- **Web mode**: the same engine as a web service (`docs/WEB.md`)
+- **Accounts**: every surface (app, engine, `rxd`, `import rxd`, web mode) needs a signed-in account (`docs/ACCOUNTS.md`,
+  `python/engine/account/`); the Python tests set `RADARX_AUTH_DISABLED=1` (honoured only when not frozen) in `tests/conftest.py`,
+  gate tests use the `gate_on` fixture (local test key, mocked account server, no real network)
 
 ### Project structure
 ```

@@ -218,3 +218,13 @@ kind = "native"
 name = "libc++, libc++abi (LLVM)"
 license = "Apache-2.0 WITH LLVM-exception"
 where = "C++ runtime of some wheels"
+
+# The account gate (engine/account/tokens.py) uses PyJWT, which uses `cryptography`; its binary wheel links
+# OpenSSL statically and contains Rust crates (all permissive; the wheel's own LICENSE files list them).
+[[entry]]
+kind = "native"
+name = "OpenSSL (statically linked into the cryptography wheel)"
+license = "Apache-2.0"
+where = "signature check of the sign-in token in the frozen engine"
+url = "https://www.openssl.org/source/license.html"
+note = "OpenSSL 3.x is Apache-2.0. The wheel also embeds Rust crates under MIT / Apache-2.0 / BSD terms; see the licence files inside the cryptography distribution."

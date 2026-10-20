@@ -26,6 +26,25 @@ Argument names match the options: `files` (`-i`), `out` (`-o`), `plot` (`-p`), `
 `sweep` (`-s`), keyword parameters (`-P`). Anywhere a volume is expected you may pass a file path or a `Volume`.
 `sweep=None` means "the lowest sweep that has what is needed" (velocity is on sweep 1 of a NEXRAD split-cut volume).
 
+## Sign in first
+
+An account is required (free; see {doc}`ACCOUNTS`). `import rxd` always works, but every function that touches data
+raises `rxd.AccountRequired` until a user is signed in, in the app or with `rxd login` in a terminal:
+
+```python
+import rxd
+
+try:
+    vol = rxd.open("KTLX20130520_201643_V06.gz")
+except rxd.AccountRequired as exc:
+    print(exc)            # "You are not signed in." ... how to sign in
+    print(exc.reason)     # "no_session" | "invalid" | "expired" | "offline_expired" | "revoked" | "not_entitled"
+```
+
+The check reads the same session file as the app and `rxd` (it is renewed automatically; with no network it holds for
+30 days after the last server check) and costs microseconds after the first call. `RADARX_AUTH_DISABLED=1` switches it
+off for developers working from a source checkout; installers ignore that variable.
+
 ## A session
 
 Run on the KTLX example volume of 20 May 2013 (outputs are real).
@@ -233,6 +252,7 @@ the format) and `.to_dict()` (JSON-safe), exactly what the command line prints w
 | `XrdInputError` (an `XrdArgumentError`) | file missing, a folder, unreadable | 3 |
 | `XrdDependencyError` | an optional package is missing (`pip install -U radarx`) | 4 |
 | `XrdError` and the engine's own errors (`api.user_errors()`) | the processing failed | 1 |
+| `AccountRequired` (an `Exception`, not an `XrdError`) | nobody is signed in, the sign-in has expired or lapsed offline, or the account is not allowed | 5 |
 
 ## Notes
 

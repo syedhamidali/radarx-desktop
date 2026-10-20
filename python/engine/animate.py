@@ -390,7 +390,25 @@ def run(
     gridder: data.Gridder | None = None,
     meta: Callable[[Path], tuple[str, datetime]] | None = None,
 ) -> AnimateResult:
-    """Plan, grid, track, plan the frames and (unless ``no_render``) render and write the output."""
+    """Plan, grid, track, plan the frames and (unless ``no_render``) render and write the output.
+
+    Needs a signed-in account like everything else (``AccountRequired`` otherwise, docs/ACCOUNTS.md).
+    """
+    from engine.account import activity, require_account
+
+    require_account()
+    result = _run(o, note, detail, gridder, meta)
+    activity.record("animate_run")
+    return result
+
+
+def _run(
+    o: AnimateOptions,
+    note: Note,
+    detail: Note,
+    gridder: data.Gridder | None,
+    meta: Callable[[Path], tuple[str, datetime]] | None,
+) -> AnimateResult:
     t_start = time.perf_counter()
     from engine import animate_render as render
 

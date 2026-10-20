@@ -804,13 +804,19 @@ def test_console_script_is_declared() -> None:
 
 
 def _python(*args: str, **kw) -> subprocess.CompletedProcess:
-    env = {"PYTHONPATH": str(PYTHON_DIR), "PATH": "/usr/bin:/bin", "HOME": str(Path.home())}
+    env = {
+        "PYTHONPATH": str(PYTHON_DIR),
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(Path.home()),
+        "RADARX_AUTH_DISABLED": "1",  # the development bypass (docs/ACCOUNTS.md)
+    }
     return subprocess.run(
         [sys.executable, "-W", "ignore", *args],
         capture_output=True,
         text=True,
         env=env,
         timeout=180,
+        close_fds=False,  # no fork: see tests/account_helpers.run_python (pyproj's atfork handler)
         **kw,
     )
 

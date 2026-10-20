@@ -80,12 +80,13 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 | libquadmath | LGPL-2.1-or-later | Fortran runtime of scipy |  |  |
 | GNU libiconv | LGPL-2.1-or-later | text conversion in a wheel (seen on macOS) |  |  |
 | libc++, libc++abi (LLVM) | Apache-2.0 WITH LLVM-exception | C++ runtime of some wheels |  |  |
+| OpenSSL (statically linked into the cryptography wheel) | Apache-2.0 | signature check of the sign-in token in the frozen engine |  | https://www.openssl.org/source/license.html |
 
 ## Python engine
 
 Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and the packages the PyInstaller spec collects, with everything they require, in the environment the file was generated in. Versions of platform-specific wheels can differ in a release build.
 
-66 packages. Licences: MIT (21), BSD-3-Clause (20), Apache-2.0 (13), PSF-2.0 (3), Apache-2.0 AND MIT (1), MPL-2.0 (1), CC-BY-4.0 (1), CC0-1.0 (1), BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (1), Apache-2.0 OR BSD-2-Clause (1), MIT-CMU (1), Apache-2.0 OR BSD-3-Clause (1), BSD-2-Clause (1).
+70 packages. Licences: MIT (22), BSD-3-Clause (21), Apache-2.0 (13), PSF-2.0 (3), Apache-2.0 OR BSD-3-Clause (2), Apache-2.0 AND MIT (1), MPL-2.0 (1), MIT-0 (1), CC-BY-4.0 (1), CC0-1.0 (1), BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (1), Apache-2.0 OR BSD-2-Clause (1), MIT-CMU (1), BSD-2-Clause (1).
 
 | Package | Version | Licence | Identified by | Link |
 | --- | --- | --- | --- | --- |
@@ -99,6 +100,7 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 | botocore | 1.43.106 | Apache-2.0 | License field | https://github.com/boto/botocore |
 | Cartopy | 0.26.0 | BSD-3-Clause |  | https://cartopy.readthedocs.io/stable/ |
 | certifi | 2026.4.22 | MPL-2.0 | classifier | https://github.com/certifi/python-certifi |
+| cffi | 2.1.1 | MIT-0 |  | https://cffi.readthedocs.io/ |
 | cftime | 1.6.5 | MIT |  |  |
 | charset-normalizer | 3.4.7 | MIT | License field | https://charset-normalizer.readthedocs.io/ |
 | click | 8.3.3 | BSD-3-Clause |  | https://click.palletsprojects.com/ |
@@ -106,6 +108,7 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 | cmweather | 0.3.2 | MIT | classifier | https://github.com/openradar/cmweather |
 | colorcet | 3.1.0 | CC-BY-4.0 | override: metadata says only 'CC-BY License'; the LICENSE.txt in the distribution is Creative Commons Attribution 4.0 | https://colorcet.holoviz.org |
 | contourpy | 1.3.3 | BSD-3-Clause | classifier | https://github.com/contourpy/contourpy |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause |  | https://cryptography.io/ |
 | cycler | 0.12.1 | BSD-3-Clause | classifier | https://matplotlib.org/cycler/ |
 | dask | 2026.3.0 | BSD-3-Clause |  | https://github.com/dask/dask/ |
 | donfig | 0.8.1.post1 | MIT | classifier | https://github.com/pytroll/donfig |
@@ -133,6 +136,8 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 | platformdirs | 4.9.6 | MIT |  | https://platformdirs.readthedocs.io |
 | pooch | 1.9.0 | BSD-3-Clause |  | https://www.fatiando.org/pooch |
 | propcache | 0.5.2 | Apache-2.0 | classifier | https://github.com/aio-libs/propcache |
+| pycparser | 3.11 | BSD-3-Clause |  | https://github.com/eliben/pycparser |
+| PyJWT | 2.15.1 | MIT |  | https://github.com/jpadilla/pyjwt |
 | pyparsing | 3.3.2 | MIT |  | https://pyparsing-docs.readthedocs.io/en/latest/ |
 | pyproj | 3.7.2 | MIT |  | https://github.com/pyproj4/pyproj |
 | pyshp | 3.1.6 | MIT |  | https://github.com/GeospatialPython/pyshp |

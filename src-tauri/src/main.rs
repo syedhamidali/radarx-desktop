@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -70,12 +70,25 @@ fn server_script() -> PathBuf {
     project_root().join("python/server.py")
 }
 
+/// File types the Share bar offers (src/lib/utils/share.ts): only these can be revealed.
+const REVEALABLE: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"];
+
+/// An existing regular file with an absolute path and one of the share extensions. The command is
+/// reachable from the web view, so it must not become "open any path with the file manager".
+fn revealable(p: &Path) -> bool {
+    p.is_absolute()
+        && p.is_file()
+        && p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| REVEALABLE.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 /// Shows a saved file in the system file manager (Finder / Explorer / the default file manager).
 #[tauri::command]
 fn reveal_in_folder(path: String) -> Result<(), String> {
     let p = PathBuf::from(&path);
-    if !p.is_file() {
-        return Err("that file no longer exists".into());
+    if !revealable(&p) {
+        return Err("only a saved image or movie can be shown".into());
     }
     #[cfg(target_os = "macos")]
     let status = Command::new("open").arg("-R").arg(&p).status();
@@ -924,6 +937,27 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_saved_images_and_movies_can_be_revealed() {
+        let dir = std::env::temp_dir().join(format!("radarx-reveal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("map.PNG");
+        let mp4 = dir.join("film.mp4");
+        let txt = dir.join("notes.txt");
+        let none = dir.join("README");
+        for f in [&png, &mp4, &txt, &none] {
+            std::fs::write(f, b"x").unwrap();
+        }
+        assert!(revealable(&png) && revealable(&mp4));
+        assert!(!revealable(&txt), "a text file");
+        assert!(!revealable(&none), "no extension");
+        assert!(!revealable(&dir), "a folder");
+        assert!(!revealable(&dir.join("missing.png")), "missing");
+        assert!(!revealable(Path::new("map.png")), "a relative path");
+        assert!(!revealable(Path::new("/etc/passwd")), "a system file");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn token_is_64_hex_chars_and_unique() {

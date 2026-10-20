@@ -168,7 +168,7 @@ machine, so a result can be repeated and opens in other tools. See
   13.8 MB to 7.7 MB (see [docs/PACKAGING_AUDIT.md](docs/PACKAGING_AUDIT.md))
 - **Automatic updates, under your control:** signature-checked, never mid-job, switchable off
   ([docs/UPDATES.md](docs/UPDATES.md))
-- **Web build:** the same engine as an anonymous web service ([docs/WEB.md](docs/WEB.md))
+- **Web build:** the same engine as a web service ([docs/WEB.md](docs/WEB.md)); like every surface it needs a free account ([docs/ACCOUNTS.md](docs/ACCOUNTS.md))
 
 ## Where it is going
 

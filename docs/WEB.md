@@ -1,7 +1,7 @@
 # Web mode
 
-The engine can run as a public, anonymous web service (a browser is the client, nothing is
-installed). The desktop engine trusts its caller; web mode assumes **every visitor is hostile** and
+The engine can run as a public web service (a browser is the client, nothing is
+installed; a free radarx account is required, see *Accounts* below). The desktop engine trusts its caller; web mode assumes **every visitor is hostile** and
 closes every door to the server: no server paths, no persistent state, no plug-in loading, nothing
 that outlives the connection.
 
@@ -19,6 +19,7 @@ Desktop behaviour is unchanged when web mode is off (the default). Code: `python
 | Variable | Default | Meaning |
 |---|---|---|
 | `XRADAR_WEB` | off | `1`/`true` enables web mode (CLI: `--web`). |
+| `RADARX_WEB_REQUIRE_ACCOUNT` | **on** | A visitor must present a signed-in radarx account before the engine does any work (see *Accounts* below). `0` / `false` turns the gate off, for a private deployment (also build the web app with `RADARX_AUTH_DISABLED=1`). Ignored by a frozen (installer) build. |
 | `PORT` | | Port when `--port` is not given (web mode only). |
 | `--host` | `127.0.0.1` (web), `localhost` (desktop) | Interface to bind; Docker uses `0.0.0.0`. |
 | `XRADAR_ALLOWED_ORIGINS` | *(empty)* | Comma-separated allowed `Origin`s (`https://app.example.com`). Empty = same-origin only. `*` allows every origin and is honoured **only if set explicitly**. |
@@ -53,6 +54,27 @@ The server sends immediately (web mode only; desktop sends nothing new):
 on the desktop. If the server is full it sends
 `{type:"error", code:"server_busy", message}` and closes with code 1013. A rejected `Origin` closes
 with 1008 (and the HTTP upgrade is answered 403). No session token is used in web mode.
+
+### Accounts (`auth_session`)
+
+Web mode has the same account gate as the desktop engine (`docs/ACCOUNTS.md`), **on by default**. On every new
+connection the browser signs in with Supabase (the web build shows the sign-in screen first) and presents the
+access token:
+
+```
+client -> {type: "auth_session", access_token, reason: "start" | "sign_in" | "refresh" | "reconnect"}
+server -> {type: "auth_ok", email, stale, grace_days_left}     | {type: "auth_required", reason, message}
+client -> {type: "auth_signout"}                               # server -> {type: "auth_signed_out"}
+client -> {type: "auth_status"}                                # server -> auth_ok | auth_required
+```
+
+Until the connection has an accepted account, every message except `ping`, `get_web_info` and `auth_*` is answered
+`{type: "auth_required", reason, message, request_type, request_id}` and **no work happens** (an upload does not
+start, no file is opened). The token is verified offline against the project's public key; the refresh token never
+reaches the server, and the web engine never writes a session or an activity queue to disk. The token must be **unexpired**, and the engine checks that again on every message: when it lapses the answer is `auth_required` with `reason: "expired"` and the browser renews its Supabase token and sends `auth_session` again (the web service is always online, so the 30-day offline allowance of the desktop engine does not apply). `/health` stays open.
+
+**Behaviour change for a public demo:** before accounts existed, anyone who could reach the port could open a session;
+now they need a radarx account. For a deployment that stays anonymous set `RADARX_WEB_REQUIRE_ACCOUNT=0` on the engine **and** build the web app with `RADARX_AUTH_DISABLED=1` (`npm run build:web`), so the page does not ask for a sign-in either; the engine then answers `auth_session` with `{type: "auth_ok", bypass: true}`.
 
 ### Uploads
 
@@ -163,8 +185,9 @@ executor; a request that somehow has no session raises instead of falling back t
   module run (`XRADAR_MODULE_TIMEOUT_S`; a timed-out module's thread cannot be killed). Put a
   reverse proxy / platform limit in front, and size `XRADAR_MAX_SESSIONS` for your RAM.
 * **Downloads are read into memory** (up to the session quota) while being served.
-* No authentication: anyone who can reach the port can open a session. Add auth at the proxy if
-  that matters. Origin checks protect against other *websites* using your service from a visitor's
+* Authentication is the radarx account (`RADARX_WEB_REQUIRE_ACCOUNT`, default on; any valid free account passes
+  today, not a per-user quota). With the gate switched off anyone who can reach the port can open a session: add
+  auth at the proxy then. Origin checks protect against other *websites* using your service from a visitor's
   browser, not against scripted clients, which can send any `Origin`.
 * The cloud tab makes outbound requests to NOAA/AWS from the server (anonymous, public buckets).
 * TLS is the platform's job (`wss://` / `https://`).

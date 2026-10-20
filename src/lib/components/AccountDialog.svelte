@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { auth, saveProfile, signOut, deleteAccount, listDevices, removeDevice, deviceId, USE_CASES, type DeviceRow } from '../stores/auth';
+  import { auth, saveProfile, retryProfile, signOut, deleteAccount, listDevices, removeDevice, listActivity, deviceId, USE_CASES, type DeviceRow, type ActivityRow } from '../stores/auth';
   import { focusTrap } from '../utils/focusTrap';
   import { addToast } from '../stores/toasts';
 
@@ -13,6 +13,9 @@
   let useCase = $state('research');
   let devices: DeviceRow[] = $state([]);
   let devicesError = $state(false);
+  let activity: ActivityRow[] = $state([]);
+  let activityLoaded = $state(false);
+  let activityError = $state(false);
   let confirmText = $state('');
   let deleting = $state(false);
   const me = deviceId();
@@ -26,6 +29,12 @@
     } catch {
       devicesError = true;
     }
+    try {
+      activity = await listActivity();
+    } catch {
+      activityError = true;
+    }
+    activityLoaded = true;
   });
 
   async function save() {
@@ -40,6 +49,23 @@
     if (await deleteAccount()) onclose();
   }
   const when = (iso: string) => new Date(iso).toLocaleDateString();
+  const whenFull = (iso: string) => new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+  const EVENT_LABELS: Record<string, string> = {
+    app_start: 'Started the app',
+    sign_in: 'Signed in',
+    sign_out: 'Signed out',
+    command: 'Ran a command',
+    module_run: 'Ran an algorithm',
+    file_opened: 'Opened a file',
+    export: 'Exported',
+    mosaic_run: 'Made a mosaic',
+    winds_run: 'Ran multi-Doppler winds',
+    animate_run: 'Made an animation',
+    qpe_run: 'Ran rain estimation',
+    error: 'An error occurred',
+  };
+  const SURFACE_LABELS: Record<string, string> = { app: 'App', cli: 'Terminal', api: 'Python', engine: 'Engine' };
+  const detailText = (d: Record<string, string> | null) => (d ? Object.values(d).join(', ') : '');
 </script>
 
 <svelte:window onkeydown={(e) => e.key === 'Escape' && (e.stopPropagation(), onclose())} />
@@ -49,6 +75,12 @@
   <div class="dlg brackets-4" role="dialog" aria-modal="true" aria-label="Account" use:focusTrap={{ initial: 'input' }}>
     <h2>Your account</h2>
     <p class="mail">{a.email ?? ''}</p>
+    {#if a.profileState === 'failed'}
+      <p class="hint" role="status">
+        Your profile could not be loaded (no connection or the server is busy).
+        <button class="linkish" onclick={() => retryProfile()}>Try again</button>
+      </p>
+    {/if}
 
     <label><span>Name</span><input bind:value={name} autocomplete="name" /></label>
     <label><span>Affiliation</span><input bind:value={affiliation} autocomplete="organization" /></label>
@@ -75,8 +107,29 @@
       </ul>
     {/if}
 
+    <h3>Activity</h3>
+    <p class="hint">
+      The features this account has used, exactly as sent (newest first, last 100). Never file names, places, radar sites or your data.
+    </p>
+    {#if activityError}
+      <p class="hint">Cannot load the list right now.</p>
+    {:else if !activityLoaded}
+      <p class="hint">Loading...</p>
+    {:else if activity.length === 0}
+      <p class="hint">Nothing recorded yet.</p>
+    {:else}
+      <ul class="activity" aria-label="Recent activity">
+        {#each activity as r (r.id)}
+          <li>
+            <span class="what">{EVENT_LABELS[r.event] ?? r.event}{#if detailText(r.detail)}<small>: {detailText(r.detail)}</small>{/if}</span>
+            <small class="meta">{SURFACE_LABELS[r.surface] ?? r.surface} · {whenFull(r.occurred_at)}</small>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+
     <h3>Data we keep</h3>
-    <p class="hint">Your name, e-mail, affiliation, what you use radarx for, and the computers listed above. Radar files and results stay on your machine.</p>
+    <p class="hint">Your name, e-mail, affiliation, what you use radarx for, the computers listed above and the activity above. Radar files and results stay on your machine.</p>
 
     <div class="row between">
       <button onclick={async () => { await signOut(); onclose(); }}>Sign out</button>
@@ -111,6 +164,9 @@
   ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   li { display: flex; justify-content: space-between; gap: var(--space-2); font-size: var(--fs-sm); }
   li small { color: var(--c-muted); }
+  ul.activity { max-height: 180px; overflow-y: auto; border: 1px solid var(--c-border); border-radius: var(--radius-sm); padding: var(--space-2); gap: 4px; }
+  ul.activity li { flex-direction: column; gap: 0; font-size: var(--fs-xs); }
+  ul.activity .meta { font-size: var(--fs-2xs); }
   .hint { margin: 0; font-size: var(--fs-xs); color: var(--c-muted); line-height: 1.5; }
   .err { color: var(--c-alarm); font-size: var(--fs-xs); margin: 0; }
   .row { display: flex; justify-content: flex-end; gap: var(--space-2); }

@@ -38,8 +38,18 @@ the map: what the parts are, how data moves, and why it is built this way. Detai
     format)             on request)
 
 The same engine runs without the window:  rxd ...  (engine/cli.py)   from engine import api
-and as an anonymous web service:          python server.py --web     (docs/WEB.md)
+and as a web service:                     python server.py --web     (docs/WEB.md)
 ```
+
+## Accounts
+
+An account is required on every surface (app, engine, `rxd`, `import rxd`; [docs/ACCOUNTS.md](docs/ACCOUNTS.md)). The
+app signs in with Supabase and hands the short-lived access token to the engine (`auth_session`); the engine refuses
+all work on a connection until it has verified the token offline against the project's public key
+(`python/engine/account/`), and writes the session to one per-user file that `rxd` and `import rxd` share. One function
+(`entitlement_allows`) is where a subscription check would go; there is no billing yet. A feature-level activity log
+(never files, places or data) is queued locally and sent with the user's own token. The gate is client-side: it stops
+honest use without an account, and docs/ACCOUNTS.md says plainly what it cannot stop.
 
 ## Data flow
 
@@ -134,7 +144,7 @@ radarx-desktop/
 ├── python/
 │   ├── server.py            WebSocket server (also --web)
 │   ├── engine/              reader, volume, derived, pipeline, mosaic, multidoppler, cells, tracking, rhi,
-│   │                        exporter, cfwrite, provenance, cloud, web, api, cli ...
+│   │                        exporter, cfwrite, provenance, cloud, web, api, cli, account/ (sign-in gate, activity log) ...
 │   ├── modules/             plug-in algorithms (radarx_*.py, storm_detection.py ...)
 │   ├── packaging/           PyInstaller spec and build script
 │   ├── tests/  benchmarks/

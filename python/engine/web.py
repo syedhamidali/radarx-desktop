@@ -177,9 +177,10 @@ def is_web_mode() -> bool:
 def manager() -> SessionManager:
     global MANAGER
     if MANAGER is None:
+        cfg = settings()  # before taking the lock: settings() takes it too (a plain Lock: deadlock)
         with _settings_lock:
             if MANAGER is None:
-                MANAGER = SessionManager(settings())
+                MANAGER = SessionManager(cfg)
     return MANAGER
 
 

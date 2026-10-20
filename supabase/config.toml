@@ -147,8 +147,10 @@ max_indexes = 5
 [auth]
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
-# in emails.
-site_url = "http://127.0.0.1:1490"
+# in emails. `supabase config push` writes this to the hosted project, so it must be a real https URL
+# and NOT localhost. radarx's e-mails carry a 6-digit code, not a link (supabase/templates/), so nothing
+# opens it; the project page is a harmless, valid value.
+site_url = "https://github.com/syedhamidali/xradar-desktop"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
 # The desktop app finishes OAuth on a one-shot loopback port (src-tauri/src/oauth.rs); the web build
 # runs on :1490 in development.
@@ -177,8 +179,11 @@ minimum_password_length = 8
 password_requirements = "letters_digits"
 
 [auth.rate_limit]
-# Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled.
-email_sent = 2
+# Number of emails that can be sent per hour. Requires auth.email.smtp to be enabled: with Supabase's
+# built-in mailer the project's real limit is far lower (about 2 per hour) whatever is written here, which
+# is not enough for real sign-ups. Set up custom SMTP first (see [auth.email.smtp] below and
+# docs/ACCOUNTS.md "Setting it up", step 2), then this number applies.
+email_sent = 30
 # Number of SMS messages that can be sent per hour. Requires auth.sms to be enabled.
 sms_sent = 30
 # Number of anonymous sign-ins that can be made per hour per IP address. Requires enable_anonymous_sign_ins = true.
@@ -215,15 +220,18 @@ otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
 otp_expiry = 3600
 
-# Use a production-ready SMTP server
+# REQUIRED before real users sign up: a production SMTP server (Supabase's built-in mailer is for
+# testing and allows only a handful of e-mails per hour). Uncomment, fill in your provider's values and
+# keep the password out of git: `pass = "env(...)"` is read from the environment when `supabase config
+# push` runs.
 # [auth.email.smtp]
 # enabled = true
-# host = "smtp.sendgrid.net"
+# host = "smtp.example-provider.net"
 # port = 587
 # user = "apikey"
-# pass = "env(SENDGRID_API_KEY)"
-# admin_email = "admin@email.com"
-# sender_name = "Admin"
+# pass = "env(SMTP_PASSWORD)"
+# admin_email = "noreply@your-domain.example"
+# sender_name = "radarx"
 
 # Uncomment to customize email template
 # [auth.email.template.invite]

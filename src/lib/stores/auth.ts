@@ -1,12 +1,18 @@
 import { writable, get } from 'svelte/store';
 import type { Session } from '@supabase/supabase-js';
-import { getClient } from '../auth/client';
+import { getClient, STORAGE_KEY } from '../auth/client';
 import { signInWithProvider, cancelOAuth } from '../auth/oauth';
 import { AUTH_DISABLED, OFFLINE_GRACE_DAYS, type OAuthProvider } from '../auth/config';
-import { gateState, friendlyAuthError, type GateState } from '../auth/gate';
+import { friendlyAuthError, type GateState } from '../auth/gate';
+import { parseStoredSession, planStartup, tokenIssuedAt, isDefiniteAuthFailure, isValidDeviceId, type StoredSession } from '../auth/startup';
+import { startEngineLink, engineSignedIn, engineSignedOut, engineTokenRefreshed, hasPendingSignOut } from '../auth/engineLink';
 
-/** Version of the terms and privacy notice the user agreed to (bump when they change). */
-export const TERMS_VERSION = '2026-10';
+/**
+ * Version of the terms and privacy notice the user agreed to (bump when they change; everyone is then
+ * asked once more, see profileIncomplete). 2026-10-21: an account is now required to use radarx
+ * everywhere, and the feature-level activity log is disclosed (docs/PRIVACY.md).
+ */
+export const TERMS_VERSION = '2026-10-21';
 
 export const USE_CASES = [
   { id: 'research', label: 'Research' },
@@ -39,6 +45,8 @@ export interface AuthState {
   gate: GateState;
   email: string | null;
   profile: Profile | null;
+  /** 'loading' until the profile has been asked for; 'failed' (offline, server trouble) never traps the user. */
+  profileState: 'loading' | 'ready' | 'failed';
   lastVerifiedAt: number | null;
   /** A request is running (disable the buttons). */
   busy: boolean;
@@ -71,6 +79,7 @@ export const auth = writable<AuthState>({
   gate: AUTH_DISABLED ? 'open' : 'needs-account',
   email: null,
   profile: null,
+  profileState: 'loading',
   lastVerifiedAt: null,
   busy: false,
   error: null,
@@ -84,16 +93,17 @@ function patch(p: Partial<AuthState>): void {
 
 const online = () => (typeof navigator === 'undefined' ? true : navigator.onLine);
 
-function lastVerified(): number | null {
-  const v = Number(readLocal(VERIFIED_KEY));
-  return Number.isFinite(v) && v > 0 ? v : null;
+/** The session in storage (possibly expired), read without asking Supabase to renew it. */
+function storedSession(): StoredSession | null {
+  return parseStoredSession(readLocal(STORAGE_KEY));
 }
 
 /** A random id for this install; it never changes and carries no personal data. */
 export function deviceId(): string {
   let id = readLocal(DEVICE_KEY);
-  if (!id) {
-    id = (globalThis.crypto?.randomUUID?.() ?? `d${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/-/g, '');
+  if (!isValidDeviceId(id)) {
+    id = (globalThis.crypto?.randomUUID?.() ?? `d${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9]/g, '');
+    if (!isValidDeviceId(id)) id = `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`.replace(/[^A-Za-z0-9]/g, '').padEnd(8, '0');
     writeLocal(DEVICE_KEY, id);
   }
   return id;
@@ -104,19 +114,58 @@ function deviceName(): string {
   return p.includes('Mac') ? 'Mac' : p.includes('Win') ? 'Windows PC' : p.includes('Linux') ? 'Linux PC' : p;
 }
 
-async function loadProfile(): Promise<Profile | null> {
-  const sb = await getClient();
-  const { data } = await sb.from('profiles').select('display_name, avatar_url, affiliation, use_case, terms_version').maybeSingle();
-  return (data as Profile | null) ?? null;
+/** The profile row; `ok` is false when it could not be read (offline, server trouble): that is not "no profile". */
+async function loadProfile(): Promise<{ profile: Profile | null; ok: boolean }> {
+  try {
+    const sb = await getClient();
+    const query = sb.from('profiles').select('display_name, avatar_url, affiliation, use_case, terms_version').maybeSingle();
+    const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000));
+    const { data, error } = await Promise.race([query, timeout]);
+    if (error) return { profile: null, ok: false };
+    return { profile: (data as Profile | null) ?? null, ok: true };
+  } catch {
+    return { profile: null, ok: false };
+  }
 }
 
+async function refreshProfile(): Promise<void> {
+  patch({ profileState: 'loading' });
+  const r = await loadProfile();
+  patch(r.ok ? { profile: r.profile, profileState: 'ready' } : { profileState: 'failed' });
+}
+
+/** Try the profile again (the Account dialog offers it after a failed load). */
+export async function retryProfile(): Promise<void> {
+  await refreshProfile();
+}
+
+/** True from a click on "Sign in" until the session arrives (a silent restore is not a sign-in). */
+let explicitSignIn = false;
+
 /** Called with a verified session: remember it, load the profile, record this device. */
-async function onSignedIn(session: Session): Promise<void> {
+async function onSignedIn(session: Session, how: 'start' | 'event' = 'event'): Promise<void> {
   const now = Date.now();
-  writeLocal(VERIFIED_KEY, String(now));
-  patch({ email: session.user.email ?? null, lastVerifiedAt: now, gate: 'open', pendingEmail: null, error: null });
+  // the server vouched for the account when it issued this token (a signed claim), not "now"
+  const iat = tokenIssuedAt(session.access_token);
+  writeLocal(VERIFIED_KEY, String(iat ? iat * 1000 : now));
+  // hand the account to the engine (it refuses all work without one); see auth/engineLink.ts
   try {
-    patch({ profile: await loadProfile() });
+    await startEngineLink({
+      deviceId,
+      onRequired: (_reason, message) => patch({ gate: 'needs-account', error: message, info: null }),
+    });
+  } catch {
+    /* the engine link is retried at the next token refresh; signing in itself succeeded */
+  }
+  if (explicitSignIn) {
+    explicitSignIn = false;
+    engineSignedIn();
+  } else if (how === 'event') {
+    engineTokenRefreshed();
+  }
+  patch({ email: session.user.email ?? null, lastVerifiedAt: iat ? iat * 1000 : now, gate: 'open', pendingEmail: null, error: null, profileState: 'loading' });
+  await refreshProfile();
+  try {
     const sb = await getClient();
     await sb.rpc('register_device', {
       p_device_id: deviceId(),
@@ -131,7 +180,48 @@ async function onSignedIn(session: Session): Promise<void> {
 
 let started = false;
 
-/** Decide the first screen: a stored session opens the app (online or inside the offline grace). */
+/** How long start-up waits for the account server before it uses the stored session instead. supabase-js
+ * retries a failed renewal with growing pauses (minutes in all), which must not hold the window shut. */
+const SERVER_WAIT_MS = 8000;
+
+async function withinTime<T>(work: Promise<T>): Promise<{ value: T } | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), SERVER_WAIT_MS);
+  });
+  try {
+    const r = await Promise.race([work.then((value) => ({ value })), timeout]);
+    return r;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function engineHooks() {
+  return {
+    deviceId,
+    onRequired: (_reason: string, message: string) => patch({ gate: 'needs-account', error: message, info: null }),
+  };
+}
+
+/**
+ * Open the app on the strength of the STORED session (no network, or the server answered with
+ * something that is not a verdict about the account): the engine is given the stored token, which it
+ * accepts inside the 30-day allowance, and the app is marked "offline".
+ */
+async function openWithStoredSession(stored: StoredSession, gate: 'open-offline' | 'reconnect'): Promise<void> {
+  const iat = tokenIssuedAt(stored.access_token);
+  patch({ email: stored.user?.email ?? null, lastVerifiedAt: iat ? iat * 1000 : null, gate });
+  if (gate !== 'open-offline') return;
+  try {
+    await startEngineLink(engineHooks());
+  } catch {
+    /* retried when the connection comes back */
+  }
+  patch({ profileState: 'failed' }); // the profile needs the server; the app does not wait for it
+}
+
+/** Decide the first screen: a stored session opens the app (online or inside the offline allowance). */
 export async function initAuth(): Promise<void> {
   if (AUTH_DISABLED) {
     patch({ ready: true, gate: 'open' });
@@ -140,43 +230,62 @@ export async function initAuth(): Promise<void> {
   if (started) return;
   started = true;
   try {
+    if (hasPendingSignOut()) void startEngineLink(engineHooks()).catch(() => {}); // delivers an undelivered sign-out
     const sb = await getClient();
     sb.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
+        engineSignedOut();
         patch({ gate: 'needs-account', email: null, profile: null });
       } else if (session && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
         void onSignedIn(session);
       }
     });
-    const { data } = await sb.auth.getSession();
-    if (data.session && online()) {
-      // getUser asks the server, so a deleted or disabled account is noticed
-      const { data: u, error } = await sb.auth.getUser();
-      if (!error && u.user) await onSignedIn(data.session);
-      else if (error && /fetch|network/i.test(error.message)) offlineOrReconnect(true);
-      else {
-        await sb.auth.signOut({ scope: 'local' });
-        patch({ gate: 'needs-account' });
-      }
-    } else if (data.session) {
-      offlineOrReconnect(true, data.session.user.email ?? null);
-    } else {
+    if (typeof window !== 'undefined') {
+      // back online while the app runs on a stored session: renew it (this also leaves "offline")
+      window.addEventListener('online', () => {
+        if (get(auth).gate === 'open-offline') void sb.auth.getSession();
+      });
+    }
+    const stored = storedSession();
+    const plan = planStartup({ stored, online: online(), nowMs: Date.now(), graceDays: OFFLINE_GRACE_DAYS });
+    if (plan.kind === 'needs-account') {
       patch({ gate: 'needs-account' });
+    } else if (plan.kind === 'offline') {
+      await openWithStoredSession(stored!, plan.gate);
+    } else {
+      // online: renew if needed and ask the server (getUser notices a deleted or disabled account)
+      const first = await withinTime(sb.auth.getSession());
+      const { data, error } = first?.value ?? { data: { session: null }, error: { message: 'timeout', status: 0 } as any };
+      if (data.session) {
+        const second = await withinTime(sb.auth.getUser());
+        const { data: u, error: uerr } = second?.value ?? { data: { user: null }, error: { message: 'timeout', status: 0 } as any };
+        if (!uerr && u.user) await onSignedIn(data.session, 'start');
+        else if (uerr && isDefiniteAuthFailure(uerr)) {
+          await sb.auth.signOut({ scope: 'local' });
+          patch({ gate: 'needs-account' });
+        } else {
+          const fallback = planStartup({ stored: storedSession() ?? stored, online: false, nowMs: Date.now(), graceDays: OFFLINE_GRACE_DAYS });
+          if (fallback.kind === 'offline') await openWithStoredSession((storedSession() ?? stored)!, fallback.gate);
+          else patch({ gate: 'needs-account' });
+        }
+      } else if (isDefiniteAuthFailure(error) || !storedSession()) {
+        patch({ gate: 'needs-account' }); // the server refused the session (supabase-js dropped it)
+      } else {
+        // the renewal failed for another reason (5xx, 429, a portal page): that is not a verdict
+        const again = storedSession()!;
+        const fallback = planStartup({ stored: again, online: false, nowMs: Date.now(), graceDays: OFFLINE_GRACE_DAYS });
+        if (fallback.kind === 'offline') await openWithStoredSession(again, fallback.gate);
+        else patch({ gate: 'needs-account' });
+      }
     }
   } catch {
-    offlineOrReconnect(false);
+    const again = storedSession();
+    const fallback = planStartup({ stored: again, online: false, nowMs: Date.now(), graceDays: OFFLINE_GRACE_DAYS });
+    if (again && fallback.kind === 'offline') await openWithStoredSession(again, fallback.gate);
+    else patch({ gate: 'needs-account' });
   } finally {
     patch({ ready: true });
   }
-}
-
-function offlineOrReconnect(hasSession: boolean, email: string | null = null): void {
-  const last = lastVerified();
-  patch({
-    gate: gateState({ hasSession, lastVerifiedAt: last, now: Date.now(), online: false, graceDays: OFFLINE_GRACE_DAYS }),
-    lastVerifiedAt: last,
-    email,
-  });
 }
 
 async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
@@ -184,6 +293,7 @@ async function run<T>(work: () => Promise<T>): Promise<T | undefined> {
   try {
     return await work();
   } catch (e: any) {
+    explicitSignIn = false; // a failed attempt is not a sign-in
     patch({ error: friendlyAuthError(e?.message ?? String(e)) });
     return undefined;
   } finally {
@@ -222,6 +332,7 @@ export async function signUp(i: SignUpInput): Promise<void> {
 
 export async function confirmCode(email: string, code: string): Promise<void> {
   await run(async () => {
+    explicitSignIn = true;
     const sb = await getClient();
     const { error } = await sb.auth.verifyOtp({ email, token: code.replace(/\s/g, ''), type: 'signup' });
     if (error) throw error;
@@ -239,6 +350,7 @@ export async function resendCode(email: string): Promise<void> {
 
 export async function signIn(email: string, password: string): Promise<void> {
   await run(async () => {
+    explicitSignIn = true;
     const sb = await getClient();
     const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     if (error) {
@@ -249,10 +361,12 @@ export async function signIn(email: string, password: string): Promise<void> {
 }
 
 export async function signInWith(provider: OAuthProvider): Promise<void> {
+  explicitSignIn = true;
   await run(() => signInWithProvider(provider));
 }
 
 export async function abortOAuth(): Promise<void> {
+  explicitSignIn = false;
   await cancelOAuth();
   patch({ busy: false });
 }
@@ -272,6 +386,7 @@ export async function resetPassword(email: string): Promise<boolean> {
 /** Checks the code from the reset e-mail, then sets the new password (which also signs in). */
 export async function completeReset(email: string, code: string, newPassword: string): Promise<boolean> {
   const ok = await run(async () => {
+    explicitSignIn = true;
     const sb = await getClient();
     const { error } = await sb.auth.verifyOtp({ email: email.trim(), token: code.replace(/\s/g, ''), type: 'recovery' });
     if (error) throw error;
@@ -284,6 +399,7 @@ export async function completeReset(email: string, code: string, newPassword: st
 
 export async function signOut(): Promise<void> {
   await run(async () => {
+    engineSignedOut(); // before the session is gone: the engine records the sign-out and clears the shared file
     const sb = await getClient();
     await sb.auth.signOut();
     patch({ gate: 'needs-account', email: null, profile: null, pendingEmail: null });
@@ -306,7 +422,7 @@ export async function saveProfile(p: { display_name: string; affiliation: string
       })
       .eq('id', u.user.id);
     if (error) throw error;
-    patch({ profile: await loadProfile() });
+    await refreshProfile();
     return true;
   });
   return !!ok;
@@ -316,6 +432,26 @@ export async function listDevices(): Promise<DeviceRow[]> {
   const sb = await getClient();
   const { data } = await sb.from('devices').select('id, device_id, name, platform, last_seen').order('last_seen', { ascending: false });
   return (data as DeviceRow[]) ?? [];
+}
+
+export interface ActivityRow {
+  id: number;
+  occurred_at: string;
+  surface: string;
+  event: string;
+  detail: Record<string, string>;
+}
+
+/** The last 100 events this account has sent (the log is readable by its owner only; docs/PRIVACY.md). */
+export async function listActivity(): Promise<ActivityRow[]> {
+  const sb = await getClient();
+  const { data, error } = await sb
+    .from('activity_events')
+    .select('id, occurred_at, surface, event, detail')
+    .order('occurred_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data as ActivityRow[]) ?? [];
 }
 
 export async function removeDevice(id: string): Promise<void> {
@@ -328,6 +464,7 @@ export async function deleteAccount(): Promise<boolean> {
     const sb = await getClient();
     const { error } = await sb.rpc('delete_my_account');
     if (error) throw error;
+    engineSignedOut();
     await sb.auth.signOut({ scope: 'local' });
     patch({ gate: 'needs-account', email: null, profile: null, pendingEmail: null });
     return true;
@@ -338,7 +475,9 @@ export async function deleteAccount(): Promise<boolean> {
 /** True when the profile still lacks what sign-up asks for (OAuth users skip the sign-up form). */
 export function profileIncomplete(s: AuthState): boolean {
   const p = s.profile;
-  return s.gate === 'open' && !!s.email && (!p || !p.affiliation || p.terms_version !== TERMS_VERSION);
+  // only once the profile has really been read: while it loads, or when it could not be read (offline,
+  // server trouble), nobody is held at "One more step" (the Account dialog offers a retry)
+  return s.gate === 'open' && !!s.email && s.profileState === 'ready' && (!p || !p.affiliation || p.terms_version !== TERMS_VERSION);
 }
 
 export const authSnapshot = () => get(auth);
