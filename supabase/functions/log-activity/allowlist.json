@@ -1,0 +1,26 @@
+{
+  "_comment": "One source of truth for what the log-activity function accepts. It must equal the allow-list in python/engine/account/activity.py (EVENTS, SURFACES, the value and version patterns) and in supabase/migrations/20261021000000_activity.sql; python/tests/test_account_activity_allowlist.py fails when they drift. Feature level only: no file names, paths, places or free text.",
+  "events": {
+    "app_start": [],
+    "sign_in": [],
+    "sign_out": [],
+    "command": ["command"],
+    "module_run": ["module"],
+    "file_opened": ["format"],
+    "export": ["format"],
+    "mosaic_run": ["type"],
+    "winds_run": ["type"],
+    "animate_run": ["type"],
+    "qpe_run": ["type"],
+    "error": ["class"]
+  },
+  "surfaces": ["app", "cli", "api", "engine"],
+  "os": ["macOS", "Windows", "Linux", "Web", "Other"],
+  "value_pattern": "^[A-Za-z0-9_ +-]{1,64}$",
+  "device_pattern": "^[A-Za-z0-9]{8,80}$",
+  "version_pattern": "^[0-9]{1,4}(\\.[0-9A-Za-z+_-]{1,12}){0,3}$",
+  "version_unknown": "unknown",
+  "max_detail_bytes": 200,
+  "max_event_name": 40,
+  "max_batch": 100
+}

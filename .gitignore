@@ -40,3 +40,6 @@ docs/changes/unreleased.md
 dist-analyze/
 dist-perf/
 dist-prof/
+
+# access-token signing key (docs/ACCOUNTS.md): the private half never belongs in git
+*entitlement*private*.pem
