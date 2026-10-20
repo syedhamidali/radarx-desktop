@@ -9,6 +9,11 @@ name: Release
 # manual builds also create and sign the updater artifacts, and tauri-action publishes latest.json next
 # to the installers. Without the secret (forks, or before the key is set up) and on pull requests the
 # build is the same as before, just unsigned: it never fails because a secret is missing.
+#
+# Download channel (docs/RELEASING.md): on a tag build the `downloads` job copies the draft release's
+# files to the download host (Cloudflare R2) as a CANDIDATE under radarx/v<version>/. It is additive:
+# the draft GitHub release is created exactly as before, and without the R2 secrets the job only
+# prints a notice. Nothing goes live until the "Promote release" workflow is run for the tag.
 
 on:
   push:
@@ -173,3 +178,115 @@ jobs:
             src-tauri/target/release/bundle/nsis/*.exe.sig
             src-tauri/target/release/bundle/macos/*.app.tar.gz
             src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+
+  # ---------------------------------------------------------------------------------------------
+  # Download channel: upload the finished draft release to the download host as a candidate.
+  # Writes only radarx/v<version>/ (never radarx/latest.json or radarx/releases.json: those belong to
+  # promote-release.yml). Skips itself, successfully, on forks and wherever the R2 secrets are absent.
+  # ---------------------------------------------------------------------------------------------
+  downloads:
+    name: Upload candidate to the download host
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success'
+    runs-on: ubuntu-latest
+    # Draft releases are only visible to a token with push access, so reading the draft needs
+    # contents: write here (this job never writes to the repository).
+    permissions:
+      contents: write
+    concurrency:
+      group: downloads-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Are the download-host secrets set?
+        id: gate
+        shell: bash
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          missing=""
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET; do
+            if [ -z "${!name}" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Download host upload skipped: secret(s) not set:$missing. The draft GitHub release is unaffected. See docs/RELEASING.md."
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        if: steps.gate.outputs.enabled == 'true'
+        with:
+          python-version: "3.12"
+
+      # The files the build jobs attached to the draft release (installers, .sig files, latest.json).
+      # `gh release download` finds drafts by tag on current gh versions; if it does not, look the
+      # draft up in the release list and download its assets by id.
+      - name: Download the draft release files
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir staging
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir staging --clobber; then
+            echo "gh release download did not find the draft by tag; looking in the release list"
+            id="$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+              --jq ".[] | select(.tag_name == \"$TAG\") | .id" | head -n 1)"
+            if [ -z "$id" ]; then
+              echo "::error::No GitHub release (draft or published) found for $TAG"
+              exit 1
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/releases/$id/assets" --paginate \
+              --jq '.[] | "\(.id) \(.name)"' |
+            while read -r asset_id asset_name; do
+              gh api -H "Accept: application/octet-stream" \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" > "staging/$asset_name"
+            done
+          fi
+          echo "Downloaded $(find staging -type f | wc -l) files:"
+          ls -l staging
+
+      # Validate the update manifest (signatures present, https, version = tag), point every url at
+      # the download host, keep the signatures as they are, and write SHA256SUMS.
+      - name: Prepare the candidate
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: python scripts/release/rewrite_latest.py --tag "$TAG" --dir staging
+
+      # Upload under radarx/<tag>/ with the AWS CLI against R2's S3 endpoint, then read it back and
+      # check every SHA-256. The access key reaches the CLI only through the environment.
+      - name: Upload and verify the candidate
+        if: steps.gate.outputs.enabled == 'true'
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          # R2 does not take the newer default checksum headers of the AWS CLI on every call.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          python scripts/release/upload_version.py --tag "$TAG" --dir staging
+          python scripts/release/promote.py verify --tag "$TAG"
+          {
+            echo "### Candidate uploaded"
+            echo ""
+            echo "\`$TAG\` is on the download host but **not live**. Check it, then run the"
+            echo "**Promote release** workflow with tag \`$TAG\` to publish it (docs/RELEASING.md)."
+          } >> "$GITHUB_STEP_SUMMARY"

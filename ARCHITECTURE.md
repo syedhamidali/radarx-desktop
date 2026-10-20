@@ -164,8 +164,10 @@ radarx-desktop/
 | Linux | `.deb`, `.rpm` | uses the system WebKitGTK |
 | Engine | PyInstaller one-folder bundle inside the app resources | built on each OS by the Release workflow |
 
-Updates: signed Tauri updater artifacts on GitHub Releases for macOS and Windows; Linux packages are told that a
-new version exists. Details: [docs/UPDATES.md](docs/UPDATES.md).
+Updates: signed Tauri updater artifacts, served from the download host (Cloudflare R2 behind
+`downloads.labshope.com`) for macOS and Windows; Linux packages are told that a new version exists. A tag build uploads
+a candidate and the Promote release workflow makes it live. Details: [docs/UPDATES.md](docs/UPDATES.md),
+[docs/RELEASING.md](docs/RELEASING.md).
 
 ## Where the work is going
 

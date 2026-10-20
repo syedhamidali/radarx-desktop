@@ -5,7 +5,7 @@
 
 ## 0.3.0
 
-- **Updates:** the app can find, verify and install new versions by itself (signed updates from GitHub Releases;
+- **Updates:** the app can find, verify and install new versions by itself (signed updates from the download server;
   you stay in control: check on launch, ask first, never during a running job). See {doc}`UPDATES`.
 - **Command line and Python:** `rxd` (info, plot, run, pipeline, mosaic, winds, cells, export, check, sounding, qpe,
   basin, animate) and `from engine import api`, with bulk-job recipes ({doc}`CLI`, {doc}`BULK`, {doc}`API`).

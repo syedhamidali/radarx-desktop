@@ -24,8 +24,7 @@ import urllib.request
 from pathlib import Path
 
 USER_AGENT = (
-    "radarx-desktop-storm-clip/0.1 (non-commercial research tool; "
-    "https://radarx.labshope.com)"
+    "radarx-desktop-storm-clip/0.1 (non-commercial research tool; https://radarx.labshope.com)"
 )
 
 SOURCES: dict[str, dict[str, str]] = {
