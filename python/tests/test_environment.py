@@ -790,3 +790,25 @@ def test_iem_raob_real_sounding(tmp_path: Path) -> None:  # pragma: no cover - n
     snd = sounding.read_sounding_file(res.paths[0], "iem_json")
     assert snd.station and snd.profile.sizes["height"] > 20
     assert urllib.request.getproxies() is not None
+
+
+@pytest.mark.parametrize("status", [503, 404])
+def test_client_closes_the_error_response_it_keeps(status: int) -> None:
+    """An HTTPError owns the open response; keeping it for the retries must not hold the socket."""
+    import io
+    import urllib.error
+
+    closed: list[bool] = []
+
+    class Body(io.BytesIO):
+        def close(self) -> None:
+            closed.append(True)
+            super().close()
+
+    def opener(req, timeout):
+        raise urllib.error.HTTPError(req.full_url, status, "scripted", {}, Body(b"error page"))
+
+    client = HttpClient(opener=opener, sleep=Sleeper(), min_interval_s=0, retries=1)
+    with pytest.raises(FetchFailed):
+        client.get_bytes(BASE_URL + "a.bin")
+    assert len(closed) >= 2 if status == 503 else len(closed) >= 1

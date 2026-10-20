@@ -945,7 +945,7 @@
     <button class="rhi-btn" onclick={exportPng} disabled={!field} title="Save the picture with its colour bar and a caption saying what was applied" data-testid="rhi-save">Save PNG</button>
   </div>
 
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
   <div
     class="rhi-plot"
     class:dragging

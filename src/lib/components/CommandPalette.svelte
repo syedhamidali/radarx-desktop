@@ -253,8 +253,7 @@
 </script>
 
 {#if visible}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="cmd-backdrop" on:click={handleBackdropClick}>
     <div class="cmd-palette" role="dialog" tabindex="-1" aria-modal="true" aria-label="Command palette" on:keydown={handleKeyDown} use:focusTrap={{ initial: '.cmd-input' }}>
       <div class="cmd-input-wrap">
@@ -284,8 +283,7 @@
           <div class="cmd-empty" role="status">No matching commands</div>
         {:else}
           {#each filtered as action, i}
-            <!-- svelte-ignore a11y-click-events-have-key-events -->
-            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
             <div
               class="cmd-item"
               class:selected={i === selectedIndex}

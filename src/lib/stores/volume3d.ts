@@ -26,9 +26,9 @@ import {
   type WindVolume,
 } from '../utils/cartesianVolume';
 
-export type Source3d = 'radar' | 'mosaic' | 'wind';
-
-export const source3d = writable<Source3d>('radar');
+import { source3d } from './source3d';
+export { source3d };
+export type { Source3d } from './source3d';
 export const mosaicVolume = writable<CartVolume | null>(null);
 export const windVolume = writable<WindVolume | null>(null);
 export const volume3dLoading = writable<{ mosaic: boolean; wind: boolean }>({ mosaic: false, wind: false });

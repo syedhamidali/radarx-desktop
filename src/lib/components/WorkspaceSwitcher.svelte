@@ -155,7 +155,7 @@
 
 <svelte:window on:click={handleClickOutside} on:keydown={handleKeydown} />
 
-<!-- svelte-ignore a11y-no-static-element-interactions -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 <div class="workspace-switcher" on:click|stopPropagation>
   <button class="ws-trigger" on:click={toggle} title="Switch workspace" aria-haspopup="menu" aria-expanded={dropdownOpen}>
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

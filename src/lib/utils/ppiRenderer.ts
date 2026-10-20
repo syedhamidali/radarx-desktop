@@ -25,6 +25,7 @@ import { perfStats } from '../stores/perfStats';
 import { buildSharpMesh, buildSmoothMesh, type SmoothMesh } from './meshBuilder';
 import type { MeshWorkerOutput } from '../workers/meshWorker';
 import { styleFor } from './variableStyles';
+import { safeRange } from './colorRange';
 import { GLSL_VALUE_MASK, MASK_OFF, maskVec, type MaskVec4 } from './valueMaskGl';
 import type { ValueMask } from '../stores/valueMask';
 
@@ -1138,6 +1139,8 @@ export class PPIRenderer {
    * nothing since the last draw are no-ops.
    */
   render(vmin: number, vmax: number): void {
+    // the shaders divide by (vmax - vmin): an empty or non-finite range would blank the sweep
+    [vmin, vmax] = safeRange(vmin, vmax);
     const changed = !this.hasRenderParams || vmin !== this.lastVmin || vmax !== this.lastVmax;
     this.lastVmin = vmin;
     this.lastVmax = vmax;

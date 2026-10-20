@@ -44,7 +44,10 @@ def main():
         bench = Bench(page, cdp)
         check("first-run tour appears", page.locator("[aria-label='Welcome tour']").count() > 0 or page.get_by_text("Skip", exact=True).count() > 0)
         bench.skip_tour()
-        page.wait_for_timeout(500)
+        try:  # it fades out (200 ms) and the machine may be busy: wait for it instead of guessing a delay
+            page.wait_for_selector("[aria-label='Welcome tour']", state="detached", timeout=4000)
+        except Exception:
+            pass
         check("tour closes", page.locator("[aria-label='Welcome tour']").count() == 0)
         check("welcome screen", "Open" in page.inner_text("body"))
         page.wait_for_timeout(3000)  # idle prefetch of the panels

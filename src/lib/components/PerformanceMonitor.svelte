@@ -125,7 +125,7 @@
   <div class="perf-monitor">
     <div class="perf-header">
       <span class="perf-title">Performance</span>
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
       <span class="perf-close" on:click={toggle}>x</span>
     </div>
 

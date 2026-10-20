@@ -276,6 +276,42 @@ class TestProvenance:
         assert want in provenance.redact_path(raw)
         assert "/Users/me" not in provenance.redact_path(raw)
 
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("s3://noaa-nexrad-level2/2013/05/20/KTLX/KTLX20130520_201643_V06.gz",) * 2,
+            ("https://doi.org/10.1175/x", "https://doi.org/10.1175/x"),
+            (
+                "from https://host.example/data/x.nc (accessed)",
+                "from https://host.example/data/x.nc (accessed)",
+            ),
+            (
+                "https://u:secret@host.example/a/b.nc?X-Amz-Signature=abc#frag",
+                "https://host.example/a/b.nc",
+            ),
+            ("file:///Users/me/data/x.nc", "x.nc"),
+            ("/Users/me/a.nc then s3://bucket/k/f.gz", "a.nc then s3://bucket/k/f.gz"),
+        ],
+    )
+    def test_redact_path_keeps_urls(self, raw, want):
+        """A URL is the origin of the data: it was cut to ``https:x`` and lost its host."""
+        assert provenance.redact_path(raw) == want
+
+    @pytest.mark.parametrize(
+        ("raw", "want"),
+        [
+            ("2013-05-20T20:16:43+02:00", "2013-05-20T18:16:43Z"),
+            ("2013-05-20 20:16:43-05:00", "2013-05-21T01:16:43Z"),
+            ("2013-05-20T20:16:43.5+0530", "2013-05-20T14:46:43Z"),
+            ("2013-05-20T00:30:00+01:00", "2013-05-19T23:30:00Z"),
+            ("2013-05-20T20:16:43+00:00", "2013-05-20T20:16:43Z"),
+            ("2013-05-20T20:16:43Z", "2013-05-20T20:16:43Z"),
+        ],
+    )
+    def test_iso_utc_converts_a_stated_offset(self, raw, want):
+        """A time with an offset is converted to UTC (it was returned unchanged as if UTC)."""
+        assert provenance.iso_utc(raw) == want
+
     def test_history_and_placeholders(self):
         assert provenance.append_history("None", "x") == "x"
         assert provenance.append_history("a", "b") == "a\nb"

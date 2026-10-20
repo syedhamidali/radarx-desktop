@@ -86,6 +86,96 @@ def _mask_no_echo(values: np.ndarray, variable: str) -> np.ndarray:
     return np.where(values <= _NO_ECHO_DBZ, np.float32(np.nan), values)
 
 
+def _polar_axes(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray] | None:
+    """``(azimuth, range)`` coordinates of a 2-D ``(azimuth, range)`` sweep, else ``None``."""
+    if da.dims != ("azimuth", "range") or "azimuth" not in da.coords or "range" not in da.coords:
+        return None
+    az = np.asarray(da.coords["azimuth"].values, dtype=np.float64)
+    rng = np.asarray(da.coords["range"].values, dtype=np.float64)
+    if az.size == 0 or rng.size == 0 or not (np.isfinite(az).all() and np.isfinite(rng).all()):
+        return None
+    return az, rng
+
+
+def _grid_axes(
+    values: np.ndarray, axes: tuple[np.ndarray, np.ndarray] | None
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """*axes* if they describe the shape of *values*, else ``None``."""
+    ok = axes is not None and values.shape == (axes[0].size, axes[1].size)
+    return axes if ok else None
+
+
+def _ray_step(az: np.ndarray) -> float:
+    """Typical angle between neighbouring rays (deg); 1 for a single ray."""
+    if az.size < 2:
+        return 1.0
+    s = np.sort(np.mod(az, 360.0))
+    gaps = np.diff(np.concatenate([s, [s[0] + 360.0]]))
+    gaps = gaps[gaps > 1e-9]
+    return float(np.median(gaps)) if gaps.size else 1.0
+
+
+def _gate_step(rng: np.ndarray) -> float:
+    """Typical gate spacing (m); 1 for a single gate."""
+    if rng.size < 2:
+        return 1.0
+    d = np.abs(np.diff(np.sort(rng)))
+    d = d[d > 1e-9]
+    return float(np.median(d)) if d.size else 1.0
+
+
+def _on_grid(
+    values: np.ndarray,
+    src: tuple[np.ndarray, np.ndarray],
+    ref: tuple[np.ndarray, np.ndarray],
+) -> np.ndarray:
+    """*values* (on the ``src`` rays and gates) on the ``ref`` rays and gates.
+
+    Two scans never have the same ray angles, and may have different numbers of rays or gates
+    (0.5 and 1 degree, 250 and 1000 m). Index ``i`` of one is then not the ray ``i`` of the
+    other. Volumes whose grids agree to within half a step where they overlap are used as they
+    are (nothing is resampled); otherwise every ``ref`` ray and gate takes the nearest ray
+    (circular) and gate of the source, and is missing where the source has no ray within 1.5
+    steps or no gate within half a step.
+    """
+    az_s, rng_s = src
+    az_r, rng_r = ref
+    # Grids that agree where they overlap (the same scan strategy, one maybe a sector or shorter):
+    # the caller trims to the common part, nothing is resampled.
+    m_az, m_rng = min(az_s.size, az_r.size), min(rng_s.size, rng_r.size)
+    d_az = np.abs((az_s[:m_az] - az_r[:m_az] + 180.0) % 360.0 - 180.0)
+    if d_az.max() <= 0.5 * _ray_step(az_r) and np.abs(
+        rng_s[:m_rng] - rng_r[:m_rng]
+    ).max() <= 0.5 * _gate_step(rng_r):
+        return values
+
+    order = np.argsort(np.mod(az_s, 360.0))
+    a = np.mod(az_s, 360.0)[order]
+    q = np.mod(az_r, 360.0)
+    hi = np.searchsorted(a, q) % a.size
+    lo = (hi - 1) % a.size
+    d_lo = np.abs((q - a[lo] + 180.0) % 360.0 - 180.0)
+    d_hi = np.abs((q - a[hi] + 180.0) % 360.0 - 180.0)
+    use_hi = d_hi < d_lo
+    ray = order[np.where(use_hi, hi, lo)]
+    ray_ok = np.where(use_hi, d_hi, d_lo) <= 1.5 * _ray_step(az_s)
+
+    go = np.argsort(rng_s)
+    g = rng_s[go]
+    pos = np.clip(np.searchsorted(g, rng_r), 1, max(g.size - 1, 1)) if g.size > 1 else 0
+    if g.size > 1:
+        left = np.abs(rng_r - g[pos - 1]) <= np.abs(g[pos] - rng_r)
+        gate = go[np.where(left, pos - 1, pos)]
+    else:
+        gate = np.zeros(rng_r.size, dtype=np.intp)
+    gate_ok = np.abs(rng_s[gate] - rng_r) <= 0.5 * _gate_step(rng_s) * (1 + 1e-9)
+
+    out = np.full((az_r.size, rng_r.size), np.nan, dtype=np.float32)
+    sel = values[np.ix_(ray, gate)].astype(np.float32, copy=False)
+    out[np.ix_(ray_ok, gate_ok)] = sel[np.ix_(ray_ok, gate_ok)]
+    return out
+
+
 def compute_difference(
     reader1: Any,
     reader2: Any,
@@ -115,7 +205,16 @@ def compute_difference(
     v1 = _mask_no_echo(np.asarray(da1.values, dtype=np.float32), variable)
     v2 = _mask_no_echo(np.asarray(da2.values, dtype=np.float32), variable)
 
-    # Handle shape mismatch by trimming to smallest common shape
+    # The second scan is put on the rays and gates of the first (a no-op when they agree).
+    # Without coordinates the arrays are trimmed to the smallest common shape instead.
+    axes1, axes2 = _polar_axes(da1), _polar_axes(da2)
+    if (
+        axes1 is not None
+        and axes2 is not None
+        and v1.shape == (axes1[0].size, axes1[1].size)
+        and v2.shape == (axes2[0].size, axes2[1].size)
+    ):
+        v2 = _on_grid(v2, axes2, axes1)
     min_az = min(v1.shape[0], v2.shape[0])
     min_rng = min(v1.shape[1], v2.shape[1])
 
@@ -197,12 +296,14 @@ def compute_accumulation(
     # not O(n_files x sweep)); NaN means "no echo" and is skipped.
     acc: np.ndarray | None = None
     cnt: np.ndarray | None = None
+    ref_axes: tuple[np.ndarray, np.ndarray] | None = None
     n_files = 0
     errors: list[str] = []
 
     for fid, reader in readers.items():
         try:
-            arr = np.asarray(reader.get_sweep_data(sweep, variable).values)
+            da = reader.get_sweep_data(sweep, variable)
+            arr = np.asarray(da.values)
         except Exception as exc:
             logger.debug("Skipping file %s in accumulation: %s", fid, exc)
             errors.append(f"{fid}: {exc}")
@@ -211,11 +312,16 @@ def compute_accumulation(
             errors.append(f"{fid}: expected a 2-D sweep, got {arr.ndim}-D")
             continue
 
+        axes = _polar_axes(da)
         if acc is None:
             acc = np.full(arr.shape, np.nan if method == "max" else 0.0, dtype=np.float64)
             cnt = np.zeros(arr.shape, dtype=np.int32)
+            ref_axes = _grid_axes(arr, axes)
+        elif ref_axes is not None and _grid_axes(arr, axes) is not None:
+            # Put the scan on the rays and gates of the first one (a no-op when they agree)
+            arr = _on_grid(arr, axes, ref_axes)  # type: ignore[arg-type]
         else:
-            # Align to the smallest common shape
+            # Without coordinates: align to the smallest common shape
             min_az = min(acc.shape[0], arr.shape[0])
             min_rng = min(acc.shape[1], arr.shape[1])
             acc, cnt = acc[:min_az, :min_rng], cnt[:min_az, :min_rng]  # type: ignore[index]

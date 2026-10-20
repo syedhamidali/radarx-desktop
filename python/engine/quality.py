@@ -357,6 +357,13 @@ class _Sweep:
 # ---------------------------------------------------------------------------
 
 
+def _finite_mean(raw: Any) -> float:
+    """``np.nanmean`` that gives NaN, not a RuntimeWarning, when every value is missing."""
+    a = np.asarray(raw, dtype=float)
+    a = a[~np.isnan(a)]
+    return float(a.mean()) if a.size else float("nan")
+
+
 def radar_band(tree: xr.DataTree, ds: xr.Dataset | None, fmt: str | None) -> tuple[str | None, str]:
     """``("S"|"C"|"X"|None, how)`` from the file's frequency / wavelength, else the format."""
     freq = None
@@ -367,7 +374,7 @@ def radar_band(tree: xr.DataTree, ds: xr.Dataset | None, fmt: str | None) -> tup
                 if key in src:
                     try:
                         raw = src[key].values if hasattr(src[key], "values") else src[key]
-                        val = float(np.nanmean(np.asarray(raw, dtype=float)))
+                        val = _finite_mean(raw)
                     except (TypeError, ValueError):
                         continue
                     if math.isfinite(val) and val > 0:
@@ -382,7 +389,7 @@ def radar_band(tree: xr.DataTree, ds: xr.Dataset | None, fmt: str | None) -> tup
                 if key in src:
                     try:
                         raw = src[key].values if hasattr(src[key], "values") else src[key]
-                        w = float(np.nanmean(np.asarray(raw, dtype=float)))
+                        w = _finite_mean(raw)
                     except (TypeError, ValueError):
                         continue
                     if math.isfinite(w) and w > 0:
