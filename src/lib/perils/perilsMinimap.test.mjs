@@ -62,7 +62,7 @@ test('the immersive grade takes the labels, arrows and cards out of the tornado 
   }
   assert.equal(crossfade(shots, LAYER_TABLE.immersion, 58), 1);
   assert.equal(crossfade(shots, LAYER_TABLE.immersion, 30), 0);
-  assert.equal(crossfade(shots, LAYER_TABLE.funnel, 58), 1);
+  assert.equal(crossfade(shots, LAYER_TABLE.sim, 58), 1);
   assert.ok(crossfade(shots, LAYER_TABLE.minimap, 58) > 0.3 && crossfade(shots, LAYER_TABLE.minimap, 58) < 1);
   assert.equal(crossfade(shots, LAYER_TABLE.minimap, 20), 1);
   assert.equal(crossfade(shots, LAYER_TABLE.minimap, 110), 1);

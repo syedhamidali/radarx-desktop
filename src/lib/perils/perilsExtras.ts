@@ -25,6 +25,7 @@ import { type HudModel, drawCompass, drawTopLeft, drawLmaPanel, drawEnvPanel, ty
 import { activeCaption, captionAlpha, captionOf, scheduleCaptions, type ScheduledCaption, type ScienceEvent } from './perilsCaptions';
 import { surfaceParcel } from './perilsThermo';
 import { drawMinimap, hfovFromTan, type MinimapState } from './perilsMinimap';
+import { SimTornado, simDistanceWeight, type SimSeedFile, type SimGeoPose } from './perilsTornadoSim';
 import { ParticleTornado, drawParentCirculation, vortexFrame, type TornadoRenderer, type VortexFrame } from './perilsVortex';
 import { provColour } from './perilsStyle';
 import { fmtOffset, clockUtc } from './perilsData';
@@ -43,6 +44,10 @@ export interface PerilsOptions {
   fov?: number;
   /** The tornado drawn in the scene (default: the particle funnel); a physically based tornado implements the same interface. */
   tornado?: TornadoRenderer;
+  /** The tornado simulation of the tornado shot (needs tornado_seed.json next to perils.json); false = the particle funnel only. */
+  sim?: boolean;
+  /** Internal render scale of the simulation (1 = full size; less for drafts). */
+  simScale?: number;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -84,6 +89,10 @@ export class PerilsExtras implements ClipExtras {
   private pending: Promise<void> | null = null;
   private lastNearest: string | null = null;
   private tornado: TornadoRenderer;
+  private sim: SimTornado | null = null;
+  /** Opacity of the simulation in the current frame (0 away from the tornado). */
+  simW = 0;
+  private simPrev: { td: number; pose: SimGeoPose } | null = null;
   private hudCtx: CanvasRenderingContext2D | null = null;
   private vfCache: { td: number; imm: number; vf: VortexFrame | null } | null = null;
   groundMissing = true;
@@ -224,6 +233,31 @@ export class PerilsExtras implements ClipExtras {
     if (Number.isFinite(lo)) this.tRange = [lo, Math.max(hi, lo + 1)];
     this.composeGround({ t: 0, td: 0, k: 0, s: 0, vexag: 1, eye: [0, 0, 0], yawDeg: 0, pitchDeg: 0 });
     this.mountInset();
+    await this.initSim();
+  }
+
+  /** The simulated tornado: its seed (tornado_seed.json), the shot span and the camera path, then the scene. */
+  private async initSim(): Promise<void> {
+    if (this.opts.sim === false) return;
+    const shot = this.director.tl.shots.find((q) => q.name === 'tornado');
+    if (!shot) return;
+    let file: SimSeedFile;
+    try {
+      const r = await fetch(`${this.base}/tornado_seed.json`);
+      if (!r.ok) return;
+      file = (await r.json()) as SimSeedFile;
+    } catch {
+      return;
+    }
+    const geoAt = (t: number): SimGeoPose => {
+      const p = this.director.pose(t);
+      return { lat: p.lat, lon: p.lon, altM: p.altM, headingDeg: p.yawDeg, pitchDeg: p.pitchDeg, fovDeg: p.fov ?? 50 };
+    };
+    const path: { tc: number; td: number; geo: SimGeoPose }[] = [];
+    for (let t = shot.t0 - 1; t <= shot.t1 + 1; t += 0.5) path.push({ tc: t, td: this.director.dataTime(t), geo: geoAt(t) });
+    this.sim = new SimTornado();
+    await this.sim.init(file, [this.director.dataTime(shot.t0), this.director.dataTime(shot.t1)], { width: window.innerWidth, height: window.innerHeight, scale: this.opts.simScale }, path);
+    if (!this.sim.ready) console.warn('[perils] tornado simulation not available:', this.sim.error);
   }
 
   /** Ground box: the MRMS extent when there is one, else a generous square around the grid. */
@@ -366,6 +400,25 @@ export class PerilsExtras implements ClipExtras {
       ctx, cam, u, ve: info.vexag, td: info.td, tc: info.t, data: this.data, nearestStation: this.nearestId(info), centre, sounding: this.pair?.pre ?? null, nearStep: this.nearStep(info.td), speedup: this.director.speedup(info.t),
     };
     const v = (id: LayerId) => this.vis.at(id, info.t);
+    // the simulated tornado: its own render, drawn over the echo with an opacity that is zero away from the tornado
+    this.simW = 0;
+    if (this.sim?.ready && this.sim.active(info.td)) {
+      const vf0 = this.vortex(info.td, 0);
+      const dist = vf0 ? Math.hypot(info.eye[0] - vf0.x, info.eye[1] - vf0.y) : 1e9;
+      this.simW = v('sim') * simDistanceWeight(dist);
+      if (this.simW > 0.01) {
+        const p = this.director.pose(info.t);
+        const pose: SimGeoPose = { lat: p.lat, lon: p.lon, altM: p.altM, headingDeg: p.yawDeg, pitchDeg: p.pitchDeg, fovDeg: p.fov ?? 50 };
+        const c = this.sim.render(info.td, pose, this.simPrev ?? undefined);
+        this.simPrev = { td: info.td, pose };
+        if (c) {
+          ctx.save();
+          ctx.globalAlpha = this.simW;
+          ctx.drawImage(c as CanvasImageSource, 0, 0, cam.w, cam.h);
+          ctx.restore();
+        }
+      } else this.simPrev = null;
+    }
     // the right-hand inset column is the HUD's: scene labels do not run through it
     const W = cam.w;
     const colOn = Math.max(v('stripCharts'), v('timeHeight'), v('envPanel'), v('lmaPanel'), v('skewt')) > 0.05;
@@ -394,8 +447,8 @@ export class PerilsExtras implements ClipExtras {
     const imm = v('immersion');
     const vf = this.vortex(info.td, imm);
     if (vf) {
-      drawParentCirculation(env, v('rotation'), vf, imm < 0.5);
-      this.tornado.draw(env, v('funnel'), vf);
+      drawParentCirculation(env, v('rotation') * (1 - this.simW), vf, imm < 0.5);
+      this.tornado.draw(env, v('funnel') * (1 - this.simW), vf);
     }
     ctx.restore();
     this.lmaDrawn = drawLma(ctx, cam, this.lmaNow, projRaw, info.vexag, this.opts.lmaColourBy ?? this.lma.colourBy, 1);
@@ -452,6 +505,7 @@ export class PerilsExtras implements ClipExtras {
         rating: tor.rating ?? 'Tornado', active: !!cur, widthM: tor.width_m ?? null, interpolated: !!cur && cur.interpolated,
         parent: vf?.params.parent ?? null, windRangeMs: vf?.params.windRangeMs ?? null, periodRangeS: vf?.params.periodRangeS ?? null, periodS: vf?.params.periodS ?? null,
         debris, resolutionM: res != null && res < 1e9 ? res : null,
+        sim: this.sim?.numbers && this.simW > 0.3 ? { vt: this.sim.numbers.vt, rm: this.sim.numbers.coreRadius, periodCore: this.sim.numbers.periodCore, periodFunnel: this.sim.numbers.periodFunnel, ground: this.sim.numbers.ground } : null,
       };
     }
     // caption: the science event on screen, else the feature in view
@@ -736,6 +790,7 @@ export class PerilsExtras implements ClipExtras {
 
   report(): Record<string, unknown> {
     return {
+      sim: this.sim ? { ready: this.sim.ready, error: this.sim.error, numbers: this.sim.numbers } : null,
       frames: this.frameNo, flashes: this.firstTimes.length, lmaSources: this.data.lma?.nSources ?? 0, maxSimultaneousFlashes: this.maxSimultaneousFlashes,
       stations: this.data.stations.length, groundMissing: this.groundMissing, speedup: { mean: this.director.tl.speedup_mean, min: this.director.tl.speedup_min, max: this.director.tl.speedup_max },
       nearestStation: this.lastNearest,

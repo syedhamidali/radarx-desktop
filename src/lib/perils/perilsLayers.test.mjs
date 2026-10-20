@@ -14,7 +14,7 @@ const shots = [
 ];
 
 test('a layer has the value of its shot in the middle of the shot', () => {
-  assert.equal(crossfade(shots, LAYER_TABLE.funnel, 58), 1);
+  assert.equal(crossfade(shots, LAYER_TABLE.sim, 58), 1);
   assert.equal(crossfade(shots, LAYER_TABLE.convStrat, 115), 1);
   assert.equal(crossfade(shots, LAYER_TABLE.skewt, 5), 0.95);
 });

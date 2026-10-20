@@ -356,7 +356,7 @@ export class ParticleTornado implements TornadoRenderer {
     ctx.filter = 'none';
     paint(ctx, front.map((it) => ({ ...it, a: it.a * a })));
     ctx.restore();
-    this.drawIndicator(e, a, f, R);
+    if (f.immersion < 0.3) this.drawIndicator(e, a, f, R);
   }
 
   /** A thin circular arrow on the ground around the vortex; the arrowhead sits at azimuth omega * td. */
@@ -445,7 +445,7 @@ export function drawParentCirculation(e: SceneEnv, a: number, f: VortexFrame, la
     const q = pj(cam, f.x + R * Math.cos(phi), f.y + R * Math.sin(phi), z, e.ve);
     if (!q) continue;
     ctx.beginPath();
-    ctx.arc(q[0], q[1], Math.max(1.4 * u, 0.05 * (cam.w / 2 / (q[2] * cam.tanX))), 0, Math.PI * 2);
+    ctx.arc(q[0], q[1], Math.min(4 * u, Math.max(1.4 * u, 0.05 * (cam.w / 2 / (q[2] * cam.tanX)))), 0, Math.PI * 2);
     ctx.fillStyle = 'rgba(255,235,90,0.8)';
     ctx.fill();
   }

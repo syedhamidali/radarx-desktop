@@ -52,8 +52,55 @@ def parse_segments(spec: str, fps: int, duration: float) -> list[int]:
     return frames
 
 
+def build_tornado_seed(bundle: Path, clip: Path, work: Path, log=print) -> bool:
+    """Write ``tornado_seed.json`` (tools/tornado_sim/make_seed.py) for the data span of the tornado shot.
+
+    The seed builder reads ``<movie>/bundle`` and ``<movie>/events.json``; a scratch folder with a link to the bundle and the
+    events of this plan stands in for the movie folder. Without it (no bundle of that layout, an error) the film keeps the
+    particle funnel and says so in the log."""
+    import subprocess
+
+    ev = json.loads((clip / "events.json").read_text())
+    shot = (ev.get("tornado") or {}).get("shot")
+    maker = Path(__file__).resolve().parents[2] / "tornado_sim" / "make_seed.py"
+    if not shot or not maker.exists() or not (bundle / "tornadoes" / "tornadoes.json").exists():
+        log(
+            "no tornado seed (no tornado shot, or no survey in the bundle): the particle funnel is used"
+        )
+        return False
+    src = work / "seed_src"
+    src.mkdir(parents=True, exist_ok=True)
+    link = src / "bundle"
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(bundle.resolve())
+    (src / "events.json").write_bytes((clip / "events.json").read_bytes())
+    cmd = [
+        sys.executable,
+        str(maker),
+        "--movie",
+        str(src),
+        "--out",
+        str(clip / "tornado_seed.json"),
+        "--shot",
+        f"{shot['t0_data_s']},{shot['t1_data_s']}",
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    log(
+        (r.stdout or r.stderr).strip().splitlines()[-1]
+        if (r.stdout or r.stderr)
+        else "seed written"
+    )
+    return r.returncode == 0
+
+
 def prepare_bundle(
-    bundle: Path, work: Path, export_dir: Path | None, counties: Path | None = None, log=print
+    bundle: Path,
+    work: Path,
+    export_dir: Path | None,
+    counties: Path | None = None,
+    log=print,
+    sim: bool = True,
 ) -> Path:
     """Convert the bundle (if needed) and write timeline / camera / events next to the converted files."""
     import choreography
@@ -91,6 +138,8 @@ def prepare_bundle(
         except Exception as e:  # the movie still renders: a plain grid ground, said on screen
             log(f"no ground map ({e}); the ground will be a plain grid")
     choreography.write(stamp, clip, 120.0, 30, log=log)
+    if sim:
+        build_tornado_seed(bundle, clip, work, log=log)
     if export_dir:
         export_dir.mkdir(parents=True, exist_ok=True)
         for name in ("timeline.json", "camera_path.json", "events.json"):
@@ -126,7 +175,12 @@ async def draw_frames(a, clip: Path, frames: list[int], frames_dir: Path, log=pr
             settings["lookOverrides"][k.strip()] = float(v)
         except ValueError:
             settings["lookOverrides"][k.strip()] = v.strip()
-    perils = {"cloudBaseKm": a.cloud_base_km, "fov": a.fov}
+    perils = {
+        "cloudBaseKm": a.cloud_base_km,
+        "fov": a.fov,
+        "sim": not a.no_sim,
+        "simScale": a.sim_scale,
+    }
     if a.title:
         perils["title"] = a.title
     if a.subtitle:
@@ -352,6 +406,17 @@ def main(argv=None) -> None:
     )
     ap.add_argument("--jpeg-quality", type=int, default=95)
     ap.add_argument(
+        "--no-sim",
+        action="store_true",
+        help="draw the particle funnel instead of the tornado simulation (tools/tornado_sim) in the tornado shot",
+    )
+    ap.add_argument(
+        "--sim-scale",
+        type=float,
+        default=1.0,
+        help="internal render scale of the simulation (drafts)",
+    )
+    ap.add_argument(
         "--cam-dump",
         default=None,
         help="write the camera of every drawn frame (JSON) for measure_rotation.py",
@@ -386,7 +451,11 @@ def main(argv=None) -> None:
     work.mkdir(parents=True, exist_ok=True)
     export = Path(a.export_dir).expanduser().resolve() if a.export_dir else None
     clip = prepare_bundle(
-        bundle, work, export, Path(a.counties).expanduser() if a.counties else None
+        bundle,
+        work,
+        export,
+        Path(a.counties).expanduser() if a.counties else None,
+        sim=not a.no_sim,
     )
     if a.convert_only:
         return

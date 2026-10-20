@@ -35,6 +35,14 @@ from convert_bundle import Geo, parse_iso
 from vortex import vortex_params
 
 EYE_M = 2.0  # eye height of the ground-level (window) camera above the ground, m
+EYE_TOR_M = 2.0  # eye height of the standing observer of the tornado shot, m
+TOR_SHOT_S = 24.0  # length of the tornado shot, s
+TOR_BLEND_S = 8.0  # the camera glides into the tornado shot over this many seconds (slower than the others: it comes from 60 km)
+TOR_SIDE = -1.0  # the observer is to the right of the direction of travel
+CHASER_LATERAL_KM = 0.42  # distance of the chaser from the track, km
+DEBRIS_MISS_KM = 0.075  # distance at which the tornado passes the debris-field observer, km
+PASS_TAU = 18.5  # seconds into the shot at which it passes
+DOLLY_START, DOLLY_S = 11.0, 5.0  # the move from the chaser to the debris-field position
 
 
 # ── basic maths ─────────────────────────────────────────────────────────────
@@ -235,6 +243,14 @@ class Scene:
         y = np.interp(td, pt, [q["y"] for q in path])
         return np.stack([x, y], -1), (td >= pt[0]) & (td <= pt[-1])
 
+    def tornado_axes(self):
+        """Unit vectors (x east, y north) along the tornado's direction of travel and to its left."""
+        tors = [t for t in self.p.get("tornadoes", []) if len(t.get("path", [])) >= 2]
+        path = tors[0]["path"]
+        d = np.array([path[-1]["x"] - path[0]["x"], path[-1]["y"] - path[0]["y"]], float)
+        u = d / max(np.hypot(*d), 1e-9)
+        return u, np.array([-u[1], u[0]])
+
     def tornado_span(self):
         tors = [t for t in self.p.get("tornadoes", []) if len(t.get("path", [])) >= 2]
         if not tors:
@@ -293,7 +309,16 @@ def _pad(v, n):
 
 
 class Shot:
-    def __init__(self, name: str, label: str, t0: float, t1: float, fn, vexag: float):
+    def __init__(
+        self,
+        name: str,
+        label: str,
+        t0: float,
+        t1: float,
+        fn,
+        vexag: float,
+        overlap: float | None = None,
+    ):
         self.name, self.label, self.t0, self.t1, self.fn, self.vexag = (
             name,
             label,
@@ -301,6 +326,9 @@ class Shot:
             t1,
             fn,
             vexag,
+        )
+        self.overlap = (
+            overlap  # seconds of the crossfade into this shot (None: the default of blend_shots)
         )
 
 
@@ -329,15 +357,27 @@ def plan_shots(
     b0 = 15.0
     b1 = (tor_c - 12.0) if tor_c is not None else 40.0
 
+    # the flyby runs along the line from its north end toward where the tornado is, and ends a few km from it
+    if tor_c is not None:
+        td_b1 = float(data_time_of_clip(tl, b1))
+        c_b1 = scene.centre(td_b1)
+        tor_b1 = scene.tornado_at(td_b1)[0]
+        s_end = float(np.clip((tor_b1 - c_b1) @ a, -0.7 * L, 0.7 * L))
+        d_end = float((tor_b1 - c_b1) @ m) + 5.0
+        look_end = tor_b1
+    else:
+        s_end, d_end, look_end = -0.62 * L, front + 24.0, None
+
     def fly(t):
         u = np.clip((t - b0) / max(1e-6, b1 - b0), 0, 1)
-        s = (
-            -0.62 + 1.24 * smoothstep(u)
-        ) * L  # along-line position (km): from the south end to the north end
+        w = smoothstep(u)
+        s = (1 - w) * 0.62 * L + w * s_end  # along-line position (km)
         c = cen(t)
-        d = front + 24.0 + 4.0 * np.sin(u * math.pi)
+        d = (1 - w) * (front + 24.0 + 4.0 * np.sin(u * math.pi)) + w * d_end
         P = c + col(s) * a[None, :] + col(d) * m[None, :]
-        look = c + col(s + 0.22 * L) * a[None, :] + (front - 6.0) * m[None, :]
+        look = c + col(s - 0.22 * L) * a[None, :] + (front - 6.0) * m[None, :]
+        if look_end is not None:
+            look = (1 - w)[:, None] * look + w[:, None] * look_end[None, :]
         return P, 2.2 + 1.3 * np.sin(u * math.pi), look, _pad(3.2, len(t))
 
     shots = [
@@ -347,39 +387,31 @@ def plan_shots(
     t_after = b1
     if tor_c is not None:
         t_a = tor_c - 12.0
-        # the camera closes in on the vortex: 2.6 km, then 0.9 km, then 250-300 m for the real-time core
-        # (tor_c +- 5 s), then backs off a little; low over the ground, looking up at the funnel
-        keys_d = [
-            (t_a, 2.6),
-            (t_a + 4.5, 0.9),
-            (tor_c - 4.0, 0.40),
-            (tor_c, 0.34),
-            (tor_c + 4.0, 0.38),
-            (tor_c + 12.0, 0.8),
-        ]
-        keys_h = [
-            (t_a, 0.35),
-            (t_a + 4.5, 0.12),
-            (tor_c - 4.0, 0.04),
-            (tor_c + 4.0, 0.035),
-            (tor_c + 12.0, 0.12),
-        ]
-        keys_l = [
-            (t_a, 0.5),
-            (t_a + 4.5, 0.35),
-            (tor_c - 4.0, 0.16),
-            (tor_c + 4.0, 0.16),
-            (tor_c + 12.0, 0.3),
-        ]
+        u_t, n_t = scene.tornado_axes()
+        td_a = float(data_time_of_clip(tl, t_a))
+        a0 = scene.tornado_at(td_a)[0]
+        a_pass = scene.tornado_at(float(data_time_of_clip(tl, t_a + PASS_TAU)))[0]
 
         def tor(t):
-            q, _act = scene.tornado_at(data_time_of_clip(tl, t))
-            u = np.clip((t - t_a) / 24.0, 0, 1)
-            # AHEAD of the tornado (the line is behind it), orbiting slowly around it
-            ang = np.radians(scene.perp_deg) + np.radians(-32.0 + 64.0 * smoothstep(u))
-            dist = smooth_keys(t, keys_d)
-            P = q + col(dist) * np.stack([np.sin(ang), np.cos(ang)], -1)
-            return P, smooth_keys(t, keys_h), q, smooth_keys(t, keys_l)
+            """A chaser 800-500 m ahead of and beside the tornado, then (a dolly of 5 s) the debris field, 75 m from where
+            it passes. The tornado simulation's camera modes (src/lib/utils/tornado/cameraModes.ts), in the film's frame."""
+            tau = np.clip(np.asarray(t, float) - t_a, 0.0, TOR_SHOT_S)
+            a_now = scene.tornado_at(data_time_of_clip(tl, t))[0]
+            a_lag = scene.tornado_at(data_time_of_clip(tl, np.asarray(t, float) - 0.9))[0]
+            ahead = 0.78 + (0.52 - 0.78) * smoothstep(tau / TOR_SHOT_S)
+            pc = (
+                a0[None, :]
+                + col(ahead + 0.006 * tau) * u_t[None, :]
+                + TOR_SIDE * CHASER_LATERAL_KM * n_t[None, :]
+            )
+            pd = np.broadcast_to(a_pass + TOR_SIDE * DEBRIS_MISS_KM * n_t, pc.shape)
+            w = tornado_dolly(np.asarray(t, float), t_a)
+            P = (1 - w)[:, None] * pc + w[:, None] * pd
+            T = (1 - w)[:, None] * a_now + w[:, None] * a_lag
+            tz = (1 - w) * (0.055 + 0.025 * np.sin(0.2 * tau)) + w * (
+                0.016 + 0.022 * smoothstep(tau / TOR_SHOT_S)
+            )
+            return P, _pad(EYE_TOR_M / 1000.0, len(tau)), T, tz
 
         shots.append(
             Shot(
@@ -389,6 +421,7 @@ def plan_shots(
                 tor_c + 12.0,
                 tor,
                 1.0,
+                overlap=TOR_BLEND_S,
             )
         )
         t_after = tor_c + 12.0
@@ -476,8 +509,9 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
 
     heading, pitch = aim(P, alt, T, tz, vex)
     for j, s in enumerate(shots[1:], start=1):
-        w = smoothstep((t - (s.t0 - overlap / 2.0)) / overlap)
-        ev = s.fn(np.clip(t, s.t0 - overlap, s.t1 + overlap))
+        ov = s.overlap or overlap
+        w = smoothstep((t - (s.t0 - ov / 2.0)) / ov)
+        ev = s.fn(np.clip(t, s.t0 - ov, s.t1 + ov))
         P = (1 - w)[:, None] * P + w[:, None] * ev[0]
         alt = (1 - w) * alt + w * np.asarray(ev[1], float)
         T = (1 - w)[:, None] * T + w[:, None] * ev[2]
@@ -488,6 +522,11 @@ def blend_shots(shots: list[Shot], t: np.ndarray, overlap: float = 5.0):
         heading = (heading + (((hj - heading) + 180.0) % 360.0 - 180.0) * w) % 360.0
         pitch = (1 - w) * pitch + w * pj
     return P, alt, T, tz, vex, idx, heading, pitch
+
+
+def tornado_dolly(t, t_a: float):
+    """0 for the chaser, 1 for the debris-field view: a smooth move that starts ``DOLLY_START`` s into the shot."""
+    return smoothstep((np.asarray(t, float) - t_a - DOLLY_START) / DOLLY_S)
 
 
 def immersion(shots: list[Shot], t: np.ndarray, overlap: float = 5.0) -> np.ndarray:
@@ -501,8 +540,17 @@ def immersion(shots: list[Shot], t: np.ndarray, overlap: float = 5.0) -> np.ndar
     return w
 
 
-WIDE_FOV = 64.0  # vertical field of view of the immersive tornado shot, degrees
-SHAKE = {"pos_m": 0.45, "heading_deg": 0.32, "pitch_deg": 0.26}  # amplitudes of the hand-held look
+FOV_CHASER, FOV_DEBRIS = (
+    38.0,
+    62.0,
+)  # vertical field of view of the chaser and of the debris-field view, degrees
+WIDE_FOV = FOV_DEBRIS
+SHAKE = {
+    "pos_m": 0.3,
+    "heading_deg": 0.3,
+    "pitch_deg": 0.25,
+}  # base amplitudes of the hand-held look
+SHAKE_NEAR = 2.8  # the shake grows to 1 + SHAKE_NEAR times the base at the tornado (bounded: about 1.1 degrees)
 
 
 def shake_signal(t: np.ndarray, seed: float) -> np.ndarray:
@@ -522,20 +570,30 @@ def build_camera(scene: Scene, tl: dict, shots: list[Shot], shake: bool = True) 
     t = tl["t_clip_s"]
     P, alt, _T, _tz, vex, idx, heading, pitch = blend_shots(shots, t)
     # the renderer stretches heights by the vertical exaggeration of the frame: so does the pitch (blend_shots)
-    if shake:
-        w = immersion(shots, t)
-        if w.max() > 0:
-            # hand-held look inside the tornado shot: a few cm to decimetres of position, a third of a degree of aim
-            P = P + w[:, None] * np.stack([shake_signal(t, 0.4), shake_signal(t, 1.7)], -1) * (
-                SHAKE["pos_m"] / 1000.0
-            )
-            alt = alt + w * shake_signal(t, 2.9) * (SHAKE["pos_m"] / 2000.0)
-            alt = np.maximum(alt, 0.0021)
-            heading = (heading + w * shake_signal(t, 3.3) * SHAKE["heading_deg"]) % 360.0
-            pitch = pitch + w * shake_signal(t, 4.1) * SHAKE["pitch_deg"]
+    sh = next((q for q in shots if q.name == "tornado"), None)
+    w = immersion(shots, t)
+    if shake and w.max() > 0:
+        # hand-held look inside the tornado shot: stronger where the tornado is near (it is bounded)
+        near = 1.0
+        if sh is not None:
+            a_xy = scene.tornado_at(data_time_of_clip(tl, t))[0]
+            near = np.exp(-((np.hypot(P[:, 0] - a_xy[:, 0], P[:, 1] - a_xy[:, 1]) / 0.15) ** 2))
+        g = w * (1.0 + SHAKE_NEAR * near) / (1.0 + SHAKE_NEAR)
+        P = P + g[:, None] * np.stack([shake_signal(t, 0.4), shake_signal(t, 1.7)], -1) * (
+            SHAKE["pos_m"] / 1000.0
+        )
+        alt = alt + g * shake_signal(t, 2.9) * (SHAKE["pos_m"] / 2000.0)
+        alt = np.maximum(alt, 0.0021)
+        heading = (
+            heading + g * shake_signal(t, 3.3) * SHAKE["heading_deg"] * (1.0 + SHAKE_NEAR)
+        ) % 360.0
+        pitch = pitch + g * shake_signal(t, 4.1) * SHAKE["pitch_deg"] * (1.0 + SHAKE_NEAR)
     pitch = np.clip(pitch, -86.0, 86.0)
     # a wider lens inside the tornado shot (a phone-like first-person view); 45 degrees (the renderer's default) elsewhere
-    fov = 45.0 + (WIDE_FOV - 45.0) * immersion(shots, t)
+    fov = np.full(len(t), 45.0)
+    if sh is not None:
+        fov_t = FOV_CHASER + (FOV_DEBRIS - FOV_CHASER) * tornado_dolly(t, sh.t0)
+        fov = (1 - w) * fov + w * fov_t
     lat, lon = scene.geo.latlon(P[:, 0], P[:, 1])
     out = []
     for i in range(len(t)):
@@ -626,6 +684,12 @@ def build_events(
         # the rotation of the vortex (vortex.py): at the middle of the tornado shot
         sh = next((s for s in shots if s.name == "tornado"), None)
         if sh is not None:
+            ev["tornado"]["shot"] = {
+                "t0_clip_s": round(sh.t0, 3),
+                "t1_clip_s": round(sh.t1, 3),
+                "t0_data_s": round(float(data_time_of_clip(tl, sh.t0)), 3),
+                "t1_data_s": round(float(data_time_of_clip(tl, sh.t1)), 3),
+            }
             tm = 0.5 * (sh.t0 + sh.t1)
             tdm = float(data_time_of_clip(tl, tm))
             _q, _a = scene.tornado_at(tdm)
@@ -790,7 +854,7 @@ def plan(
     dip_level: float = 0.35,
     dip_width: float = 24.0,
     core_speedup: float | None = 1.0,
-    core_width: float = 10.0,
+    core_width: float = TOR_SHOT_S,
 ) -> dict:
     """Everything: timeline.json, camera_path.json and events.json contents.
 

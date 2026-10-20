@@ -14,17 +14,22 @@ The data side is [PERILS_BUNDLE.md](PERILS_BUNDLE.md) (branch `feat/perils-data`
 
 ## The film
 
-`~/Downloads/xradar-exports/perils_movie/perils_qlcs_movie.mp4` (not in the repository): 3600 frames, 120.00 s, 1920x1080
-at 30 fps, H.264 (crf 17) with AAC stereo 48 kHz, 292 MB, with the 20-second preview `perils_qlcs_preview.mp4`
-(five segments of the film, the sound of the same segments). It shows 960 s of data (01:04:00 to 01:20:00 UTC) in
-120 s: a mean speed-up of x8, between x1.0 (the real-time core of the tornado shot) and x9.7. The three files that drive
-it (`timeline.json`, `camera_path.json`, `events.json`) are in the same folder and, for reference, in
-`tools/perils_movie/reference/` with the measurement of the rotation (`rotation_measurement.json`).
-Checks made on the encoded film: 3600 decoded frames and 120.00 s, an audio stream (peak 0.37, rms 0.023), no black
-frames, stills every 10 s read by eye (storm in frame, labels readable at 1080p), the flashes of the screen
-correlated with the clip times of the real LMA sources (a detrended correlation of 0.17 against 0.00 +- 0.04 for the
-same series shifted by 1.5 to 5 s; the 40 largest flashes add a third more bright pixels in the 0.4 s after their
-first source than in the second before), and the rotation of the funnel measured in the decoded frames.
+Two versions, in `~/Downloads/xradar-exports/perils_movie/` (not in the repository):
+
+* `perils_qlcs_movie_v2.mp4`: the film with the **tornado simulation** (`feat/tornado-realism`, see
+  [TORNADO_SIM.md](TORNADO_SIM.md)) in the tornado shot. 3600 frames, 120.00 s, 1920x1080 at 30 fps, H.264 (crf 17) with
+  AAC stereo 48 kHz, 262 MB, and the short preview of that shot, `perils_qlcs_tornado_preview_v2.mp4` (clip 44 to 72 s,
+  28 s, 90 MB, the sound of the same seconds).
+* `perils_qlcs_movie.mp4` (v1, 292 MB) and `perils_qlcs_preview.mp4`: the first film, with the particle funnel; kept.
+
+Both show 960 s of data (01:04:00 to 01:20:00 UTC) in 120 s: a mean speed-up of x8, between x1.0 (the whole tornado
+shot) and x10.1. The files that drive the film (`timeline.json`, `camera_path.json`, `events.json`) are in the same folder
+and, for reference, in `tools/perils_movie/reference/` with the measurements of the rotation.
+Checks made on the encoded v2 film: 3600 decoded frames and 120.00 s, an audio stream (peak 0.39, rms 0.024), no black
+frames, stills every 10 s and every second of the tornado shot read by eye (storm in frame, labels readable at 1080p, the
+dissolves into and out of the simulation without a jump in exposure), the flashes of the screen correlated with the clip
+times of the real LMA sources (v1: a detrended correlation of 0.17 against 0.00 +- 0.04 for the same series shifted by 1.5
+to 5 s), and the rotation of the simulated funnel measured in the decoded frames (below).
 
 ## The labels (provenance)
 
@@ -115,41 +120,57 @@ is drawn (and says so on screen).
 
 ## The tornado
 
-What the data say, and what the picture adds (`perilsVortex.ts`, `tools/perils_movie/render/vortex.py`):
+What the data say, and what the picture adds (`perilsVortex.ts`, `perilsTornadoSim.ts`,
+`tools/perils_movie/render/vortex.py`):
 
 * **Observed (survey)**: the begin and end points and times (01:08:00 to 01:20:00 UTC), the rating (EF2) and the damage
-  width (366 m). The path between the ends is a straight line at constant speed: INTERPOLATED.
+  width (366 m). The path between the ends is a straight line at constant speed: INTERPOLATED. Every consumer (the camera, the
+  marker of the plan-view inset, `events.json` and so the sound) uses this one path through the timeline (tested to within
+  2 m).
 * **Retrieved (radar)**: `context/vortex_kinematics.json` of the bundle. The radars measure the PARENT circulation: a
   couplet 1.1 to 5.9 km wide (median 1.8 km), rotational velocity Vrot 8 to 15 m/s (median 11), cyclonic in 11 of 13
   steps, one turn in about 8 minutes. **No radar resolves the tornado itself**: it is 366 m wide, the finest effective
   resolution is 500 m (`tornado_resolved = false` at every step). The debris-signature flag is weak evidence at X
   band and is worded "possible debris signature (weak evidence)".
-* **Estimated, STYLISED**: the funnel. Its position is the surveyed one, its radius half the damage width (183 m);
-  its tangential speed at that radius is the middle of the EF2 damage-based wind range (50 to 60 m/s: 55 m/s, an
-  assumption, not a measurement), so omega = Vt / r = 0.30 rad/s and one turn takes 21 s (19 to 23 s over the range;
-  the data tool's own estimate is the same). It turns counter-clockwise seen from above, like the parent
-  circulation. The card and the lower third of the shot say this in words and numbers.
-* **The picture** (`ParticleTornado`, behind the `TornadoRenderer` interface so that a physically based tornado, branch
-  `feat/tornado-realism`, can replace it through `PerilsOptions.tornado`): a surface of revolution whose texture
-  (spiral streaks and billows) is fixed in the rotating frame, so that it turns at omega; a debris ring with the
-  Rankine angular rate (rigid inside the core, 1/r^2 outside) lifted by an assumed updraft of 12 m/s, drawn as hard
-  specks with the motion blur of 1/12 s; a dust skirt; and a thin circular arrow on the ground whose cyan arrowhead
-  sits at the azimuth omega times the data time. The rotation phase is omega times the DATA time: in the time-lapse
-  the funnel turns faster by the speed-up of the frame, in the real-time core at nature's pace.
-* **Real time for the tornado**: the timeline slows to 0.35 of the base speed around the shot and its middle 10 s
-  (clip 52.4 to 63.6 s) run at x1.0 (REAL TIME is written on the screen); the rest of the film speeds up to x9.7 to
-  pay for it. 17 degrees of turn per clip second there.
-* **The shot** (clip 46 to 70 s): the camera closes in from 2.6 km to 340 m of the vortex and 37 m above the ground,
-  ahead of the tornado with the line behind it, orbiting 64 degrees; a 64 degree lens, true vertical scale and a
-  hand-held shake (a few decimetres, a third of a degree). The look is darker and denser (the wall cloud of the
-  echo), with more rain streaks, nearer haze and a little vignette. The grade removes the arrows, labels, the
-  vertical rotation lines, the cards and the panels; what stays is the real flashes, the plan-view inset (small and
-  faint) and one lower third (rating, funnel spin as an estimate, what the radars measured, REAL TIME).
-* **Measured in the frames**: `tools/perils_movie/render/measure_rotation.py` finds the arrowhead in the decoded frames
-  of the real-time core, projects its pixel back to the ground plane with the camera of the frame (render_movie.py
-  `--cam-dump` records the camera the scene drew), turns it into an azimuth around the surveyed tornado position and
-  fits the rate against the data time. On the rendered film: 170 frames over 11.4 s of data, 0.303 rad/s, period 20.7 s
-  against 20.9 s drawn (0.8 % off), counter-clockwise, ring radius 229.1 m against 228.8 m, scatter 0.3 degrees.
+* **The tornado shot is a SIMULATION seeded by observations** (`TornadoScene`, docs/TORNADO_SIM.md): the survey gives where,
+  when, how wide and how strongly rated, the radar the parent circulation, the nearest stations the air (StickNet 0102A,
+  rain-cooled, T 15.7 Td 15.4 C; the warm inflow StickNet 0216A, T 20.4 Td 18.3 C), the lightning array the flashes
+  (239 within 45 km), the merged volume the rain. Modelled: a Lamb-Oseen vortex with the rated peak wind at its core radius
+  (55 m/s, the middle of the EF2 range: an assumption; core radius 69 m from the damage width at the onset of damage), the
+  funnel (where the pressure deficit of the vortex saturates the inflow air), noise carried by the swirl, 12000 debris
+  particles with drag, rain, dust, trees that lean and fall, and the light of the real flashes. The ground is procedural
+  farmland (no imagery offline; the tile-cache hook of the simulation is kept) and says so. The core turns once in 7.9 s and
+  the funnel wall in about 7 s; the survey-scale estimate of the data bundle is 19 to 23 s per turn (solid body at the rated
+  wind over the damage width): both are on the screen. The sense is cyclonic (counter-clockwise from above).
+* **How it is in the film**: `make_seed.py` (tools/tornado_sim) writes `tornado_seed.json` for the data span of the shot
+  (`render_movie.py` runs it); the page draws the simulation on its own canvas over the echo render with an opacity that is the
+  layer weight times the nearness of the camera to the tornado (full inside 1.8 km, none beyond 4.5 km): the flyby ends 2.9 km
+  from the tornado and the film dissolves into the simulation as the camera glides in over 8 s (the particle funnel of the
+  wide shots, a surface of revolution with a rotating texture behind the `TornadoRenderer` interface, is drawn only where the
+  simulation is not). The simulation is rendered from the film's own camera (`camera_path.json`: position, heading, pitch, lens)
+  at the film's data time, with the camera's velocity for the motion blur of the rain.
+* **Real time**: inside the shot the timeline runs at exactly one data second per clip second (the swirl of the simulation is
+  physically paced; at the 0.35 slow-down of v1 it looked three times too fast); it ramps to x10 outside. REAL TIME is
+  written on the screen.
+* **The camera sequence** (the simulation's two modes, in the film's frame): a chaser 800 to 500 m ahead of and 420 m beside
+  the track, 2 m above the ground, 38 degree lens, a slow sway (clip 50 to 58 s); a dolly of 5 s; then the debris-field view,
+  75 m from where the tornado passes (clip 64.5 s), 62 degree lens, a bounded hand-held shake that grows with nearness
+  (about 1 degree at most). Trees are cleared around the camera positions only. In this view the camera is in the dust
+  and rain wall: the picture is murky by physics, and debris is the modelled sprites of the simulation. No view from inside
+  the vortex (the simulation has one; it is not used).
+* **The grade of the shot** (immersive): the arrows, labels, vertical lines, cards and panels are out; what stays is the
+  real flashes, the plan-view inset (small and faint), the simulation tag and one lower third that says SIMULATION seeded by
+  observations, what is observed and what is modelled, the numbers of the swirl, the unresolved tornado, the ground and
+  that the position is interpolated; it fades to a quarter after nine seconds.
+* **Measured in the frames**: `tools/perils_movie/render/measure_funnel.py`. The streaks of the funnel wall slide across it at
+  the model's tangential wind at the wall radius (`vt(r_wall, z)`, 42 to 54 m/s at 40 to 160 m height). In the decoded
+  frames of the chaser view (clip 50 to 60 s) the script projects the axis with the camera the simulation drew
+  (`--cam-dump`), cuts bands at 40, 60, 80 and 100 m centred on the axis (so the movement of the tornado and of the camera
+  drops out), finds the sideways shift of the texture between frames 0.1 s apart and compares it with the model. On the final
+  film: 322 bands, measured / modelled median **1.02** (interquartile range 0.96 to 1.11; by height 1.09, 1.00, 1.01, 1.03),
+  that is a period of the funnel wall 2 % shorter than the model's (7.2 s at 60 m), counter-clockwise, in every 2-second
+  stretch between 1.01 and 1.04. The v1 particle funnel was measured the same way with its own tracer (period 20.7 s drawn
+  20.9 s, 0.8 % off); `measure_rotation.py` remains for it.
 
 ## The clock and the camera
 
@@ -158,13 +179,13 @@ What the data say, and what the picture adds (`perilsVortex.ts`, `tools/perils_m
 `tools/perils_movie/reference/`).
 
 * **Timeline**: 960 s of data (01:04:00 to 01:20:00 UTC) in 120 s, monotone, never backwards. The speed is the
-  same everywhere except for a slow-down to 0.35 of the base speed around the tornado shot with a real-time core
-  (above); the shot's data time is solved so that its middle is the middle of the tornado's life. The speed-up is
-  written on the screen (mean x8, between x1.0 and x9.7). The file has the dense mapping (one entry per frame) and the
-  speed-up per frame.
+  same everywhere except for the tornado shot, which runs at exactly x1.0 (with ramps of a few seconds either side); the
+  shot's data time is solved so that its middle is the middle of the tornado's life. The speed-up is written on the screen
+  (mean x8, between x1.0 and x10.1). The file has the dense mapping (one entry per frame) and the speed-up per frame.
 * **Camera** (one entry per frame: latitude, longitude, altitude, heading, pitch, lens, plus the scene position and
   the vertical exaggeration): an establishing wide oblique view of the whole line; a line-parallel low flyby with
-  the line to one side; the tornado shot (above); the ground-level window camera at a station looking at the
+  the line to one side, from its north end toward the tornado; the tornado shot (above), entered by a glide of 8 s from 2.9 km;
+  the ground-level window camera at a station looking at the
   approaching line (the audio listener is the camera), which turns to watch the line leave; a rise behind the line; a
   top-down finale with the motion of the line toward the top of the frame. Every shot is defined in the frame of the
   line (centre, motion, along-line direction at the data time of the frame), so the camera rides with the storm.
@@ -174,9 +195,9 @@ What the data say, and what the picture adds (`perilsVortex.ts`, `tools/perils_m
   `--cam-dump` file) differs from it a little near the ground, which is why the measurement above uses the dump.
 * **Vertical exaggeration** is a camera channel: x2.4 in the wide shots, x1 (true scale) at the ground and in the
   tornado shot. The screen states it.
-* **Events** (`events.json`): flashes (clip time of the first source and position), the tornado (clip times, a
-  position per second and the vortex numbers: radius, speed, period, the real-time window, the parent circulation and
-  that the tornado is unresolved), station hail candidates (none: the bundle has no hail particle of 8 mm or more),
+* **Events** (`events.json`): flashes (clip time of the first source and position), the tornado (clip times, the shot's
+  clip and data span, a position per second and the vortex numbers: radius, speed, period, the real-time window, the parent
+  circulation and that the tornado is unresolved), station hail candidates (none: the bundle has no hail particle of 8 mm or more),
   radar hail cores, heavy-rain onsets, the data's science events, the shot list and the station nearest the camera
   through the clip.
 
@@ -190,11 +211,16 @@ python/.venv/bin/python tools/perils_movie/render/render_movie.py --bundle <bund
 npm run build
 # 3. frames and video: a scratch environment OUTSIDE the repository with playwright, av and pillow; Google Chrome
 <clipenv>/bin/python tools/perils_movie/render/render_movie.py --bundle <bundle> --work <scratch> \
-    [--preview] [--audio <file>] [--cam-dump cams.json] --out movie.mp4
-# 4. the rotation measured in the frames of the real-time core
-<clipenv>/bin/python tools/perils_movie/render/measure_rotation.py --frames <scratch>/frames --camera camera_path.json \
-    --timeline timeline.json --events events.json --perils <scratch>/clip_bundle/perils.json --cams cams.json
+    [--preview] [--audio <file>] [--cam-dump cams.json] [--no-sim] [--sim-scale 0.5] --out movie.mp4
+# 4. the rotation of the simulated funnel measured in the frames of the chaser view (decoded from the MP4 or the frames)
+<clipenv>/bin/python tools/perils_movie/render/measure_funnel.py --frames <frames> --cams cams.json \
+    --report <scratch>/render_report.json --seed <scratch>/clip_bundle/tornado_seed.json --timeline timeline.json \
+    --from-frame 1500 --to-frame 1800
 ```
+
+`render_movie.py` writes `tornado_seed.json` itself (tools/tornado_sim/make_seed.py, for the data span of the shot) when
+the bundle has the survey; `--no-sim` draws the particle funnel instead (the v1 film); `--sim-scale` renders the simulation
+at a lower internal scale for drafts. `measure_rotation.py` measures the v1 particle funnel (its tracer arrow).
 
 `--preview "0-4,20-24,..."` renders segments of the film (clip seconds; 20 s for the default five); `--at 8,22,70`
 draws single frames; frames are JPEG files (quality 95; PNG with `--frame-format png`) in `<scratch>/frames`
@@ -214,12 +240,16 @@ the station choice, the events in clip time, and a Chrome end-to-end render (ski
 `python/tests/test_perils_tornado_shot.py`: the real-time core of the timeline, the smooth camera keys, the vortex numbers
 (survey estimate, parent circulation, unresolved), the close low tornado shot with its lens and bounded shake, the
 events, the aim blending, the measurement of the rotation from pixels (a synthetic ring and camera round trip) and the
-conversion of the plan-view columns, the sonde track times and the couplet file.
+conversion of the plan-view columns, the sonde track times and the couplet file, the chaser and debris-field camera
+(distances, lenses, standing height), the one survey path through the timeline for events, camera and marker, the
+one-second-per-second timeline of the shot, and the estimator of the funnel measurement (a known sideways shift, the
+projection of the axis).
 `src/lib/perils/*.test.mjs` (`npm run test:unit`): the director (clock, pose, lens, nearest station), the data lookups
 (series gaps, soundings, balloon flight and fade, tornado, interpolation weights), the real-LMA maths (a source appears
 at its time and not before, links break over long steps, only measured positions), layer relevance and the immersive
 grade, captions, the parcel path, the surface analysis and ground layers, the insets' helpers, the vortex
-(spin numbers, Rankine rates, the indicator phase) and the plan-view helpers.
+(spin numbers, Rankine rates, the indicator phase), the plan-view helpers and the opacity of the simulation with the
+distance of the camera.
 
 ## Honest limits
 
@@ -229,11 +259,17 @@ grade, captions, the parcel path, the surface analysis and ground layers, the in
   contains each radar's nearest volume, and several radars update every few minutes, so consecutive steps share
   data. Frames between steps are interpolation.
 * **The tornado vortex is not observed.** The radars resolve the parent circulation (Vrot 8 to 15 m/s, about 1.8 km
-  wide), not a 366 m wide tornado. The funnel, its debris and its spin rate are an estimate from the survey (wind range
-  and width) drawn as a stylised particle vortex on the overlay of the scene, a flat image over the volume: it has no
-  depth test against the echo, no shadows and no real condensation physics. It looks like a diagram of a funnel, not a
-  photograph; a physically based tornado (`feat/tornado-realism`) is meant to replace it through the
-  `TornadoRenderer` interface.
+  wide), not a 366 m wide tornado. The tornado shot is a simulation seeded by observations: where, when, how wide and how
+  strong it was rated are the survey's; the rest (the wind profile, the funnel, the swirl rate, the debris, the rain
+  texture, the trees that fall) is modelled and says so on screen. Its peak wind (55 m/s) is the middle of a damage-based
+  range, and its core turns in 7.9 s whereas the survey-scale estimate is 19 to 23 s; the two are not reconciled. The
+  debris sprites and the trees are stylised; the light is a stylised dusk (the real scene was dark between flashes).
+* The echo of the radar volume, the plan-view inset and the lightning of the film come from the data; the simulation draws
+  its own rain, cloud and flashes from the seed (a rain rate from the radar reflectivity at 0.5 km, the flash positions
+  and times), so in the tornado shot the "cloud" is the simulation's, not the volume's. The two renders are joined by a
+  dissolve over the camera's distance (1.8 to 4.5 km), 1.5 s, in which the exposure and the haze colour differ a little.
+* The ground of the tornado shot is the simulation's procedural farmland (fields, tree lines, roads, farm buildings), not
+  the real land cover; in the other shots it is the flat schematic map.
 * The tornado path is a straight line between the surveyed begin and end points, so the marker position is interpolated.
 * The ground is flat and schematic: no terrain, no imagery (no tiles and no network). Station and radar heights
   are drawn on a flat ground at sea level. The flat dark ground and the empty sky near the tornado are a large part

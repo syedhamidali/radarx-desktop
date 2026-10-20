@@ -35,6 +35,8 @@ export interface TornadoCard {
   debris: boolean | null;
   /** Finest effective resolution of the radars (m). */
   resolutionM: number | null;
+  /** The numbers of the tornado simulation while it is on screen (else null). */
+  sim: { vt: number; rm: number; periodCore: number; periodFunnel: number | null; ground: string } | null;
 }
 
 export interface HudModel {
@@ -293,23 +295,34 @@ export function drawTornadoCard(ctx: CanvasRenderingContext2D, u: number, m: Hud
 }
 
 /**
- * The one lower third of the immersive tornado shot: what the viewer sees, how it is paced and what is measured. It
- * fades down (not out) after a few seconds so that the view is left alone, while the honesty line stays.
+ * The one lower third of the immersive tornado shot: what the viewer sees, how it is paced and what is measured. With the
+ * tornado simulation on it says so first (SIMULATION seeded by observations) and gives the numbers of the model; it fades
+ * down (not out) after a few seconds so that the view is left alone, while the honesty lines stay.
  */
 export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, u: number, m: HudModel, a: number): void {
   const t = m.tornado;
   if (a <= 0.02 || !t || !t.active) return;
   const par = t.parent;
   const real = m.speedup <= 1.3;
-  const lines = [
-    t.periodRangeS
-      ? `Funnel: one turn per ${t.periodS ? t.periodS.toFixed(0) : t.periodRangeS[0].toFixed(0)} s, counter-clockwise from above. ESTIMATED from the survey (${t.rating} wind ${t.windRangeMs ? `${t.windRangeMs[0].toFixed(0)}-${t.windRangeMs[1].toFixed(0)} m/s` : ''}, ${t.widthM ? Math.round(t.widthM) : '–'} m wide).`
-      : 'Funnel: spin not estimated.',
-    `Radar measured only the parent circulation${par && par.medianVrotMs != null ? `: Vrot ${par.medianVrotMs.toFixed(0)} m/s, couplet ${par.medianDiameterKm?.toFixed(1)} km` : ''}; the tornado is unresolved (grid ${t.resolutionM ? Math.round(t.resolutionM) : 500} m).`,
-    `Position from the survey (straight line, INTERPOLATED)${t.debris ? '; possible debris signature (weak evidence)' : ''}. Funnel and debris: STYLISED.`,
-  ];
-  const w = 860 * u;
-  const h = (54 + lines.length * 20) * u;
+  const sim = t.sim;
+  const radar = `Radars resolve only the parent circulation${par && par.medianVrotMs != null ? ` (Vrot ${par.medianVrotMs.toFixed(0)} m/s, couplet ${par.medianDiameterKm?.toFixed(1)} km)` : ''}: the ${t.widthM ? Math.round(t.widthM) : ''} m tornado is unresolved on a ${t.resolutionM ? Math.round(t.resolutionM) : 500} m grid.`;
+  const raw: string[] = sim
+    ? [
+        'SIMULATION seeded by observations: position, width and rating from the survey, Vrot and couplet from the radar, air from the stations, flashes from the lightning array. The shape of the funnel, the swirl and the debris are modelled.',
+        `Swirl: peak wind ${sim.vt.toFixed(0)} m/s (middle of the ${t.rating} range: an assumption), core radius ${sim.rm.toFixed(0)} m, the core turns once in ${sim.periodCore.toFixed(1)} s${sim.periodFunnel ? `, the funnel wall in ${sim.periodFunnel.toFixed(0)} s` : ''}; the survey-scale estimate is ${t.periodRangeS ? `${t.periodRangeS[0].toFixed(0)}-${t.periodRangeS[1].toFixed(0)} s` : '19-23 s'} per turn. ${radar}`,
+        `Position from the survey (a straight line: INTERPOLATED). Ground: ${sim.ground === 'procedural' ? 'procedural farmland, not the real land cover (no imagery offline)' : 'imagery and terrain tiles'}.`,
+      ]
+    : [
+        t.periodRangeS
+          ? `Funnel: one turn per ${t.periodS ? t.periodS.toFixed(0) : t.periodRangeS[0].toFixed(0)} s, counter-clockwise from above. ESTIMATED from the survey (${t.rating} wind ${t.windRangeMs ? `${t.windRangeMs[0].toFixed(0)}-${t.windRangeMs[1].toFixed(0)} m/s` : ''}, ${t.widthM ? Math.round(t.widthM) : '–'} m wide).`
+          : 'Funnel: spin not estimated.',
+        radar,
+        `Position from the survey (straight line, INTERPOLATED)${t.debris ? '; possible debris signature (weak evidence)' : ''}. Funnel and debris: STYLISED.`,
+      ];
+  const cols = 150;
+  const lines = raw.flatMap((ln) => wrapText(ln, cols));
+  const w = 980 * u;
+  const h = (54 + lines.length * 18) * u;
   const x = 34 * u;
   const y = H - 172 * u - h;
   ctx.save();
@@ -317,7 +330,7 @@ export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, 
   panel(ctx, x, y, w, h, u, 0.62);
   drawText(ctx, `${t.rating} tornado`, x + 14 * u, y + 30 * u, u, { size: 21, weight: 700, color: rgba([255, 120, 110], 1), halo: 0 });
   let cx = x + 14 * u + measure(ctx, `${t.rating} tornado`, u, { size: 21, weight: 700 }) + 14 * u;
-  cx += chip(ctx, 'stylised', cx, y + 28 * u, u, 'STYLISED FUNNEL', 11) + 8 * u;
+  cx += chip(ctx, 'stylised', cx, y + 28 * u, u, sim ? 'SIMULATION' : 'STYLISED FUNNEL', 11) + 8 * u;
   if (real) {
     ctx.fillStyle = rgba(ui().caution, 0.95);
     const label = `REAL TIME ×${m.speedup.toFixed(1)}`;
@@ -330,7 +343,7 @@ export function drawTornadoLowerThird(ctx: CanvasRenderingContext2D, H: number, 
     drawText(ctx, `time-lapse ×${m.speedup.toFixed(1)}`, cx, y + 30 * u, u, { size: 13, weight: 600, color: rgba(ui().dim, 1), halo: 0 });
   }
   lines.forEach((ln, i) => {
-    drawText(ctx, fit(ctx, ln, w - 28 * u, u, { size: 13, weight: 500 }), x + 14 * u, y + (56 + i * 20) * u, u, { size: 13, weight: 500, halo: 0, color: rgba(ui().text, 0.95) });
+    drawText(ctx, ln, x + 14 * u, y + (56 + i * 18) * u, u, { size: 13, weight: 500, halo: 0, color: rgba(ui().text, 0.95) });
   });
   ctx.restore();
 }

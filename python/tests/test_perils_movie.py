@@ -367,8 +367,10 @@ def test_the_ground_level_shot_stands_at_a_station_looking_at_the_approaching_li
     assert win[len(win) // 2]["alt_m"] < 10
     scene = choreography.Scene(p)
     look_back = (scene.perp_deg + 180.0) % 360.0
-    d = abs(((win[5]["heading_deg"] - look_back) + 180) % 360 - 180)
-    assert d < 25
+    d = abs(((win[len(win) // 3]["heading_deg"] - look_back) + 180) % 360 - 180)
+    assert (
+        d < 25
+    )  # a third into the shot, once the aim has settled after the crossfade from the tornado shot
 
 
 def test_nearest_station_selection():

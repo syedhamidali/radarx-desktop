@@ -20,6 +20,7 @@ convert_bundle = importlib.import_module("convert_bundle")
 synth_bundle = importlib.import_module("synth_bundle")
 vortex = importlib.import_module("vortex")
 measure_rotation = importlib.import_module("measure_rotation")
+measure_funnel = importlib.import_module("measure_funnel")
 
 
 @pytest.fixture(scope="module")
@@ -53,13 +54,14 @@ KINEMATICS = {
 
 def test_the_timeline_has_a_core_that_runs_in_real_time_and_still_covers_the_window():
     tl = choreography.build_timeline(
-        960.0, 120.0, 30, dip_centre=58.0, dip_width=24.0, core_speedup=1.0, core_width=10.0
+        960.0, 120.0, 30, dip_centre=58.0, dip_width=24.0, core_speedup=1.0, core_width=24.0
     )
     sp, td = tl["speedup"], tl["t_data_s"]
     assert td[0] == 0 and td[-1] == pytest.approx(960.0)
     assert np.all(np.diff(td) > 0)
     assert sp[58 * 30] == pytest.approx(1.0, abs=0.02)  # real time in the middle
-    assert sp[54 * 30] < 1.3 and sp[62 * 30] < 1.3  # and around it
+    # and through the whole shot (46 to 70 s): one data second per clip second, which is what the simulation's swirl needs
+    assert np.abs(sp[47 * 30 : 69 * 30] - 1.0).max() < 0.05
     assert sp[10 * 30] > 8  # the rest runs faster to make up for it
 
 
@@ -124,12 +126,17 @@ def test_the_events_carry_the_vortex_and_the_real_time_window(tiny):
     assert vx["radius_m"] == pytest.approx(183.0)
     assert vx["period_s"] == pytest.approx(20.91, abs=0.02)
     assert vx["speedup_at_middle"] == pytest.approx(1.0, abs=0.05)
-    assert vx["real_time_to_clip_s"] - vx["real_time_from_clip_s"] > 8.0
+    assert vx["real_time_to_clip_s"] - vx["real_time_from_clip_s"] > 20.0
     assert vx["tornado_resolved"] is False
     assert vx["parent_circulation"]["median_vrot_ms"] == 11.2
     assert "no radar resolves" in vx["note"]
     tm = res["timeline"]["tornado_slowdown"]
-    assert tm["core_speedup"] == 1.0 and tm["core_width_s"] == 10.0
+    assert tm["core_speedup"] == 1.0 and tm["core_width_s"] == 24.0
+    shot = res["events"]["tornado"]["shot"]
+    assert shot["t1_clip_s"] - shot["t0_clip_s"] == pytest.approx(24.0)
+    assert shot["t1_data_s"] - shot["t0_data_s"] == pytest.approx(
+        24.0, abs=0.5
+    )  # 1 data s per clip s
 
 
 def test_the_aim_is_blended_so_that_the_view_does_not_whip_when_a_shot_arrives(tiny):
@@ -139,7 +146,9 @@ def test_the_aim_is_blended_so_that_the_view_does_not_whip_when_a_shot_arrives(t
     dh = np.abs((np.diff(h) + 180) % 360 - 180)
     assert dh.max() < 2.0
     tor_i = [i for i, c in enumerate(cam) if c["shot"] == "tornado"]
-    assert dh[tor_i[0] : tor_i[-1]].max() < 1.2  # inside the tornado shot, an orbit, not a whip
+    assert (
+        dh[tor_i[0] : tor_i[-1]].max() < 1.6
+    )  # inside the tornado shot, a dolly and a bounded shake, not a whip
 
 
 def _ring_pixels(omega, times, centre=(5.0, -3.0), radius=0.229, fov_deg=64.0):
@@ -226,3 +235,83 @@ def test_the_couplet_summary_is_converted_with_its_verdict():
     assert v["summary"]["tornado_resolved_any"] is False
     assert v["summary"]["vrot_ms_min_median_max"][1] == pytest.approx(7.9)
     assert convert_bundle.convert_vortex(None, lambda iso: 0.0) is None
+
+
+def test_the_events_the_camera_and_the_survey_path_through_the_timeline_agree(tiny):
+    """events.json (and with it the sound), camera_path.json and the page's marker all use the SURVEY path mapped through the
+    timeline: begin and end points at their times, a straight line at constant speed between them."""
+    _root, p = tiny
+    res = choreography.plan(p)
+    tl, ev = res["tl"], res["events"]["tornado"]
+    path = next(t["path"] for t in p["tornadoes"] if len(t.get("path", [])) >= 2)
+    t0, t1 = path[0]["t"], path[-1]["t"]
+    geo = choreography.Scene(p).geo
+    for q in ev["positions"]:
+        td = float(choreography.data_time_of_clip(tl, q["t_clip_s"]))
+        f = (td - t0) / (t1 - t0)
+        x = path[0]["x"] + (path[-1]["x"] - path[0]["x"]) * f
+        y = path[0]["y"] + (path[-1]["y"] - path[0]["y"]) * f
+        la, lo = geo.latlon(x, y)
+        assert abs(q["lat"] - la) < 2e-5 and abs(q["lon"] - lo) < 2e-5  # a couple of metres
+    # the camera of the tornado shot is placed from the same position
+    scene = choreography.Scene(p)
+    for c in res["camera"][::15]:
+        if c["shot"] != "tornado" or c["t_clip_s"] < 50 or c["t_clip_s"] > 66:
+            continue
+        td = float(choreography.data_time_of_clip(tl, c["t_clip_s"]))
+        a = scene.tornado_at(td)[0]
+        d = math.hypot(c["x_km"] - a[0], c["y_km"] - a[1])
+        assert d < 0.9  # chaser (500-800 m) or debris-field view (under 150 m)
+
+
+def test_the_tornado_shot_is_a_chaser_then_the_debris_field(tiny):
+    _root, p = tiny
+    res = choreography.plan(p)
+    cam, tl = res["camera"], res["tl"]
+    scene = choreography.Scene(p)
+
+    def dist(c):
+        a = scene.tornado_at(float(choreography.data_time_of_clip(tl, c["t_clip_s"])))[0]
+        return 1000.0 * math.hypot(c["x_km"] - a[0], c["y_km"] - a[1])
+
+    tor = [c for c in cam if c["shot"] == "tornado"]
+    t_a = next(s for s in res["shots"] if s.name == "tornado").t0
+    chaser = [c for c in tor if t_a + 5 <= c["t_clip_s"] <= t_a + 9]
+    debris = [c for c in tor if t_a + 17 <= c["t_clip_s"] <= t_a + 22]
+    assert chaser and debris
+    assert all(450 < dist(c) < 900 for c in chaser)  # 800 to 500 m ahead of and beside the track
+    assert min(dist(c) for c in debris) < 110  # the debris field: 75 m from where it passes
+    assert all(c["fov_deg"] == pytest.approx(choreography.FOV_CHASER, abs=0.5) for c in chaser)
+    assert all(c["fov_deg"] == pytest.approx(choreography.FOV_DEBRIS, abs=0.5) for c in debris)
+    assert all(c["alt_m"] < 4.0 for c in chaser + debris)  # a standing observer
+
+
+def test_the_funnel_measurement_finds_a_known_sideways_shift_and_projects_the_axis():
+    x = np.arange(160.0)
+    rng = np.random.default_rng(3)
+    a = np.convolve(rng.normal(size=400), np.ones(5) / 5, mode="same")[100:260]
+    b = np.interp(x - 5.3, x, a)  # the texture moved 5.3 px to the right
+    shift, peak = measure_funnel.estimate_shift(a, b, with_peak=True)
+    assert shift == pytest.approx(5.3, abs=0.25) and peak > 0.9
+    assert measure_funnel.estimate_shift(a, np.interp(x + 4.0, x, a)) == pytest.approx(
+        -4.0, abs=0.25
+    )
+    # a point straight ahead of the camera is at the centre of the picture, one on its right is to the right
+    pos, target = (0.0, 0.0, 2.0), (0.0, 100.0, 2.0)
+    fwd, right, up = measure_funnel.camera_basis(pos, target)
+    tan_y = math.tan(math.radians(38.0) / 2)
+    x0, y0, d, ppm = measure_funnel.project(
+        (0.0, 500.0, 2.0), pos, fwd, right, up, tan_y, 1920, 1080
+    )
+    assert abs(x0 - 960) < 1e-6 and abs(y0 - 540) < 1e-6 and d == pytest.approx(500.0)
+    assert ppm == pytest.approx(540 / (500 * tan_y))
+    x1, _y1, _d, _p = measure_funnel.project(
+        (50.0, 500.0, 2.0), pos, fwd, right, up, tan_y, 1920, 1080
+    )
+    assert x1 > 960
+    seed = {
+        "track": [{"t": 0.0, "lat": 33.0, "lon": -88.0}, {"t": 100.0, "lat": 33.1, "lon": -87.9}]
+    }
+    ex, ey = measure_funnel.local_axis(seed, 50.0)
+    assert ex == pytest.approx(0.05 * 111320 * math.cos(math.radians(33.0)), rel=1e-6)
+    assert ey == pytest.approx(0.05 * 110574, rel=1e-6)

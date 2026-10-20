@@ -41,6 +41,10 @@ export interface CamEntry {
 }
 
 export interface Pose {
+  /** Geographic position and the lens of the frame (for the tornado simulation). */
+  lat: number;
+  lon: number;
+  altM: number;
   x: number;
   y: number;
   zKm: number;
@@ -122,6 +126,9 @@ export class Director {
     const a = this.cam[i];
     const b = this.cam[Math.min(i + 1, this.cam.length - 1)];
     return {
+      lat: a.lat + (b.lat - a.lat) * f,
+      lon: a.lon + (b.lon - a.lon) * f,
+      altM: a.alt_m + (b.alt_m - a.alt_m) * f,
       x: a.x_km + (b.x_km - a.x_km) * f,
       y: a.y_km + (b.y_km - a.y_km) * f,
       zKm: a.z_km + (b.z_km - a.z_km) * f,

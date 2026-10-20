@@ -8,7 +8,7 @@
 export type LayerId =
   | 'radars' | 'stations' | 'lma' | 'hail' | 'rotation' | 'tornadoTrack' | 'funnel' | 'zdr' | 'convStrat' | 'balloon'
   | 'mrms' | 'isotherms' | 'flow' | 'wsurface' | 'captions' | 'skewt' | 'envPanel' | 'stripCharts' | 'timeHeight' | 'lmaPanel' | 'stationCard'
-  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks' | 'immersion' | 'tornadoCard' | 'minimap';
+  | 'modelCloud' | 'surfaceModels' | 'dsd' | 'rainStreaks' | 'immersion' | 'tornadoCard' | 'minimap' | 'sim';
 
 const SHOTS = ['establishing', 'flyby', 'tornado', 'window', 'rise', 'topdown'] as const;
 type ShotName = (typeof SHOTS)[number];
@@ -18,7 +18,7 @@ export const LAYER_TABLE: Record<LayerId, number[]> = {
   radars: [1, 0.55, 0.0, 0.35, 0.6, 1],
   stations: [0.7, 0.9, 0.0, 1, 0.7, 1],
   lma: [1, 1, 1, 1, 1, 1],
-  hail: [0.35, 1, 0.3, 0.7, 0.5, 0.8],
+  hail: [0.35, 1, 0.0, 0.7, 0.5, 0.8],
   rotation: [0.5, 0.9, 0.0, 0.4, 0.5, 0.8],
   tornadoTrack: [1, 1, 0.0, 0.5, 0.8, 1],
   funnel: [0, 0.6, 1, 0.5, 0.5, 0],
@@ -46,6 +46,8 @@ export const LAYER_TABLE: Record<LayerId, number[]> = {
   tornadoCard: [0, 1, 0, 0.7, 0, 0.7],
   /** The plan-view inset: in every shot, small and faint in the immersive one. */
   minimap: [1, 1, 0.6, 1, 1, 1],
+  /** The simulated tornado of the tornado shot (further multiplied by the camera's nearness to the tornado). */
+  sim: [0, 0, 1, 0, 0, 0],
 };
 
 export function smoothstep(x: number): number {
