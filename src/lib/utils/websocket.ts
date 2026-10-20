@@ -818,7 +818,10 @@ class WebSocketManager {
       }
 
       default:
-        console.log('[WS] Unhandled message type:', type, msg);
+        // Most reply types are answered by handlers registered through onMessage (scatter, histogram,
+        // statistics ...): only a type nobody listens for is worth a line, and only its name: the
+        // payload (thousands of points) would be kept alive by an open DevTools console.
+        if (!this.messageHandlers.has(type)) console.log('[WS] Unhandled message type:', type);
     }
 
     // Dispatch to custom handlers
