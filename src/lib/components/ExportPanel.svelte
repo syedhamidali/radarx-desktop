@@ -456,8 +456,8 @@
       <div class="section-header">Batch Export</div>
 
       <div class="field">
-        <label>Variables</label>
-        <div class="checkbox-grid">
+        <span class="field-label" id="exp-batch-vars">Variables</span>
+        <div class="checkbox-grid" role="group" aria-labelledby="exp-batch-vars">
           <label class="checkbox-label select-all">
             <input type="checkbox" checked={batchSelectAllVars} on:change={toggleAllVars} disabled={!canExport} />
             All
@@ -472,8 +472,8 @@
       </div>
 
       <div class="field">
-        <label>Sweeps</label>
-        <div class="checkbox-grid">
+        <span class="field-label" id="exp-batch-sweeps">Sweeps</span>
+        <div class="checkbox-grid" role="group" aria-labelledby="exp-batch-sweeps">
           <label class="checkbox-label select-all">
             <input type="checkbox" checked={batchSelectAllSweeps} on:change={toggleAllSweeps} disabled={!canExport} />
             All
@@ -721,7 +721,8 @@
     gap: var(--spacing-sm);
   }
 
-  .field label {
+  .field label,
+  .field .field-label {
     font-size: 10px;
     color: var(--text-secondary);
     text-transform: uppercase;

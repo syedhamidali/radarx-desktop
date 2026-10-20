@@ -493,10 +493,10 @@
 
     <!-- Station row -->
     <div class="cdp-row">
-      <label class="cdp-label">{mode === 'network' ? 'Centre' : 'Station'}</label>
+      <label class="cdp-label" for="cdp-station">{mode === 'network' ? 'Centre' : 'Station'}</label>
       <div class="cdp-station-row">
         {#if stations.length > 0}
-          <select class="cdp-select" bind:value={selectedStation}>
+          <select id="cdp-station" class="cdp-select" bind:value={selectedStation}>
             {#each stations as s}
               <option value={s.id}>{s.id}{s.arco ? ' ★' : ''}</option>
             {/each}
@@ -527,8 +527,8 @@
     {#if mode === 'archive'}
       <div class="cdp-section">
         <div class="cdp-row">
-          <label class="cdp-label">Date</label>
-          <input type="date" class="cdp-input flex1" bind:value={archiveDate} />
+          <label class="cdp-label" for="cdp-archive-date">Date</label>
+          <input id="cdp-archive-date" type="date" class="cdp-input flex1" bind:value={archiveDate} />
         </div>
         <button class="cdp-btn full" on:click={fetchL2Files} disabled={!isConnected || loadingFiles || !selectedStation}>
           {loadingFiles ? 'Loading…' : 'List Files'}

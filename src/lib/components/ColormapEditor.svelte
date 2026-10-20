@@ -269,14 +269,14 @@
       <div class="editor-body">
         <!-- Name input -->
         <div class="field-row">
-          <label class="field-label">Name</label>
-          <input class="field-input" type="text" bind:value={name} maxlength="48" placeholder="Colormap name" />
+          <label class="field-label" for="cme-name">Name</label>
+          <input id="cme-name" class="field-input" type="text" bind:value={name} maxlength="48" placeholder="Colormap name" />
         </div>
 
         <!-- Preview gradient -->
         <div class="preview-section">
-          <label class="field-label">Preview</label>
-          <div class="preview-bar" style="background: {previewGradient}"></div>
+          <span class="field-label">Preview</span>
+          <div class="preview-bar" role="img" aria-label="Preview of the colormap" style="background: {previewGradient}"></div>
         </div>
 
         <!-- Gradient editor bar with stops -->
@@ -310,8 +310,9 @@
         {#if selectedStopIdx >= 0 && selectedStopIdx < stops.length}
           <div class="stop-details">
             <div class="field-row">
-              <label class="field-label">Color</label>
+              <label class="field-label" for="cme-stop-color">Color</label>
               <input
+                id="cme-stop-color"
                 type="color"
                 class="color-picker"
                 value={stopColorHex(stops[selectedStopIdx])}
@@ -319,8 +320,9 @@
               />
             </div>
             <div class="field-row">
-              <label class="field-label">Position</label>
+              <label class="field-label" for="cme-stop-pos">Position</label>
               <input
+                id="cme-stop-pos"
                 class="field-input narrow"
                 type="number"
                 min="0"
