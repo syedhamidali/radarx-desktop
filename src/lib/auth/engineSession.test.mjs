@@ -9,7 +9,9 @@ function harness(over = {}) {
   const calls = { authorised: [], required: [], refreshed: 0 };
   let connected = true;
   let session = { access_token: 'tok1', expires_at: 1_800_000_000 };
+  let pending = over.pendingStart ?? false;
   const deps = {
+    pendingSignOut: { get: () => pending, set: (v) => (pending = v) },
     send: (m) => sent.push(m),
     isConnected: () => connected,
     getSession: async () => session,
@@ -31,7 +33,7 @@ function harness(over = {}) {
     appVersion: () => '0.3.0',
   };
   const sync = new EngineSessionSync(deps);
-  return { sync, sent, timers, calls, setConnected: (v) => (connected = v), setSession: (s) => (session = s) };
+  return { sync, sent, timers, calls, setConnected: (v) => (connected = v), setSession: (s) => (session = s), pending: () => pending };
 }
 const flush = () => new Promise((r) => setImmediate(r));
 
@@ -200,4 +202,34 @@ test('nothing is sent when there is no session any more', async () => {
   h.sync.connected();
   await flush();
   assert.equal(h.sent.length, 0);
+});
+
+test('a sign-out with no connection is remembered and delivered first when the engine is reached', async () => {
+  const h = harness();
+  h.setConnected(false);
+  h.sync.signOut();
+  assert.equal(h.pending(), true);
+  assert.equal(h.sent.length, 0);
+  h.setConnected(true);
+  h.setSession(null);
+  h.sync.connected();
+  await flush();
+  assert.deepEqual(h.sent[0], SIGN_OUT_MESSAGE);
+  assert.equal(h.pending(), false);
+});
+
+test('a sign-out that reaches the engine leaves nothing pending', () => {
+  const h = harness();
+  h.sync.signOut();
+  assert.deepEqual(h.sent.at(-1), SIGN_OUT_MESSAGE);
+  assert.equal(h.pending(), false);
+});
+
+test('signing in again cancels a sign-out that was still waiting', async () => {
+  const h = harness({ pendingStart: true });
+  h.sync.signedIn();
+  assert.equal(h.pending(), false);
+  h.sync.connected();
+  await flush();
+  assert.equal(h.sent.some((m) => m.type === 'auth_signout'), false);
 });

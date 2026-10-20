@@ -222,6 +222,11 @@ class WebSocketManager {
     }
   }
 
+  /** Forget requests waiting for the engine to accept an account (sign-out: they must not replay later). */
+  clearHeld(): void {
+    this.heldForAuth.length = 0;
+  }
+
   /** Drop all per-connection protocol state (called on connect, close, disconnect). */
   private resetConnectionState(): void {
     this.inflight = null;

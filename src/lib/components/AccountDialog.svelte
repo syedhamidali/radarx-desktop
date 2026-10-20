@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { auth, saveProfile, signOut, deleteAccount, listDevices, removeDevice, listActivity, deviceId, USE_CASES, type DeviceRow, type ActivityRow } from '../stores/auth';
+  import { auth, saveProfile, retryProfile, signOut, deleteAccount, listDevices, removeDevice, listActivity, deviceId, USE_CASES, type DeviceRow, type ActivityRow } from '../stores/auth';
   import { focusTrap } from '../utils/focusTrap';
   import { addToast } from '../stores/toasts';
 
@@ -75,6 +75,12 @@
   <div class="dlg brackets-4" role="dialog" aria-modal="true" aria-label="Account" use:focusTrap={{ initial: 'input' }}>
     <h2>Your account</h2>
     <p class="mail">{a.email ?? ''}</p>
+    {#if a.profileState === 'failed'}
+      <p class="hint" role="status">
+        Your profile could not be loaded (no connection or the server is busy).
+        <button class="linkish" onclick={() => retryProfile()}>Try again</button>
+      </p>
+    {/if}
 
     <label><span>Name</span><input bind:value={name} autocomplete="name" /></label>
     <label><span>Affiliation</span><input bind:value={affiliation} autocomplete="organization" /></label>

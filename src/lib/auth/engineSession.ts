@@ -77,6 +77,11 @@ export interface SyncDeps {
   onRequired(reason: string, message: string): void;
   deviceId?(): string | undefined;
   appVersion?(): string | undefined;
+  /**
+   * A sign-out that could not be delivered (no connection to the engine) is remembered here and sent
+   * as soon as the connection is up, so the shared session file never survives an in-app sign-out.
+   */
+  pendingSignOut?: { get(): boolean; set(value: boolean): void };
 }
 
 export class EngineSessionSync {
@@ -101,6 +106,10 @@ export class EngineSessionSync {
   connected(): void {
     this.attempts = 0;
     this.renewedOnce = false;
+    if (this.d.pendingSignOut?.get()) {
+      this.d.send({ ...SIGN_OUT_MESSAGE });
+      this.d.pendingSignOut.set(false);
+    }
     const reason = this.nextReason;
     this.nextReason = 'reconnect';
     void this.push(reason);
@@ -113,6 +122,7 @@ export class EngineSessionSync {
 
   /** The user just signed in (not a silent restore). */
   signedIn(): void {
+    this.d.pendingSignOut?.set(false); // a new sign-in replaces any sign-out still waiting
     this.nextReason = 'sign_in';
     if (this.d.isConnected()) {
       this.nextReason = 'reconnect';
@@ -130,7 +140,12 @@ export class EngineSessionSync {
     this.clearTimer();
     this.waiting = false;
     this.nextReason = 'start';
-    if (this.d.isConnected()) this.d.send({ ...SIGN_OUT_MESSAGE });
+    if (this.d.isConnected()) {
+      this.d.send({ ...SIGN_OUT_MESSAGE });
+      this.d.pendingSignOut?.set(false);
+    } else {
+      this.d.pendingSignOut?.set(true);
+    }
   }
 
   async push(reason: PushReason): Promise<void> {

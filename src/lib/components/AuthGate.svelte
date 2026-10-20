@@ -101,7 +101,7 @@
       </div>
     </div>
 
-    {#if !a.ready}
+    {#if !a.ready || (a.gate === 'open' && a.profileState === 'loading')}
       <p class="note" role="status">Checking your account...</p>
     {:else if waitingForCode}
       <h1>Check your e-mail</h1>
