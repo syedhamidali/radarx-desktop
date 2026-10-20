@@ -655,12 +655,17 @@ def _guess_formats(path: str) -> tuple[list[str], bool]:
     magic_fmt = _sniff_magic(path)
     if magic_fmt:
         add(magic_fmt)
+        if magic_fmt == "cfradial1":
+            # CfRadial2 is the other NetCDF flavour: next, not after every binary format. The
+            # fallbacks scan the file (xradar's Rainbow reader took 17 s on a 17 MB NetCDF file).
+            add("cfradial2")
 
     # 2. Extension-based hints
     if not p.suffix or suffixes & {".gz", ".bz2"}:
         add("nexrad_level2")
     if suffixes & {".nc", ".ncf", ".cdf"}:
         add("cfradial1")
+        add("cfradial2")
     if suffixes & {".h5", ".hdf5", ".hdf"}:
         add("odim")
         add("gamic")

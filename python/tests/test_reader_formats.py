@@ -110,6 +110,30 @@ class TestCfRadial2FirstDimension:
             reader_mod._azimuth_first(broken)("x.nc")
 
 
+class TestNetcdfFamilyOrder:
+    """A NetCDF file that is not CfRadial1 tries CfRadial2 next, not after every binary format."""
+
+    def test_guess_puts_cfradial2_right_after_cfradial1(self, tmp_path: Path) -> None:
+        for path in (_cdf_file(tmp_path), str(tmp_path / "volume.nc")):
+            order = _guess_formats(path)[0]
+            assert order[:2] == ["cfradial1", "cfradial2"]
+
+    def test_cfradial2_file_opens_without_scanning_it_as_other_formats(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        tried: list[str] = []
+        real = reader_mod._get_opener
+
+        def spy(fmt: str) -> Callable[[str], xr.DataTree]:
+            tried.append(fmt)
+            return real(fmt)
+
+        monkeypatch.setattr(reader_mod, "_get_opener", spy)
+        schema = RadarReader().open_file(str(_time_first_cfradial2(tmp_path / "cf2.nc")))
+        assert schema["format"] == "cfradial2"
+        assert tried == ["cfradial1", "cfradial2"]
+
+
 class TestFormatTable:
     def test_new_formats_present(self) -> None:
         labels = {label for label, _, _ in _FORMAT_TABLE}
