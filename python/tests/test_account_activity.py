@@ -45,6 +45,8 @@ def assert_clean_rows(rows, *forbidden: str) -> None:
             if text == row["occurred_at"]:
                 continue
             assert not PATHLIKE.search(text), f"path-like text in {row['event']}: {text!r}"
+            if text == row["device_id"]:
+                continue  # a random hex id can contain any short hex-letter word, such as "ada"
             for fragment in forbidden:
                 assert fragment.lower() not in text.lower(), f"{fragment!r} leaked into {row}"
 
