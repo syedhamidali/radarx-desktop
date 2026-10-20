@@ -112,7 +112,7 @@ def parse_time(text: str) -> datetime:
         raise AnimatePlanError(
             f"cannot read the time {text!r}: use for example 2021-12-11T02:00:00Z"
         ) from exc
-    return t if t.tzinfo else t.replace(tzinfo=UTC)
+    return t.astimezone(UTC) if t.tzinfo else t.replace(tzinfo=UTC)
 
 
 def radar_label(attrs: dict[str, Any], lat: float | None, lon: float | None, fallback: str) -> str:

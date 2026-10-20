@@ -2287,20 +2287,10 @@ def prepare_argv(argv: Sequence[str]) -> list[str]:
 
 
 def _version() -> str:
-    try:
-        from importlib.metadata import PackageNotFoundError, version
+    """The app version, the same one that is stamped into every file (``provenance``)."""
+    from engine import provenance
 
-        for name in (
-            "radarx-desktop-engine",
-            "xradar-desktop-engine",
-        ):  # the old name: older installs
-            try:
-                return version(name)
-            except PackageNotFoundError:
-                continue
-        return "0.1.0"
-    except Exception:
-        return "0.1.0"
+    return provenance.software_version()
 
 
 class _NoTraceback:

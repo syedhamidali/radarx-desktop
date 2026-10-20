@@ -4,6 +4,7 @@
   import { customColormaps } from '../stores/customColormaps';
   import ColormapEditor from './ColormapEditor.svelte';
   import { portal } from '../utils/portal';
+  import { applyTypedLimit, colorbarTicks } from '../utils/colorRange';
 
   export let cmapName: string = 'turbo';
   export let vmin: number = 0;
@@ -38,21 +39,7 @@
     return `linear-gradient(to right, ${stops.join(', ')})`;
   }
 
-  function computeTicks(min: number, max: number): { pos: number; label: string }[] {
-    const range = max - min;
-    if (range <= 0) return [];
-    const ticks: { pos: number; label: string }[] = [];
-    const nTicks = 5;
-    for (let i = 0; i < nTicks; i++) {
-      const frac = i / (nTicks - 1);
-      const val = min + frac * range;
-      ticks.push({
-        pos: frac * 100,
-        label: Number.isInteger(val) ? val.toString() : val.toFixed(1),
-      });
-    }
-    return ticks;
-  }
+  const computeTicks = colorbarTicks;
 
   function buildAllCategories(_customCmaps: any[]): Record<string, string[]> {
     const cats = { ...COLORMAP_CATEGORIES };
@@ -80,15 +67,15 @@
   function commitVmin() {
     if (!editingVmin) return; // Enter already committed; the input's blur fires again as it unmounts
     editingVmin = false;
-    const v = parseFloat(vminInput);
-    if (!isNaN(v) && v < vmax && onRangeChange) onRangeChange(v, vmax);
+    const next = applyTypedLimit(vminInput, 'vmin', vmin, vmax);
+    if (next && onRangeChange) onRangeChange(next[0], next[1]);
   }
 
   function commitVmax() {
     if (!editingVmax) return;
     editingVmax = false;
-    const v = parseFloat(vmaxInput);
-    if (!isNaN(v) && v > vmin && onRangeChange) onRangeChange(vmin, v);
+    const next = applyTypedLimit(vmaxInput, 'vmax', vmin, vmax);
+    if (next && onRangeChange) onRangeChange(next[0], next[1]);
   }
 
   function handleVminKey(e: KeyboardEvent) {
@@ -141,8 +128,8 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="colorbar-container" on:keydown={handleBarKeydown} tabindex="0">
+<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+<div class="colorbar-container" role="group" aria-label="Colour scale: arrow keys shift the range" on:keydown={handleBarKeydown} tabindex="0">
   <!-- Colormap name button (opens picker) -->
   <button class="cmap-label" on:click={() => showPicker = !showPicker} title="Change colormap">
     {cmapName}

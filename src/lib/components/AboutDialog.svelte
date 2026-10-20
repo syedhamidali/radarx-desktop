@@ -44,18 +44,17 @@
 <svelte:window on:keydown={handleKeyDown} />
 
 {#if visible}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="about-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
     <div class="about-dialog brackets-4" role="dialog" aria-modal="true" aria-label="About radarx desktop" transition:fly={{ y: 16, duration: 250 }} use:focusTrap={{ initial: '.about-close-btn' }}>
       <!-- Logo area: the mark over a slow scope -->
       <div class="about-logo">
         <div class="logo-scope"><RadarSweep size={132} period={8} rings={2} labels={false} hub={false} /></div>
-        <div class="logo-icon"><LogoMark size={68} title="xradar" /></div>
+        <div class="logo-icon"><LogoMark size={68} title="Radarx" /></div>
       </div>
 
       <div class="about-name">
-        <span class="name-x">X</span>RADAR
+        RADAR<span class="name-x">X</span>
       </div>
       <div class="about-sub">{$webUi ? 'web' : 'desktop'} &middot; radar research workstation</div>
 

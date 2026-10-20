@@ -77,6 +77,24 @@ flat, DOM nodes and listeners are flat after warm-up, and every texture, buffer 
 deleted when a viewer goes away. (Two early "leaks" in this investigation turned out to be the
 measuring code itself keeping WebGL objects alive; the script now uses weak references.)
 
+### First-paint JS, measured again (`npm run build`, entry + App + colormaps chunks)
+
+The 229 KB entry above had grown back to 368.5 KB raw / 138.3 KB gzip: the updater imported the
+pipeline, mosaic, wind and module stores to know whether a job is running, and `App.svelte` imported
+`volume3d.ts` (which needs the mosaic and wind stores) for one small store. That pulled four stores, the
+WebGL PPI renderer and the wind maths in front of the first paint. Each store now registers a
+running-job counter with `stores/jobSources.ts`, `source3d` lives in its own file, and the update dialog is
+fetched when idle:
+
+| | before | after |
+|---|---|---|
+| JS the first paint needs (raw / gzip) | 368.5 KB / 138.3 KB | **261.9 KB / 103.0 KB** |
+| `App` chunk (raw / gzip) | 288.4 KB / ~97 KB | **191.7 KB / 68.1 KB** |
+
+`src/lib/utils/entryGraph.test.mjs` walks the static imports of `main.ts` and `App.svelte` and fails when
+a heavy module (the renderers, the job stores, the viewers) becomes reachable again; it runs in
+`npm run test:unit`.
+
 ## What changed
 
 1. **Code splitting** (`src/lib/utils/lazy.svelte.ts`, `App.svelte`, `PanelManager.svelte`,
@@ -148,6 +166,13 @@ python scripts/perf/summarize.py /tmp/perf base after
 
 # UI smoke test of a build (every view, every panel, the dialogs; non-zero exit on failure)
 python scripts/perf/smoke.py --url http://127.0.0.1:4174/ --engine-port ... --file volume.gz
+
+# browser regression checks of the fixes a node test cannot see (splitters and panel order by keyboard,
+# colour-bar limits, settings labels, no 'unhandled message' log noise, engine restart; --engine-cmd enables the last)
+python scripts/perf/regress_ui.py --url http://127.0.0.1:4174/ --engine-port ... --file volume.gz
+
+# pixel check of the 2D renderer between two builds (identical hashes = identical output)
+python scripts/perf/ppi_hash.py --url http://127.0.0.1:4174/ --engine-port ... --file volume.gz
 
 # diagnosing: CPU profile, retained DOM, element growth
 PERF_NOMINIFY=1 PERF_OUT=dist-prof npx vite build -c scripts/perf/vite.perf.config.ts

@@ -1155,3 +1155,30 @@ def test_python_dash_m_runs_both_names(module: str) -> None:
     )
     assert done.returncode == 0, done.stderr
     assert done.stdout.strip()
+
+
+def test_version_is_the_one_stamped_into_files(capsys) -> None:
+    """``rxd --version`` and ``rxd.__version__`` follow the app version, not a stale constant."""
+    import rxd
+    from engine import provenance
+
+    version = provenance.software_version()
+    assert version != "0.1.0"  # the old hard-coded fallback
+    code, out, _ = run_cli(capsys, "--version")
+    assert code == 0 and out.strip() == f"rxd {version}"
+    assert rxd.__version__ == version
+
+
+def test_xrd_alias_reports_the_same_version() -> None:
+    code = (
+        "import warnings; warnings.simplefilter('ignore'); import rxd, xrd; "
+        "assert xrd.__version__ == rxd.__version__"
+    )
+    done = subprocess.run(
+        [sys.executable, "-W", "ignore", "-c", code],
+        cwd=PYTHON_DIR,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr

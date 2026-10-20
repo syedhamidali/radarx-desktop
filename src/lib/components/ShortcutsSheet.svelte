@@ -40,6 +40,8 @@
     { description: 'Previous sweep', keys: 'ArrowLeft', category: 'Playback' },
     { description: 'First sweep', keys: 'Home', category: 'Playback' },
     { description: 'Last sweep', keys: 'End', category: 'Playback' },
+    { description: 'Move the focused right-hand panel up', keys: 'alt+arrowup', category: 'View' },
+    { description: 'Move the focused right-hand panel down', keys: 'alt+arrowdown', category: 'View' },
   ]);
 
   const categories = ['Navigation', 'File', 'View', 'Tools', 'Playback'];
@@ -55,6 +57,8 @@
         if (p === 'space') return 'Space';
         if (p === 'arrowright') return '\u2192';
         if (p === 'arrowleft') return '\u2190';
+        if (p === 'arrowup') return '\u2191';
+        if (p === 'arrowdown') return '\u2193';
         if (p === 'escape') return 'Esc';
         if (p === 'home') return 'Home';
         if (p === 'end') return 'End';
@@ -104,8 +108,7 @@
 <svelte:window on:keydown={handleKeyDown} />
 
 {#if visible}
-  <!-- svelte-ignore a11y-click-events-have-key-events -->
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="shortcuts-overlay" on:click={handleOverlayClick} transition:fade={{ duration: 150 }}>
     <div class="shortcuts-dialog" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" transition:fly={{ y: -20, duration: 200 }} use:focusTrap={{ initial: '.search-input' }}>
       <div class="shortcuts-header">
