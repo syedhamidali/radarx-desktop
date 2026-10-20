@@ -1,7 +1,7 @@
-"""Data side of ``xrd animate``: grid the volumes, find and track the storm, keep a disk cache.
+"""Data side of ``rxd animate``: grid the volumes, find and track the storm, keep a disk cache.
 
 For each time step of a :class:`~engine.animate_plan.StepPlan` the volumes of the step's radars are
-merged onto a 3-D grid (the same ``engine.mosaic`` code as ``xrd mosaic`` and the 3D tab). The
+merged onto a 3-D grid (the same ``engine.mosaic`` code as ``rxd mosaic`` and the 3D tab). The
 work is done **one time step at a time**: the radar files of one step are opened, gridded and
 closed before the next step is touched, so memory is bounded by one step (a few radar volumes),
 not by the length of the series. What survives a step is small: the cells and the column maximum of

@@ -40,7 +40,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[radarx]"        # radarx needs Python >= 3.12
 ```
 
-This gives the Python API (`from engine import api`) and the `xrd` command. The desktop app itself additionally
+This gives the Python API (`from engine import api`) and the `rxd` command. The desktop app itself additionally
 needs Node.js 20+ and Rust; see {doc}`contributing`.
 
 ## On the web

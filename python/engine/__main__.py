@@ -1,4 +1,4 @@
-"""``python -m engine ...`` is the same as the ``xrd`` command (see :mod:`engine.cli`)."""
+"""``python -m engine ...`` is the same as the ``rxd`` command (see :mod:`engine.cli`)."""
 
 from __future__ import annotations
 

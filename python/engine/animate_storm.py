@@ -1,4 +1,4 @@
-"""Storm finding and tracking on gridded radar volumes (shared by ``xrd animate`` and tools/storm_clip).
+"""Storm finding and tracking on gridded radar volumes (shared by ``rxd animate`` and tools/storm_clip).
 
 Pure NumPy/SciPy functions on the merged 3-D mosaic (uint8 codes, 0 = no echo): the convective
 cells of a volume, the storm followed from step to step, the echo-free eye of a tropical cyclone,

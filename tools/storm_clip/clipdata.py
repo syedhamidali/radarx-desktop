@@ -37,7 +37,7 @@ import numpy as np
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "python"))
 
-from engine.animate_storm import (  # shared with `xrd animate`: finding and tracking the storm
+from engine.animate_storm import (  # shared with `rxd animate`: finding and tracking the storm
     Cell,
     Eye,
     box_around,

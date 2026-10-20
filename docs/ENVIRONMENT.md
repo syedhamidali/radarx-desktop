@@ -124,7 +124,7 @@ on and files are missing, the dialog says why and offers no Download button.
 
 ## Soundings
 
-**Sounding** panel (right-hand side) and `xrd sounding`: a radiosonde profile as a **Skew-T log-p diagram**
+**Sounding** panel (right-hand side) and `rxd sounding`: a radiosonde profile as a **Skew-T log-p diagram**
 and a **hodograph**, with the parameters below. The diagram is drawn by the app (SVG, no extra
 dependency, themed, lazy-loaded).
 
@@ -197,15 +197,15 @@ numbers must come from one source); the LCL, LFC and EL of the selected parcel a
 ### Command line and Python
 
 ```bash
-xrd sounding -i BMX_20220330_00Z.csv --wind-units kt          # labelled table
-xrd sounding -i BMX_20220330_00Z.csv --wind-units kt -v       # + definitions and references
-xrd sounding -i sonde.csv --json                              # everything, machine-readable
-xrd sounding -i sonde.csv -o result.json -o profile.csv       # full result / profile levels with a provenance header
+rxd sounding -i BMX_20220330_00Z.csv --wind-units kt          # labelled table
+rxd sounding -i BMX_20220330_00Z.csv --wind-units kt -v       # + definitions and references
+rxd sounding -i sonde.csv --json                              # everything, machine-readable
+rxd sounding -i sonde.csv -o result.json -o profile.csv       # full result / profile levels with a provenance header
 ```
 
 ```python
-import xrd
-d = xrd.sounding("BMX_20220330_00Z.csv", wind_units="kt")
+import rxd
+d = rxd.sounding("BMX_20220330_00Z.csv", wind_units="kt")
 d["diagnostics"]["parcels"]["most-unstable"]["cape"], d["provenance"]["kind"]
 ```
 

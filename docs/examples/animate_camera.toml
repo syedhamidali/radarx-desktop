@@ -1,4 +1,4 @@
-# A camera for `xrd animate --camera animate_camera.toml`: five keyframes, 24 s.
+# A camera for `rxd animate --camera animate_camera.toml`: five keyframes, 24 s.
 #
 # azimuth    degrees; where the camera is seen from the target (180 = south of it, looking north)
 # elevation  degrees above the horizon (90 = straight down)

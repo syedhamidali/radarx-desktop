@@ -5,7 +5,7 @@ scene, in 3D, with a camera that moves around it while the storm travels across 
 own 3D viewer (`CartesianRenderer`, the same ray-marched volume, transfer function, lighting, map
 ground and overlay as the 3D tab) in headless Chrome, so the look matches the app. It lives in
 `tools/storm_clip/`; it adds nothing to the app's dependencies. The same pipeline is available as a
-command, `xrd animate` (any number of files, nearest volume per radar within a tolerance, a disk cache,
+command, `rxd animate` (any number of files, nearest volume per radar within a tolerance, a disk cache,
 resume, camera files; see [ANIMATE.md](ANIMATE.md)); this page documents the scripts and the renderer.
 
 ![Start of the clip: the storm at 01:50 UTC, the track ahead of it](images/storm3d-oblique.png)

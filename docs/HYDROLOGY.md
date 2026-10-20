@@ -4,8 +4,8 @@ From radar volumes to **rain rate, rainfall accumulation and basin-average rainf
 uncertainty and the beam quality shown next to every number, optional adjustment to rain gauges, and
 a CF NetCDF that says how it was made. Built on [radarx](https://github.com/syedhamidali/radarx)
 (rain-rate relations, KDP, attenuation, hydrometeor classification, beam blockage, advection) and the
-mosaic grid of the app. Works from the app (the **Rainfall** panel), the command line (`xrd qpe`,
-`xrd basin`) and Python (`api.qpe`), with the same engine and the same numbers.
+mosaic grid of the app. Works from the app (the **Rainfall** panel), the command line (`rxd qpe`,
+`rxd basin`) and Python (`api.qpe`), with the same engine and the same numbers.
 
 ```{admonition} An estimate, never an observation
 :class: warning
@@ -21,18 +21,18 @@ go wrong (see [Limits](#limits-what-this-does-not-do)).
 
 ```bash
 # an accumulation from a folder of volumes of one radar (needs radarx)
-xrd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
+rxd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
 
 # the instantaneous rate of a single volume, tropical Z-R, with a known freezing level
-xrd qpe -i KHPX20211211_020457_V06 --relation tropical --freezing-level-m 3800 -o rate.nc
+rxd qpe -i KHPX20211211_020457_V06 --relation tropical --freezing-level-m 3800 -o rate.nc
 
 # four radars, quality-weighted, on a 2 km grid
-xrd qpe -i 'mayfield/*/*_V06' --resolution-m 2000 -o network.nc
+rxd qpe -i 'mayfield/*/*_V06' --resolution-m 2000 -o network.nc
 
 # adjust to gauges, summarise basins, return period from a table you supply
-xrd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked \
+rxd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked \
         --basins watersheds.geojson --frequency atlas14_6h.json -o adjusted.nc
-xrd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png
+rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png
 ```
 
 ```python
@@ -89,7 +89,7 @@ Each is evaluated by the compiled radarx kernels (a NEXRAD sweep in a few millis
 
 ### Z-R relations you can select
 
-`xrd qpe --list-relations` prints them. *Z* = *A* *R*<sup>β</sup>:
+`rxd qpe --list-relations` prints them. *Z* = *A* *R*<sup>β</sup>:
 
 | key | *A* | β | use |
 |---|---|---|---|
@@ -354,7 +354,7 @@ open volumes. Peak memory is one decoded volume plus the working set, about 1–
 
 ## Command line, Python and app reference
 
-`xrd qpe` options: `-i` volumes (files, globs, folders), `-o` (`.nc .png .json .csv`), `-p` figure, `-P KEY=VALUE`
+`rxd qpe` options: `-i` volumes (files, globs, folders), `-o` (`.nc .png .json .csv`), `-p` figure, `-P KEY=VALUE`
 (any estimator option: `zr_a`, `zr_b`, `sigma_z_db`, `phase_policy`, `ml_policy`, `hail_policy`, `kdp_min`,
 `r_light`, `r_heavy`, `z_offset_db`, `zdr_offset_db`, `block_max`, `tile_km` ...), `--method`, `--relation`,
 `--band`, `--precip`, `--freezing-level-m`, `--z-cap/--no-z-cap`, `--attenuation`, `--dem`, `--start/--end`,
@@ -362,7 +362,7 @@ open volumes. Peak memory is one decoded volume plus the working set, about 1–
 `--hold-edges-s`, `--gauges` (+ `--adjust`, `--gauge-format/-units/-tz/-stations/-interval-s/-time`,
 `--min-gauge-mm`, `--no-gauge-qc`), `-b/--basins` (+ `--basin-id`, `--basin-name`, `--basin-crs`, `--thresholds`,
 `--frequency`), `--field`, `--list-relations`, and the shared `-v -q --json --config --print-command`.
-`xrd basin` is the same pipeline with the basins required and the table / hyetograph as the default outputs.
+`rxd basin` is the same pipeline with the basins required and the table / hyetograph as the default outputs.
 Exit codes as in {doc}`CLI`: a wrong option or relation is 2, a missing file 3, a processing failure 1.
 
 Python: `api.qpe(files, **options)` / `Volume.qpe()` return an `engine.hydro.accumulate.QpeResult`

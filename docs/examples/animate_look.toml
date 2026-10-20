@@ -1,4 +1,4 @@
-# A look for `xrd animate --realistic --look animate_look.toml` (the keys of docs/REALISTIC_3D.md).
+# A look for `rxd animate --realistic --look animate_look.toml` (the keys of docs/REALISTIC_3D.md).
 # Every key is optional; a file with an unknown key is refused with the nearest known one.
 [scene]
 light = "daylight"

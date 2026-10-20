@@ -1,4 +1,4 @@
-"""Tests of the public Python API (``engine.api`` / ``import xrd``).
+"""Tests of the public Python API (``engine.api`` / ``import rxd``).
 
 Synthetic volumes come from ``tests.conftest.make_synthetic_datatree`` (and, for the multi-radar
 products, the radarx test volumes); the real KTLX and Mayfield volumes are optional and skipped
@@ -682,12 +682,12 @@ def test_real_mayfield_mosaic_and_winds(tmp_path: Path) -> None:
 
 
 def test_xrd_alias_package_reexports_the_api() -> None:
-    import xrd
+    import rxd
 
-    assert xrd.open is api.open
-    assert xrd.mosaic is api.mosaic
-    assert xrd.Volume is api.Volume
-    assert xrd.api is api
+    assert rxd.open is api.open
+    assert rxd.mosaic is api.mosaic
+    assert rxd.Volume is api.Volume
+    assert rxd.api is api
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +776,7 @@ def test_help_of_the_package_is_a_guide() -> None:
     import pydoc
 
     text = pydoc.render_doc(api, renderer=pydoc.plaintext)
-    for word in ("Look", "Clean", "Analyse", "Combine", "Save", "sweep=None", "xrd mosaic"):
+    for word in ("Look", "Clean", "Analyse", "Combine", "Save", "sweep=None", "rxd mosaic"):
         assert word in text
     for name in ("open", "info", "plot", "run", "pipeline", "mosaic", "winds", "export", "cells"):
         assert name in api.__all__
