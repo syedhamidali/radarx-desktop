@@ -251,7 +251,7 @@ The repository stays public for now. When you switch it, do these in order:
   can no longer check for updates (the check fails quietly with "Could not check"); those users get the new version from
   the website's download page. v0.3.0 and later also carry the downloads address.
 - [ ] **The private draft releases stay** as an archive of every build (GitHub keeps them while the repository exists).
-- [ ] **Links in already-published documents** (release notes, social posts) that point at `github.com/syedhamidali/…` will stop
+- [ ] **Links in already-published documents** (release notes, social posts) that point at the source host will stop
   working for the public.
 
 ## GitHub Actions minutes for a private repository

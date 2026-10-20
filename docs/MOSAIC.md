@@ -1,7 +1,7 @@
 # Radar mosaic (multi-radar merge)
 
 Merge one or more open radar volumes onto a shared grid and draw the result on the map. The
-heavy lifting is done by [radarx](https://github.com/syedhamidali/radarx) (`grid_radars`,
+heavy lifting is done by [radarx](https://radarx.readthedocs.io/en/latest/) (`grid_radars`,
 `merge_radars`, `network_bias`), whose compiled kernels run multithreaded. Needs
 `pip install "radarx>=0.5.1"` (Python 3.12+).
 

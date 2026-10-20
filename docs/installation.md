@@ -2,9 +2,9 @@
 
 ## The installers (nothing else to install)
 
-Download the file for your system from the
-[latest release](https://github.com/syedhamidali/radarx-desktop/releases/latest). The installers include
-the Python engine, so there is no Python or library to install.
+Download the file for your system from the [download page](https://radarx.labshope.com/#download). The
+installers include the Python engine, so there is no Python or library to install. You need a free Radarx
+account to use the app (see {doc}`ACCOUNTS`).
 
 | System | File |
 |---|---|
@@ -33,15 +33,16 @@ no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`).
 
 ## From source (engine only, for scripts and the command line)
 
+For contributors who have been given the source. In the checkout:
+
 ```bash
-git clone https://github.com/syedhamidali/radarx-desktop.git
-cd radarx-desktop/python
+cd python
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[radarx]"        # radarx needs Python >= 3.12
 ```
 
-This gives the Python API (`from engine import api`) and the `rxd` command. The desktop app itself additionally
-needs Node.js 20+ and Rust; see {doc}`contributing`.
+This gives the Python API (`import rxd`) and the `rxd` command; both need a signed-in account like the app
+({doc}`ACCOUNTS`). The desktop app itself additionally needs Node.js 20+ and Rust; see {doc}`contributing`.
 
 ## On the web
 

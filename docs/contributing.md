@@ -1,15 +1,14 @@
 # Contributing
 
 The rules for contributors (set-up, checks, commit style, DCO sign-off, how to add a module, the science
-checklist) are in [CONTRIBUTING.md](https://github.com/syedhamidali/radarx-desktop/blob/main/CONTRIBUTING.md); every
+checklist) are in `CONTRIBUTING.md` at the top of the source tree; every
 feature has to meet the {doc}`SCIENCE` policy, and dependencies and imagery are tracked as described in
 {doc}`LICENSES`. This page covers the documentation.
 
 ## Set up
 
 ```bash
-git clone https://github.com/syedhamidali/radarx-desktop.git
-cd radarx-desktop
+cd radarx-desktop                 # your checkout of the source
 npm install
 cd python && python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev,radarx]" && cd ..
 npm run tauri dev                 # run the desktop app
@@ -27,7 +26,7 @@ python scripts/check_links.py          # Markdown links and the docs toctree
 
 Only the sources are in the repository (`docs/*.md`, `docs/conf.py`). HTML, the API pages written by `conf.py`
 (`docs/_api/`) and executed notebook outputs are build products and are git-ignored, exactly as in
-[radarx](https://github.com/syedhamidali/radarx).
+[radarx](https://radarx.readthedocs.io/en/latest/).
 
 ```bash
 pip install sphinx pydata-sphinx-theme myst-nb sphinx-copybutton ipykernel

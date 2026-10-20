@@ -1,7 +1,7 @@
 # Multi-Doppler wind retrieval (dual / multi-radar)
 
 Retrieve the 3-D wind (`u`, `v`, `w`) from the radial velocities of two or more Doppler radars that
-scan the same weather. The retrieval is done by [radarx](https://github.com/syedhamidali/radarx)
+scan the same weather. The retrieval is done by [radarx](https://radarx.readthedocs.io/en/latest/)
 (`radarx.retrieve.multidoppler`); the radars are cone-gridded onto one Cartesian grid with
 `multi_doppler_input` (which uses `grid_radars`, the same gridder as the mosaic). Needs
 `pip install radarx` (Python 3.12+).

@@ -174,7 +174,7 @@ While the source repository is public, `endpoints` lists two addresses, in this 
 ```json
 "endpoints": [
   "https://downloads.labshope.com/radarx/latest.json",
-  "https://github.com/syedhamidali/radarx-desktop/releases/latest/download/latest.json"
+  "<address of latest.json on the source host's releases>"
 ]
 ```
 

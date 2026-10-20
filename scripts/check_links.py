@@ -6,7 +6,7 @@ Checks, for the top-level ``*.md`` files, ``docs/*.md`` and ``.github/*.md``:
 * relative links and images ``[text](path)``, ``![alt](path)`` point to an existing file or folder,
 * ``#anchors`` (own page or another Markdown file) match a heading, with GitHub's slug rules,
 * MyST roles ``{doc}`name```, and ``{image}``/``{figure}`` directive paths in ``docs/``,
-* every ``docs/*.md`` page is listed in a ``toctree`` of ``docs/index.md`` (Sphinx warns otherwise).
+* every ``docs/*.md`` page is listed in a ``toctree`` reachable from ``docs/index.md`` (Sphinx warns otherwise).
 
 External ``http(s)`` links are only counted; add ``--external`` to also request them (needs network).
 
@@ -122,19 +122,33 @@ def main() -> int:
                 if not re.match(r"https?:", img) and not (md.parent / img).exists():
                     problems.append(f"{rel}: image {img} not found")
 
-    index = (ROOT / "docs" / "index.md").read_text()
-    listed = {
-        line.strip()
-        for block in TOCTREE.findall(index)
-        for line in block.splitlines()
-        if line.strip() and not line.startswith(":")
-    }
+    # Pages are reached through toctrees that may be nested: index.md lists the section pages and each
+    # section page lists its own pages.
+    def entries(page: Path) -> set[str]:
+        text = page.read_text()
+        return {
+            line.strip()
+            for block in TOCTREE.findall(text)
+            for line in block.splitlines()
+            if line.strip() and not line.startswith(":")
+        }
+
+    listed: set[str] = set()
+    pending = ["index"]
+    while pending:
+        current = ROOT / "docs" / f"{pending.pop()}.md"
+        if not current.exists():
+            continue
+        for name in entries(current):
+            if name not in listed:
+                listed.add(name)
+                pending.append(name)
     for page in sorted((ROOT / "docs").glob("*.md")):
         if page.stem != "index" and page.stem not in listed:
-            problems.append(f"docs/{page.name}: not in a toctree of docs/index.md (Sphinx will warn)")
+            problems.append(f"docs/{page.name}: not in any toctree reachable from docs/index.md (Sphinx will warn)")
     for name in sorted(listed):
         if not name.startswith("_api") and not (ROOT / "docs" / f"{name}.md").exists():
-            problems.append(f"docs/index.md: toctree entry {name!r} has no page")
+            problems.append(f"docs: toctree entry {name!r} has no page")
 
     if args.external:
         for url in sorted(external):
