@@ -14,13 +14,16 @@ The data side is [PERILS_BUNDLE.md](PERILS_BUNDLE.md) (branch `feat/perils-data`
 
 ## The film
 
-Four files, in `~/Downloads/xradar-exports/perils_movie/` (not in the repository):
+Six files, in `~/Downloads/xradar-exports/perils_movie/` (not in the repository):
 
+* `perils_qlcs_movie_v4.mp4`: the current film: the same as v3 with the **lightning drawn as thin branching channels, lines only**
+  (below) and the louder soundtrack `perils_audio_v5`; 3600 frames, 120.00 s, 293 MB.
+* `perils_tornado_focus_v2.mp4`: the current clip: the same change; 2580 frames, 86.00 s, 258 MB.
 * `perils_qlcs_movie_v3.mp4`: the film with the **tornado focus** (below): the merged reflectivity of **merge v2** (calibrated,
   attenuation-corrected, advected to the step time; `bundle/manifest_v2.json`), six angles on the surveyed tornado in 49 s of
   the 120, the radar echo and velocity inset, the rotation series, the finale with the whole track. 3600 frames, 120.00 s,
   1920x1080 at 30 fps, H.264 (crf 17) with AAC stereo 48 kHz (the audio agent's `perils_audio_v4`), 294 MB.
-* `perils_tornado_focus.mp4`: the same six angles at more length, 86 s (2580 frames), 1080p, 260 MB, with its own sound; the data
+* `perils_tornado_focus.mp4` (clip v1, kept): the same six angles at more length, 86 s (2580 frames), 1080p, 260 MB, with its own sound; the data
   01:06:30 to 01:20:00, the end of the track at 01:20 held for 3 s in real time.
 * `perils_qlcs_movie_v2.mp4` (the film with the single tornado shot, 262 MB; made with the old projection, see
   `verification_geometry.md`) and `perils_qlcs_movie.mp4` (v1, the particle funnel): kept.
@@ -38,12 +41,26 @@ Checks made on the encoded files:
   into the chaser view, the funnel forming, the close and the low angle, the damage-path view, the track from above, and the
   inset against the 3-D view (the cone of the inset points where the camera looks, the strong echo is behind the tornado in the
   chaser view, on the same side in the inset).
-* **Sound** (`perils_audio_v4`, rendered from the v3 plan files): -23.0 LUFS, true peak -5.0 dBFS; the thunder layer has rms
-  -23.7 dBFS and peak -5.5 dBFS with 54 voiced events (a median of 12 dB over the rain, wind and convective bed, which is
-  -44 dBFS rms): in every 10-s window from 20 s on the loudest second of thunder is -18.9 to -22.5 dBFS against -43.5 to -49.3
-  dBFS for the rain layer. There is an event in every 10-s window but the first; the first sound arrives at 15.9 s because
-  the opening camera is 143 km from the line and no flash is within hearing range before that. The clip: -23.0 LUFS, true peak
-  -3.7 dBFS, 50 voiced events, one in every 10-s window.
+* **Film v4 and clip v2** (the lightning as lines, the sound `perils_audio_v5`): film 3600 decoded frames, 120.00 s, AAC 120.00 s,
+  darkest frame 49.5 of 255, no black frame; clip 2580 frames, 86.00 s, AAC 86.00 s, darkest frame 52.1; the largest
+  frame-to-frame changes (42.7 in the film at 44.6 s, 40.4 in the clip at 42.5 s) are a bright flash that lights the whole
+  cloud and the ground in one frame (the scene light of the real flashes, as in v3), seen in the pair of frames, not a cut or an error. Frames made by `render_movie.py --plan film|clip --keep-plan` with the
+  frames of the whole film redrawn (a flash is visible in 3562 of the 3602 frames of the film, so nothing could be skipped).
+  Stills read by eye: far flashes (a hair-like, jagged, forked line, 1 to 2 px, in the establishing and the flyby shots), flashes 8 to 15 km
+  away with branches, and the large flash over the tornado in the chaser view (a trunk with branches from the cloud base,
+  a violet-blue glow); no bead, disc or dot anywhere, on the 3-D view or on the two maps.
+* **Sound** (`perils_audio_v5`, rendered from the v3 plan files, which are unchanged by the lightning: the same timeline, camera and
+  events): film -21.0 LUFS, true peak -1.6 dBFS, 77 voiced thunders (54 of the flashes seen on screen), a median of 7 per 10 s,
+  the thunder layer rms -21.4 dBFS, 17 dB median over the rain, wind and convective bed (-45 dBFS rms); clip -21.0 LUFS, true peak -1.9
+  dBFS, 60 voiced thunders (36 on screen), a median of 6 per 10 s, at least 3 in every 10 s. The film has no thunder in its first
+  10 s (the opening camera is 143 km away, no flash is within hearing range). The previous soundtrack (`perils_audio_v4`, -23.0 LUFS,
+  54 and 50 thunders) is in `audio/`.
+* **Film v3**: 3600 decoded frames, 120.00 s, 1920x1080, H.264 + AAC (48 kHz stereo, 120.0 s); no black frame (the darkest frame
+  has a mean luminance of 49 of 255); the largest frame-to-frame changes are the fast lapses (the simulation fading into the
+  echo scene over about half a second at x43). Stills across the tornado segment read by eye: the wide start, the descent
+  into the chaser view, the funnel forming, the close and the low angle, the damage-path view, the track from above, and the
+  inset against the 3-D view (the cone of the inset points where the camera looks, the strong echo is behind the tornado in the
+  chaser view, on the same side in the inset). Its lightning was drawn as polylines with a disc at every source (replaced in v4).
 * **Rotation of the simulated funnel measured in the decoded frames** (`measure_funnel.py`, tornado simulation, model wall
   tangential wind at 40 to 100 m): close angle (450 m): 83 bands, measured / modelled **1.11** (interquartile range 1.03 to
   1.19, so the funnel wall turns once in 90 % of the modelled period), within 15 %; at 1.0 km (the chaser) the wall's texture
@@ -332,6 +349,14 @@ grade, captions, the parcel path, the surface analysis and ground layers, the in
 distance of the camera.
 
 ## Honest limits
+
+* **Lightning** (v4): the line of a flash is the real sources' skeleton drawn smooth with modelled fine jaggedness: a real channel
+  has branches the LMA does not locate (the sources are VHF pulses, mostly from the negative leaders in the cloud, and the
+  return stroke to the ground is not located at all), so the picture shows less branching than a photograph and none of the
+  ground strokes (it is the channel in the cloud and in the air seen through the rain); the brightness (leader, return-stroke
+  flashes, afterglow) and the re-lighting after the last source are modelled; the lines are drawn on top of the scene without
+  being hidden by the cloud or the rain in front of them, so a flash behind a thick rain curtain is too sharp; the glow is a
+  blur, not scattering in the cloud (the cloud light comes from the renderer's flash light, which is unchanged).
 
 * The cloud is the radar echo drawn as cloud: soft, smooth, vertically stretched; radar does not see cloud
   droplets. Looks and lighting are stylised (the real scene was at night).
