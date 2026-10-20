@@ -13,9 +13,12 @@ the app's engine and a command-line run at the same moment cannot corrupt it or 
 What is in it (see docs/ACCOUNTS.md):
 
 ``source``        who owns the refresh chain: ``"cli"`` (``rxd login``; the file also holds the
-                  refresh token and ``rxd`` refreshes it) or ``"app"`` (the desktop app signed in;
+                  refresh token and ``rxd`` refreshes it), ``"app"`` (the desktop app signed in;
                   only the short-lived access token is kept here, because two programs rotating
-                  one refresh token would make the server end the session for both).
+                  one refresh token would make the server end the session for both) or ``"pat"``
+                  (``rxd login --token``: ``pat_token`` is the personal access token, a long-lived
+                  secret as sensitive as a password, and ``access_token`` holds the one-hour
+                  *entitlement token* it was exchanged for).
 ``issued_at``     the ``iat`` of the newest access token the server has issued for this session:
                   the moment the server last vouched for the account. The 30-day offline rule
                   counts from here.
@@ -74,6 +77,8 @@ class StoredSession:
     email: str
     source: str = "cli"
     refresh_token: str | None = None
+    #: a personal access token (source "pat" only): the long-lived secret of an automated job
+    pat_token: str | None = None
     issued_at: float = 0.0
     high_water: float = 0.0
     saved_at: float = 0.0
@@ -94,13 +99,17 @@ class StoredSession:
             if not isinstance(access, str) or not access:
                 return None
             refresh = data.get("refresh_token")
+            pat = data.get("pat_token")
             source = data.get("source", "cli")
+            if source not in ("app", "cli", "pat"):
+                source = "cli"
             return cls(
                 access_token=access,
                 user_id=str(data.get("user_id") or ""),
                 email=str(data.get("email") or ""),
-                source=source if source in ("app", "cli") else "cli",
+                source=source,
                 refresh_token=refresh if isinstance(refresh, str) and refresh else None,
+                pat_token=pat if source == "pat" and isinstance(pat, str) and pat else None,
                 issued_at=float(data.get("issued_at") or 0.0),
                 high_water=float(data.get("high_water") or 0.0),
                 saved_at=float(data.get("saved_at") or 0.0),

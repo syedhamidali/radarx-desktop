@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from engine.account import config, http
+from engine.account import config, http, pat
 from engine.account.errors import AccountServerError
 from engine.account.store import SessionStore, _FileLock, config_dir, device_id
 
@@ -352,6 +352,16 @@ def record(
             with _lock:
                 _memory_only.append({"row": row, "token": token})
                 del _memory_only[:-QUEUE_MAX_EVENTS]
+        elif pat.from_environment() is not None:
+            # RADARX_TOKEN (CI, a batch job): no session file, so the events stay in memory and are
+            # sent through the log-activity function with the current entitlement token.
+            from engine.account import core
+
+            if core.env_token_credentials() is None:
+                return
+            with _lock:
+                _memory_only.append({"row": row, "token": "", "kind": "pat"})
+                del _memory_only[:-QUEUE_MAX_EVENTS]
         else:
             current = _signed_in_user()
             if current is None or (uid is not None and uid != current):
@@ -409,8 +419,10 @@ def queued_count() -> int:
 # -- sending ------------------------------------------------------------------------------------
 
 
-def _file_session_token(net_timeout: float | None = None) -> tuple[str, str] | None:
-    """(access token, user id) of the shared session if it is usable right now, else None."""
+def _file_session_token(net_timeout: float | None = None) -> tuple[str, str, str] | None:
+    """``(token, user id, kind)`` of the shared session if it is usable right now, else None.
+    ``kind`` is "supabase" (an access token for the database) or "pat" (an entitlement token for
+    the log-activity function)."""
     from engine.account import core  # local import: core imports this module lazily too
 
     try:
@@ -420,33 +432,52 @@ def _file_session_token(net_timeout: float | None = None) -> tuple[str, str] | N
     stored = SessionStore().load()
     if stored is None or account.stale:
         return None  # the server would refuse an expired token; wait for a fresh one
-    return stored.access_token, stored.user_id
+    return stored.access_token, stored.user_id, ("pat" if stored.source == "pat" else "supabase")
 
 
-def _post(rows: list[dict[str, Any]], access_token: str, timeout: float = 8.0) -> str:
+def _post(
+    rows: list[dict[str, Any]], access_token: str, timeout: float = 8.0, kind: str = "supabase"
+) -> str:
     """Send one batch. Returns "sent", "drop" (the server refused it for good) or "retry"
-    (the network, an outage, rate limiting or an expired token: try again later)."""
+    (the network, an outage, rate limiting or an expired token: try again later).
+
+    ``kind`` "pat" posts to the ``log-activity`` Edge Function, which checks the entitlement token
+    and applies the same allow-list and caps as the table before inserting for that account."""
     try:
-        http.request_json(
-            "POST",
-            f"{config.project_url()}/rest/v1/activity_events",
-            headers={
-                "apikey": config.publishable_key(),
-                "Authorization": f"Bearer {access_token}",
-                "Prefer": "return=minimal",
-            },
-            body=rows,
-            timeout=timeout,
-        )
+        if kind == "pat":
+            http.request_json(
+                "POST",
+                config.functions_url("log-activity"),
+                headers={
+                    "apikey": config.publishable_key(),
+                    "Authorization": f"Bearer {access_token}",
+                },
+                body={"events": rows},
+                timeout=timeout,
+            )
+        else:
+            http.request_json(
+                "POST",
+                f"{config.project_url()}/rest/v1/activity_events",
+                headers={
+                    "apikey": config.publishable_key(),
+                    "Authorization": f"Bearer {access_token}",
+                    "Prefer": "return=minimal",
+                },
+                body=rows,
+                timeout=timeout,
+            )
         return "sent"
     except AccountServerError as exc:
+        if exc.status == 404 and kind == "pat":
+            return "retry"  # the function is not deployed (yet): keep the events
         if exc.status in (400, 403, 404, 409, 413, 422):
             return "drop"  # the database refuses (some of) this batch
         return "retry"
 
 
 def _post_split(
-    items: list[tuple[str, dict[str, Any]]], token: str, deadline: float
+    items: list[tuple[str, dict[str, Any]]], token: str, deadline: float, kind: str = "supabase"
 ) -> tuple[int, list[tuple[str, dict[str, Any]]]]:
     """Send ``items`` (queue line, row); when the database refuses the batch (a 4xx rejects the
     whole
@@ -455,7 +486,7 @@ def _post_split(
     remaining = deadline - time.monotonic()
     if remaining <= 0.05:
         return 0, items
-    outcome = _post([row for _, row in items], token, timeout=min(remaining, 8.0))
+    outcome = _post([row for _, row in items], token, timeout=min(remaining, 8.0), kind=kind)
     if outcome == "sent":
         return len(items), []
     if outcome == "retry":
@@ -463,8 +494,8 @@ def _post_split(
     if len(items) == 1:  # refused for good: this row is the bad one
         return 0, []
     mid = len(items) // 2
-    sent_a, later_a = _post_split(items[:mid], token, deadline)
-    sent_b, later_b = _post_split(items[mid:], token, deadline)
+    sent_a, later_a = _post_split(items[:mid], token, deadline, kind)
+    sent_b, later_b = _post_split(items[mid:], token, deadline, kind)
     return sent_a + sent_b, later_a + later_b
 
 
@@ -486,16 +517,18 @@ def flush(timeout: float = 5.0) -> int:
         sent += _flush_memory(deadline)
         if config.auth_disabled():
             return sent
+        if pat.from_environment() is not None:
+            return sent  # RADARX_TOKEN mode: this process has no session file of its own
         auth = _file_session_token(net_timeout=max(0.0, deadline - time.monotonic()))
         if auth is None:
             return sent
-        token, uid = auth
+        token, uid, kind = auth
         while time.monotonic() < deadline:
             claimed = _claim(uid)
             if not claimed:
                 break
             items = [(ln, _to_wire(json.loads(ln))) for ln in claimed]
-            done, later = _post_split(items, token, deadline)
+            done, later = _post_split(items, token, deadline, kind)
             sent += done
             if later:
                 _requeue([ln for ln, _ in later])
@@ -537,23 +570,39 @@ def _flush_memory(deadline: float) -> int:
     if not pending:
         return 0
     sent = 0
-    by_token: dict[str, list[dict[str, Any]]] = {}
+    # (token, kind) -> rows. Events of a RADARX_TOKEN session carry no token of their own: they are
+    # sent with the entitlement token this process holds NOW (it is renewed as the job runs).
+    by_token: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    current = None
     for item in pending:
-        by_token.setdefault(item["token"], []).append(item["row"])
-    for token, rows in by_token.items():
+        kind = item.get("kind", "supabase")
+        token = item["token"]
+        if kind == "pat":
+            if current is None:
+                from engine.account import core
+
+                current = core.env_token_credentials() or ("", "")
+            token = current[0]
+        by_token.setdefault((token, kind), []).append(item["row"])
+    for (token, kind), rows in by_token.items():
         for i in range(0, len(rows), BATCH_SIZE):
             chunk = rows[i : i + BATCH_SIZE]
             remaining = deadline - time.monotonic()
             outcome = (
                 "retry"
-                if remaining <= 0.05
-                else _post([_to_wire(r) for r in chunk], token, timeout=min(remaining, 8.0))
+                if remaining <= 0.05 or not token
+                else _post(
+                    [_to_wire(r) for r in chunk], token, timeout=min(remaining, 8.0), kind=kind
+                )
             )
             if outcome == "sent":
                 sent += len(chunk)
-            elif outcome == "retry" and not _visitor_token_expired(token):
+            elif outcome == "retry" and (kind == "pat" or not _visitor_token_expired(token)):
                 with _lock:
-                    _memory_only[:0] = [{"row": r, "token": token} for r in chunk]
+                    _memory_only[:0] = [
+                        {"row": r, "token": "" if kind == "pat" else token, "kind": kind}
+                        for r in chunk
+                    ]
                     del _memory_only[:-QUEUE_MAX_EVENTS]
             # "drop", or an expired visitor token (nobody will ever present a fresher one for this
             # buffer): the rows are discarded

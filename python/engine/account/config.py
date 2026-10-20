@@ -84,3 +84,27 @@ def web_gate_enabled() -> bool:
         "no",
         "off",
     }
+
+
+#: Entitlement tokens (personal access tokens, docs/ACCOUNTS.md): a fixed issuer that is not
+#: Supabase's, an audience of its own, and a token lifetime of one hour (set by the function).
+ENTITLEMENT_ISSUER = "radarx-desktop/entitlement/v1"
+ENTITLEMENT_AUDIENCE = "radarx-cli"
+PAT_PREFIX = "rxd_pat_"
+
+
+def is_default_project() -> bool:
+    return project_url() == DEFAULT_PROJECT_URL
+
+
+def functions_url(name: str) -> str:
+    """An Edge Function of the project (``exchange-api-token``, ``log-activity``)."""
+    return f"{project_url()}/functions/v1/{name}"
+
+
+def entitlement_jwks_override() -> str:
+    """A key document for the entitlement tokens of ANOTHER project (a developer's local stack or
+    the tests): only read in a source checkout, never by an installer build."""
+    if is_frozen():
+        return ""
+    return os.environ.get("RADARX_ENTITLEMENT_JWKS", "").strip()

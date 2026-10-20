@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from tests.account_helpers import KeyPair
+from tests.account_helpers import EntitlementKeys, KeyPair, new_pat
 
 USER_ID = "11111111-2222-3333-4444-555555555555"
 
@@ -53,6 +53,9 @@ class RotatingGoTrue:
         self.refused: list[str] = []  # refresh tokens answered with an error
         self.offline = False  # answer every call with 503
         self.pkce_codes: dict[str, str] = {}
+        self.ent = EntitlementKeys()
+        self.pats: dict[str, dict[str, Any]] = {}
+        self.exchange_calls = 0
         self.external = {"email": True, "google": True, "apple": False, "facebook": True}
         self.log: list[str] = []
         self._httpd: ThreadingHTTPServer | None = None
@@ -153,6 +156,10 @@ class RotatingGoTrue:
             return 200, self.keys.jwks
         if path.endswith("/auth/v1/settings"):
             return 200, {"external": dict(self.external), "disable_signup": False}
+        if path.endswith("/functions/v1/exchange-api-token"):
+            return self._exchange((body or {}).get("token"))
+        if path.endswith("/functions/v1/log-activity"):
+            return 200, {"inserted": len((body or {}).get("events") or [])}
         if path.endswith("/auth/v1/logout"):
             return 204, None
         if path.endswith("/auth/v1/token"):
@@ -162,6 +169,28 @@ class RotatingGoTrue:
             if grant == "refresh_token":
                 return self._refresh(str((body or {}).get("refresh_token", "")))
         return 404, {"msg": f"unexpected {method} {path}"}
+
+    def create_pat(self, name: str = "ci", days: float = 90) -> str:
+        token = new_pat()
+        self.pats[token] = {"name": name, "expires_at": time.time() + days * 86400}
+        return token
+
+    def _exchange(self, token: Any) -> tuple[int, Any]:
+        with self._lock:
+            self.exchange_calls += 1
+            rec = self.pats.get(token) if isinstance(token, str) else None
+            if rec is None or rec["expires_at"] <= time.time():
+                return 401, {"error": "invalid_token"}
+            now = time.time()
+            ent = self.ent.token(
+                sub=USER_ID, iat=now, pat_expires=rec["expires_at"], name=rec["name"]
+            )
+            return 200, {
+                "entitlement_token": ent,
+                "expires_at": int(min(now + 3600, rec["expires_at"])),
+                "token_name": rec["name"],
+                "token_expires_at": int(rec["expires_at"]),
+            }
 
     def _password(self, body: dict[str, Any]) -> tuple[int, Any]:
         with self._lock:

@@ -237,12 +237,12 @@ def test_the_new_tokens_are_saved_before_they_are_checked(gate_on, monkeypatch):
 
     real_verify = core._verify
 
-    def verify(token, at):
+    def verify(token, at, source="cli"):
         seen["on_disk"] = store.load().refresh_token
         if seen.get("count", 0) >= 1:  # the check of the NEW token fails
             raise AccountRequired("invalid")
         seen["count"] = seen.get("count", 0) + 1
-        return real_verify(token, at)
+        return real_verify(token, at, source)
 
     monkeypatch.setattr(core, "_verify", verify)
     with pytest.raises(AccountRequired):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -194,6 +195,7 @@ def gate_on(monkeypatch, tmp_path):
     monkeypatch.setenv("RADARX_SUPABASE_URL", TEST_URL)
     monkeypatch.setenv("RADARX_SUPABASE_KEY", "sb_publishable_test_only")
     monkeypatch.setenv("RADARX_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.delenv("RADARX_TOKEN", raising=False)
     monkeypatch.delattr("sys.frozen", raising=False)
 
     real_connect = socket.socket.connect
@@ -207,6 +209,8 @@ def gate_on(monkeypatch, tmp_path):
     monkeypatch.setattr(socket.socket, "connect", no_network)
 
     fake = FakeServer(keys=KeyPair())
+    # the made-up entitlement key stands in for the one the real engine ships (jwks_seed.py)
+    monkeypatch.setenv("RADARX_ENTITLEMENT_JWKS", json.dumps(fake.ent.jwks))
     monkeypatch.setattr(http, "request_json", fake.request)
     monkeypatch.setattr(core, "now", fake.clock)
     tokens.reset_cache()

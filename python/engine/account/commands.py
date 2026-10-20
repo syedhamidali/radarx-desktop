@@ -14,8 +14,9 @@ import sys
 import time
 from typing import Any
 
-from engine.account import activity, config, core, gotrue, oauth_login
+from engine.account import activity, config, core, gotrue, oauth_login, pat
 from engine.account.errors import AccountRequired, AccountServerError
+from engine.account.store import SessionStore
 
 EXAMPLES_LOGIN = (
     "examples:\n"
@@ -23,15 +24,17 @@ EXAMPLES_LOGIN = (
     "  rxd login --email you@example.org\n"
     "  rxd login --email you@example.org --password-stdin < password.txt\n"
     "  rxd login --browser --provider google\n"
+    "  rxd login --token < token.txt\n"
     "\n"
     "Signs in with your radarx account (the same account as in the app; create it in the app or\n"
     "at the sign-up screen). The password is asked for without echo, or read from ONE line of\n"
     "standard input with --password-stdin (never from the command line or the environment), and\n"
     "is never stored. Accounts made with Google, Apple or Facebook have no password: use\n"
     "--browser (needs a browser on this same computer). For batch jobs, cron, CI and clusters\n"
-    "use an access token instead (see docs/ACCOUNTS.md). The session is kept in a private file in\n"
-    "your user configuration folder and shared with Python (import rxd). 'rxd whoami' shows it\n"
-    "and 'rxd logout' removes it."
+    "use an access token (created in the app: Account > Access tokens): --token reads it from\n"
+    "standard input and stores it, or set RADARX_TOKEN for a job that should leave nothing\n"
+    "behind. The session is kept in a private file in your user configuration folder and shared\n"
+    "with Python (import rxd). 'rxd whoami' shows it and 'rxd logout' removes it."
 )
 EXAMPLES_LOGOUT = (
     "examples:\n  rxd logout\n\n"
@@ -63,6 +66,11 @@ def register(command: Any, cli: Any) -> None:
         "--provider",
         choices=oauth_login.PROVIDERS,
         help="with --browser: which provider (asked for in a terminal when left out)",
+    )
+    p.add_argument(
+        "--token",
+        action="store_true",
+        help="sign in with a personal access token read from standard input (for automation)",
     )
     p.add_argument(
         "--no-open",
@@ -140,6 +148,8 @@ def read_password_line(stream: Any) -> str:
 
 
 def cmd_login(args: argparse.Namespace, out: Any) -> int:
+    if args.token:
+        return _login_token(args, out)
     if args.browser:
         return _login_browser(args, out)
     if args.provider or args.no_open:
@@ -188,6 +198,50 @@ def _signed_in(account: core.Account, out: Any) -> int:
     return 0
 
 
+def _login_token(args: argparse.Namespace, out: Any) -> int:
+    if args.email or args.password_stdin or args.browser or args.provider or args.no_open:
+        raise cli_usage("--token does not go with --email, --password-stdin or --browser")
+    if sys.stdin.isatty():
+        token = getpass.getpass("Access token (not shown): ").strip()
+    else:
+        token = read_password_line(sys.stdin).strip()
+    if not pat.valid_format(token):
+        raise cli_usage(
+            "that is not a radarx access token (it starts with rxd_pat_ and is 51 characters). "
+            "Create one in the app: Account > Access tokens."
+        )
+    try:
+        account = core.login_with_token(token)
+    except AccountServerError as exc:
+        print(f"error: {pat.friendly_error(exc)}", file=sys.stderr)
+        return 1
+    except AccountRequired as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        token = ""
+    activity.record("sign_in", surface="cli")
+    if out.json:
+        out.emit_json(
+            {
+                "signed_in": True,
+                "email": account.email,
+                "session": "pat",
+                "token_name": account.token_name,
+                "token_expires_at": account.token_expires_at,
+            }
+        )
+    else:
+        out.result(f"Signed in as {account.email} with the access token '{account.token_name}'.")
+        out.result(f"  it expires on {_date(account.token_expires_at)}; rxd logout removes it here")
+        out.result("  (revoke it for good in the app: Account > Access tokens)")
+    return 0
+
+
+def _date(epoch: float | None) -> str:
+    return time.strftime("%Y-%m-%d", time.localtime(epoch)) if epoch else "?"
+
+
 def _choose_provider(args: argparse.Namespace) -> str:
     if args.provider:
         return str(args.provider)
@@ -230,11 +284,23 @@ def cli_usage(message: str) -> Exception:
 
 
 def cmd_logout(args: argparse.Namespace, out: Any) -> int:
+    was_token = (stored := SessionStore().load()) is not None and stored.source == "pat"
     removed = core.logout()
+    env = pat.from_environment() is not None
     if out.json:
-        out.emit_json({"signed_out": removed})
+        out.emit_json({"signed_out": removed, "environment_token": env})
     else:
         out.result("Signed out." if removed else "You were not signed in.")
+        if was_token:
+            out.result(
+                "  the access token was removed from this computer only; to cancel it, revoke it "
+                "in the app (Account > Access tokens)"
+            )
+        if env:
+            out.result(
+                f"  note: {pat.ENV_VARIABLE} is set in this environment and still signs you in; "
+                "unset it"
+            )
     return 0
 
 
@@ -264,6 +330,15 @@ def cmd_whoami(args: argparse.Namespace, out: Any) -> int:
         "email": account.email,
         "session": account.source,
         "renewed_by": "app" if account.source == "app" else "rxd",
+        **(
+            {
+                "token_name": account.token_name,
+                "token_expires_at": account.token_expires_at,
+                "token_from": "RADARX_TOKEN" if account.origin == "env" else "session file",
+            }
+            if account.is_token
+            else {}
+        ),
         "token_valid_until": account.expires_at,
         "offline_grace_days_left": account.grace_days_left,
     }
@@ -285,6 +360,18 @@ def cmd_whoami(args: argparse.Namespace, out: Any) -> int:
 
 def _renewal_lines(account: core.Account, prog: str) -> list[str]:
     """Which program keeps this sign-in alive, and what to do when it is not running."""
+    if account.is_token:
+        where = (
+            f"{pat.ENV_VARIABLE} (environment, kept in memory only)"
+            if account.origin == "env"
+            else "the private session file (rxd login --token)"
+        )
+        return [
+            f"  access token '{account.token_name}', expires {_date(account.token_expires_at)}; "
+            f"from {where}",
+            f"  {prog} and Python exchange it for a one-hour sign-in automatically; revoke it "
+            "in the app (Account > Access tokens)",
+        ]
     if account.source == "app":
         lines = [
             "  made by the radarx-desktop app, which renews it while it is open; "

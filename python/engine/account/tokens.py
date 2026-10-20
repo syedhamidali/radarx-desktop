@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
@@ -20,7 +21,7 @@ from typing import Any
 
 from engine.account import config, http
 from engine.account.errors import AccountServerError
-from engine.account.jwks_seed import SEED_JWKS, SEED_URL
+from engine.account.jwks_seed import ENTITLEMENT_SEED_JWKS, SEED_JWKS, SEED_URL
 
 ALLOWED_ALGS = ("ES256", "RS256")
 JWKS_REFETCH_MIN_S = 300.0
@@ -181,6 +182,118 @@ def verify_access_token(token: str, *, now: float | None = None) -> Claims:
         raise TokenInvalid("claims") from None
     sub = payload.get("sub")
     if not isinstance(sub, str) or not sub:
+        raise TokenInvalid("claims")
+    email = payload.get("email")
+    return Claims(
+        sub=sub, email=email if isinstance(email, str) else "", exp=exp, iat=iat, raw=payload
+    )
+
+
+# -- entitlement tokens (personal access tokens) -------------------------------------------------
+#
+# Strictly separate from the Supabase access tokens above: a different issuer, a different
+# audience, a different key set (never fetched from the network, never read from a file), and the
+# algorithm is pinned to ES256 before any key is looked at. A token of one kind cannot pass as the
+# other even if both were signed by the same key.
+
+ENTITLEMENT_ALGS = ("ES256",)
+
+
+def entitlement_keys() -> list[dict[str, Any]]:
+    """The public keys entitlement tokens are checked against: the built-in set for the real
+    project; in a source checkout pointed at another project, only ``RADARX_ENTITLEMENT_JWKS``."""
+    keys: list[dict[str, Any]] = []
+    if config.is_default_project():
+        keys += list(ENTITLEMENT_SEED_JWKS["keys"])
+    override = config.entitlement_jwks_override()
+    if override:
+        try:
+            doc = json.loads(override)
+        except ValueError:
+            doc = None
+        if _valid_jwks(doc):
+            known = {k.get("kid") for k in keys}
+            keys += [k for k in doc["keys"] if k.get("kid") not in known]
+    return keys
+
+
+def verify_entitlement_token(token: str, *, now: float | None = None) -> Claims:
+    """Verify an entitlement token offline (:class:`TokenInvalid`, :class:`DependencyMissing`).
+
+    Checked: ES256 signature with one of :func:`entitlement_keys` (chosen by ``kid``), issuer,
+    audience, the claims ``exp iat sub jti``, ``src == "pat"`` and the token's own expiry date
+    ``pat_exp``. Like :func:`verify_access_token` it *reports* expiry (``Claims.expired``) and
+    leaves the offline rule to the caller.
+    """
+    now = time.time() if now is None else now
+    try:
+        import jwt  # PyJWT
+        from jwt import exceptions as jwt_exc
+    except ImportError as exc:  # pragma: no cover - dependencies are declared
+        raise DependencyMissing(str(exc)) from exc
+
+    if not isinstance(token, str) or token.count(".") != 2 or len(token) > 8192:
+        raise TokenInvalid("format")
+    try:
+        header = jwt.get_unverified_header(token)
+    except jwt_exc.PyJWTError:
+        raise TokenInvalid("format") from None
+    if header.get("alg") not in ENTITLEMENT_ALGS:
+        raise TokenInvalid("algorithm")
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        raise TokenInvalid("unknown_key")
+    keys = [k for k in entitlement_keys() if k.get("kid") == kid]
+    if not keys:
+        raise TokenInvalid("unknown_key")
+    key = None
+    for entry in keys:
+        try:
+            candidate = jwt.PyJWK.from_dict(entry)
+        except Exception:  # a malformed key entry is "no key"
+            continue
+        if entry.get("kty") == "EC" and entry.get("crv") == "P-256":
+            key = candidate.key
+            break
+    if key is None:
+        raise TokenInvalid("unknown_key")
+    try:
+        payload = jwt.decode(
+            token,
+            key=key,
+            algorithms=list(ENTITLEMENT_ALGS),
+            audience=config.ENTITLEMENT_AUDIENCE,
+            issuer=config.ENTITLEMENT_ISSUER,
+            options={
+                "verify_exp": False,
+                "verify_iat": False,
+                "verify_nbf": False,
+                "require": ["exp", "iat", "sub", "aud", "iss", "jti"],
+            },
+        )
+    except jwt_exc.InvalidSignatureError:
+        raise TokenInvalid("signature") from None
+    except jwt_exc.InvalidAudienceError:
+        raise TokenInvalid("audience") from None
+    except jwt_exc.InvalidIssuerError:
+        raise TokenInvalid("issuer") from None
+    except jwt_exc.MissingRequiredClaimError:
+        raise TokenInvalid("claims") from None
+    except jwt_exc.PyJWTError:
+        raise TokenInvalid("format") from None
+
+    if payload.get("src") != "pat":
+        raise TokenInvalid("source")
+    try:
+        exp = float(payload["exp"])
+        iat = float(payload["iat"])
+        pat_exp = float(payload["pat_exp"])
+    except (KeyError, TypeError, ValueError):
+        raise TokenInvalid("claims") from None
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not sub:
+        raise TokenInvalid("claims")
+    if exp > pat_exp + 1:  # a token can never outlive the access token it came from
         raise TokenInvalid("claims")
     email = payload.get("email")
     return Claims(

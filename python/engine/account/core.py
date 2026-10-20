@@ -11,6 +11,10 @@ One decision procedure serves every surface (see docs/ACCOUNTS.md for the rules 
    (it holds a refresh token) is refreshed online; a session handed over by the app is refreshed
    by the app itself, which hands the new token over (two programs must never rotate one refresh
    token).
+   A session made with a personal access token (``source == "pat"``, :mod:`engine.account.pat`)
+   holds a one-hour *entitlement token* instead of a Supabase access token. It is verified against
+   its own keys (:func:`engine.account.tokens.verify_entitlement_token`), renewed by exchanging the
+   access token again, and refused at once after the access token's own expiry date.
 5. If the server cannot be reached, the session is still accepted for ``OFFLINE_GRACE_DAYS`` (30)
    after the ``iat`` of its newest token, the last time the server vouched for the account. A clock
    set backwards cannot extend that: the latest clock reading ever seen is kept (``high_water``)
@@ -27,7 +31,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from engine.account import config, gotrue, tokens
+from engine.account import config, gotrue, pat, tokens
 from engine.account.entitlement import entitlement_allows
 from engine.account.errors import AccountRequired, AccountServerError
 from engine.account.store import SessionStore, StoredSession
@@ -61,7 +65,7 @@ class Account:
 
     user_id: str
     email: str
-    source: str  # "cli" | "app" | "bypass"
+    source: str  # "cli" | "app" | "pat" | "bypass"
     expires_at: float = 0.0
     issued_at: float = 0.0
     #: True when the access token has expired and the session is carried by the offline grace.
@@ -69,10 +73,25 @@ class Account:
     #: Whole days left of the offline grace (None when the token is current).
     grace_days_left: int | None = None
     claims: Mapping[str, Any] = field(default_factory=dict)
+    #: for a token session: where the access token came from, "file" (rxd login --token) or "env"
+    origin: str = ""
 
     @property
     def bypassed(self) -> bool:
         return self.source == "bypass"
+
+    @property
+    def is_token(self) -> bool:
+        return self.source == "pat"
+
+    @property
+    def token_name(self) -> str:
+        return str(self.claims.get("pat_name") or "") if self.is_token else ""
+
+    @property
+    def token_expires_at(self) -> float | None:
+        value = self.claims.get("pat_exp") if self.is_token else None
+        return float(value) if isinstance(value, (int, float)) else None
 
 
 _BYPASS = Account(user_id="", email="", source="bypass")
@@ -88,23 +107,36 @@ def reset_runtime_state() -> None:
     with _state_lock:
         _cache.update(path=None, until=0.0, account=None)
         _net_down_until = 0.0
+    with _env_lock:
+        _env_state.update(pat=None, token=None, down_until=0.0)
     with contextlib.suppress(Exception):  # the shared "server unreachable" note goes too
         SessionStore().clear_network_down()
 
 
-def _verify(token: str, at: float) -> tokens.Claims:
+def _verify(token: str, at: float, source: str = "cli") -> tokens.Claims:
+    """Verify ``token`` as what ``source`` says it is: an entitlement token for a token session,
+    a Supabase access token for everything else. Never the other way round."""
     try:
-        claims = tokens.verify_access_token(token, now=at)
+        if source == "pat":
+            claims = tokens.verify_entitlement_token(token, now=at)
+        else:
+            claims = tokens.verify_access_token(token, now=at)
     except tokens.DependencyMissing as exc:
         raise AccountRequired("dependency") from exc
     except tokens.TokenInvalid as exc:
+        if source == "pat" and exc.detail == "unknown_key" and not tokens.entitlement_keys():
+            raise AccountRequired(
+                "unavailable",
+                "Access tokens are not set up in this build yet (no entitlement key). "
+                "Sign in with `rxd login` instead.",
+            ) from exc
         raise AccountRequired("invalid") from exc
     if not entitlement_allows(claims.raw):
         raise AccountRequired("not_entitled")
     return claims
 
 
-def _account_from(claims: tokens.Claims, source: str, at: float) -> Account:
+def _account_from(claims: tokens.Claims, source: str, at: float, origin: str = "") -> Account:
     expired = claims.expired(at)
     left: int | None = None
     if expired:
@@ -124,6 +156,7 @@ def _account_from(claims: tokens.Claims, source: str, at: float) -> Account:
         stale=expired,
         grace_days_left=left,
         claims=claims.raw,
+        origin=origin,
     )
 
 
@@ -228,6 +261,191 @@ def _refresh_stored(
         return again, _verify(again.access_token, at), False
 
 
+# -- personal access tokens (rxd login --token, RADARX_TOKEN) -----------------------------------
+
+
+def _pat_expired_error(claims: tokens.Claims) -> AccountRequired:
+    when = claims.raw.get("pat_exp")
+    date = (
+        time.strftime("%Y-%m-%d", time.gmtime(float(when)))
+        if isinstance(when, (int, float))
+        else ""
+    )
+    return AccountRequired(
+        "expired",
+        f"This access token expired{' on ' + date if date else ''}. Create a new one in the "
+        "radarx-desktop app (Account > Access tokens).",
+    )
+
+
+def _check_pat_expiry(claims: tokens.Claims, at: float) -> None:
+    """The access token's own expiry date is signed into every entitlement token and holds even
+    offline: the 30-day allowance never lets a token live past the date it was given."""
+    pat_exp = claims.raw.get("pat_exp")
+    if isinstance(pat_exp, (int, float)) and at > float(pat_exp) + config.LEEWAY_S:
+        raise _pat_expired_error(claims)
+
+
+def _revoked_token_error() -> AccountRequired:
+    return AccountRequired(
+        "revoked",
+        "This access token was revoked or has expired. Create a new one in the radarx-desktop "
+        "app (Account > Access tokens).",
+    )
+
+
+def _near_end(claims: tokens.Claims, at: float) -> bool:
+    return claims.expired(at) or claims.exp - at < REFRESH_MARGIN_S
+
+
+def _check_token_session(
+    store: SessionStore,
+    stored: StoredSession,
+    claims: tokens.Claims,
+    at: float,
+    wall: float,
+    network: bool,
+    refresh_limit: float,
+) -> Account:
+    if _near_end(claims, at) and network and stored.pat_token:
+        refreshed = _refresh_token_session(store, stored, at, wall, refresh_limit)
+        if refreshed is not None:
+            stored, claims, vouched = refreshed
+            if vouched:
+                at = wall  # the server just vouched for the account: trust the clock again
+    _check_pat_expiry(claims, at)
+    if not claims.expired(at) or _within_grace(claims, at):
+        return _account_from(claims, "pat", at, "file")
+    raise AccountRequired("offline_expired")
+
+
+def _refresh_token_session(
+    store: SessionStore, seen: StoredSession, at: float, wall: float, timeout: float
+) -> tuple[StoredSession, tokens.Claims, bool] | None:
+    """Exchange the stored access token for a new entitlement token, once for all the processes that
+    share the session file (the same lock as the other renewals; the server rate-limits exchanges).
+    None = the server could not be reached. Raises ``AccountRequired('revoked')`` only when the
+    exchange function itself says the token is unknown, revoked or expired."""
+    global _net_down_until
+    if time.monotonic() < _net_down_until:
+        return None
+    try:
+        with store.refresh_locked():
+            current = store.load()
+            if current is None:
+                raise AccountRequired("no_session")
+            if current.source != "pat" or current.pat_token != seen.pat_token:
+                return None  # replaced by another sign-in while we waited: leave it alone
+            if current.access_token != seen.access_token:
+                claims = _verify(current.access_token, at, "pat")
+                if not _near_end(claims, at):
+                    return current, claims, False  # somebody else exchanged while we waited
+            if store.network_down_recently(now(), SHARED_NETDOWN_S):
+                _net_down_until = time.monotonic() + NETWORK_RETRY_S
+                return None
+            try:
+                answer = pat.exchange(str(current.pat_token), timeout=timeout)
+            except AccountServerError as exc:
+                if pat.definite_refusal(exc):
+                    latest = store.load()
+                    if latest is None or latest.pat_token == current.pat_token:
+                        store._unlink()
+                        raise _revoked_token_error() from exc
+                    return None
+                _net_down_until = time.monotonic() + NETWORK_RETRY_S
+                store.mark_network_down(now())
+                return None
+            store.clear_network_down()
+            claims = _verify(answer["entitlement_token"], wall, "pat")  # before it is kept
+            stored = StoredSession(
+                access_token=answer["entitlement_token"],
+                pat_token=current.pat_token,
+                user_id=claims.sub,
+                email=claims.email,
+                source="pat",
+                issued_at=min(claims.iat, wall),
+                high_water=wall,
+            )
+            store._write(stored)
+            return stored, claims, True
+    except TimeoutError:
+        again = store.load()
+        if again is None or again.source != "pat":
+            return None
+        return again, _verify(again.access_token, at, "pat"), False
+
+
+_env_lock = threading.Lock()
+_env_state: dict[str, Any] = {"pat": None, "token": None, "down_until": 0.0}
+
+
+def _env_token_account(token: str) -> Account:
+    """``RADARX_TOKEN``: exchange on first use, keep the entitlement token ONLY in memory and
+    renew it hourly. Nothing is written to disk, so a CI job leaves no session behind."""
+    if not pat.valid_format(token):
+        raise AccountRequired(
+            "invalid",
+            "RADARX_TOKEN is not a radarx access token (it starts with rxd_pat_ and is 51 "
+            "characters long). Check the variable; create a token in the app: Account > Access "
+            "tokens.",
+        )
+    with _env_lock:
+        wall = now()
+        held = _env_state["token"] if _env_state["pat"] == token else None
+        claims: tokens.Claims | None = None
+        if held:
+            try:
+                claims = _verify(held, wall, "pat")
+            except AccountRequired:
+                claims = None
+        if claims is not None and not _near_end(claims, wall):
+            _check_pat_expiry(claims, wall)
+            return _account_from(claims, "pat", wall, "env")
+        if time.monotonic() >= _env_state["down_until"]:
+            try:
+                answer = pat.exchange(token, timeout=REFRESH_TIMEOUT_S)
+            except AccountServerError as exc:
+                if pat.definite_refusal(exc):
+                    _env_state.update(pat=None, token=None)
+                    raise _revoked_token_error() from exc
+                _env_state["down_until"] = time.monotonic() + NETWORK_RETRY_S
+            else:
+                new_claims = _verify(answer["entitlement_token"], wall, "pat")
+                _env_state.update(pat=token, token=answer["entitlement_token"])
+                return _account_from(new_claims, "pat", wall, "env")
+        # The account server cannot be reached. A token this process already holds keeps working
+        # inside the offline allowance; with none there is nothing to stand on.
+        if claims is not None:
+            _check_pat_expiry(claims, wall)
+            if _within_grace(claims, wall):
+                return _account_from(claims, "pat", wall, "env")
+        raise AccountRequired(
+            "unavailable",
+            "RADARX_TOKEN needs the account server once an hour and it cannot be reached. On a "
+            "machine without internet, run `rxd login --token` on one that has it: the session "
+            "file is then valid offline for 30 days.",
+        )
+
+
+def env_token_credentials() -> tuple[str, str] | None:
+    """``(entitlement token, user id)`` of the ``RADARX_TOKEN`` session if this process holds a
+    current one, else None. Never touches the network (the activity recorder uses it)."""
+    token = pat.from_environment()
+    if token is None:
+        return None
+    with _env_lock:
+        held = _env_state["token"] if _env_state["pat"] == token else None
+    if not held:
+        return None
+    try:
+        claims = tokens.verify_entitlement_token(held, now=now())
+    except Exception:
+        return None
+    if claims.expired(now()):
+        return None
+    return held, claims.sub
+
+
 def server_reachable(timeout: float = PROBE_TIMEOUT_S) -> bool:
     """True only when the account server answers a small public request properly. A proxy or captive
     portal (an error page, HTML, 403 ...) and an outage count as "not reachable"."""
@@ -267,15 +485,17 @@ def check_stored_session(
     wall = now()
     at = max(wall, stored.high_water)  # a clock set backwards cannot make anything newer
     store.note_time(wall)
-    claims = _verify(stored.access_token, at)
+    source = stored.source
+    claims = _verify(stored.access_token, at, source)
     if claims.sub != stored.user_id and stored.user_id:
         raise AccountRequired("invalid")
-    source = stored.source
     refresh_limit = (
         REFRESH_TIMEOUT_S if net_timeout is None else min(net_timeout, REFRESH_TIMEOUT_S)
     )
     probe_limit = PROBE_TIMEOUT_S if net_timeout is None else min(net_timeout, PROBE_TIMEOUT_S)
     network = allow_network and (net_timeout is None or net_timeout >= 0.2)
+    if source == "pat":
+        return _check_token_session(store, stored, claims, at, wall, network, refresh_limit)
 
     can_refresh = source == "cli" and bool(stored.refresh_token)
     near_end = claims.expired(at) or claims.exp - at < REFRESH_MARGIN_S
@@ -315,6 +535,9 @@ def require_account() -> Account:
     """
     if config.auth_disabled():
         return _BYPASS
+    env_token = pat.from_environment()
+    if env_token is not None:  # an explicit token in the environment wins over a stored session
+        return _env_token_account(env_token)
     store = SessionStore()
     key = str(store.path)
     with _state_lock:
@@ -376,6 +599,35 @@ def _finish_login(store: SessionStore, session: Mapping[str, Any], at: float) ->
     return _account_from(claims, stored.source, at)
 
 
+def login_with_token(token: str, store: SessionStore | None = None) -> Account:
+    """``rxd login --token``: exchange a personal access token once (this checks it) and keep it in
+    the private session file; every later run renews the one-hour entitlement token from it."""
+    if not pat.valid_format(token):
+        raise AccountRequired(
+            "invalid",
+            "That is not a radarx access token (it starts with rxd_pat_ and is 51 characters).",
+        )
+    store = store or SessionStore()
+    at = now()
+    answer = pat.exchange(token)  # AccountServerError on failure
+    claims = _verify(answer["entitlement_token"], at, "pat")
+    _check_pat_expiry(claims, at)
+    store.save(
+        StoredSession(
+            access_token=answer["entitlement_token"],
+            pat_token=token,
+            user_id=claims.sub,
+            email=claims.email,
+            source="pat",
+            issued_at=min(claims.iat, at),
+            high_water=at,
+        )
+    )
+    store.clear_network_down()
+    reset_runtime_state()
+    return _account_from(claims, "pat", at, "file")
+
+
 def logout(store: SessionStore | None = None) -> bool:
     """``rxd logout``: end the session on the server (best effort) and delete the shared file.
 
@@ -390,8 +642,9 @@ def logout(store: SessionStore | None = None) -> bool:
 
     activity.record("sign_out", surface="cli")
     activity.flush(timeout=3.0)
-    with contextlib.suppress(AccountServerError):  # the file goes regardless; the session lapses
-        gotrue.logout(stored.access_token)
+    if stored.source != "pat":  # (a token session has no Supabase session to end)
+        with contextlib.suppress(AccountServerError):  # the file goes regardless
+            gotrue.logout(stored.access_token)
     store.clear()
     reset_runtime_state()
     return True
@@ -449,6 +702,8 @@ def _persist_presented(
     reset_mark: bool = False,
 ) -> None:
     def change(cur: StoredSession | None) -> StoredSession | None:
+        if cur is not None and cur.source == "pat":
+            return cur  # an access-token session is never replaced by the app (it keeps its own)
         if cur is not None and cur.user_id == claims.sub and cur.access_token != access_token:
             cur_claims_iat = _safe_iat(cur.access_token)
             if cur_claims_iat is not None and cur_claims_iat > claims.iat:
@@ -475,6 +730,10 @@ def _safe_iat(token: str) -> float | None:
 
 
 def end_presented_session(store: SessionStore | None = None) -> None:
-    """The app signed out: remove the shared file (one credential for every surface)."""
-    (store or SessionStore()).clear()
+    """The app signed out: remove the shared file (one credential for every surface), unless it
+    holds an access-token session, which the app does not own."""
+    store = store or SessionStore()
+    stored = store.load()
+    if stored is None or stored.source != "pat":
+        store.clear()
     reset_runtime_state()

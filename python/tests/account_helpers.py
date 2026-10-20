@@ -73,6 +73,77 @@ class KeyPair:
         )
 
 
+ENT_ISS = "radarx-desktop/entitlement/v1"
+ENT_AUD = "radarx-cli"
+ENT_KID = "ent-test-1"
+
+
+class EntitlementKeys:
+    """A made-up signing key for entitlement tokens (what the Edge Function holds as a secret) and
+    its public key document (what the engine ships). Never a real key."""
+
+    def __init__(self, kid: str = ENT_KID) -> None:
+        self.kid = kid
+        self.private = ec.generate_private_key(ec.SECP256R1())
+        public_jwk = jwt.algorithms.ECAlgorithm(jwt.algorithms.ECAlgorithm.SHA256).to_jwk(
+            self.private.public_key(), as_dict=True
+        )
+        public_jwk.update({"kid": kid, "alg": "ES256", "use": "sig", "key_ops": ["verify"]})
+        self.jwks = {"keys": [public_jwk]}
+
+    def token(
+        self,
+        *,
+        sub: str = "11111111-2222-3333-4444-555555555555",
+        email: str = "ada@example.test",
+        iat: float | None = None,
+        lifetime: float = 3600.0,
+        pat_expires: float | None = None,
+        name: str = "ci",
+        iss: str = ENT_ISS,
+        aud: str = ENT_AUD,
+        src: str | None = "pat",
+        kid: str | None = None,
+        alg: str = "ES256",
+        key: Any = None,
+        extra: dict[str, Any] | None = None,
+        drop: tuple[str, ...] = (),
+    ) -> str:
+        iat = time.time() if iat is None else iat
+        pat_expires = iat + 90 * 86400 if pat_expires is None else pat_expires
+        claims: dict[str, Any] = {
+            "iss": iss,
+            "aud": aud,
+            "sub": sub,
+            "email": email,
+            "src": src,
+            "jti": uuid.uuid4().hex,
+            "iat": int(iat),
+            "exp": int(min(iat + lifetime, pat_expires)),
+            "pat_id": "00000000-0000-0000-0000-000000000001",
+            "pat_name": name,
+            "pat_exp": int(pat_expires),
+        }
+        claims.update(extra or {})
+        for item in drop:
+            claims.pop(item, None)
+        if src is None:
+            claims.pop("src", None)
+        return jwt.encode(
+            claims,
+            key or self.private,
+            algorithm=alg,
+            headers={"kid": self.kid if kid is None else kid},
+        )
+
+
+def new_pat() -> str:
+    """A well-formed access token (rxd_pat_ + 43 URL-safe characters), made up on the spot."""
+    import secrets
+
+    return "rxd_pat_" + secrets.token_urlsafe(32)
+
+
 @dataclass
 class FakeServer:
     """The account server: GoTrue endpoints, the key document and the activity table."""
@@ -99,9 +170,31 @@ class FakeServer:
     pkce_codes: dict[str, str] = field(default_factory=dict)
     #: every body POSTed to the token endpoint, for "the password never leaks" checks
     token_bodies: list[Any] = field(default_factory=list)
+    #: entitlement tokens: the signing key, the access tokens the function knows, and what it saw
+    ent: EntitlementKeys = field(default_factory=EntitlementKeys)
+    pats: dict[str, dict[str, Any]] = field(default_factory=dict)
+    exchange_calls: int = 0
+    #: "ok" | "rate_limited" | "bad_gateway" (a 401 that is not the function's own answer)
+    exchange_mode: str = "ok"
+    log_calls: list[tuple[str, Any]] = field(default_factory=list)
+    log_rows: list[dict[str, Any]] = field(default_factory=list)
+    #: what the log-activity function answers: ok | unreachable | unauthorized | bad_request
+    log_mode: str = "ok"
 
     def clock(self) -> float:
         return self.now
+
+    def create_pat(self, name: str = "ci", days: float = 90) -> str:
+        """An access token as the app would create it (the function knows it from now on)."""
+        token = new_pat()
+        self.pats[token] = {
+            "name": name,
+            "expires_at": self.now + days * 86400,
+            "revoked": False,
+            "sub": "11111111-2222-3333-4444-555555555555",
+            "email": "ada@example.test",
+        }
+        return token
 
     def _session(self, email: str) -> dict[str, Any]:
         self.refresh_counter += 1
@@ -112,6 +205,56 @@ class FakeServer:
             "token_type": "bearer",
             "user": {"id": "11111111-2222-3333-4444-555555555555", "email": email},
         }
+
+    def _exchange(self, body):
+        self.exchange_calls += 1
+        if self.exchange_mode == "rate_limited":
+            raise AccountServerError(429, "rate_limited", "slow down")
+        if self.exchange_mode == "bad_gateway":
+            raise AccountServerError(401, "", "Invalid JWT")  # a gateway, not the function
+        token = (body or {}).get("token")
+        rec = self.pats.get(token) if isinstance(token, str) else None
+        if rec is None or rec["revoked"] or rec["expires_at"] <= self.now:
+            raise AccountServerError(401, "invalid_token", "invalid token")
+        ent = self.ent.token(
+            sub=rec["sub"],
+            email=rec["email"],
+            iat=self.now,
+            pat_expires=rec["expires_at"],
+            name=rec["name"],
+        )
+        return {
+            "entitlement_token": ent,
+            "expires_at": int(min(self.now + 3600, rec["expires_at"])),
+            "token_name": rec["name"],
+            "token_expires_at": int(rec["expires_at"]),
+        }
+
+    def _log_activity(self, headers, body):
+        auth = str(headers.get("Authorization", ""))
+        self.log_calls.append((auth, body))
+        if self.log_mode == "unreachable":
+            raise AccountServerError(0, "unreachable", "OSError")
+        if self.log_mode == "unauthorized":
+            raise AccountServerError(401, "invalid_token", "expired")
+        if self.log_mode == "bad_request":
+            raise AccountServerError(400, "invalid_event", "bad event")
+        try:
+            claims = jwt.decode(
+                auth.removeprefix("Bearer "),
+                self.ent.private.public_key(),
+                algorithms=["ES256"],
+                audience=ENT_AUD,
+                issuer=ENT_ISS,
+                options={"verify_exp": False},
+            )
+        except Exception:
+            raise AccountServerError(401, "invalid_token", "bad token") from None
+        events = (body or {}).get("events")
+        if not isinstance(events, list):
+            raise AccountServerError(400, "invalid_event", "events must be a list")
+        self.log_rows.extend({**row, "user_id": claims["sub"]} for row in events)
+        return {"inserted": len(events)}
 
     def request(self, method: str, url: str, *, headers=None, body=None, timeout=0):
         path = urlparse(url).path
@@ -153,6 +296,10 @@ class FakeServer:
             ):
                 raise AccountServerError(400, "refresh_token_not_found", "Invalid Refresh Token")
             return self._session("ada@example.test")
+        if path.endswith("/functions/v1/exchange-api-token"):
+            return self._exchange(body or {})
+        if path.endswith("/functions/v1/log-activity"):
+            return self._log_activity(headers or {}, body or {})
         if path.endswith("/auth/v1/logout"):
             return None
         if path.endswith("/rest/v1/activity_events"):

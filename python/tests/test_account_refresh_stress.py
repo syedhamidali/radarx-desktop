@@ -37,6 +37,7 @@ def child_env(server: RotatingGoTrue, cfg: Path) -> dict[str, str]:
         "RADARX_CONFIG_DIR": str(cfg),
         "RADARX_SUPABASE_URL": server.url,
         "RADARX_SUPABASE_KEY": "sb_publishable_test_only",
+        "RADARX_ENTITLEMENT_JWKS": json.dumps(server.ent.jwks),
     }
 
 
@@ -171,3 +172,38 @@ def test_a_transient_outage_does_not_delete_the_session_or_make_everyone_wait(se
         marker.write_text(repr(time.time() - 3600))
     assert run_round(server, cfg, processes=2, threads=1, broken_flock=False) == ["ok"] * 2
     assert server.refresh_calls == 1 and server.revoked == set()
+
+
+def expire_token_session(server, cfg, pat_token):
+    """A stored access-token session whose one-hour entitlement token has run out."""
+    old = server.ent.token(
+        sub=USER_ID, iat=time.time() - 7200, pat_expires=time.time() + 30 * 86400, name="stress"
+    )
+    SessionStore(cfg).save(
+        StoredSession(
+            access_token=old,
+            pat_token=pat_token,
+            user_id=USER_ID,
+            email="ada@example.test",
+            source="pat",
+            issued_at=time.time() - 7200,
+            high_water=time.time(),
+        )
+    )
+
+
+@pytest.mark.parametrize("broken_flock", [False, True], ids=["flock", "flock-does-nothing"])
+def test_a_herd_of_jobs_with_one_access_token_exchanges_it_once(server, tmp_path, broken_flock):
+    """Access tokens do not rotate, but the exchange is rate limited on the server: a cluster of
+    jobs sharing one session file must not each call it."""
+    cfg = tmp_path / "cfg"
+    pat_token = server.create_pat(name="stress", days=30)
+    for n in range(2):
+        expire_token_session(server, cfg, pat_token)
+        outcomes = run_round(
+            server, cfg, processes=8, threads=4, broken_flock=broken_flock, checks=2
+        )
+        assert outcomes == ["ok"] * 64, outcomes
+        assert server.exchange_calls == n + 1, (n, server.exchange_calls)
+    kept = SessionStore(cfg).load()
+    assert kept is not None and kept.pat_token == pat_token and kept.source == "pat"

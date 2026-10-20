@@ -23,3 +23,16 @@ SEED_JWKS = {
         }
     ]
 }
+
+
+# The ENTITLEMENT public keys: the signing keys of the Edge Function `exchange-api-token`
+# (supabase/functions/), which turns a personal access token into a one-hour entitlement token.
+# They are NOT Supabase's keys and are kept apart from SEED_JWKS on purpose (docs/ACCOUNTS.md
+# "Access tokens for automation"): a token signed by one set never verifies against the other.
+#
+# The owner fills this in once, with the output of `python scripts/make_entitlement_key.py` (the
+# PUBLIC half only; the private half goes into a Supabase secret and is never in this repository).
+# Rotation: ADD the new key here, release, switch the secret, and remove the old key after the
+# last token signed with it (one hour) and the offline allowance (30 days) have passed.
+# Until a key is added, access tokens are reported as "not set up yet" and nothing else changes.
+ENTITLEMENT_SEED_JWKS: dict = {"keys": []}

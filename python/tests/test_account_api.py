@@ -130,3 +130,17 @@ def test_animate_needs_an_account_too(gate_on):
 
     with pytest.raises(AccountRequired):
         animate.run(object())  # the gate answers before the options are looked at
+
+
+def test_python_use_with_an_access_token_in_the_environment(gate_on, monkeypatch):
+    """CI / batch jobs: ``RADARX_TOKEN`` lets ``import rxd`` work with no sign-in file at all."""
+    with pytest.raises(AccountRequired):
+        rxd.modules()
+    monkeypatch.setenv("RADARX_TOKEN", gate_on.create_pat(name="notebook"))
+    assert rxd.modules()  # signed in by the token
+    assert core.require_account().token_name == "notebook"
+    assert not SessionStore().path.exists()
+    monkeypatch.delenv("RADARX_TOKEN")
+    core.reset_runtime_state()
+    with pytest.raises(AccountRequired):
+        rxd.modules()
