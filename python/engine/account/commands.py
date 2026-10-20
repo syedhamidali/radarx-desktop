@@ -162,7 +162,10 @@ def cmd_whoami(args: argparse.Namespace, out: Any) -> int:
             f"{account.grace_days_left} more day(s) (limit {config.OFFLINE_GRACE_DAYS} days)"
         )
     else:
-        out.result(f"  sign-in valid until {when} (renewed automatically)")
+        renewal = (
+            "renewed automatically" if account.source == "cli" else "renewed while the app is open"
+        )
+        out.result(f"  sign-in valid until {when} ({renewal})")
     return 0
 
 
