@@ -1463,6 +1463,10 @@ class WebSocketManager {
     clearAllFiles();
     clearSweepCache();
     this.cancelQueuedSweeps(() => true);
+    // "Loading DBZH sweep 5 failed: Connection lost" rows belong to files that are gone now; their
+    // Retry button could only ask the new engine for a file it never opened.
+    for (const id of this.failedSweepOps.values()) dismissOp(id);
+    this.failedSweepOps.clear();
     processingProgress.set(null);
     addToast(
       'error',
