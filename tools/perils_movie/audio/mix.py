@@ -103,6 +103,8 @@ def duck_layers(
             if hi not in layers or hi not in DUCK:
                 continue
             thr, ratio, mx = DUCK[hi]
+            if hi == "thunder" and name == "tornado":
+                mx, ratio = 14.0, 0.75  # the thunder cuts through the roar
             r = np.clip((env[hi] - thr) * ratio, 0.0, mx)
             r = np.where(env[hi] > env[name] - 3.0, r, 0.0)
             red = np.maximum(red, r)
@@ -126,23 +128,43 @@ def fade_curve(n: int, sr: int, fade_in_s=2.0, fade_out_s=2.5) -> np.ndarray:
 
 
 def limiter_gain(
-    x: np.ndarray, sr: int, ceiling_db: float = -1.6, window_s: float = 0.01
+    x: np.ndarray,
+    sr: int,
+    ceiling_db: float = -1.6,
+    window_s: float = 0.008,
+    release_s: float = 0.12,
 ) -> np.ndarray:
-    """Look-ahead peak limiter as a gain curve (min filter, then an equal-length average: the
-    smoothed gain can never exceed the requirement at any sample)."""
+    """Look-ahead peak limiter as a gain curve. Attack: a minimum filter then an equal-length average (the smoothed
+    gain can never exceed the requirement at any sample, so the peaks stay under the ceiling); release: an
+    exponential recovery of ``release_s`` (run at 1 kHz), so a few peaks do not make the level pump."""
     ceil = 10 ** (ceiling_db / 20.0)
     pk = np.abs(x).max(axis=0)
     req = np.minimum(1.0, ceil / np.maximum(pk, 1e-12))
-    w = int(window_s * sr) | 1
-    return uniform_filter1d(minimum_filter1d(req, w, mode="nearest"), w, mode="nearest")
+    w = 2 * max(1, int(window_s * sr)) + 1
+    g = uniform_filter1d(minimum_filter1d(req, w, mode="nearest"), w, mode="nearest")
+    if g.min() > 0.9995:
+        return g
+    d = max(1, sr // 1000)
+    nb = len(g) // d
+    blocks = g[: nb * d].reshape(nb, d).min(axis=1)
+    k = 1.0 - np.exp(-1.0 / (release_s * 1000.0))
+    out = np.empty(nb)
+    r = 1.0
+    for i, bmin in enumerate(blocks.tolist()):
+        r = min(bmin, r + (1.0 - r) * k)
+        out[i] = r
+    up = np.repeat(out, d)
+    if len(up) < len(g):
+        up = np.concatenate([up, np.full(len(g) - len(up), out[-1] if nb else 1.0)])
+    return np.minimum(up[: len(g)], g)
 
 
 def _master_once(
     layers: dict[str, np.ndarray],
     sr: int,
-    target_lufs=-23.0,
+    target_lufs=-21.0,
     ceiling_db=-1.6,
-    tp_max_db=-1.0,
+    tp_max_db=-1.5,
     fade_in_s=2.0,
     fade_out_s=2.5,
 ):
@@ -181,6 +203,7 @@ def _master_once(
         "true_peak_dbfs": true_peak_dbfs(y),
         "sample_peak_dbfs": float(20 * np.log10(max(np.abs(y).max(), 1e-12))),
         "limiter_max_reduction_db": float(-20 * np.log10(max(lim.min(), 1e-6))),
+        "limiter_reduced_fraction": float((lim < 0.98).mean()),
         "clipped_samples": int((np.abs(y) >= 0.999).sum()),
         "ducking_max_reduction_db": maxred,
         "ducking_mean_reduction_db": meanred,
@@ -199,9 +222,9 @@ def _master_once(
 def master(
     layers: dict[str, np.ndarray],
     sr: int,
-    target_lufs=-23.0,
+    target_lufs=-21.0,
     ceiling_db=-1.6,
-    tp_max_db=-1.0,
+    tp_max_db=-1.5,
     fade_in_s=2.0,
     fade_out_s=2.5,
     thunder_peak_dbfs: float | None = -8.0,

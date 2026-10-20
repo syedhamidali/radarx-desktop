@@ -68,15 +68,21 @@ tornado > hail > rain > wind**, then the convective rumble and the ambient bed. 
     physical `1/r` ratios, so the attack is sharp and the decay natural. The air absorption is applied for half the
     distance (`absorption_scale`, 1 = physical): the same compression for the brightness, so a far thunder is still
     a rumble with some body. `ThunderParams(level_model="physical")` and `absorption_scale=1` restore the strict physics.
-  - *Selection by audibility score, with variety.* `score = level at the listener + 6 dB per decade of the number of
-    sources (the big flashes) + 4 dB if the flash is within 10 km of the tornado`, minus 3 dB for every voiced flash of
-    the same range class (near < 10 km, mid 10 to 30, far) within 6 s: cracks, rolls and rumble are mixed. (1)
-    **Guarantee**: in every 8 s of clip time (by the time the sound arrives) the best flash within 80 km is voiced; a
-    window with none that near gets the best farther one (to 150 km). (2) The rest by score, up to 3 overlapping
-    voices, at most 3 starts within +-1 s, masked only when more than 20 dB below a louder one. Skipped flashes are
-    counted with their reason (`skipped_density`, `skipped_masked`, `skipped_voices`, `skipped_out_of_range`,
-    `outside_clip`) and every voiced flash says how it was chosen (`selection`). Only real flashes are voiced.
-  - *What the report says.* `thunder.selection` (flashes in the bundle, voiced, by rule, not voiced, per 8 s window),
+  - *Selection by audibility score, with variety, and the flashes you can see.* `score = level at the listener
+    + 6 dB per decade of the number of sources (the big flashes) + 4 dB if the flash is within 10 km of the tornado
+    + 6 dB if the flash is ON SCREEN when it happens` (its centroid in the camera's frame: heading, pitch, vertical
+    field of view and a 16:9 aspect, from `camera_path.json`, with the camera as it films, not the capped
+    listener), minus 3 dB for every voiced flash of the same range class (near < 10 km, mid 10 to 30, far) within
+    6 s: cracks, rolls and rumble are mixed. A voiced on-screen flash is heard after its physical delay
+    (`r / 343` s of real time in the real-time shots), which makes the connection between the picture and the
+    sound obvious. (1) **Guarantee**: in every 4.5 s of clip time (by the time the sound arrives) the best flash
+    within 150 km is voiced. (2) The rest by score, **up to 5 overlapping voices**, at most 4 starts within +-1 s,
+    thunder sounding (its impact and first roll, 2.5 s and a fifth of the tail) for at most **85 % of any 10 s**, and
+    masked only when more than 20 dB below a louder one. Skipped flashes are counted with their reason
+    (`skipped_density`, `skipped_masked`, `skipped_voices`, `skipped_coverage`, `skipped_out_of_range`,
+    `outside_clip`) and every voiced flash says how it was chosen (`selection`) and whether it was on screen
+    (`visible_on_screen`). Only real flashes are voiced.
+  - *What the report says.* `thunder.selection` (flashes in the bundle, voiced, by rule, not voiced, per 4.5 s window, events per 10 s, how many voiced flashes were on screen),
     `thunder.loudest_events` (the 10 loudest) and the full row of every voiced flash: clip time, distances, delay, onset,
     range class, channel extent, level, margins over the bed / rain / tornado, `n_pulses`, `n_reflections`,
     `n_tortuosity_points`, `n_bridge_elements`, `rendered_duration_30db_s`, `spectral_centroid_hz`.
@@ -126,8 +132,8 @@ model, and the check against it:
 | Physics (literature) | In the synthesis (`thunder.py`, `nwave.py`) |
 |---|---|
 | Thunder is the sum of the sound from every element of the channel; the onset is the nearest point, a long or tilted channel rolls on | every LMA source is an element at its real position and time; arrival `t_i + r_i / 343`; onset = earliest arrival; duration from `(r_max - r_min) / c` |
-| Close to the channel the wave is a sharp N-wave (shock steepening: the stronger and nearer, the sharper); crack with energy at 1 to 5 kHz | N-wave of 0.1 ms rise and 2 ms length at 200 m, 1.6 ms and 5 ms at 6 km, 3 ms and 10 ms at 20 km; elements within 1.5 km are boosted (`crack_boost`) |
-| Spectral peak of the rumble at 20 to 100 Hz (heated-channel relaxation, tortuous segments) | a damped 40 Hz pulse per source, 80 Hz where the local density of sources is high; nothing below 20 Hz (not reproducible) |
+| Close to the channel the wave is a sharp N-wave (shock steepening: the stronger and nearer, the sharper); crack with energy at 1 to 5 kHz | N-wave of 0.1 ms rise and 2 ms length at 200 m, 1.6 ms and 5 ms at 6 km, 3 ms and 10 ms at 20 km; elements within 15 km are boosted (`crack_boost`) and get an extra short N-wave that keeps the brightness of a channel at most 1.5 km away (`crack_gain`): a sharp crack for flashes to 15 km |
+| Spectral peak of the rumble at 20 to 100 Hz (heated-channel relaxation, tortuous segments) | a damped 55, 80 or 110 Hz pulse per source (by the local density of sources), 0.6 of the N-wave for a flash within 8 km, 0.4 at 15 km, 0.2 beyond 30 km: the low end is felt, not just heard; nothing below 20 Hz (not reproducible) |
 | Air absorption removes the highs with distance (ISO 9613-1) | the minimum-phase filter of each source's own distance (`absorbed`), 12 distance bins; test: within 1 dB of ISO 9613-1 at 1 km and 20 km |
 | Tortuosity of the channel (10 to 100 m) makes the crackle | **modelled**: between consecutive sources closer than 8 km, elements at random spacing 1 to 20 m with 3 m lateral scatter, seeded (`sub-resolution tortuosity modelled`) |
 | The LMA samples the channel, it does not cover it | **modelled**: arrival gaps longer than 0.4 s are filled along the chord between the sources around them (`n_bridge_elements`) |
@@ -159,16 +165,18 @@ the real flash. Only with the maintainer's agreement.
 
 ## Mix
 
-BS.1770 loudness (K-weighting, gated): **-23 LUFS integrated**, look-ahead limiter, **true peak below
--1 dBFS** (4x oversampled), 2 s fade in and 2.5 s out, no clipping, deterministic (seeded). Mono
-compatibility is reported (the loss of the mono sum against the stereo RMS, the L/R correlation).
-Output 48 kHz stereo WAV (24 or 16 bit with seeded TPDF dither).
+BS.1770 loudness (K-weighting, gated): **-21 LUFS integrated**, a transparent look-ahead limiter (a 16 ms
+attack that never lets a peak through, a 120 ms exponential release run at 1 kHz so a few peaks do not make the
+level pump), **true peak at most -1.5 dBFS** (4x oversampled), 2 s fade in and 2.5 s out, no clipping, deterministic
+(seeded). Mono compatibility is reported. Output 48 kHz stereo WAV (24 or 16 bit with seeded TPDF dither). The limiter
+barely acts (0.4 dB at most, for under 0.1 % of the film).
 
-**Thunder has the headroom.** The integrated loudness stays at -23 LUFS, but the other layers are trimmed (or raised)
-together until the *median voiced thunder stands 12 dB above the rest of the mix* (rms over its first 4 s;
-`master.bed_trim_db`, `master.thunder_median_margin_over_bed_db`), and the thunder is then what sets the loudness:
-its peaks sit high in the mix, up to the true-peak limit of -1 dBFS (the limiter ceiling is -1.6 dBFS).
-Optionally (`--thunder-peak`, off by default) the thunder gain is iterated to put its loudest peak at a given level.
+**Thunder is the foreground.** The other layers are trimmed (or raised) together until the *median voiced thunder
+stands 17 dB above the rest of the mix* (rms over its first 4 s; `master.bed_trim_db`,
+`master.thunder_median_margin_over_bed_db`), and the thunder is then what sets the loudness: its peaks sit at the
+true-peak limit. Priority ducking: the thunder lowers the tornado roar by up to 14 dB (ratio 0.75), the other layers by
+up to 10 dB (thunder > tornado > hail > rain > wind). Optionally (`--thunder-peak`, off by default) the thunder gain is
+iterated to put its loudest peak at a given level.
 
 ## audio_report.json
 
@@ -225,7 +233,7 @@ python/.venv/bin/python tools/perils_movie/audio/verify_audio.py --wav ...perils
 `--synthetic DIR` renders a made-up storm (never the real data) for a quick test. From Python:
 `render_audio(bundle_dir, timeline, camera_path, out_wav)` and `mux_audio(video_in, wav, video_out)`.
 
-## Verification on the real bundle
+## Verification on the real bundle (the v4 render; the v5 louder mix is verified below)
 
 `tools/perils_movie/audio/verify_audio.py` writes the plots (waveform, spectrogram with the thunder arrivals,
 per-layer levels, flash / delay table); they were looked at. Real bundle (PERiLS IOP2, window 2022-03-31
@@ -252,6 +260,30 @@ to 9.4, mean 8; its `camera_path.json` and `events.json`):
   mesonet stations.
 * The gust fronts the data contain are weak (rises of 5 to 6 m/s in 2 minutes, pressure rises of 0.8 to
   2.8 hPa): the swell is as small as the data say.
+
+## Verification: the louder, busier thunder (v5)
+
+Two soundtracks are rendered for the current `timeline.json`, `camera_path.json`, `events.json` of each film
+(`audio/perils_audio_v5_film.wav` for the 120 s film, `audio/perils_audio_v5_focus.wav` for the 86 s tornado-focus
+clip, each with its `_report.json` and `plots_v5_*`):
+
+| | film (120 s) | focus (86 s) |
+|---|---|---|
+| flashes voiced of 3236 | 77 (24 by the guarantee, 53 by score) | 60 (19, 41) |
+| by class near / mid / far | 25 / 34 / 18 | 20 / 29 / 11 |
+| voiced per 10 s | 0, 2, 11, 7, 5, 10, 5, 7, 8, 8, 8, 6 (median 7) | 6, 6, 6, 6, 5, 7, 7, 9, 3 (median 6) |
+| voiced flashes on screen | 54 (of 872 on-screen flashes heard) | 36 (of 884) |
+| median thunder over the rest of the mix | 17.0 dB (10th percentile 12.5) | 17.0 dB (9.7) |
+| median thunder over the rain / the tornado roar | 27.8 dB / 20.0 dB (min 12.2) | 28.6 dB / 19.1 dB (min 9.0) |
+| integrated loudness, true peak | -21.0 LUFS, -1.59 dBFS | -21.0 LUFS, -1.95 dBFS |
+| thunder layer rms, peak | -21.5, -1.6 dBFS | -20.9, -2.0 dBFS |
+| limiter | 0.38 dB at most, 0.08 % of the film | not needed |
+
+The first 13.5 s of the film (the wide shot 100 km from the line) have no flash that can have arrived: ambient only,
+by physics; the focus clip starts near the storm and has thunder from the first second (some of it the sound of
+flashes that happened before the shown time, still arriving). More thunder is not louder alone: the per-flash
+levels follow the audibility law (nearer is louder), the busy storm comes from the guarantee, the voices and the
+coverage; variety is kept (near cracks, mid rolls, far rumble in the proportions above).
 
 ## Limits
 

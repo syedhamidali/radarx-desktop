@@ -80,13 +80,21 @@ class ThunderParams:
     tail_max_s: float = 7.0
     # synthesis
     n_dist_bins: int = 12
-    crack_range_m: float = 1500.0  # sources closer than this are boosted (the crack)
-    crack_boost: float = 2.0
-    lf_gain: float = 0.15  # low-frequency pulse amplitude relative to the N-wave
+    crack_range_m: float = 15_000.0  # elements closer than this are boosted and get the sharp crack
+    crack_boost: float = 3.0
+    crack_gain: float = 1.5  # amplitude of the crack N-wave relative to the element's
+    crack_absorb_m: float = (
+        1500.0  # the crack keeps the brightness of a channel 1.5 km away at most
+    )
+    # low-frequency pulse amplitude relative to the N-wave: felt, not just heard, for the near and mid flashes
+    lf_gain: float = 0.2  # far (> 30 km)
+    lf_gain_near: float = 0.6  # < 8 km
+    lf_gain_mid: float = 0.4  # 15 km (log interpolation between)
+    lf_mid_hz: float = 110.0
     intra_flash_exponent: float = (
         1.0  # amplitude ~ r^-this between the parts of ONE flash (physical 1/r)
     )
-    lf_low_hz: float = 40.0
+    lf_low_hz: float = 55.0
     lf_high_hz: float = 80.0
     ground_reflection: float = 0.5
     ear_height_m: float = 1.7
@@ -108,11 +116,17 @@ class ThunderParams:
     # selection (see select_flashes): a clearly audible thunder in every ``guarantee_window_s`` of clip time
     # whenever a flash within ``guarantee_range_m`` is heard in it; then the best scores with variety, at most
     # ``max_voices`` at once, ``window_cap`` starts per +-``window_s``, masking only below ``mask_db``
-    guarantee_window_s: float = 8.0
-    guarantee_range_m: float = 80_000.0
-    max_voices: int = 3
+    guarantee_window_s: float = 4.5
+    guarantee_range_m: float = 150_000.0
+    max_voices: int = 5
+    max_coverage: float = 0.85  # thunder may sound for this fraction of any 10 s (loud parts)
+    visible_bonus_db: float = (
+        6.0  # score bonus for a flash that is in the camera's frame when it happens
+    )
+    view_aspect: float = 16.0 / 9.0
+    view_margin_deg: float = 8.0
     window_s: float = 1.0
-    window_cap: int = 3
+    window_cap: int = 4
     mask_db: float = 20.0
     mask_s: float = 3.0
     tornado_bonus_db: float = 4.0  # score bonus for a flash within 10 km of the tornado
@@ -121,6 +135,36 @@ class ThunderParams:
     )
     variety_db: float = 3.0  # score penalty per voiced flash of the same range class within +-6 s
     variety_s: float = 6.0
+
+
+def lf_gain_for(prm: ThunderParams, r_nearest_m: float) -> float:
+    """Low-frequency gain by the distance of the flash: near, mid (15 km) and far, log-interpolated."""
+    x = np.log([8000.0, 15000.0, 30000.0])
+    y = [prm.lf_gain_near, prm.lf_gain_mid, prm.lf_gain]
+    return float(np.interp(np.log(max(r_nearest_m, 1.0)), x, y))
+
+
+def in_view(
+    camera: CameraPath, t_clip: float, lat: float, lon: float, alt: float, prm: ThunderParams
+):
+    """Whether a point is in the camera's frame at a clip time (camera heading, pitch, vertical field of view
+    and a 16:9 aspect, with a margin): (visible, angle from the view axis in degrees)."""
+    c = camera.at(float(np.clip(t_clip, camera.t[0], camera.t[-1])))
+    e, n, u = enu(c["lat"], c["lon"], c["alt_m"], lat, lon, alt)
+    h, p = np.radians(c["heading_deg"]), np.radians(c["pitch_deg"])
+    fwd = np.array([np.sin(h) * np.cos(p), np.cos(h) * np.cos(p), np.sin(p)])
+    right = np.array([np.cos(h), -np.sin(h), 0.0])
+    up = np.cross(right, fwd)
+    d = np.array([float(e), float(n), float(u)])
+    xf, xr, xu = float(d @ fwd), float(d @ right), float(d @ up)
+    if xf <= 0.0:
+        return False, 180.0
+    vf = np.radians(float(c["fov_deg"]))
+    hf = 2.0 * np.arctan(np.tan(vf / 2.0) * prm.view_aspect)
+    m = np.radians(prm.view_margin_deg)
+    ax, ay = np.arctan2(xr, xf), np.arctan2(xu, xf)
+    ang = float(np.degrees(np.arccos(np.clip(xf / max(np.linalg.norm(d), 1e-9), -1.0, 1.0))))
+    return bool(abs(ax) <= hf / 2 + m and abs(ay) <= vf / 2 + m), ang
 
 
 def flash_seed(seed: int, fid: str) -> int:
@@ -133,7 +177,12 @@ def range_class(dist_m: float) -> int:
 
 
 def plan_flash(
-    flash, timeline: Timeline, camera: CameraPath, duration: float, prm: ThunderParams
+    flash,
+    timeline: Timeline,
+    camera: CameraPath,
+    duration: float,
+    prm: ThunderParams,
+    view_camera: CameraPath | None = None,
 ) -> dict:
     """Timing, distances and level of one flash for the camera as listener. No audio.
 
@@ -195,7 +244,14 @@ def plan_flash(
         r_cen = float(np.sqrt(ce * ce + cn * cn + cu * cu))
     else:
         r_cen = float(np.mean(r))
+    visible, view_angle = (False, None)
+    if view_camera is not None and np.isfinite(flash.centroid[0]):
+        visible, view_angle = in_view(
+            view_camera, tf, flash.centroid[0], flash.centroid[1], flash.centroid[2], prm
+        )
     row.update(
+        visible_on_screen=bool(visible),
+        view_angle_deg=view_angle,
         t_flash_clip_s=float(tf),
         listener={
             "lat": float(cam["lat"]),
@@ -222,7 +278,8 @@ def plan_flash(
         peak_amp=a_flash,
         peak_dbfs_premaster=float(db(a_flash)),
         score_db=float(db(a_flash))
-        + prm.n_bonus_db_per_decade * float(np.log10(max(row["n_sources"], 1) / 50.0)),
+        + prm.n_bonus_db_per_decade * float(np.log10(max(row["n_sources"], 1) / 50.0))
+        + (prm.visible_bonus_db if visible else 0.0),
         level_model=prm.level_model,
         level_floor_engaged=bool(floored.mean() > 0.5),
         power_dbw_median=float(pm),
@@ -276,6 +333,9 @@ def select_flashes(
         duration = max([r["last_arrival_clip_s"] for r in cand] + [1.0])
     dt = 0.1
     occ = np.zeros(int(np.ceil(duration / dt)) + 2, int)
+    cov_occ = np.zeros_like(
+        occ
+    )  # the loud part (the impact and its first roll) of every voiced thunder
     kept: list[dict] = []
 
     def span(r):
@@ -296,9 +356,14 @@ def select_flashes(
         )
         return i0, max(i1, i0 + 1)
 
+    def loud_end(r, i0):
+        # the loud part for the coverage: the impact and its first roll (2.5 s and a fifth of the tail)
+        return min(len(occ), i0 + int((2.5 + 0.2 * _tail_s(prm, r["dist_nearest_m"])) / dt))
+
     def accept(r, how):
         i0, i1 = span(r)
         occ[i0:i1] += 1
+        cov_occ[i0 : loud_end(r, i0)] += 1
         r["status"] = "rendered"
         r["selection"] = how
         kept.append(r)
@@ -349,6 +414,16 @@ def select_flashes(
         if occ[i0:i1].max(initial=0) >= prm.max_voices:
             r["status"] = "skipped_voices"
             continue
+        # thunder may sound for at most max_coverage of any 10 s (the loud parts), so the rolls stay distinct
+        w10 = int(10.0 / dt)
+        lo, hi = max(0, i0 - w10), min(len(occ), i1 + w10)
+        seg = cov_occ[lo:hi].copy()
+        seg[i0 - lo : loud_end(r, i0) - lo] += 1
+        if len(seg) >= w10:
+            cov = np.convolve((seg > 0).astype(float), np.ones(w10) / w10, mode="valid")
+            if cov.max() > prm.max_coverage:
+                r["status"] = "skipped_coverage"
+                continue
         accept(r, "score")
     counts: dict[str, int] = {}
     for r in rows:
@@ -509,10 +584,12 @@ def render_flash(
     P_r = np.concatenate([r, r, tr, br])
     P_arr = np.concatenate([arr, arr + np.maximum(d_path, 0.0), t_arr, b_arr])
     P_amp = np.concatenate([amp, amp * prm.ground_reflection, ta, ba])
-    P_lf = np.concatenate(
-        [amp * prm.lf_gain, amp * prm.lf_gain * prm.ground_reflection, np.zeros(nx)]
-    )
-    P_hi = np.concatenate([rho >= 1.0, rho >= 1.0, np.zeros(nx, bool)])
+    lfg = lf_gain_for(prm, float(r.min()))
+    P_lf = np.concatenate([amp * lfg, amp * lfg * prm.ground_reflection, np.zeros(nx)])
+    band = np.where(
+        rho < 0.8, 0, np.where(rho < 1.3, 1, 2)
+    )  # 40, 80 or 110 Hz by the local density
+    P_hi = np.concatenate([band, band, np.zeros(nx, int)])
     # thunder lasts as long as the channel is long, up to max_thunder_s: the last fade_s seconds fade out
     x = np.clip((P_arr - onset - (prm.max_thunder_s - prm.fade_s)) / prm.fade_s, 0.0, 1.0)
     taper = np.cos(0.5 * np.pi * x) ** 2
@@ -541,13 +618,31 @@ def render_flash(
         kern = absorbed(n_wave(sr, rb), sr, r_abs, temp_c, p_hpa, prm.rh_pct)
         for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
             accumulate(out[ear], idx[m] + dd[m], P_amp[m] * g[m], kern)
-        for hi, f0 in ((False, prm.lf_low_hz), (True, prm.lf_high_hz)):
+        for hi, f0 in ((0, prm.lf_low_hz), (1, prm.lf_high_hz), (2, prm.lf_mid_hz)):
             mm = m & (P_hi == hi) & (P_lf > 0)
             if not mm.any():
                 continue
             kl = absorbed(lf_pulse(sr, f0), sr, r_abs, temp_c, p_hpa, prm.rh_pct)
             for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
                 accumulate(out[ear], idx[mm] + dd[mm], P_lf[mm] * g[mm], kl)
+    # the crack of the channel parts within crack_range_m: a short N-wave that keeps the brightness of a channel
+    # at most crack_absorb_m away (sharper than the rest), weaker towards the edge of the range
+    for bi in np.unique(b):
+        m = (b == bi) & (P_r < prm.crack_range_m)
+        if not m.any():
+            continue
+        rb = float(np.sqrt(P_r[m].min() * P_r[m].max()))
+        kc = absorbed(
+            n_wave(sr, min(rb, 1500.0)),
+            sr,
+            min(rb * prm.absorption_scale, prm.crack_absorb_m),
+            temp_c,
+            p_hpa,
+            prm.rh_pct,
+        )
+        wc = prm.crack_gain * np.sqrt(1.0 - P_r[m] / prm.crack_range_m)
+        for ear, g, dd in ((0, gl, dl), (1, gr, dr)):
+            accumulate(out[ear], idx[m] + dd[m], P_amp[m] * wc * g[m], kc)
     # head shadow on the ear that is farther from the energy (a low-pass blend)
     e_l, e_r = float((P_amp**2 * gl**2).sum()), float((P_amp**2 * gr**2).sum())
     far = 0 if e_l < e_r else 1
