@@ -210,6 +210,20 @@ test('at most `maxLabels` labels are shown, the most important first', () => {
   assert.deepEqual(out.map((d) => d.id).sort(), ['l7', 'l8', 'l9']);
 });
 
+test('the key labels are not starved by the cap: a label of priority 90 or more is shown even when the others fill it', () => {
+  const pl = new LabelPlacer(measureFn, 3);
+  const dt = 1 / 30;
+  let last = [];
+  for (let f = 0; f < 40; f++) {
+    const L = new FrameLayout(1920, 1080, 1);
+    const reqs = [req('a', 100, 300), req('b', 400, 300), req('c', 700, 300)];
+    if (f >= 10) reqs.push(req('key', 1000, 300, { priority: 100 }));
+    last = pl.place(reqs, L, f * dt);
+  }
+  assert.ok(last.some((d) => d.id === 'key' && d.alpha > 0.99), 'the key label is shown');
+  assert.equal(last.length, 4);
+});
+
 test('a label that has no free place near its anchor slides clear of the card and is tied to its anchor (the track label over the timeline)', () => {
   const pl = new LabelPlacer(measureFn);
   const L = new FrameLayout(1920, 1080, 1);

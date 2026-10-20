@@ -31,6 +31,8 @@ export const VISIBLE = 0.2;
 export const FADE_S = 0.3;
 /** A label that is not on screen must have had a free place for this many frames in a row before it starts to fade in (no flashes). */
 export const ENTER_FRAMES = 8;
+/** Labels of at least this priority (the track's start and end, the event marker) are not held back by the cap of `maxLabels`. */
+export const KEY_PRIORITY = 90;
 /** Head start (in priority points) of a label that is on screen over a new one. */
 export const INCUMBENT_BONUS = 14;
 /** Gap (in `u`) kept between two labels, and between a label and a card. */
@@ -249,6 +251,7 @@ export class LabelPlacer {
     const all = [...byId.values()];
     const order = [...all.filter((r) => (this.state.get(r.id)?.s ?? 0) > 0).sort(byScore), ...all.filter((r) => !((this.state.get(r.id)?.s ?? 0) > 0)).sort(byScore)];
     const placed: Rect[] = [];
+    let counted = 0; // labels that count toward the cap (the key labels do not)
     for (const [id, st] of this.state) if (!byId.has(id) && st.s > 0) placed.push(st.rect);
     const keep = new Map<string, LabelState>();
     const waiting = new Map<string, number>();
@@ -263,7 +266,7 @@ export class LabelPlacer {
       if (prev && prev.cand >= 0 && prev.cand < offs.length) idx.sort((a, b) => (a === prev.cand ? -1 : b === prev.cand ? 1 : a - b));
       let found: { x: number; y: number; rect: Rect; cand: number; leader: [number, number, number, number] | null } | null = null;
       const clear = (rect: Rect): boolean => layout.isFree(rect, CARD_GAP * u) && !placed.some((p) => rectsOverlap(p, rect, LABEL_GAP * u));
-      if (placed.length < this.maxLabels) {
+      if (counted < this.maxLabels || r.priority >= KEY_PRIORITY) {
         for (const k of idx) {
           let x = r.ax + offs[k][0] * u;
           let y = r.ay + offs[k][1] * u;
@@ -298,6 +301,7 @@ export class LabelPlacer {
       } else if (found) {
         placed.push(found.rect);
       }
+      if (found && r.priority < KEY_PRIORITY) counted++;
       if (found) {
         const s0 = prev?.s ?? 0;
         keep.set(r.id, { s: jump ? 1 : Math.min(1, s0 + step), cand: found.cand, rect: found.rect, req: r, x: found.x, y: found.y, shown: true, leader: found.leader });

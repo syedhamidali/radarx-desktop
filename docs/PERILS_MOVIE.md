@@ -171,6 +171,39 @@ is drawn (and says so on screen).
   (`perilsCaptions.ts`), with its provenance chip.
 * **End card**: every data source and instrument of the manifest with its credit and class, and the legend.
 
+## Layout of the overlay
+
+Everything drawn over the 3-D scene is either a **card** (the heads-up display: title block, compass, insets, captions, lower
+thirds, timeline, legend) or a **label** (a name tied to a point of the scene: radars, stations, "vortex candidate", "possible
+debris", "hail class", the track's start and end). `perilsLayout.ts` holds the rules; `perilsExtras.ts` registers every card
+and label in a `FrameLayout` before anything is drawn, and the film is checked against the rules frame by frame.
+
+* **No overlap, nothing out of the frame.** Two items that are both visible (alpha above 0.2) never overlap, and nothing
+  visible lies outside the frame. Where two overlap, the one of lower priority gives way: its opacity is cut by 1 - 4 x the
+  opacity of the other, so it is gone as soon as the other reaches a quarter of its opacity (a cross-fade never leaves two
+  texts on top of each other, e.g. the station card under a lower third). Priority, from the top: legend and timeline, the title
+  block, the insets, the simulation tag, the lower thirds and the caption, the right-hand column, the station and tornado cards,
+  the rotation series, the Skew-T, the compass.
+* **The right-hand column keeps clear of the bottom** (56 px at 1080 p for the credits): a card that does not fit entirely is
+  not drawn there. The flash counter (LMA) goes under the insets when it fits entirely, else to the left column under the
+  rotation series, where nothing else stands (`firstFit`).
+* **Labels are ranked, capped and placed.** The scene layers only *ask* for a label (`SceneEnv.labels.add`); at most 8 are
+  shown, the most important first (the tornado's start and end, the event marker, the stylised funnel, the parent circulation,
+  the station nearest the camera, the vortex candidate, ..., the other radars and stations, the cold-pool edge, the isotherms).
+  Each is tried at six places around its anchor (the place it had before first), outside every visible card and every
+  other label; when none is free it is dropped. The track's start and end labels (and the event marker) slide up, with a thin
+  leader line to their anchor, when the anchor lies under the timeline.
+* **Fades are stable.** A label fades in and out over 0.3 s; a new label must have had a free place for 8 frames before it
+  appears; a label that is on screen (or fading out) keeps its place against newcomers, which wait. The decisions use only the
+  current frame and the labels' own states, so a render that is stopped and resumed takes the targets at once on its first frame.
+* **The compass** is a strip with a tick every 5 degrees, a number every 15 and the eight winds (N, NE, ...) at their ticks,
+  linear in degrees (+-42 around the heading), with a marker and the heading under it.
+* **Checked on the film.** Each drawn frame leaves its layout in `window.__xrPerilsLayout` (items, boxes, alphas, the rules it
+  broke); `render_movie.py --layout-dump file.json [--no-shot] [--frame-step n]` collects them (the check of a film takes no
+  pictures). The unit test `perilsLayout.test.mjs` runs the rules on the real card rectangles at three frame sizes, on
+  cross-fades, and on random scenes (600 frames of random labels and cards), and fails when two drawn items overlap, an item
+  leaves the frame, or the placer is broken on purpose (three mutations were tried).
+
 ## The tornado
 
 What the data say, and what the picture adds (`perilsVortex.ts`, `perilsTornadoSim.ts`,
@@ -310,6 +343,9 @@ python/.venv/bin/python tools/perils_movie/render/plot_focus.py --bundle <bundle
 `render_movie.py` writes `tornado_seed.json` itself (tools/tornado_sim/make_seed.py, for the data span of the shot) when
 the bundle has the survey; `--no-sim` draws the particle funnel instead (the v1 film); `--plan v2` plans the v2 film's single tornado shot; `--manifest manifest_v2.json` reads the merge-v2 volumes; `--sim-scale` renders the simulation
 at a lower internal scale for drafts. `measure_rotation.py` measures the v1 particle funnel (its tracer arrow).
+
+`--layout-dump file.json` writes the layout of every drawn frame (cards, labels, boxes, alphas, rule violations); with `--no-shot` no picture is saved
+and with `--frame-step n` only every n-th frame is drawn: a layout check of the whole film takes minutes.
 
 `--preview "0-4,20-24,..."` renders segments of the film (clip seconds; 20 s for the default five); `--at 8,22,70`
 draws single frames; frames are JPEG files (quality 95; PNG with `--frame-format png`) in `<scratch>/frames`
