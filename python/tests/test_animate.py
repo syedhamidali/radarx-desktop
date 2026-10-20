@@ -1,4 +1,4 @@
-"""Tests of ``xrd animate`` (engine/animate*.py) that need neither a browser nor radar files:
+"""Tests of ``rxd animate`` (engine/animate*.py) that need neither a browser nor radar files:
 file grouping and time matching, the tolerance, frame planning, interpolation weights, camera maths
 (checked against values computed by the TypeScript of src/lib/utils/clipCamera.ts), camera and
 config errors, the cache and resume logic, and the memory bound on a long synthetic series. One
@@ -1025,11 +1025,11 @@ class TestRunWithoutRendering:
 
     def test_provenance_record_names_data_versions_parameters_and_method(self, tmp_path):
         res = animate.run(
-            self.opts(tmp_path, command="xrd animate -i x --no-render", fps=24, duration=20.0),
+            self.opts(tmp_path, command="rxd animate -i x --no-render", fps=24, duration=20.0),
             gridder=SyntheticGridder(),
         )
         doc = json.loads(json.dumps(animate.provenance(res, {"fps": 24, "keys": [1]}, None)))
-        assert doc["tool"] == "xrd animate" and doc["command"] == "xrd animate -i x --no-render"
+        assert doc["tool"] == "rxd animate" and doc["command"] == "rxd animate -i x --no-render"
         assert doc["created_utc"].endswith("Z")
         assert {"python", "radarx", "playwright", "av", "browser", "app_build"} <= set(
             doc["versions"]
@@ -1455,7 +1455,7 @@ class TestCommand:
 
     def test_print_command_and_examples_topic(self, capsys):
         code, out, _ = run_cli(capsys, "examples", "animate")
-        assert code == 0 and out.startswith("# ANIMATE") and "xrd animate" in out
+        assert code == 0 and out.startswith("# ANIMATE") and "rxd animate" in out
 
 
 # ---------------------------------------------------------------------------

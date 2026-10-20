@@ -1,6 +1,6 @@
-# `xrd animate`: storm-centred 3D animations from many volumes
+# `rxd animate`: storm-centred 3D animations from many volumes
 
-`xrd animate` turns a pile of radar volumes (one radar over time, or several radars over time, any
+`rxd animate` turns a pile of radar volumes (one radar over time, or several radars over time, any
 number of files) into an MP4: the strongest storm of the scene in 3D, a camera that flies around it
 while the storm travels across the map, a UTC clock, the storm's track on the ground, and labels
 that say which frames are real volumes and which are interpolated. It draws with the app's own 3D
@@ -8,10 +8,10 @@ renderer (the ray-marched volume, colour scale, map and overlay of the 3D tab) i
 Chrome, so the picture matches the app.
 
 ```bash
-xrd animate -i mayfield -o mayfield.mp4                          # the folder with one sub-folder per radar
-xrd animate -i 'mayfield/*/*_V06' --camera top-down -o top.mp4   # a glob, another camera
-xrd animate -i mayfield -p still.png --still-at 12               # one frame, to try a camera or a look
-xrd animate -i mayfield --no-render                              # the plan only: steps, track, frames (no browser)
+rxd animate -i mayfield -o mayfield.mp4                          # the folder with one sub-folder per radar
+rxd animate -i 'mayfield/*/*_V06' --camera top-down -o top.mp4   # a glob, another camera
+rxd animate -i mayfield -p still.png --still-at 12               # one frame, to try a camera or a look
+rxd animate -i mayfield --no-render                              # the plan only: steps, track, frames (no browser)
 ```
 
 It is the command-line form of the clip tool in `tools/storm_clip/` (see [the clip page](STORM_CLIP.md),
@@ -20,7 +20,7 @@ which has the details of the renderer, the realistic look and the cyclone flight
 ## Install and what it needs
 
 ```bash
-pip install -e python/                      # the engine and the `xrd` command
+pip install -e python/                      # the engine and the `rxd` command
 pip install -U radarx                       # gridding the radars (Python >= 3.12), needed for every run
 pip install -e 'python/[video]'             # the optional extra: Playwright and PyAV   (pip install 'radarx-desktop-engine[video]')
 npm ci && npm run build                     # once, in a source checkout: the app that draws (dist/)
@@ -28,14 +28,14 @@ npm ci && npm run build                     # once, in a source checkout: the ap
 
 | Needs | Why | When it is missing |
 |---|---|---|
-| `radarx` | merges the radars onto a 3D grid (`xrd mosaic` uses it too) | exit code 4 with the install line |
+| `radarx` | merges the radars onto a 3D grid (`rxd mosaic` uses it too) | exit code 4 with the install line |
 | `playwright` (extra `video`) | drives Chrome | exit code 4: `pip install 'radarx-desktop-engine[video]'` |
 | Google Chrome | the renderer runs in it (`channel="chrome"`: the system Chrome, nothing is downloaded) | exit code 4, says to install Chrome or use `--browser ''` after `python -m playwright install chromium` |
 | `av` / PyAV (extra `video`) | encodes H.264 | the frames are still written as numbered PNG files and the command prints the `ffmpeg` line that makes the MP4 |
 | the built app (`dist/`) | the renderer itself | exit code 4 with the build steps |
 
 Neither Playwright nor PyAV is a dependency of the package: `import engine` never loads them, and the
-rest of `xrd` works without them. `--no-render` needs none of the four rows below `radarx`.
+rest of `rxd` works without them. `--no-render` needs none of the four rows below `radarx`.
 
 **Where the app is found.** `--app-dist DIR`, then `$XRADAR_APP_DIST`, then `<checkout>/dist` (the
 folder `npm run build` writes; found automatically when the engine is installed with
@@ -45,7 +45,7 @@ frontend in the executable, so their resources cannot be used for this today: bu
 checkout. Without PyAV:
 
 ```console
-$ xrd animate -i mayfield -o mayfield.mp4
+$ rxd animate -i mayfield -o mayfield.mp4
 ...
 wrote mayfield_frames
 to make the MP4 from those frames: ffmpeg -framerate 30 -i 'mayfield_frames/frame_%05d.png' -c:v libx264 -crf 18 -pix_fmt yuv420p -movflags +faststart 'mayfield.mp4'
@@ -61,7 +61,7 @@ to make the MP4 from those frames: ffmpeg -framerate 30 -i 'mayfield_frames/fram
    A step needs two radars (`--min-radars`; one for a single radar) and a step whose volumes are all
    repeats of the previous step is dropped. Everything that is not used is listed with the reason.
 3. **Grids, one time step at a time.** The radars of one step are gridded together
-   (`engine.mosaic`, the same code as `xrd mosaic`) at 2 km to find and track the storm, then at 500 m on a box
+   (`engine.mosaic`, the same code as `rxd mosaic`) at 2 km to find and track the storm, then at 500 m on a box
    around the whole track. Only one step's radar volumes are in memory at once; every result is cached on disk.
 4. **The storm.** The strongest convective cell (column maximum of at least `--cell-dbz` 45 dBZ, score =
    maximum dBZ + 2 x echo top + 4 x log10 area) of the first step is followed from step to step
@@ -75,7 +75,7 @@ to make the MP4 from those frames: ffmpeg -framerate 30 -i 'mayfield_frames/fram
 ## The time steps
 
 ```console
-$ xrd animate -i mayfield --no-render
+$ rxd animate -i mayfield --no-render
 5 time steps from 4 radar(s) (KHPX, KNQA, KPAH, KVWX); reference KVWX
 KHPX, KNQA, KPAH, KVWX  11 Dec 2021  |  4 radar(s)  |  5 time steps over 18.1 min  |  1080 frames (36 s at 30 fps, 1920x1080)
   time steps  reference radar KVWX, tolerance 330 s; each radar contributes its nearest volume (offset in s from the reference)
@@ -121,7 +121,7 @@ How to read it:
 file is a repeat, or when a radar cannot be read (the TDWR files of the Laura case):
 
 ```console
-$ xrd animate -i laura --no-render
+$ rxd animate -i laura --no-render
   not used    5:
     THOU20200827_045319_V08: could not be read: Could not open THOU20200827_045319_V08: it looks like a NEXRAD Level II file but could not be read: ...
     TIAH20200827_045407_V08: could not be read: site position 30065, -95567 is out of range (a TDWR file with unscaled coordinates)
@@ -139,7 +139,7 @@ $ xrd animate -i laura --no-render
 
 A folder is accepted in two forms: a folder of radar files, or a *case folder* with one sub-folder per radar
 (only files whose names carry a radar and a time are taken from the sub-folders, so a `results/` folder
-beside them is ignored). Globs and `-i -` (names on stdin) work as in every `xrd` command.
+beside them is ignored). Globs and `-i -` (names on stdin) work as in every `rxd` command.
 
 ## The camera
 
@@ -189,9 +189,9 @@ that ends before the clip stays at its last pose, and keys after the end are rep
 Mistakes are caught before anything is gridded, with the fix in the message:
 
 ```console
-$ xrd animate -i mayfield --camera bad.toml
+$ rxd animate -i mayfield --camera bad.toml
 error: unknown key "azimut" in keyframe 2 (did you mean "azimuth"?). Known keys: t, azimuth, elevation, distance, target, dx, dy, dz, fov
-$ xrd animate -i mayfield --camera topdwn
+$ rxd animate -i mayfield --camera topdwn
 error: unknown camera preset "topdwn". Did you mean "top-down"? Presets: orbit, wide, top-down, window, flight; or give a camera file (.toml / .json)
 ```
 
@@ -208,7 +208,7 @@ the map is the default; `--realistic` switches to terrain with satellite imagery
 renderer, before any gridding:
 
 ```console
-$ xrd animate -i mayfield --realistic --set exposur=1.4 -o x.mp4
+$ rxd animate -i mayfield --realistic --set exposur=1.4 -o x.mp4
 error: unknown look key "exposur" (did you mean "exposure"?)
 ```
 
@@ -270,7 +270,7 @@ with the flat map takes 0.06 to 0.1 s. The software renderer is several times sl
 
 ## The record of a clip
 
-Next to the result `xrd animate` writes `clip.animate.json` (`folder/animate.json` for a PNG sequence,
+Next to the result `rxd animate` writes `clip.animate.json` (`folder/animate.json` for a PNG sequence,
 `still.animate.json` for a still) and puts a short note in the MP4's tags (`title`, `comment`: the radars, the
 time span, that frames between volumes are interpolated, and the name of that file). The record has the
 command line, the date, the versions (engine, radarx, xradar, Python, Playwright, PyAV, Chrome, the build of
@@ -280,8 +280,8 @@ the files that were not used and the method in words, so a clip can be checked a
 
 ## All options
 
-`xrd animate --help` lists them; the common ones (`-i`, `-o`, `-p`, `-v`, `-q`, `--json`, `--config`,
-`--print-command`) are those of [every `xrd` command](CLI.md).
+`rxd animate --help` lists them; the common ones (`-i`, `-o`, `-p`, `-v`, `-q`, `--json`, `--config`,
+`--print-command`) are those of [every `rxd` command](CLI.md).
 
 | Group | Options |
 |---|---|
@@ -308,8 +308,8 @@ exposure = 1.3
 ```
 
 ```console
-$ xrd --config mayfield.toml
-$ xrd animate -i mayfield --tolerence-s 300
+$ rxd --config mayfield.toml
+$ rxd animate -i mayfield --tolerence-s 300
 error: unrecognized option(s): --tolerence-s. Did you mean --tolerance-s?
 ```
 
@@ -323,13 +323,13 @@ The two cases of the test collection, read only (nothing is written next to the 
 
 ```bash
 # Mayfield, Kentucky, 11 Dec 2021: four radars, five volumes each over 18 minutes
-xrd animate -i SEVERE_CASES_TEST/mayfield -o mayfield.mp4
-xrd animate -i SEVERE_CASES_TEST/mayfield -o mayfield_window.mp4 --camera window --realistic --timelapse 24
-xrd animate -i SEVERE_CASES_TEST/mayfield -o mayfield_custom.mp4 --camera docs/examples/animate_camera.toml \
+rxd animate -i SEVERE_CASES_TEST/mayfield -o mayfield.mp4
+rxd animate -i SEVERE_CASES_TEST/mayfield -o mayfield_window.mp4 --camera window --realistic --timelapse 24
+rxd animate -i SEVERE_CASES_TEST/mayfield -o mayfield_custom.mp4 --camera docs/examples/animate_camera.toml \
     --realistic --look docs/examples/animate_look.toml --title "Mayfield, KY: the storm in 3D"
 
 # Hurricane Laura, 27 Aug 2020: four readable radars (the two TDWR files are named and left out), four volumes in 15 minutes
-xrd animate -i SEVERE_CASES_TEST/laura -o laura.mp4 --track eye --camera flight --crop-km 140 --detail-m 1000 \
+rxd animate -i SEVERE_CASES_TEST/laura -o laura.mp4 --track eye --camera flight --crop-km 140 --detail-m 1000 \
     --realistic --look-preset "Hurricane (stormy)"
 ```
 
@@ -350,9 +350,9 @@ xrd animate -i SEVERE_CASES_TEST/laura -o laura.mp4 --track eye --camera flight 
 - **Needs Chrome, ideally with a GPU**, and a built app. Without a working GPU path the command falls back to Chrome's software renderer (`--software` chooses it): it works anywhere, a still took 19 s instead of 7 s here, and a clip is much slower. Resolution is limited by the
   GPU's 3D-texture and canvas limits. Tested on macOS (Apple M1 Pro); the Chrome switches for Linux and Windows
   are not tested here (`XRADAR_CHROME_ARGS` adds switches).
-- **No sound track.** The clip tool of `tools/storm_clip/` can add a synthesised soundscape; `xrd animate` does not.
+- **No sound track.** The clip tool of `tools/storm_clip/` can add a synthesised soundscape; `rxd animate` does not.
 - **The ground needs tiles.** The flat map's tiles are fetched by Chrome from the basemap server while the
-  frames are drawn (xrd keeps no cache of them); the satellite imagery and terrain of `--realistic` go through
+  frames are drawn (rxd keeps no cache of them); the satellite imagery and terrain of `--realistic` go through
   the tile cache, and `--offline` uses only that. Without tiles the ground is a grid and the command says so.
 - **Radar data are not downloaded.** Give files on disk.
 

@@ -1,4 +1,4 @@
-"""The ``xrd animate`` command line: options, input handling and output (see docs/ANIMATE.md).
+"""The ``rxd animate`` command line: options, input handling and output (see docs/ANIMATE.md).
 
 Kept out of :mod:`engine.cli` so that file only gets a few lines for the new command. Standard
 library only at import time; the engine is imported when the command runs.
@@ -17,13 +17,13 @@ from typing import Any
 
 EPILOG = """\
 examples:
-  xrd animate -i 'mayfield/*/*_V06' -o mayfield.mp4
-  xrd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
-  xrd animate -i mayfield -o mayfield.mp4 --realistic --look-preset "Golden hour" --set exposure=1.4
-  xrd animate -i mayfield -o mayfield.mp4 --camera my_camera.toml --look my_look.toml
-  xrd animate -i mayfield -p still.png --still-at 12
-  xrd animate -i mayfield --no-render --json
-  xrd animate -i laura --reference KLCH --tolerance-s 400 --track linear --camera wide -o laura.mp4
+  rxd animate -i 'mayfield/*/*_V06' -o mayfield.mp4
+  rxd animate -i mayfield -o mayfield.mp4 --camera top-down --duration 30
+  rxd animate -i mayfield -o mayfield.mp4 --realistic --look-preset "Golden hour" --set exposure=1.4
+  rxd animate -i mayfield -o mayfield.mp4 --camera my_camera.toml --look my_look.toml
+  rxd animate -i mayfield -p still.png --still-at 12
+  rxd animate -i mayfield --no-render --json
+  rxd animate -i laura --reference KLCH --tolerance-s 400 --track linear --camera wide -o laura.mp4
 
 The files are grouped by radar and time; every time step takes each radar's nearest volume within
 --tolerance-s (files that are not used are listed with the reason). The strongest storm is found
@@ -40,7 +40,7 @@ def add_parser(
     add_output: Callable[..., None],
     add_plot: Callable[..., None],
 ) -> argparse.ArgumentParser:
-    """Register ``animate`` on the ``xrd`` parser (called by ``build_parser``)."""
+    """Register ``animate`` on the ``rxd`` parser (called by ``build_parser``)."""
     p = command(
         "animate",
         "Make a storm-centred 3D animation (MP4) from many volumes of one or more radars.",
@@ -284,7 +284,7 @@ def add_parser(
 
 
 def expand_animate_inputs(items: Sequence[str]) -> list[str]:
-    """Like ``xrd``'s ``-i`` but a case folder that holds one folder per radar works too.
+    """Like ``rxd``'s ``-i`` but a case folder that holds one folder per radar works too.
 
     A folder with radar files in it gives those files. A folder with only sub-folders (one per
     radar) gives the files in them whose names carry a radar and a time (``KHPX20211211_015357_V06``),
@@ -425,7 +425,7 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         app_dist=args.app_dist,
         browser=args.browser,
         software=args.software,
-        command=shlex.join(["xrd", *getattr(args, "argv", [])]),
+        command=shlex.join(["rxd", *getattr(args, "argv", [])]),
         crf=args.crf,
         preset=args.x264_preset,
         frame_format=args.frame_format,
@@ -448,7 +448,7 @@ def cmd_animate(args: argparse.Namespace, out: Any) -> int:
     if not items:
         raise cli.UsageError(
             "animate needs radar files: give them with -i (for example: "
-            "xrd animate -i 'mayfield/*/*_V06' -o storm.mp4)"
+            "rxd animate -i 'mayfield/*/*_V06' -o storm.mp4)"
         )
     try:
         files = expand_animate_inputs(items)

@@ -566,7 +566,7 @@ def stage_mosaic(readers: list, repeat: int) -> None:
 def stage_export(rd, var: str, repeat: int) -> None:
     from engine.exporter import RadarExporter
 
-    tmp = Path(tempfile.mkdtemp(prefix="xrd-bench-"))
+    tmp = Path(tempfile.mkdtemp(prefix="rxd-bench-"))
     ex = RadarExporter()
     s0 = _sweeps_with(rd, var)[0]
     ext = {"png": ".png", "csv": ".csv", "netcdf": ".nc", "cfradial2": ".nc", "zarr": ".zarr"}

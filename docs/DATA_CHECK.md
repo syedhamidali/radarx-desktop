@@ -9,7 +9,7 @@ suggested clean-up is a normal [pipeline recipe](PIPELINES.md) that runs only wh
   (`1 warning, 5 notices`). Click it to open the panel; the `x` hides the chip until the file is
   closed, *Don't show again for this file* remembers that choice for the file path (also after a
   restart), and *Command palette > Data Check* brings it back.
-* **Command line:** `xrd check -i FILE [FILE ...] [--json] [--fix-plan]` (see below).
+* **Command line:** `rxd check -i FILE [FILE ...] [--json] [--fix-plan]` (see below).
 * **Python:** `engine.quality.check_volume(vol)` returns the same report as a plain dict.
 
 The check is fast (about 1 s for a NEXRAD volume, measured; see *Cost*), uses only the sweeps that
@@ -93,7 +93,7 @@ Every finding that motivates a pipeline step (`dealias`, `clutter_filter`, `biol
 reason, to a recipe for the matching variable. Steps come out in a safe order (gates are removed
 before the velocity is de-aliased). The result is up to three recipes, named *Data check -
 Doppler velocity*, *... Reflectivity*, *... ZDR*; they are ordinary recipes (parameters at their
-defaults), so *Review in Pipelines* opens them for editing and `xrd pipeline recipe.json` runs
+defaults), so *Review in Pipelines* opens them for editing and `rxd pipeline recipe.json` runs
 them. Problems no pipeline step fixes (ZDR offset, PhiDP unfolding, attenuation, range folding)
 are listed as *Other things to do*.
 
@@ -105,7 +105,7 @@ not applied.
 ## Command line
 
 ```console
-$ xrd check -i KTLX20130520_201643_V06.gz
+$ rxd check -i KTLX20130520_201643_V06.gz
 KTLX20130520_201643_V06.gz  (nexrad_level2, 17 sweeps, S band; checked in 1.0 s)
   1 warning, 5 notice, 3 info. Nothing was changed; ESTIMATE values name their method.
 
@@ -114,9 +114,9 @@ KTLX20130520_201643_V06.gz  (nexrad_level2, 17 sweeps, S band; checked in 1.0 s)
       - steps above 1.2 x Nyquist 4.17 % [RETRIEVED]
       - Nyquist velocity 26 m/s [ESTIMATE]
   ...
-$ xrd check -i FILE --fix-plan -o recipe.json     # also writes the suggested recipe(s) as JSON
-$ xrd pipeline recipe_velocity.json -i FILE       # run it yourself
-$ xrd check -i A B C --json                       # a JSON list, one report per file
+$ rxd check -i FILE --fix-plan -o recipe.json     # also writes the suggested recipe(s) as JSON
+$ rxd pipeline recipe_velocity.json -i FILE       # run it yourself
+$ rxd check -i A B C --json                       # a JSON list, one report per file
 ```
 
 Options follow the [shared options](CLI.md): `-i`, `--json`, `-v` (adds each finding's method and
@@ -151,7 +151,7 @@ the others are still checked and the exit code is 3 if any failed.
   raise nothing above *info*. A real KTLX volume is checked for the known facts (split cuts,
   velocity on odd sweeps, an estimated Nyquist velocity near 26 m/s).
 
-Code: `python/engine/quality.py`, `python/tests/test_quality.py`, `xrd check` in
+Code: `python/engine/quality.py`, `python/tests/test_quality.py`, `rxd check` in
 `python/engine/cli.py`, the status-bar chip `DataCheckChip.svelte` and the lazily loaded
 `DataCheckPanel.svelte`.
 

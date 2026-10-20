@@ -1,4 +1,4 @@
-"""``xrd qpe`` and ``xrd basin``: the command line, the Python API and the QPE module.
+"""``rxd qpe`` and ``rxd basin``: the command line, the Python API and the QPE module.
 
 Volumes are in-memory synthetic ones (uniform rain of a given rate, see ``hydro_synth``): files
 named ``*.hyd`` hold ``<ISO time> <rate mm/h>`` and open as such through the real reader.

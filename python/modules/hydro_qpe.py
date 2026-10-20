@@ -63,7 +63,7 @@ calibration and attenuation but noisy below 0.3 deg/km."""
         "Rain rate from R(Z) with a selectable Z-R relation (WSR-88D, Marshall-Palmer, tropical, "
         "cool-season, snow Z-S), R(KDP), R(Z,ZDR), R(A) or a hybrid that switches by hydrometeor "
         "class and rain-rate regime. Outputs the rate, its uncertainty and the beam quality; "
-        "labelled RETRIEVED. For accumulations over a period use `xrd qpe`."
+        "labelled RETRIEVED. For accumulations over a period use `rxd qpe`."
     ),
     category="Hydrology",
     requires=["DBZH"],

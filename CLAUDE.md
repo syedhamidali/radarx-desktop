@@ -3,7 +3,7 @@
 A cross-platform desktop (and web) tool for weather radar data: open a file, see it in 2D and 3D, clean it, run
 algorithms, merge radars, export. Built with **Tauri 2** (Rust shell) + **Svelte 5** (frontend, its own WebGL2
 renderers) + a **Python engine** (xradar / xarray / radarx) that the shell starts and talks to over a local
-WebSocket. Everything the app does also runs without the GUI (`xrd` command line, `engine.api` in Python).
+WebSocket. Everything the app does also runs without the GUI (`rxd` command line, `engine.api` in Python).
 
 ## Rules that apply to every change
 
@@ -33,7 +33,7 @@ See `ARCHITECTURE.md` for the system diagram, data flow and design decisions.
   - **matplotlib / Pillow** for figures and PNG/GIF export (`engine/exporter.py`, `engine/renderer.py`)
   - **Apache Arrow** is optional (`engine/arrow_bridge.py`, extra `arrow`): the app itself sends raw binary
     chunks over the WebSocket, so pyarrow is neither installed by default nor bundled
-- **CLI and API**: `xrd` (`engine/cli.py`), `engine.api` / `import xrd`; docs `docs/CLI.md`, `docs/API.md`
+- **CLI and API**: `rxd` (`engine/cli.py`), `engine.api` / `import rxd`; docs `docs/CLI.md`, `docs/API.md`
 - **Web mode**: the same engine as an anonymous web service (`docs/WEB.md`)
 
 ### Project structure

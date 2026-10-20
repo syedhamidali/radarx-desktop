@@ -1,4 +1,4 @@
-"""``xrd animate``: a storm-centred 3D animation from many radar volumes.
+"""``rxd animate``: a storm-centred 3D animation from many radar volumes.
 
 This module is the orchestrator. The pieces it ties together:
 
@@ -36,7 +36,7 @@ Note = Callable[[str], None]
 
 @dataclass
 class AnimateOptions:
-    """Everything ``xrd animate`` can be told (the command line options, by their long names)."""
+    """Everything ``rxd animate`` can be told (the command line options, by their long names)."""
 
     files: list[str] = field(default_factory=list)
     output: str | None = None  # an .mp4, or a folder (PNG sequence)
@@ -675,7 +675,7 @@ def mp4_metadata(res: AnimateResult, video: Path) -> dict[str, str]:
     return {
         "title": res.options.title or res.bundle.manifest["title"],
         "comment": (
-            f"xrd animate {_xrd_version()}: {len(sp.steps)} time steps of {', '.join(sp.used_radars)} "
+            f"rxd animate {_xrd_version()}: {len(sp.steps)} time steps of {', '.join(sp.used_radars)} "
             f"({sp.steps[0].time:%Y-%m-%d %H:%M:%S} to {sp.steps[-1].time:%H:%M:%S} UTC); frames between "
             "volumes are interpolated (carried along the storm motion), not observed, and are "
             f"labelled so on screen. Parameters and data: {video.with_suffix('').name}.animate.json"
@@ -746,7 +746,7 @@ def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) 
                 }
             )
     doc = res.to_dict()
-    doc["tool"] = "xrd animate"
+    doc["tool"] = "rxd animate"
     doc["created_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     doc["command"] = o.command
     doc["versions"] = {

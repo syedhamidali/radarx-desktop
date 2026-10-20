@@ -1,13 +1,19 @@
-# The `xrd` command line
+# The `rxd` command line
 
 Everything the desktop app does can be done from a terminal, a shell script or a cron job, with
 the same engine and the same results: look at a file, clean it, run an algorithm, merge radars,
 save the outcome. No window, no server.
 
 ```text
-xrd                       # a friendly overview of everything below
-xrd examples              # a guided tour of copy-paste commands
-xrd COMMAND --help        # purpose, options, real examples
+rxd                       # a friendly overview of everything below
+rxd examples              # a guided tour of copy-paste commands
+rxd COMMAND --help        # purpose, options, real examples
+```
+
+```{note}
+**The command was called `xrd` before.** It is now `rxd` (and `import rxd`, `python -m rxd`). `xrd` still works,
+as the same program, so existing scripts and notebooks keep running; in a terminal it prints a one-line note,
+and it will be removed in a future release. Switch with a find-and-replace of `xrd` by `rxd`.
 ```
 
 ## Quick start
@@ -15,12 +21,12 @@ xrd COMMAND --help        # purpose, options, real examples
 The six commands most people need (replace the file name with yours):
 
 ```bash
-xrd info -i KTLX20130520_201643_V06.gz                       # 1. what is in the file?
-xrd plot -i KTLX20130520_201643_V06.gz                       # 2. a picture -> KTLX..._DBZH_sweep0.png
-xrd run radarx_hid -i KTLX20130520_201643_V06.gz -p hid.png  # 3. an algorithm (hydrometeor classes)
-xrd pipeline "Doppler velocity" -i KTLX20130520_201643_V06.gz -p before_after.png   # 4. clean the data
-xrd mosaic -i KHPX..._V06 KNQA..._V06 KPAH..._V06            # 5. several radars on one map
-xrd export -i KTLX20130520_201643_V06.gz -o ktlx.zarr        # 6. save it (NetCDF, Zarr, CSV, PNG)
+rxd info -i KTLX20130520_201643_V06.gz                       # 1. what is in the file?
+rxd plot -i KTLX20130520_201643_V06.gz                       # 2. a picture -> KTLX..._DBZH_sweep0.png
+rxd run radarx_hid -i KTLX20130520_201643_V06.gz -p hid.png  # 3. an algorithm (hydrometeor classes)
+rxd pipeline "Doppler velocity" -i KTLX20130520_201643_V06.gz -p before_after.png   # 4. clean the data
+rxd mosaic -i KHPX..._V06 KNQA..._V06 KPAH..._V06            # 5. several radars on one map
+rxd export -i KTLX20130520_201643_V06.gz -o ktlx.zarr        # 6. save it (NetCDF, Zarr, CSV, PNG)
 ```
 
 Without `-o`/`-p` a sensible file name is chosen, written to the current directory and printed,
@@ -29,16 +35,16 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 ## Install
 
 ```bash
-pip install -e python/            # the engine and the `xrd` command   (python -m engine works too)
+pip install -e python/            # the engine and the `rxd` command   (python -m engine works too)
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
-xrd --version
+rxd --version
 ```
 
 `pip install -e` (an editable install) is what makes the shipped algorithms in `python/modules/`
 visible; add your own folder with `export XRADAR_MODULES_DIR=~/my_modules`.
 
-Tab completion: `xrd completion bash > ~/.local/share/bash-completion/completions/xrd`,
-`source <(xrd completion zsh)` or `xrd completion fish > ~/.config/fish/completions/xrd.fish`.
+Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`,
+`source <(rxd completion zsh)` or `rxd completion fish > ~/.config/fish/completions/rxd.fish`.
 
 ## The same options everywhere
 
@@ -61,26 +67,26 @@ The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`),
 
 | Step | Command | Purpose |
 |---|---|---|
-| Look | `xrd info` | format, radar, time, sweeps, variables, Nyquist velocity |
-| | `xrd check` | data-quality report with evidence and a suggested QC recipe ([DATA_CHECK.md](DATA_CHECK.md)) |
-| | `xrd plot` | a PPI picture of one variable |
-| Clean | `xrd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |
-| Analyse | `xrd run MODULE` | an algorithm on one sweep or all sweeps (same as `xrd modules run`) |
-| | `xrd modules` | `list` (default) or `show ID` the algorithms |
-| | `xrd cells` | storm cells; several files are tracked in time |
-| | `xrd sounding` | a radiosonde file: CAPE, CIN, shear, helicity, freezing level, precipitable water |
-| Combine | `xrd mosaic` | several radars on one map |
-| | `xrd winds` | 3-D winds from two or more radars |
-| | `xrd animate` | a storm-centred 3D animation (MP4) from many volumes |
-| Hydrology | `xrd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
-| | `xrd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
-| Save | `xrd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
-| Help | `xrd examples`, `xrd completion` | a tour of commands; shell completion |
+| Look | `rxd info` | format, radar, time, sweeps, variables, Nyquist velocity |
+| | `rxd check` | data-quality report with evidence and a suggested QC recipe ([DATA_CHECK.md](DATA_CHECK.md)) |
+| | `rxd plot` | a PPI picture of one variable |
+| Clean | `rxd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |
+| Analyse | `rxd run MODULE` | an algorithm on one sweep or all sweeps (same as `rxd modules run`) |
+| | `rxd modules` | `list` (default) or `show ID` the algorithms |
+| | `rxd cells` | storm cells; several files are tracked in time |
+| | `rxd sounding` | a radiosonde file: CAPE, CIN, shear, helicity, freezing level, precipitable water |
+| Combine | `rxd mosaic` | several radars on one map |
+| | `rxd winds` | 3-D winds from two or more radars |
+| | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes |
+| Hydrology | `rxd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
+| | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
+| Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
+| Help | `rxd examples`, `rxd completion` | a tour of commands; shell completion |
 
 ### Look: `info` and `plot`
 
 ```console
-$ xrd info -i KTLX20130520_201643_V06.gz
+$ rxd info -i KTLX20130520_201643_V06.gz
 KTLX20130520_201643_V06.gz
   format     nexrad_level2
   radar      KTLX at 35.3331, -97.2775, 388 m
@@ -98,35 +104,35 @@ KTLX20130520_201643_V06.gz
 ```
 
 Note how the NEXRAD split cut shows: velocity (`VRADH`) lives on the odd sweeps. You rarely need
-to remember that: `xrd plot -V velocity` and `xrd run radarx_shear` pick the right sweep for you.
+to remember that: `rxd plot -V velocity` and `rxd run radarx_shear` pick the right sweep for you.
 
 ```console
-$ xrd plot -i KTLX20130520_201643_V06.gz
+$ rxd plot -i KTLX20130520_201643_V06.gz
 using variable DBZH (the first reflectivity field; -V NAME to change)
 wrote KTLX20130520_201643_V06_DBZH_sweep0.png
 
-$ xrd plot -i KTLX20130520_201643_V06.gz -V velocity
+$ rxd plot -i KTLX20130520_201643_V06.gz -V velocity
 using sweep 1 (the lowest sweep with velocity; choose with -s N)
 wrote KTLX20130520_201643_V06_VRADH_sweep1.png
 ```
 
-`xrd plot` uses the publication renderer of the app (range rings, colour scales per variable, no-echo
+`rxd plot` uses the publication renderer of the app (range rings, colour scales per variable, no-echo
 codes masked): `--theme dark`, `--dpi 300`, `--vmin/--vmax`, `-p figure.pdf` for a vector file.
 
-`xrd check` is the same data check the app shows after opening a file: what looks wrong (aliasing,
+`rxd check` is the same data check the app shows after opening a file: what looks wrong (aliasing,
 range folding, clutter, ZDR offset, time gaps ...), with the evidence, where it is, and a suggested
 QC recipe. It changes nothing and exits 0 even when it finds problems (3 only when a file cannot be
-read). `--fix-plan -o recipe.json` writes the suggested recipe for `xrd pipeline`. Every check, its
+read). `--fix-plan -o recipe.json` writes the suggested recipe for `rxd pipeline`. Every check, its
 method and thresholds: [DATA_CHECK.md](DATA_CHECK.md).
 
 ```console
-$ xrd check -i KTLX20130520_201643_V06.gz --fix-plan -o recipe.json
+$ rxd check -i KTLX20130520_201643_V06.gz --fix-plan -o recipe.json
 ```
 
 ### Analyse: `modules`, `run`, `cells`
 
 ```console
-$ xrd modules --category Dual-pol
+$ rxd modules --category Dual-pol
   id                    category  scope   requires          title
   --------------------  --------  ------  ----------------  -----------------------------------
   radarx_hid            Dual-pol  sweep   DBZH, ZDR         Hydrometeor Classification (radarx)
@@ -135,11 +141,11 @@ $ xrd modules --category Dual-pol
   radarx_qvp            Dual-pol  volume  DBZH, ZDR, RHOHV  Quasi-Vertical Profile (radarx)
   zdr_arc               Dual-pol  sweep   DBZH, ZDR         ZDR Arc Candidates (heuristic)
 
-$ xrd modules show radarx_hid          # purpose, requirements and every parameter with its default
+$ rxd modules show radarx_hid          # purpose, requirements and every parameter with its default
 ```
 
 ```console
-$ xrd run radarx_hid -i KTLX20130520_201643_V06.gz -p cli-hid.png
+$ rxd run radarx_hid -i KTLX20130520_201643_V06.gz -p cli-hid.png
 radarx_hid  Hydrometeor Classification (radarx)  |  KTLX20130520_201643_V06.gz  |  sweep 0  |  1.3 s
   summary
     Classified gates: 132634
@@ -163,7 +169,7 @@ A module result can be saved by extension: `-o cells.csv` (a table), `-o summary
 `-f json,csv,nc,png` chooses). Parameters are `-P name=value`; a typo is caught with the fix:
 
 ```console
-$ xrd run radarx_hid -i KTLX20130520_201643_V06.gz -P meth=park
+$ rxd run radarx_hid -i KTLX20130520_201643_V06.gz -P meth=park
 error: Module 'radarx_hid' has no parameter 'meth'. Did you mean 'method'? Parameters: method, band, ...
 ```
 
@@ -172,7 +178,7 @@ output field in the file it writes (without `-o`: `<file>_<module>_all.nc`). Swe
 input (here the Doppler cuts have no ZDR) are skipped, with the reason:
 
 ```console
-$ xrd run radarx_hid -i KTLX20130520_201643_V06.gz --all-sweeps -o hid_all.nc -v
+$ rxd run radarx_hid -i KTLX20130520_201643_V06.gz --all-sweeps -o hid_all.nc -v
 [  2%] Hydrometeor Classification: sweep 1/17
 ...
 radarx_hid  Hydrometeor Classification (radarx)  |  KTLX20130520_201643_V06.gz  |  all sweeps  |  8.4 s
@@ -186,10 +192,10 @@ radarx_hid  Hydrometeor Classification (radarx)  |  KTLX20130520_201643_V06.gz  
 wrote hid_all.nc
 ```
 
-**Storm cells** (`xrd cells`): one file lists the cells, several files (of one radar) are tracked in time order.
+**Storm cells** (`rxd cells`): one file lists the cells, several files (of one radar) are tracked in time order.
 
 ```console
-$ xrd cells -i 'mayfield/KHPX*' --threshold-dbz 45 -o cells_all.csv --tracks tracks.csv -p tracks.png
+$ rxd cells -i 'mayfield/KHPX*' --threshold-dbz 45 -o cells_all.csv --tracks tracks.csv -p tracks.png
 21 track(s)  |  4 scans  |  50 cells  |  backend numpy
 track_id  lifetime  speed_mps  direction_deg    status  max_dbz
     T001         3       5.72          132.3     ended     66.5
@@ -200,7 +206,7 @@ wrote tracks.csv
 wrote tracks.png
 ```
 
-**Soundings** (`xrd sounding`): read a radiosonde file (University of Wyoming text or CSV, SPC / SHARPpy,
+**Soundings** (`rxd sounding`): read a radiosonde file (University of Wyoming text or CSV, SPC / SHARPpy,
 IEM JSON, IGRA2, or a CSV whose header names the columns) and print its parameters, each labelled with
 the parcel it belongs to (surface-based, mixed-layer 100 hPa, most-unstable 300 hPa), its unit and its height
 reference (m AGL). A value that cannot be computed is `n/a`; a wind speed with no unit in the file is read as
@@ -208,7 +214,7 @@ m/s and the output says so (`--wind-units kt`). Needs radarx; nothing is downloa
 {doc}`ENVIRONMENT`.
 
 ```console
-$ xrd sounding -i BMX_20220330_00Z.csv --wind-units kt
+$ rxd sounding -i BMX_20220330_00Z.csv --wind-units kt
 BMX launch time not in the file  (csv, 80 levels, BMX_20220330_00Z.csv)
 data class: observed; This file has no per-level positions or times: the profile is treated as a vertical line ...
 
@@ -221,7 +227,7 @@ precipitable water 22 mm (to 7.0 hPa)
 ```
 
 `-v` adds the definitions and references, `--json` everything, `-o result.json` / `-o profile.csv` write the full
-result or the levels (with a provenance header). Python: `xrd.sounding("file.csv", wind_units="kt")`.
+result or the levels (with a provenance header). Python: `rxd.sounding("file.csv", wind_units="kt")`.
 
 ### Clean: `pipeline`
 
@@ -230,14 +236,14 @@ de-aliasing, speckle removal ...). `pipeline list` shows them, `pipeline show` t
 setting, `pipeline script` prints the equivalent Python.
 
 ```console
-$ xrd pipeline list
+$ rxd pipeline list
   recipe                                            target  kind      steps
   ------------------------------------------------  ------  --------  -----------------------------------------------------------------
   Doppler velocity: dealias + clutter + bio filter  VRADH   built-in  snr_gate > clutter_filter > biological_filter > dealias > speckle
   Reflectivity QC                                   DBZH    built-in  snr_gate > echo_mask > clutter_filter > speckle > gap_fill
   Dual-pol QC                                       ZDR     built-in  snr_gate > rhohv_gate > echo_mask > biological_filter > speckle
 
-$ xrd pipeline "Doppler velocity" -i KTLX20130520_201643_V06.gz --target VRADH -p cli-pipeline.png -o vel_qc.nc
+$ rxd pipeline "Doppler velocity" -i KTLX20130520_201643_V06.gz --target VRADH -p cli-pipeline.png -o vel_qc.nc
 Doppler velocity: dealias + clutter + bio filter  |  KTLX20130520_201643_V06.gz  |  target VRADH  |  14 sweep(s)  |  8.0 s
   #  step                    status   removed  modified  filled  valid%  note
   -  ----------------------  -------  -------  --------  ------  ------  --------------------------
@@ -264,7 +270,7 @@ Origin, map box and grid are chosen from the radar positions and printed; overri
 `--extent`, `--origin`, `--resolution-m`, `--dz-m` ... Without `-o`/`-p` the results are named after the product and time.
 
 ```console
-$ xrd mosaic -i mayfield/KHPX20211211_015930_V06 mayfield/KNQA20211211_015611_V06 \
+$ rxd mosaic -i mayfield/KHPX20211211_015930_V06 mayfield/KNQA20211211_015611_V06 \
              mayfield/KPAH20211211_015935_V06 mayfield/KVWX20211211_015522_V06 -v
 [  8%] Preparing radar volumes
 [ 15%] Gridding radars onto 723 x 796 cells (band 1/7)
@@ -292,7 +298,7 @@ wrote mosaic_composite_DBZH_20211211T0202_map.png
 sites. `--product cappi --height-m 2000` or `--product echo_top` change the product.
 
 ```console
-$ xrd winds -i mayfield/KHPX20211211_015930_V06 mayfield/KNQA20211211_015611_V06 \
+$ rxd winds -i mayfield/KHPX20211211_015930_V06 mayfield/KNQA20211211_015611_V06 \
             mayfield/KPAH20211211_015935_V06 mayfield/KVWX20211211_015522_V06 \
             --extent 200 --max-range-km 200 --dx-m 2000 --zmin-m 500 --zmax-m 6000 --dz-m 500 \
             -P min_crossing_angle=20 -o winds.nc -p winds.png --level-km 2
@@ -322,11 +328,11 @@ gridded at a time (bounded memory) and cached on disk, an interrupted job resume
 atomically at the end. [The full page](ANIMATE.md) has the camera file, the look, the report and the limits.
 
 ```console
-$ xrd animate -i mayfield --no-render                    # the plan: steps, offsets, storm track, frames (no browser)
-$ xrd animate -i mayfield -o mayfield.mp4                # the folder with one sub-folder per radar
-$ xrd animate -i mayfield -o top.mp4 --camera top-down --duration 30
-$ xrd animate -i mayfield -o custom.mp4 --camera camera.toml --realistic --look-preset "Golden hour" --set exposure=1.4
-$ xrd animate -i mayfield -p still.png --still-at 12      # one frame, to try a camera or a look
+$ rxd animate -i mayfield --no-render                    # the plan: steps, offsets, storm track, frames (no browser)
+$ rxd animate -i mayfield -o mayfield.mp4                # the folder with one sub-folder per radar
+$ rxd animate -i mayfield -o top.mp4 --camera top-down --duration 30
+$ rxd animate -i mayfield -o custom.mp4 --camera camera.toml --realistic --look-preset "Golden hour" --set exposure=1.4
+$ rxd animate -i mayfield -p still.png --still-at 12      # one frame, to try a camera or a look
 ```
 
 ```text
@@ -345,7 +351,7 @@ between scans); one volume per radar gives the instantaneous rate. Everything is
 or `ADJUSTED` (after gauges); see {doc}`HYDROLOGY` for the equations, references and limits.
 
 ```console
-$ xrd qpe -i 'mayfield/KHPX/*_V06' --basins basins.geojson --gauges gauges.csv --gauge-interval-s 1200 \
+$ rxd qpe -i 'mayfield/KHPX/*_V06' --basins basins.geojson --gauges gauges.csv --gauge-interval-s 1200 \
           --start 2021-12-11T01:50:00 --end 2021-12-11T02:10:00 --hold-edges-s 300 -o rain.nc -p rain.png
 rainfall accumulation  |  1 radar(s), 4 volume(s)  |  2021-12-11T01:50:00Z to 2021-12-11T02:10:00Z (20.0 min)  |  477 x 469 cells @ 1000 m  |  4.4 s
   method   hybrid: Z = 300 R^1.4  (R = 0.01701 Z^0.7143) if R(Z) < 6 mm/h; R(Z,ZDR) = 0.0142 Z^0.77 zdr^-1.67 to
@@ -363,14 +369,14 @@ wrote rain.png
 ```
 
 * `--relation wsr88d|marshall_palmer|tropical|stratiform_east|...` and `--method auto|hybrid|z|kdp|z_zdr|a` choose the
-  estimator (`xrd qpe --list-relations`); `-P zr_a=200 -P zr_b=1.6` a custom Z = a R^b; `--freezing-level-m` excludes the
+  estimator (`rxd qpe --list-relations`); `-P zr_a=200 -P zr_b=1.6` a custom Z = a R^b; `--freezing-level-m` excludes the
   melting layer; `--dem terrain.nc` adds beam blockage and height above ground.
 * `-o .nc` is the CF grid, `.png` the picture plus world file, `.json` the full summary (provenance, statistics, basins,
   gauge validation, return periods), `.csv` the basin table (and one `<name>_<id>_series.csv` per basin).
   Without `-o`/`-p`: `qpe_<time>.nc` and `qpe_<time>_map.png`.
 * Gauges are local files (CSV/JSON/NOAA hourly and daily/METAR): `--gauges FILE --adjust mfb|brandes|ked`; the validation
   (bias, RMSE, correlation, KGE, leave-one-out) is printed and in `--json`. Nothing is downloaded.
-* `xrd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
+* `rxd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
   mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
   with `--frequency table.json`, the return period of the basin-mean depth.
 * A long series is read one file at a time; give `--extent W,S,E,N` so that each file is decoded once.
@@ -378,11 +384,11 @@ wrote rain.png
 ### Save: `export`
 
 ```bash
-xrd export -i KTLX20130520_201643_V06.gz -o ktlx.nc                  # CfRadial1 NetCDF (the default)
-xrd export -i KTLX20130520_201643_V06.gz -o ktlx.zarr                # Zarr
-xrd export -i KTLX20130520_201643_V06.gz -o dbz_sweep0.csv -V DBZH   # azimuth, range, value
-xrd export -i KTLX20130520_201643_V06.gz -f cfradial2 -o ktlx_cf2.nc
-xrd export -i KTLX20130520_201643_V06.gz -o qc.nc --pipeline "Reflectivity QC" --run radarx_hid --include-derived
+rxd export -i KTLX20130520_201643_V06.gz -o ktlx.nc                  # CfRadial1 NetCDF (the default)
+rxd export -i KTLX20130520_201643_V06.gz -o ktlx.zarr                # Zarr
+rxd export -i KTLX20130520_201643_V06.gz -o dbz_sweep0.csv -V DBZH   # azimuth, range, value
+rxd export -i KTLX20130520_201643_V06.gz -f cfradial2 -o ktlx_cf2.nc
+rxd export -i KTLX20130520_201643_V06.gz -o qc.nc --pipeline "Reflectivity QC" --run radarx_hid --include-derived
 ```
 
 Derived variables only exist inside one run, so `export` can compute them first (`--pipeline RECIPE`,
@@ -391,11 +397,11 @@ Derived variables only exist inside one run, so `export` can compute them first 
 ## Input: files, globs, folders, stdin
 
 ```bash
-xrd info -i KHPX20211211_015930_V06 KNQA20211211_015611_V06      # several files after one -i
-xrd info -i 'mayfield/*/*_V06'                                  # a glob (quote it: xrd expands it)
-xrd info -i mayfield/KHPX                                       # a folder = the radar files inside
-ls mayfield/KHPX/*_V06 | xrd info -i -                          # a list on stdin
-xrd info KTLX20130520_201643_V06.gz                             # bare file names work too
+rxd info -i KHPX20211211_015930_V06 KNQA20211211_015611_V06      # several files after one -i
+rxd info -i 'mayfield/*/*_V06'                                  # a glob (quote it: rxd expands it)
+rxd info -i mayfield/KHPX                                       # a folder = the radar files inside
+ls mayfield/KHPX/*_V06 | rxd info -i -                          # a list on stdin
+rxd info KTLX20130520_201643_V06.gz                             # bare file names work too
 ```
 
 A pattern that matches nothing, an empty folder or a missing file is an input error (exit code 3)
@@ -418,13 +424,13 @@ threshold_dbz = 45
 ```
 
 ```console
-$ xrd --config run.toml --print-command
+$ rxd --config run.toml --print-command
 storm_detection  Storm Cell Detection  |  KTLX20130520_201643_V06.gz  |  sweep 0  |  1.7 s
   summary
     Cells: 19
     ...
 wrote cells.csv
-command: xrd run storm_detection --input KTLX20130520_201643_V06.gz --output cells.csv --param threshold_dbz=45
+command: rxd run storm_detection --input KTLX20130520_201643_V06.gz --output cells.csv --param threshold_dbz=45
 ```
 
 `--print-command` also writes out what was chosen for you (for example `-s 1`), so the printed line
@@ -435,19 +441,19 @@ reproduces the run exactly. TOML needs Python 3.11+; JSON always works, YAML nee
 Errors say what went wrong **and** the fix; there is never a Python traceback unless you ask (`-vv`).
 
 ```console
-$ xrd plot -i KTLX20130520_201643_V06.gz -V velocity -s 0
+$ rxd plot -i KTLX20130520_201643_V06.gz -V velocity -s 0
 error: No velocity field found on sweep 0. Variables on sweep 0: DBZH, ZDR, PHIDP, RHOHV. Sweeps that have it: 1, 3, 5, 6, 7, 8, 9, 10 (+6 more). Use sweep=1 in Python or -s 1 on the command line.
 
-$ xrd run radarx_hid -i KTLX20130520_201643_V06.gz -s 1
+$ rxd run radarx_hid -i KTLX20130520_201643_V06.gz -s 1
 error: Hydrometeor Classification (radarx) needs DBZH, ZDR, but sweep 1 has no ZDR (it has: DBZH, VRADH, WRADH). Sweeps that have all of them: 0, 2, 4, 6, 7, 8, 9, 10. Use sweep=0 in Python or -s 0 on the command line (without a sweep the right one is chosen for you).
 
-$ xrd mosiac -i KTLX20130520_201643_V06.gz
+$ rxd mosiac -i KTLX20130520_201643_V06.gz
 error: unknown value 'mosiac'. Did you mean 'mosaic'?
 
-$ xrd winds -i mayfield/KHPX20211211_015930_V06
-error: winds needs at least two radar files: give them with -i (for example: xrd winds -i FILE1 FILE2 [FILE3 ...]) - only 1 given
+$ rxd winds -i mayfield/KHPX20211211_015930_V06
+error: winds needs at least two radar files: give them with -i (for example: rxd winds -i FILE1 FILE2 [FILE3 ...]) - only 1 given
 
-$ xrd info -i missing.nc ; echo $?
+$ rxd info -i missing.nc ; echo $?
 error: File not found: missing.nc (looked for /.../missing.nc). Check the path and the spelling.
 3
 ```
@@ -469,10 +475,10 @@ messages go to stderr; `-q` silences everything but errors. `NO_COLOR=1` (or `--
 
 ```bash
 for f in data/*_V06; do
-  xrd run storm_detection -i "$f" -P threshold_dbz=45 --json -o "cells_$(basename "$f").csv" | jq '.scalars.Cells'
+  rxd run storm_detection -i "$f" -P threshold_dbz=45 --json -o "cells_$(basename "$f").csv" | jq '.scalars.Cells'
 done
-xrd info -i data --json | jq -r '.[] | [.radar, .time] | @tsv'
+rxd info -i data --json | jq -r '.[] | [.radar, .time] | @tsv'
 ```
 
 Real runs for this page used the KTLX example volume (20 May 2013) and four radars of the Mayfield
-case (11 Dec 2021: KHPX, KNQA, KPAH, KVWX); `xrd animate` was also run on the Mayfield and Hurricane Laura cases.
+case (11 Dec 2021: KHPX, KNQA, KPAH, KVWX); `rxd animate` was also run on the Mayfield and Hurricane Laura cases.

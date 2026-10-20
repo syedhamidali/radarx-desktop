@@ -1,4 +1,4 @@
-"""The ``xrd qpe`` and ``xrd basin`` commands (registered into :mod:`engine.cli`).
+"""The ``rxd qpe`` and ``rxd basin`` commands (registered into :mod:`engine.cli`).
 
 Kept in this package so the hydrology tools do not touch the shared command line code beyond one
 registration call. Importing this module is light (argparse only); everything else is imported by
@@ -14,13 +14,13 @@ from typing import Any
 SAMPLE_GLOB = "'mayfield/KHPX/*_V06'"
 EXAMPLES_QPE = (
     "examples:\n"
-    f"  xrd qpe -i {SAMPLE_GLOB} -o rain.nc -p rain.png\n"
-    f"  xrd qpe -i {SAMPLE_GLOB} --relation tropical --band S -o rain_tropical.nc\n"
-    f"  xrd qpe -i {SAMPLE_GLOB} --method hybrid --freezing-level-m 3500 -o rain.nc\n"
-    "  xrd qpe -i 'mayfield/*/*_V06' --composite best --resolution-m 2000 -o network.nc\n"
-    f"  xrd qpe -i {SAMPLE_GLOB} --gauges gauges.csv --adjust ked -o rain_adjusted.nc -v\n"
-    f"  xrd qpe -i {SAMPLE_GLOB} --basins basins.geojson -o basins.csv --json\n"
-    "  xrd qpe --list-relations\n"
+    f"  rxd qpe -i {SAMPLE_GLOB} -o rain.nc -p rain.png\n"
+    f"  rxd qpe -i {SAMPLE_GLOB} --relation tropical --band S -o rain_tropical.nc\n"
+    f"  rxd qpe -i {SAMPLE_GLOB} --method hybrid --freezing-level-m 3500 -o rain.nc\n"
+    "  rxd qpe -i 'mayfield/*/*_V06' --composite best --resolution-m 2000 -o network.nc\n"
+    f"  rxd qpe -i {SAMPLE_GLOB} --gauges gauges.csv --adjust ked -o rain_adjusted.nc -v\n"
+    f"  rxd qpe -i {SAMPLE_GLOB} --basins basins.geojson -o basins.csv --json\n"
+    "  rxd qpe --list-relations\n"
     "\n"
     "Several volumes (of one radar or of several) in time are integrated into a rainfall\n"
     "accumulation (mm) with advection-corrected interpolation between scans; one volume per radar\n"
@@ -30,10 +30,10 @@ EXAMPLES_QPE = (
 )
 EXAMPLES_BASIN = (
     "examples:\n"
-    f"  xrd basin -i {SAMPLE_GLOB} -b watersheds.geojson\n"
-    f"  xrd basin -i {SAMPLE_GLOB} -b huc12.shp --basin-id HUC12 -o table.csv -p series.png\n"
-    f"  xrd basin -i {SAMPLE_GLOB} -b creek.gpkg --thresholds 10,25,50 --frequency freq_6h.json\n"
-    f"  xrd basin -i {SAMPLE_GLOB} -b creek.geojson --gauges gauges.csv --adjust mfb --json\n"
+    f"  rxd basin -i {SAMPLE_GLOB} -b watersheds.geojson\n"
+    f"  rxd basin -i {SAMPLE_GLOB} -b huc12.shp --basin-id HUC12 -o table.csv -p series.png\n"
+    f"  rxd basin -i {SAMPLE_GLOB} -b creek.gpkg --thresholds 10,25,50 --frequency freq_6h.json\n"
+    f"  rxd basin -i {SAMPLE_GLOB} -b creek.geojson --gauges gauges.csv --adjust mfb --json\n"
     "\n"
     "Area-weighted rainfall over each basin: the cell fractions inside the polygon are computed\n"
     "exactly (not by counting pixels) and weighted with the true cell area. Output: the basin\n"
@@ -44,7 +44,7 @@ EXAMPLES_BASIN = (
 
 
 def register(command: Any, cli: Any) -> None:
-    """Add ``qpe`` and ``basin`` to the ``xrd`` parser (called by ``engine.cli.build_parser``)."""
+    """Add ``qpe`` and ``basin`` to the ``rxd`` parser (called by ``engine.cli.build_parser``)."""
     p = command(
         "qpe",
         "Rain rate and rainfall accumulation from radar volumes, with uncertainty (needs radarx).",
