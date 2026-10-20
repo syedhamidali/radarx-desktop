@@ -93,25 +93,44 @@ no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`).
 
 ## The command line (`rxd`)
 
-The installers contain the engine for the app; they do not put the `rxd` command on your `PATH`. The command and
-the Python API (`import rxd`) come with the Python package in the source tree, for contributors who have it.
-Python 3.10 or newer is needed (3.12 or newer for the optional radarx algorithms).
+The command line and the Python API (`import rxd`) come as a Python package, a wheel that is part of every
+release, next to the installers. It needs Python 3.10 or newer (3.12 or newer for the optional radarx
+algorithms) and works on macOS, Windows and Linux. Use a virtual environment so it stays apart from your other
+Python packages.
+
+**macOS and Linux**
 
 ```bash
-cd radarx-desktop/python                      # the python folder of your checkout
-python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -e .                               # the engine and the `rxd` command
-pip install -U radarx                          # optional: mosaics, winds and the radarx_* algorithms
+python3 -m venv ~/radarx-env && source ~/radarx-env/bin/activate
+V=$(curl -fsS https://downloads.labshope.com/radarx/releases.json | jq -r .latest)
+pip install "https://downloads.labshope.com/radarx/v$V/radarx_desktop_engine-$V-py3-none-any.whl"
 rxd --version
 rxd login                                      # the same free account as the app
 rxd examples                                   # a guided tour of copy-paste commands
 ```
 
-`pip install -e` (an editable install) is what makes the shipped algorithms in `python/modules/` visible.
-Tab completion: `source <(rxd completion zsh)`, or `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`.
-Every command, with examples and the exit codes, is in {doc}`CLI`; the Python side is in {doc}`API`. Both need
-a signed-in account like the app ({doc}`ACCOUNTS`). The desktop app itself additionally needs Node.js 20+ and
-Rust to build; see {doc}`contributing`.
+**Windows** (PowerShell)
+
+```powershell
+py -m venv $HOME\radarx-env; & $HOME\radarx-env\Scripts\Activate.ps1
+$V = (Invoke-RestMethod https://downloads.labshope.com/radarx/releases.json).latest
+pip install "https://downloads.labshope.com/radarx/v$V/radarx_desktop_engine-$V-py3-none-any.whl"
+rxd --version
+```
+
+With [pipx](https://pipx.pypa.io/) the command is on your `PATH` without activating anything:
+`pipx install "<the wheel address above>"`. To add the optional algorithms of the
+[radarx](https://radarx.readthedocs.io/en/latest/) library (mosaics, winds, `radarx_*` modules, Python 3.12 or newer):
+`pip install -U radarx`. To update, run the same `pip install` with the new version number; to check the file,
+compare it with the line for the wheel in the release's `SHA256SUMS` (see above).
+
+Tab completion: `source <(rxd completion zsh)`, or
+`rxd completion bash > ~/.local/share/bash-completion/completions/rxd`. Every command, with examples and the exit
+codes, is in {doc}`CLI`; the Python side is in {doc}`API`. Both need a signed-in account like the app
+({doc}`ACCOUNTS`).
+
+For contributors with the source, `pip install -e python/` in a checkout gives the same command, running your
+working copy ({doc}`contributing`; the desktop app itself additionally needs Node.js 20+ and Rust to build).
 
 ## On the web
 

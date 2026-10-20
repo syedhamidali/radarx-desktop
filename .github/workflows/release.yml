@@ -180,14 +180,64 @@ jobs:
             src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
 
   # ---------------------------------------------------------------------------------------------
+  # The Python package for the command line: the wheel of python/ (`rxd`, `import rxd`, the
+  # algorithms), attached to the draft release so it is uploaded to the download host with the
+  # installers and covered by SHA256SUMS. It is not an app download and is not listed on the website.
+  # ---------------------------------------------------------------------------------------------
+  wheel:
+    name: Python wheel (rxd)
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # attach the file to the draft release (nothing is pushed to the repository)
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip wheel ./python --no-deps -w dist
+          ls -l dist
+          wheel="$(ls dist/*.whl)"
+          case "$wheel" in
+            *-"${TAG#v}"-py3-none-any.whl) ;;
+            *) echo "::error::$wheel does not carry the version of the tag $TAG (bump python/pyproject.toml)"; exit 1 ;;
+          esac
+          python - "$wheel" <<'PY'
+          import sys, zipfile
+          names = zipfile.ZipFile(sys.argv[1]).namelist()
+          modules = [n for n in names if n.startswith("engine/builtin_modules/") and n.endswith(".py")]
+          assert len(modules) >= 20, f"the algorithms are missing from the wheel ({len(modules)} files)"
+          assert any(n.endswith("entry_points.txt") for n in names)
+          print(f"{len(modules)} algorithm files in the wheel")
+          PY
+
+      - name: Attach it to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" dist/*.whl --repo "$GITHUB_REPOSITORY" --clobber
+
+  # ---------------------------------------------------------------------------------------------
   # Download channel: upload the finished draft release to the download host as a candidate.
   # Writes only radarx/v<version>/ (never radarx/latest.json or radarx/releases.json: those belong to
   # promote-release.yml). Skips itself, successfully, on forks and wherever the R2 secrets are absent.
   # ---------------------------------------------------------------------------------------------
   downloads:
     name: Upload candidate to the download host
-    needs: bundle
-    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success'
+    needs: [bundle, wheel]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success' && needs.wheel.result == 'success'
     runs-on: ubuntu-latest
     # Draft releases are only visible to a token with push access, so reading the draft needs
     # contents: write here (this job never writes to the repository).

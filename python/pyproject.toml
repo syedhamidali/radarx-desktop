@@ -62,7 +62,5 @@ asyncio_mode = "auto"
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-# python/modules/ holds drop-in plugin files loaded by path, not an importable package.
-# rxd/ is the short import alias of engine.api (`import rxd`); xrd/ is its deprecated former name.
-include = ["engine*", "rxd*", "xrd*"]
+# The packages are listed in setup.py: it adds python/modules/ (drop-in plugin files, loaded by path, not an
+# importable package) to the wheel as the data folder engine/builtin_modules, see engine/plugins.py.

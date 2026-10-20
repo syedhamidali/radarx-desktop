@@ -799,7 +799,7 @@ def test_console_script_is_declared() -> None:
     tomllib = pytest.importorskip("tomllib")
     data = tomllib.loads((PYTHON_DIR / "pyproject.toml").read_text())
     assert data["project"]["scripts"]["rxd"] == "engine.cli:main"
-    assert "rxd*" in data["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert '"rxd*"' in (PYTHON_DIR / "setup.py").read_text()  # the package list lives in setup.py
     assert callable(cli.main)
 
 

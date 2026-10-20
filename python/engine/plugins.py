@@ -672,8 +672,15 @@ def _web_mode() -> bool:
     return web.is_web_mode()
 
 
+def builtin_modules_dir(engine_dir: Path) -> Path:
+    """The shipped algorithms: ``modules/`` next to ``engine/`` (source checkout, frozen engine),
+    ``engine/builtin_modules`` in an installed wheel (setup.py)."""
+    beside = engine_dir.parent / "modules"
+    return beside if beside.is_dir() else engine_dir / "builtin_modules"
+
+
 def module_dirs() -> list[Path]:
-    builtin = Path(__file__).resolve().parent.parent / "modules"
+    builtin = builtin_modules_dir(Path(__file__).resolve().parent)
     if _web_mode():
         # A public service never loads code from user-writable folders (see docs/WEB.md).
         return [builtin]
