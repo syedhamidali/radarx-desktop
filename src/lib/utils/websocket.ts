@@ -21,6 +21,7 @@ import { collectDownloads, triggerDownloads } from './download';
 import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
 import { trackEngine } from './engineIdentity';
 import { findRequestForReply, isForOtherFile } from './sweepMatch';
+import { tidyServerError } from './errorText';
 
 type MessageHandler = (data: any) => void;
 
@@ -855,7 +856,7 @@ class WebSocketManager {
   }
 
   private notifyError(message: string): void {
-    addToast('error', message, 8000);
+    addToast('error', tidyServerError(message), 8000);
   }
 
   /**
