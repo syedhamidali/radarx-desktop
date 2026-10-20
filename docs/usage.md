@@ -64,5 +64,5 @@ Chain de-aliasing, clutter and biological filters, SNR gates, despeckle, smoothi
 ## Export
 
 PNG, SVG and PDF figures, and NetCDF (CfRadial1), CfRadial2, Zarr and CSV data, including derived fields.
-Exports go to the folder you choose (or `~/Downloads/xradar-exports`); in the web version they are browser
+Exports go to the folder you choose (or `~/Downloads/radarx-exports`); in the web version they are browser
 downloads.

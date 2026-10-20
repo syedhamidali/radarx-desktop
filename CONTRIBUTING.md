@@ -117,12 +117,12 @@ views, with no server or UI changes. Full guide: [docs/MODULES.md](docs/MODULES.
 
 Only sources are in the repository (`docs/*.md`, `docs/conf.py`); HTML and the API pages written by `conf.py` are
 build products. See [docs/contributing.md](docs/contributing.md) for how the documentation is built and
-published. A new page must be added to a `toctree` in `docs/index.md`, or the build warns.
+published. A new page must be added to a `toctree` reachable from `docs/index.md` (a section page such as `docs/user-guide.md`), or the build warns.
 
 ## Reporting problems
 
-Use the [issue forms](https://github.com/syedhamidali/radarx-desktop/issues/new/choose): *Bug report*, *Feature
-request* and *Science question* (for "is this the right physics / the right number?"). Do not attach data you do
-not have the right to share, and never post tokens or keys. For a security problem, do not open a public issue:
-use the repository's private security advisory form (Security tab) if it is enabled, or contact the maintainer
-through their [GitHub profile](https://github.com/syedhamidali).
+Use *Report an issue* in the app (About, the command palette or the Account dialog) or the form at
+<https://radarx.labshope.com/report>: choose *Bug report*, *Feature request* or *Science question* (for "is this
+the right physics / the right number?"). Do not attach data you do not have the right to share, and never post
+tokens or keys. A security problem goes through the same form; say that it is a security problem and do not
+publish details.

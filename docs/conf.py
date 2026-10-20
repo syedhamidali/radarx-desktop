@@ -61,7 +61,7 @@ intersphinx_mapping = {
     "xarray": ("https://docs.xarray.dev/en/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "radarx": ("https://radarx.readthedocs.io/en/latest/", None),
-    "xradar": ("https://docs.openradar.io/projects/xradar/en/stable/", None),
+    "xradar": ("https://docs.openradarscience.org/projects/xradar/en/stable/", None),
 }
 
 # -- API reference (written at build time, git-ignored) ------------------------------------------

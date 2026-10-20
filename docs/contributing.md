@@ -33,7 +33,7 @@ pip install sphinx pydata-sphinx-theme myst-nb sphinx-copybutton ipykernel
 cd docs && python -m sphinx -T -b html -d _build/doctrees -w _build/warnings.txt . _build/html
 ```
 
-A new page must be listed in a `toctree` of `index.md`; the only warning expected offline is the unreachable
+A new page must be listed in the `toctree` of a section page (for example `user-guide.md`, which `index.md` lists); the only warning expected offline is the unreachable
 intersphinx inventory.
 
 Read the Docs builds `docs/conf.py` with the conda environment in `environment.yml` (`.readthedocs.yaml`).

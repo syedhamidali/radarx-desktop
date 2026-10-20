@@ -30,7 +30,7 @@ draws OpenStreetMap or OpenTopoMap under the scan when it is on).</sub>
 
 ## Download
 
-Get the installer for your system from the [latest release](https://github.com/syedhamidali/radarx-desktop/releases/latest). You only need one file.
+Get the installer for your system from the [download page](https://radarx.labshope.com/#download). You only need one file.
 
 | System | File |
 |---|---|

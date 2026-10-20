@@ -14,7 +14,7 @@ html_theme.sidebar_secondary.remove: true
 **Release:** {{release}}\
 **Date:** {{today}}
 
-A desktop app (and web app) for weather radar data, built on [xradar](https://docs.openradar.io/projects/xradar/en/stable/),
+A desktop app (and web app) for weather radar data, built on [xradar](https://docs.openradarscience.org/projects/xradar/en/stable/),
 [xarray](https://xarray.dev/) and [radarx](https://radarx.readthedocs.io/en/latest/). Open a file, see it in 2D
 and 3D, clean it, run algorithms, combine several radars into mosaics and wind analyses, and export the
 result. Everything the app does is also available from Python and from the command line.
