@@ -168,7 +168,8 @@
       if (s === 'connected' && stations.length === 0) {
         loadingStations = true;
         wsManager.send({ type: 'list_nexrad_stations' });
-        unsubConn();
+        // The store calls back at once with its current value: unsubscribe once `unsubConn` exists.
+        queueMicrotask(() => unsubConn());
       }
     });
   });
