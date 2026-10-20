@@ -867,9 +867,9 @@
 
   <header class="toolbar">
     <div class="toolbar-left">
-      <div class="app-title" title="xradar {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
+      <div class="app-title" title="Radarx {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
         <LogoMark size={28} animate={$connectionStatus === 'connecting'} />
-        <span class="title-word"><span class="title-x">X</span>RADAR</span>
+        <span class="title-word">RADAR<span class="title-x">X</span></span>
         <span class="title-desktop">{$webUi ? 'web' : 'desktop'}</span>
       </div>
       <WorkspaceSwitcher on:switch={handleWorkspaceSwitch} />
