@@ -180,13 +180,46 @@ def clean_text(value: Any) -> str:
     return "" if text.lower() in {"none", "nan", "null"} else text
 
 
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s'\"<>]+")
+_URL_PARTS = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://)(?:[^/@?#]*@)?([^?#]*)")
+
+
+def _redact_url(match: re.Match[str]) -> str:
+    """A URL as it may be written into a file: no credentials, query or fragment (tokens)."""
+    url = match.group(0)
+    tail = re.search(r"[).,;:\]]+$", url)
+    trailing = tail.group(0) if tail else ""
+    parts = _URL_PARTS.match(url[: len(url) - len(trailing)])
+    if parts is None:
+        return url
+    scheme, rest = parts.groups()
+    if scheme.lower() == "file://":  # a local file: the path rules below
+        return redact_path(rest) + trailing
+    return scheme + rest + trailing
+
+
 def redact_path(text: Any) -> str:
     """*text* without absolute paths: a path becomes its file name, the home folder becomes ``~``.
 
     Used for everything that is written into a file's metadata, so a figure or dataset passed
     on to a colleague does not reveal the user name or folder layout of the machine that made it.
+    A URL (``s3://bucket/key``, ``https://host/file``) is kept, without credentials, query
+    and fragment.
     """
     s = str(text)
+    if _URL.search(s):
+        out, pos = [], 0
+        for m in _URL.finditer(s):
+            out.append(_redact_local_paths(s[pos : m.start()]))
+            out.append(_redact_url(m))
+            pos = m.end()
+        out.append(_redact_local_paths(s[pos:]))
+        return "".join(out)
+    return _redact_local_paths(s)
+
+
+def _redact_local_paths(s: str) -> str:
+    """The file-path part of :func:`redact_path` (no URLs in *s*)."""
     # a lone absolute path (POSIX or Windows) -> its file name
     if re.fullmatch(r"(/|[A-Za-z]:[\\/]|~[\\/]).*", s) and "\n" not in s and " " not in s:
         return re.split(r"[\\/]", s.rstrip("\\/"))[-1]
