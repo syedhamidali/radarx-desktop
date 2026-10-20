@@ -180,7 +180,10 @@ mod tests {
             .collect();
         assert_eq!(list[0], "https://downloads.labshope.com/radarx/latest.json");
         // The fallback only works while the repository is public; docs/UPDATES.md says how to drop it.
-        assert!(list.len() <= 2, "only the downloads host and the one temporary fallback: {list:?}");
+        assert!(
+            list.len() <= 2,
+            "only the downloads host and the one temporary fallback: {list:?}"
+        );
         if let Some(second) = list.get(1) {
             assert!(second.starts_with("https://github.com/") && second.ends_with("/latest.json"));
         }
