@@ -63,6 +63,34 @@ def native_section() -> Iterator[None]:
 F = TypeVar("F")
 
 
+@contextlib.contextmanager
+def new_file(path: str | os.PathLike[str]) -> Iterator[None]:
+    """Write a NetCDF-4 file at ``path`` without HDF5 printing a harmless error.
+
+    Creating a file, netCDF-C first asks HDF5 whether ``path`` is an HDF5 file. When it does not
+    exist yet, HDF5 prints a ``H5F__is_hdf5 ... No such file or directory`` error stack from any
+    thread where netCDF-C did not switch HDF5's error printing off (the engine's worker
+    threads), which looks alarming in the engine log. So the probe only ever sees an existing
+    file: an empty one is created first and removed again if the write fails.
+    """
+    p = os.fspath(path)
+    created = False
+    if not os.path.exists(p):
+        try:
+            with open(p, "xb"):
+                created = True
+        except OSError:
+            created = False  # the writer reports the real problem (folder missing, read-only...)
+    try:
+        yield
+    except BaseException:
+        if created:
+            with contextlib.suppress(OSError):
+                if os.path.getsize(p) == 0:
+                    os.remove(p)
+        raise
+
+
 def guarded(func: F) -> F:
     """Decorator: the whole function runs inside :func:`native_section`.
 
