@@ -46,7 +46,7 @@ left empty instead of repeating the edge ray.
   (they follow the PPI until you change them here).
 * **Options**: *Fill gaps between elevations* (off draws only the beam itself), *Height above sea level*, and a white
   background for the saved image.
-* **Save PNG**: a download in a browser, a Save dialog in the desktop app (the sidecar writes the file). The image
+* **Save PNG**: a download in a browser, a Save dialog in the desktop app. The image
   is rendered at 2x or more and carries a description (variable, line, mask, smoothing) as PNG text metadata.
 
 ## Mask
@@ -55,9 +55,6 @@ left empty instead of repeating the edge ray.
 including the limits themselves. One-click presets fit the variable (reflectivity below 0 / 10 / 20 dBZ, velocity
 |V| below 2 or 5 m/s, ZDR, RhoHV, ...). The mask is remembered per variable. Masked gates are removed before any
 smoothing, so smoothing never blends across them, and the mask is printed in the figure caption.
-
-The mask is a shared piece: `src/lib/stores/valueMask.ts` (settings per variable, `maskTest`, `maskDescription`,
-`maskPresets`) and `src/lib/components/ValueMaskControl.svelte` can be used by any other view.
 
 ## Smoothing
 
@@ -72,14 +69,9 @@ The mask is a shared piece: `src/lib/stores/valueMask.ts` (settings per variable
 
 The caption says what was applied. The settings are remembered.
 
-## Engine
+## Sampling
 
-`get_cross_section` takes `start` / `end` (`[lat, lon]`) or an RHI-style `azimuth` + `max_range_km`
-(+ optional `min_range_km`), plus `variable` and `n_points` (2 - 2000). The reply (`cross_section_result`) has the
-per-sweep `height_km` and `values` and also `elevations_deg`, `ground_range_km` and `azimuth_deg` per sample, the
-line actually used (`start`, `end`, `rhi_azimuth`), `radar_lat` / `radar_lon` / `radar_altitude_m` and the scan
-`time`. `save_image_file` (desktop only) writes a PNG the user chose a path for.
-
-Code: `python/engine/processor.py` (`extract_cross_section`, `rhi_line`), `src/lib/utils/crossSection*.ts`,
-`src/lib/components/CrossSection*.svelte`. Tests: `python/tests/test_cross_section.py`,
-`src/lib/utils/crossSection*.test.mjs`, `src/lib/utils/valueMask.test.mjs`.
+The line can be given by its two ends (latitude / longitude, or azimuth and range from the radar) or, for an RHI-style
+cut, by an azimuth and a maximum range (optionally a minimum range), with 2 to 2000 sample points. For every sample the
+section keeps, per sweep, the height, the value, the beam elevation, the ground range and the azimuth, which the
+hover read-out shows.
