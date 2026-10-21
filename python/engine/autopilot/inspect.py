@@ -23,6 +23,7 @@ import os
 import time
 from collections.abc import Callable
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -187,7 +188,7 @@ def _gaps(times: list[datetime]) -> tuple[float | None, list[dict[str, Any]]]:
     """Median cadence (s) and the gaps longer than 2.5 x cadence."""
     if len(times) < 2:
         return None, []
-    deltas = [(b - a).total_seconds() for a, b in zip(times, times[1:], strict=False)]
+    deltas = [(b - a).total_seconds() for a, b in pairwise(times)]
     srt = sorted(deltas)
     cadence = srt[len(srt) // 2]
     gaps = [
@@ -294,8 +295,8 @@ def inspect_inputs(
                 "what": "metadata sampling",
                 "from": len(unnamed),
                 "to": len(keep),
-                "reason": "the file names carry no radar/time; only a sample of files is opened for "
-                "the inventory (the plan says which files it used)",
+                "reason": "the file names carry no radar/time; only a sample of files is "
+                "opened for the inventory (the plan says which files it used)",
             }
         )
         to_open = [unnamed[i] for i in keep]

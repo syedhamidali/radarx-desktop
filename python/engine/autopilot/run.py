@@ -51,7 +51,8 @@ def _subsample(paths: list[str], step: dict[str, Any]) -> tuple[list[str], list[
 
 
 def _time_steps(step: dict[str, Any], inv: dict[str, Any]) -> list[dict[str, str]]:
-    """For multi-radar steps: ``[{radar: path}]`` at the reference radar's times (nearest others)."""
+    """For multi-radar steps: ``[{radar: path}]`` at the reference radar's times (nearest
+    others)."""
     from engine.animate_plan import parse_time
 
     groups = _by_radar(step, inv)
@@ -158,7 +159,8 @@ def _run_step(
         kept, skipped = _subsample([json.dumps(s, sort_keys=True) for s in steps_t], step)
         if skipped:
             notes.append(
-                f"{len(skipped)} time step(s) skipped by the governor (every {next((r['every'] for r in step.get('reductions', []) if r.get('every')), 1)}.)"
+                f"{len(skipped)} time step(s) skipped by the governor (every "
+                f"{next((r['every'] for r in step.get('reductions', []) if r.get('every')), 1)}.)"
             )
         for n, raw in enumerate(kept):
             check_cancel()

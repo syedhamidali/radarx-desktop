@@ -65,7 +65,8 @@ def classify(inv: Inventory) -> dict[str, Any]:
     rhi = [r for r in radars.values() if r["rhi"]]
     ppi = [r for r in radars.values() if "ppi" in r["kinds"]]
     ev.append(
-        f"{inv['n_files']} file(s), {n_r} radar(s): {', '.join(sorted(radars)) or 'none identified'}"
+        f"{inv['n_files']} file(s), {n_r} radar(s): "
+        f"{', '.join(sorted(radars)) or 'none identified'}"
     )
     for r in radars.values():
         ev.append(
@@ -134,7 +135,8 @@ def _check_findings(
 @rule("inventory", "Inventory and data check", rank=0)
 def _r_inventory(inv: Inventory) -> Outcome:
     ev = [
-        f"{inv['n_files']} file(s), {inv['total_bytes'] / 1e6:.0f} MB on disk, {inv['n_opened']} opened for metadata"
+        f"{inv['n_files']} file(s), {inv['total_bytes'] / 1e6:.0f} MB on disk, "
+        f"{inv['n_opened']} opened for metadata"
     ]
     for name, rep in inv.get("checks", {}).items():
         if "error" in rep:
@@ -156,10 +158,15 @@ def _r_inventory(inv: Inventory) -> Outcome:
             "id": "check",
             "kind": "check",
             "title": "Data check report of every radar",
-            "why": "Know the problems (aliasing, clutter, noise, calibration offset) before any product is made.",
+            "why": (
+                "Know the problems (aliasing, clutter, noise, calibration offset) "
+                "before any product is made."
+            ),
             "needs": "one volume per radar (already inspected; the run writes the full reports)",
             "produces": "check_<radar>.json, one report per radar",
-            "provenance": "RETRIEVED (measured in the data; estimates are labelled in each finding)",
+            "provenance": (
+                "RETRIEVED (measured in the data; estimates are labelled in each finding)"
+            ),
             "inputs": [r["representative"] for r in _radars(inv).values() if r["representative"]],
             "rxd": "rxd check -i {inputs} --json",
             "weight": 0.3,
@@ -193,13 +200,21 @@ def _r_qc(inv: Inventory) -> Outcome:
             "id": "qc",
             "kind": "qc",
             "title": "Clean-up (QC recipe suggested by the data check)",
-            "why": "Each step is tied to a finding (de-alias when folds were counted, clutter filter when ground echo was found, ...).",
+            "why": (
+                "Each step is tied to a finding (de-alias when folds were counted, "
+                "clutter filter when ground echo was found, ...)."
+            ),
             "needs": "the suggested recipe per radar; one volume at a time",
-            "produces": "cleaned fields as derived variables in <radar>_<time>_qc.nc, with the recipe in the history",
+            "produces": (
+                "cleaned fields as derived variables in <radar>_<time>_qc.nc, "
+                "with the recipe in the history"
+            ),
             "provenance": "RETRIEVED (algorithm per step, parameters recorded)",
             "inputs": [p for n in recipes for p in _files_of(inv, n)],
             "recipes": {n: [it["recipe"] for it in items] for n, items in recipes.items()},
-            "rxd": "rxd check -i FILE --fix-plan -o recipe.json && rxd pipeline recipe.json -i FILE",
+            "rxd": (
+                "rxd check -i FILE --fix-plan -o recipe.json && rxd pipeline recipe.json -i FILE"
+            ),
             "weight": 1.0,
         },
     )
@@ -211,7 +226,9 @@ def _r_hid(inv: Inventory) -> Outcome:
     for r in _radars(inv).values():
         if r["dual_pol"]:
             ev.append(
-                f"{r['name']}: ZDR, RhoHV, PhiDP present ({', '.join(r['roles'][k] for k in ('zdr', 'rhohv', 'phidp'))}), band {r['band'] or 'not stated'}"
+                f"{r['name']}: ZDR, RhoHV, PhiDP present "
+                f"({', '.join(r['roles'][k] for k in ('zdr', 'rhohv', 'phidp'))}), "
+                f"band {r['band'] or 'not stated'}"
             )
             ok.append(r["name"])
         else:
@@ -234,10 +251,19 @@ def _r_hid(inv: Inventory) -> Outcome:
             "kind": "module",
             "module": "radarx_hid",
             "title": "Hydrometeor classification",
-            "why": "Dual-pol fields are present: a fuzzy-logic classification tells rain, hail, graupel, snow and biological echo apart.",
-            "needs": "radarx; the band (used for the membership functions); the lowest sweep is classified by default",
+            "why": (
+                "Dual-pol fields are present: a fuzzy-logic classification tells rain, hail, "
+                "graupel, snow and biological echo apart."
+            ),
+            "needs": (
+                "radarx; the band (used for the membership functions); "
+                "the lowest sweep is classified by default"
+            ),
             "produces": "HID field per volume (<radar>_<time>_hid.nc)",
-            "provenance": "RETRIEVED (fuzzy-logic HID, radarx; limits: band assumed when not stated, melting layer from the data)",
+            "provenance": (
+                "RETRIEVED (fuzzy-logic HID, radarx; limits: band assumed when not stated, "
+                "melting layer from the data)"
+            ),
             "inputs": [p for n in ok for p in _files_of(inv, n)],
             "rxd": "rxd run radarx_hid -i {inputs}",
             "weight": 2.0,
@@ -255,7 +281,8 @@ def _r_cells(inv: Inventory) -> Outcome:
         if r["n_files"] > 1:
             series.append(r["name"])
             ev.append(
-                f"{r['name']}: {r['n_files']} volumes over {r['span_s'] / 60:.0f} min: cells can be linked in time"
+                f"{r['name']}: {r['n_files']} volumes over "
+                f"{r['span_s'] / 60:.0f} min: cells can be linked in time"
             )
         else:
             single.append(r["name"])
@@ -300,7 +327,8 @@ def _r_mosaic(inv: Inventory) -> Outcome:
             )
         elif p["overlap_space"]:
             ev.append(
-                f"{p['a']}-{p['b']}: coverage overlaps but the times are {-p['time_overlap_s'] / 60:.0f} min apart"
+                f"{p['a']}-{p['b']}: coverage overlaps but the times are "
+                f"{-p['time_overlap_s'] / 60:.0f} min apart"
             )
         else:
             ev.append(f"{p['a']}-{p['b']}: {p['distance_km']} km apart, no coverage overlap")
@@ -327,10 +355,16 @@ def _r_mosaic(inv: Inventory) -> Outcome:
             "id": "mosaic",
             "kind": "mosaic",
             "title": "Reflectivity mosaic (composite) of " + ", ".join(radars),
-            "why": "Overlapping radars at the same time: one map of the column maximum, with calibration offsets between radars estimated in the overlap.",
+            "why": (
+                "Overlapping radars at the same time: one map of the column maximum, "
+                "with calibration offsets between radars estimated in the overlap."
+            ),
             "needs": "radarx; the volumes nearest to one common time per step",
             "produces": "mosaic_<time>.nc + .png per time step",
-            "provenance": "RETRIEVED (beam-weighted merge on a 1 km grid; offsets between radars are estimated, not measured)",
+            "provenance": (
+                "RETRIEVED (beam-weighted merge on a 1 km grid; "
+                "offsets between radars are estimated, not measured)"
+            ),
             "inputs": [p for n in radars for p in _files_of(inv, n)],
             "radars": radars,
             "rxd": "rxd mosaic -i {inputs} -o mosaic.nc -p mosaic.png",
@@ -351,7 +385,9 @@ def _r_winds(inv: Inventory) -> Outcome:
             ev.append(f"{p['a']}-{p['b']}: no coverage overlap for dual Doppler")
             continue
         ev.append(
-            f"{p['a']}-{p['b']}: beam crossing >= 30 deg on {g['good_fraction'] * 100:.0f}% of the dual-coverage area ({g['good_crossing_km2']:,} km2; {g['kind']})"
+            f"{p['a']}-{p['b']}: beam crossing >= 30 deg on "
+            f"{g['good_fraction'] * 100:.0f}% of the dual-coverage area "
+            f"({g['good_crossing_km2']:,} km2; {g['kind']})"
         )
         if g["good_fraction"] >= 0.2 and (p["time_overlap_s"] is None or p["time_overlap_s"] >= 0):
             good.append(p)
@@ -370,7 +406,9 @@ def _r_winds(inv: Inventory) -> Outcome:
             ev,
             refusal={
                 "what": "multi-Doppler winds",
-                "missing": "two radars with velocity, overlapping in time, with enough beam-crossing area",
+                "missing": (
+                    "two radars with velocity, overlapping in time, with enough beam-crossing area"
+                ),
             },
         )
     radars = sorted({p["a"] for p in good} | {p["b"] for p in good})
@@ -381,10 +419,19 @@ def _r_winds(inv: Inventory) -> Outcome:
             "id": "winds",
             "kind": "winds",
             "title": "Multi-Doppler winds from " + ", ".join(radars),
-            "why": "Two or more radars with velocity and good beam-crossing geometry: the 3-D wind can be retrieved where their beams cross at a wide angle.",
-            "needs": "radarx; de-aliased velocity (automatic); volumes within a few minutes of each other",
+            "why": (
+                "Two or more radars with velocity and good beam-crossing geometry: "
+                "the 3-D wind can be retrieved where their beams cross at a wide angle."
+            ),
+            "needs": (
+                "radarx; de-aliased velocity (automatic); "
+                "volumes within a few minutes of each other"
+            ),
             "produces": "winds_<time>.nc (u, v, w, speed) + .png",
-            "provenance": "RETRIEVED (analytic dual-Doppler with mass continuity; w is weakest, see docs/MULTIDOPPLER.md limits)",
+            "provenance": (
+                "RETRIEVED (analytic dual-Doppler with mass continuity; "
+                "w is weakest, see docs/MULTIDOPPLER.md limits)"
+            ),
             "inputs": [p for n in radars for p in _files_of(inv, n)],
             "radars": radars,
             "rxd": "rxd winds -i {inputs} -o winds.nc -p winds.png",
@@ -426,7 +473,10 @@ def _r_qpe(inv: Inventory) -> Outcome:
             "id": "qpe",
             "kind": "qpe",
             "title": "Rainfall accumulation with uncertainty",
-            "why": "A series of reflectivity volumes: rain rate per volume, accumulated over the period, with the Z-R scatter as uncertainty.",
+            "why": (
+                "A series of reflectivity volumes: rain rate per volume, accumulated over the "
+                "period, with the Z-R scatter as uncertainty."
+            ),
             "needs": "radarx; band for the Z-R relation"
             + (
                 "; dual-pol fields for the hybrid method"
@@ -434,7 +484,10 @@ def _r_qpe(inv: Inventory) -> Outcome:
                 else ""
             ),
             "produces": "qpe_accumulation.nc + .png (mm), uncertainty field",
-            "provenance": "RETRIEVED (Z-R / hybrid estimator; uncertainty from the relation's scatter, not from gauges)",
+            "provenance": (
+                "RETRIEVED (Z-R / hybrid estimator; "
+                "uncertainty from the relation's scatter, not from gauges)"
+            ),
             "inputs": [p for n in ok for p in _files_of(inv, n)],
             "radars": ok,
             "rxd": "rxd qpe -i {inputs} -o qpe.nc -p qpe.png",
@@ -463,10 +516,16 @@ def _r_movie(inv: Inventory) -> Outcome:
             "id": "movie",
             "kind": "movie",
             "title": "Storm animation (3D clip)",
-            "why": "A series: a storm-centred clip shows the evolution; frames are interpolated between scans and labelled as such.",
+            "why": (
+                "A series: a storm-centred clip shows the evolution; "
+                "frames are interpolated between scans and labelled as such."
+            ),
             "needs": "system Chrome and PyAV (rendered by 'rxd animate', not inside this run)",
             "produces": "animate_<radars>_<time>.mp4",
-            "provenance": "OBSERVED data; the in-between frames are SIMULATED/STYLISED (interpolated, labelled)",
+            "provenance": (
+                "OBSERVED data; the in-between frames are "
+                "SIMULATED/STYLISED (interpolated, labelled)"
+            ),
             "inputs": [p for n in ok for p in _files_of(inv, n)],
             "radars": ok,
             "rxd": "rxd animate -i {inputs}",
@@ -517,13 +576,15 @@ def _r_problems(inv: Inventory) -> Outcome:
         ev.append(f"{u['name']}: {u['reason']}")
     if inv["radars"].get("UNKNOWN"):
         ev.append(
-            f"{inv['radars']['UNKNOWN']['n_files']} file(s) of unknown radar/time (not opened; run again with fewer files or name them)"
+            f"{inv['radars']['UNKNOWN']['n_files']} file(s) of unknown radar/time "
+            f"(not opened; run again with fewer files or name them)"
         )
     return Outcome(bool(ev), ev or ["nothing flagged"], note="; ".join(ev) if ev else None)
 
 
 def evaluate_rules(inv: Inventory) -> list[dict[str, Any]]:
-    """Run every rule; the table of ``{id, title, rank, fired, evidence, step?, refusal?, note?}``."""
+    """Run every rule; the table of
+    ``{id, title, rank, fired, evidence, step?, refusal?, note?}``."""
     table: list[dict[str, Any]] = []
     for r in sorted(RULES, key=lambda x: x.rank):
         try:

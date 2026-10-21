@@ -32,7 +32,8 @@ def add_parser(
 ) -> argparse.ArgumentParser:
     p = command(
         "auto",
-        "Autopilot: inspect any set of inputs, plan the analyses that make sense, run the approved ones.",
+        "Autopilot: inspect any set of inputs, plan the analyses that make sense, "
+        "run the approved ones.",
         EPILOG,
     )
     add_input(p, "radar files, folders or globs: one file, a series, several radars, mixed")
@@ -86,7 +87,8 @@ def cmd_auto(args: argparse.Namespace, out: Any) -> int:
             out.result(format_plan(plan, inv))
             if not args.plan_only:
                 out.note(
-                    "Nothing was run. Add --yes to run the enabled steps, or --steps IDS, with -o DIR."
+                    "Nothing was run. Add --yes to run the enabled steps, "
+                    "or --steps IDS, with -o DIR."
                 )
         return cli.EXIT_OK
     step_ids = [s.strip() for s in args.steps.split(",") if s.strip()] if args.steps else None
