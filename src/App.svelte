@@ -17,6 +17,7 @@
   import AccountChip from './lib/components/AccountChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
+  import { movieStudioOpen, openMovieStudio } from './lib/stores/movieStudio';
   import { updater } from './lib/stores/updater';
   import { reportIssueOpen, openReportIssue, closeReportIssue } from './lib/stores/reportIssue';
   import { commandStudioOpen, openCommandStudio } from './lib/stores/commandStudio';
@@ -53,6 +54,7 @@
   const timeline = lazy(() => import('./lib/components/Timeline.svelte'));
   const crossDock = lazy(() => import('./lib/components/CrossSectionDock.svelte'));
   const crossDialog = lazy(() => import('./lib/components/CrossSectionDialog.svelte'));
+  const movieStudio = lazy(() => import('./lib/components/MovieStudio.svelte'));
   const palette = lazy(() => import('./lib/components/CommandPalette.svelte'));
   const dataCheckPanel = lazy(() => import('./lib/components/DataCheckPanel.svelte'));
   const tour = lazy(() => import('./lib/components/OnboardingTour.svelte'));
@@ -939,6 +941,7 @@
         <button class="view-btn" class:active={viewMode === 'dualpol'} on:pointerenter={() => dualPol.load()} on:focus={() => dualPol.load()} on:click={() => { viewMode = 'dualpol'; syncWorkspace(); }} title="Dual-Pol Analysis Dashboard">DualPol</button>
       </div>
 
+      <button class="toolbar-btn" on:pointerenter={() => movieStudio.load()} on:focus={() => movieStudio.load()} on:click={() => { void movieStudio.load(); openMovieStudio(); }} title="Movie Studio: make a storm movie (MP4)" aria-label="Movie Studio">Movie</button>
       <button class="toolbar-btn icon-btn" class:active={$diffMode === 'diff'} on:click={toggleDiffMode} title="Toggle Diff View">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="9" cy="12" r="6" /><circle cx="15" cy="12" r="6" />
@@ -1155,8 +1158,10 @@
     else if (type === 'command-studio') openCommandStudio();
     else if (type === 'export') showPanel('export');
     else if (type === 'data-check') openDataCheck();
+    else if (type === 'movie-studio') { void movieStudio.load(); openMovieStudio(); }
   }} />
   {/if}
+  {#if $movieStudioOpen && movieStudio.component}<movieStudio.component />{/if}
   {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}
   {#if shortcutsSheet.component}<shortcutsSheet.component bind:visible={shortcutsSheetVisible} />{/if}
   {#if aboutDialog.component}<aboutDialog.component bind:visible={aboutDialogVisible} />{/if}

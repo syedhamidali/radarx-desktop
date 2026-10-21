@@ -33,6 +33,12 @@ from engine import animate_plan as plan
 from engine.animate_plan import AnimateConfigError, AnimatePlanError
 
 Note = Callable[[str], None]
+#: ``on_frame(k, total) -> stop?``: called after every rendered frame (see :func:`run`).
+FrameHook = Callable[[int, int], bool]
+
+
+class AnimateCancelledError(Exception):
+    """The caller asked to stop (the app's Cancel button); nothing is broken, the job can resume."""
 
 
 @dataclass
@@ -480,15 +486,20 @@ def run(
     detail: Note = lambda _m: None,
     gridder: data.Gridder | None = None,
     meta: Callable[[Path], tuple[str, datetime]] | None = None,
+    on_frame: FrameHook | None = None,
 ) -> AnimateResult:
     """Plan, grid, track, plan the frames and (unless ``no_render``) render and write the output.
+
+    ``on_frame(k, total)`` is called after every rendered frame (the app's progress bar); when it
+    returns True the rendering stops with :class:`AnimateCancelledError` (the frames drawn so far stay
+    in the cache, so the same job resumes later).
 
     Needs a signed-in account like everything else (``AccountRequired`` otherwise, docs/ACCOUNTS.md).
     """
     from engine.account import activity, require_account
 
     require_account()
-    result = _run(o, note, detail, gridder, meta)
+    result = _run(o, note, detail, gridder, meta, on_frame)
     activity.record("animate_run")
     return result
 
@@ -499,6 +510,7 @@ def _run(
     detail: Note,
     gridder: data.Gridder | None,
     meta: Callable[[Path], tuple[str, datetime]] | None,
+    on_frame: FrameHook | None = None,
 ) -> AnimateResult:
     t_start = time.perf_counter()
     from engine import animate_render as render
@@ -633,13 +645,20 @@ def _run(
         return res
 
     assert dist is not None and base_settings is not None
-    _render(res, dist, page_settings(o, cp, sp, o.fps, duration, sound_plan), note, detail)
+    _render(
+        res, dist, page_settings(o, cp, sp, o.fps, duration, sound_plan), note, detail, on_frame
+    )
     res.seconds = time.perf_counter() - t_start
     return res
 
 
 def _render(
-    res: AnimateResult, dist: Path, settings: dict[str, Any], note: Note, detail: Note
+    res: AnimateResult,
+    dist: Path,
+    settings: dict[str, Any],
+    note: Note,
+    detail: Note,
+    on_frame: FrameHook | None = None,
 ) -> None:
     from engine import animate_render as render
 
@@ -766,6 +785,11 @@ def _render(
                     per = elapsed / k
                     note(
                         f"frame {k}/{total} ({per:.2f} s each, about {per * (total - k):.0f} s left)"
+                    )
+                if on_frame is not None and on_frame(k, total):
+                    raise AnimateCancelledError(
+                        f"stopped after {k} of {total} frames: the frames drawn so far are kept, "
+                        "so the same film resumes where it stopped"
                     )
 
             if todo:
