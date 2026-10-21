@@ -722,6 +722,31 @@ def _guess_formats(path: str) -> tuple[list[str], bool]:
     return ordered, hinted
 
 
+class GriddedProductError(ValueError):
+    """A NetCDF on a map grid (mosaic, wind or rainfall grid), not a radar volume with sweeps."""
+
+
+# dimensions of a map / Cartesian grid: a variable spanning only these is not a radar sweep
+_GRID_DIMS = frozenset(
+    {"x", "y", "z", "lat", "lon", "latitude", "longitude", "height", "level", "time"}
+)
+
+
+def _gridded_product_message(ds: xr.Dataset, moment_vars: list[str]) -> str | None:
+    """Why ``ds`` is a gridded product (None when it may be a radar sweep)."""
+    if any(c in ds for c in ("radialAzim", "azimuth", "Azimuth", "azi")):
+        return None
+    if not moment_vars or not all(set(ds[v].dims) <= _GRID_DIMS for v in moment_vars):
+        return None
+    title = str(ds.attrs.get("title") or "").strip()
+    what = f" ({title})" if title else ""
+    return (
+        f"it is a gridded product on a map grid{what}, not a radar volume with sweeps, so the "
+        "radar viewer cannot show it. Look at the PNG written next to it, open it in a GIS or "
+        "xarray, or make a mosaic again in the Mosaic panel."
+    )
+
+
 def _open_generic_netcdf(path: str) -> xr.DataTree:
     """Fallback opener for non-standard NetCDF radar files (e.g. IMD/IRIS-origin).
 
@@ -734,6 +759,9 @@ def _open_generic_netcdf(path: str) -> xr.DataTree:
         moment_vars = [v for v in ds.data_vars if ds[v].ndim == 2 and ds[v].dtype.kind == "f"]
         if not moment_vars:
             raise ValueError("No 2D float variables found — not a radar file")
+        gridded = _gridded_product_message(ds, moment_vars)
+        if gridded:
+            raise GriddedProductError(gridded)
 
         # Find azimuth and range coordinates
         azimuth = None
@@ -981,6 +1009,8 @@ class RadarReader:
                 with hdf5_guard.native_section():
                     dtree = _open_generic_netcdf(open_path)
                 schema = self._build_schema(dtree, "generic_netcdf")
+            except GriddedProductError as exc:
+                raise ValueError(f"Could not open {p.name}: {exc}") from exc
             except Exception as exc:
                 logger.debug("Generic NetCDF fallback failed: %s", exc)
                 errors.append(("generic_netcdf", exc))
