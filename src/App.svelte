@@ -73,6 +73,8 @@
   const updateDialog = lazy(() => import('./lib/components/UpdateDialog.svelte'));
   // "Share" offer after an image or movie is saved.
   const shareHost = lazy(() => import('./lib/components/ShareHost.svelte'));
+  // World map of every radar in the catalogue (Cloud panel "Map" tab, command palette).
+  const radarMap = lazy(() => import('./lib/components/RadarNetworkMap.svelte'));
   // The live map (its store, the tile map and the radar chooser) loads the first time it is asked for.
   const liveView = lazy(() => import('./lib/components/LiveMapView.svelte'));
   const liveChooser = lazy(() => import('./lib/components/LiveRadarChooser.svelte'));
@@ -148,10 +150,17 @@
   let notificationCenterOpen = $state(false);
   let onboardingVisible = $state(false);
   let settingsOpen = $state(false);
+  let radarMapOpen = $state(false);
+  let radarMapSite = $state<string | null>(null);
   /** Any modal layer open: global plain-key shortcuts must not act behind it. */
   const modalOpen = $derived(
-    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible || $reportIssueOpen || liveChooserOpen,
+    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible || $reportIssueOpen || radarMapOpen || liveChooserOpen,
   );
+  function openRadarMap(e?: Event) {
+    radarMapSite = (e as CustomEvent<{ site?: string }> | undefined)?.detail?.site ?? null;
+    void radarMap.load();
+    radarMapOpen = true;
+  }
   // Fetch the chunks the current state needs (idempotent; see the `lazy(...)` declarations above).
   $effect(() => { if (filePath) { radarViewer.load(); timeline.load(); } });
   $effect(() => { if (filePath && $diffMode === 'diff') diffViewer.load(); });
@@ -266,6 +275,7 @@
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('xradar:set-view-mode', handleSetViewMode);
     window.addEventListener('xradar:cloud-site', onCloudSite);
+    window.addEventListener('xradar:radar-map', openRadarMap);
     window.addEventListener('xradar:live-chooser', onLiveChooser);
     // Check for first-launch onboarding
     if (!localStorage.getItem('xradar-onboarding-done')) {
@@ -335,6 +345,7 @@
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('xradar:set-view-mode', handleSetViewMode);
     window.removeEventListener('xradar:cloud-site', onCloudSite);
+    window.removeEventListener('xradar:radar-map', openRadarMap);
     window.removeEventListener('xradar:live-chooser', onLiveChooser);
     window.removeEventListener('dragenter', onDomDragEnter);
     window.removeEventListener('dragover', onDomDragOver);
@@ -1230,10 +1241,12 @@
     else if (type === 'data-check') openDataCheck();
     else if (type === 'movie-studio') { void movieStudio.load(); openMovieStudio(); }
     else if (type === 'autopilot') openAutopilot(get(openFiles).map((f) => f.path));
+    else if (type === 'radar-map') openRadarMap();
     else if (type === 'live-map') void openLive();
     else if (type === 'live-radars') onLiveChooser();
   }} />
   {/if}
+  {#if radarMapOpen && radarMap.component}<radarMap.component initialSiteId={radarMapSite} onclose={() => (radarMapOpen = false)} />{/if}
   {#if liveChooserOpen && liveChooser.component}
     <liveChooser.component onclose={() => (liveChooserOpen = false)} onsaved={onLiveRadarsSaved} />
   {/if}

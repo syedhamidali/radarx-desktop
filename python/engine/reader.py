@@ -835,6 +835,9 @@ class RadarReader:
     def __init__(self) -> None:
         self._dtree: xr.DataTree | None = None
         self._path: str | None = None
+        #: Credit of data fetched from an open network ({"source", "attribution", "licence"});
+        #: read by layer_provenance.describe_reader so exports carry it. Reset on every open.
+        self._source_credit: dict[str, str] | None = None
         self._format: str | None = None
         # (tree, n_children, [sweep nodes]) — rebuilt when the tree object changes
         self._nodes_cache: tuple[xr.DataTree, int, list[xr.DataTree]] | None = None
@@ -1060,6 +1063,21 @@ class RadarReader:
         logger.info("Opened %s as a CfRadial2 Zarr store", p)
         return schema
 
+    def adopt_datatree(
+        self, dtree: xr.DataTree, source: str, fmt: str, *, source_type: str = ""
+    ) -> dict[str, Any]:
+        """Make an already built datatree the open file (a volume assembled from several files,
+        e.g. the per-sweep files of DWD Open Data).  Returns the schema; the reader's state is
+        only replaced once the schema was built, like :meth:`open_file`."""
+        schema = self._build_schema(dtree, fmt)
+        if not schema["sweeps"]:
+            raise ValueError(f"no radar sweeps found (as {fmt})")
+        self._commit(dtree, source, fmt)
+        schema["source"] = source
+        if source_type:
+            schema["source_type"] = source_type
+        return schema
+
     def open_s3_file(self, s3_path: str) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).
 
@@ -1089,6 +1107,12 @@ class RadarReader:
             self._path = s3_path
             result["source"] = s3_path
             result["source_type"] = "nexrad_l2_s3"
+            self._source_credit = {
+                "source": "NEXRAD Level II (NOAA NWS) via the Unidata AWS Open Data bucket",
+                "attribution": "Data: NOAA National Weather Service NEXRAD Level II, "
+                "distributed by Unidata on AWS Open Data",
+                "licence": "US government data (public domain); NOAA asks for credit",
+            }
             return result
         finally:
             _unlink_quietly(tmp_path)
@@ -1354,6 +1378,7 @@ class RadarReader:
     def _reset_caches(self) -> None:
         self._nodes_cache = None
         self._kinds_cache = None
+        self._source_credit = None
         self._arco_session = None
         self._arco_scan_key = None
         self._arco_sweep_names = []

@@ -9,7 +9,9 @@
 
 export type CloudSiteRequest =
   | { action: 'archive'; station: string }
-  | { action: 'open'; station: string; path: string; name: string; size?: number };
+  | { action: 'open'; station: string; path: string; name: string; size?: number }
+  /** One listed volume of another open network (DWD, FMI, ...): the engine's network providers. */
+  | { action: 'open-network'; provider: string; site: string; key: string; name: string; size?: number };
 
 let pending: CloudSiteRequest | null = null;
 

@@ -10,7 +10,9 @@
   copies such as `file.nc.1` and, on macOS, for files with no extension.
 - **Cloud**: the *Cloud data* panel opens the latest NEXRAD Level II scan of a station from the public AWS archive,
   browses the archive by date, or opens ARCO / icechunk data. Click a radar marker on the map for the same
-  actions per site ({doc}`RADAR_SITES`).
+  actions per site ({doc}`RADAR_SITES`). Its *Map* tab opens the **radar network map**: every catalogued
+  radar in the world, and the networks whose volumes the app loads directly (NEXRAD, DWD, the FMI sample;
+  {doc}`RADAR_MAP`).
 - **Live**: the live map shows the newest scans of your default radars as one updating composite ({doc}`LIVE`).
 
 ```{image} images/ui/welcome.png
@@ -43,6 +45,8 @@ takes a folder of 44 volumes from four radars through it.
 *Real-time* opens the newest scan of the chosen station; *Archive* lists scans by date; *ARCO* opens analysis-ready
 cloud-optimised volumes; *Network* opens the scans of every radar of a region at once, ready for a mosaic. Files
 are read from the public `unidata-nexrad-level2` bucket, so no AWS account or credentials are needed (your free Radarx account is still required to use the app).
+*Map* opens the world map of radar sites; from a site's card the latest DWD (Germany) or FMI (Finland sample)
+volume opens the same way, after a consent dialog that names the server and the size ({doc}`RADAR_MAP`).
 
 ## Looking inside a file
 
