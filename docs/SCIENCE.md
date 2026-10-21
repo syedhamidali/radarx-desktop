@@ -158,6 +158,12 @@ SI units and the units of the source are stated (dBZ, m s-1, deg, km, mm h-1). A
 so. Heights say whether they are above ground level, above mean sea level or above the radar. Coordinates
 say their datum and projection. A number without a unit is a bug.
 
+Decibel quantities (dBZ, dB, dBm) are logarithms and are never added or averaged as they are. A mean of
+reflectivity over several scans is the mean of the linear reflectivity factor Z (mm6 m-3), converted back to dBZ:
+20 dBZ and 40 dBZ average to 37.0 dBZ, not 30. Adding dBZ is refused, because a sum of logarithms is neither a
+rainfall nor a reflectivity; rainfall totals add up rain rates (mm/h) over time (see {doc}`HYDROLOGY`). The
+maximum is the same in either unit.
+
 ### 2.10 Credit and licence
 
 Data, imagery, colour maps, fonts and code from others are credited where they are used and listed in

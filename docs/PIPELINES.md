@@ -62,7 +62,7 @@ preview says where a field came from ("RHOHV taken from sweep 0").
 | `speckle` | - | small isolated regions (8-connected, joined across 0/360 degrees) |
 | `despike` | - | single gates far from the mean *and* median of their neighbours; limit in target units or automatic |
 | `range_clip` | - | value interval and/or range window (-1000 / 1000 / 0 = off) |
-| `dealias` | VRADH (required) | radarx `region` or `unravel`; `builtin` numpy unfolding; Nyquist from the file, the parameter, or the largest valid velocity |
+| `dealias` | VRADH (required) | radarx `region` or `unravel`; `builtin` numpy unfolding; Nyquist from the file, the parameter, or the largest valid velocity; optional fold reference (`none` / `zero` / `vad`, see Limits) |
 | `smooth` | - | NaN-aware median or Gaussian on kept gates |
 | `gap_fill` | - | smooth interpolation into small removed patches |
 | `noise_correction` | SNR; target ZDR or RhoHV | radarx `correct_zdr_noise` / `correct_rhohv_noise`; only for moments that still contain the noise |
@@ -110,5 +110,23 @@ replaced by raw data.
   UNRAVEL (Louf et al. 2020): Method `unravel` in the app, `-P dealias.method=unravel` on the command
   line. It is slower and can itself leave small suspect clusters of wrongly unfolded gates, so check the
   result in both cases.
+* **The whole sweep can be off by twice the Nyquist velocity.** Dealiasing makes neighbouring regions agree,
+  but nothing in the folded data says which interval the sweep as a whole belongs to: a 25 m/s wind seen with
+  a Nyquist velocity of 10 m/s can come out 20 m/s off at every gate (the region method of the QC panel does
+  this on a synthetic uniform wind). The **Fold reference** parameter (default `none`, the sweep as dealiased)
+  chooses that whole-sweep multiple from a stated assumption; it shifts every gate by the same amount and
+  never changes the region structure:
+  * `zero`: the along-beam wind averages to about zero around a full circle. That holds for a wind that is
+    uniform or changes linearly across the scan (its radial component is a first harmonic of azimuth,
+    Browning and Wexler 1968); divergence and fall speed add a few m/s at most. The same idea as Py-ART's
+    `centered` option. It needs velocity echo in at least 33 of 36 10-degree sectors.
+  * `vad`: the constant term of a uniform-wind VAD fit (Browning and Wexler 1968) to the 10-degree sector
+    means is brought nearest zero. It allows gaps in the echo up to 180 degrees.
+  * Both are **refused** for a sector scan or echo on one side of the radar (the step then leaves the sweep as
+    dealiased and says so in its notes). They are wrong when the mean along-beam wind of the sweep really is
+    more than one Nyquist velocity from zero, for example a strong, compact circulation filling the echo.
+  On the command line: `-P dealias.reference=zero` (or `vad`). The same option is in the QC panel's velocity
+  dealiasing. The default stays `none` until it can be checked against independent winds (a sounding, a
+  model analysis or a second radar).
 * The clutter and biological defaults are conservative starting points tuned on S-band NEXRAD
   data; check the preview ("Removed by") before trusting them on other radars.

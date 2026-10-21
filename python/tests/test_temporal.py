@@ -19,9 +19,18 @@ AZ = np.arange(0.0, 360.0, 1.0)
 RNG = 250.0 * (1 + np.arange(40))
 
 
-def _reader(values: np.ndarray, *, time: str | None = None, az=AZ, rng=RNG) -> RadarReader:
+def _reader(
+    values: np.ndarray,
+    *,
+    time: str | None = None,
+    az=AZ,
+    rng=RNG,
+    var: str = "DBZH",
+    units: str | None = None,
+) -> RadarReader:
+    attrs = {"units": units} if units else {}
     ds = xr.Dataset(
-        {"DBZH": (("azimuth", "range"), values.astype(np.float32))},
+        {var: (("azimuth", "range"), values.astype(np.float32), attrs)},
         coords={"azimuth": az, "range": rng},
         attrs={"sweep_fixed_angle": 0.5},
     )
@@ -93,6 +102,11 @@ class TestTimeSeries:
         assert ts["values"][ts["file_ids"].index("empty")] is None
 
 
+def _rr(values: np.ndarray, **kw) -> RadarReader:
+    """A reader whose variable is a linear quantity (rain rate), summed and averaged as is."""
+    return _reader(values, var="RR", units="mm h-1", **kw)
+
+
 class TestAccumulation:
     def _readers(self):
         a = _const(1.0)
@@ -101,12 +115,13 @@ class TestAccumulation:
         a[0, 0] = np.nan
         b[0, 0] = np.nan
         c[0, 1] = np.nan
-        return {"a": _reader(a), "b": _reader(b), "c": _reader(c)}, np.stack([a, b, c])
+        return {"a": _rr(a), "b": _rr(b), "c": _rr(c)}, np.stack([a, b, c])
 
     @pytest.mark.parametrize("method", ["sum", "mean", "max"])
     def test_matches_numpy(self, method: str) -> None:
         readers, stack = self._readers()
-        out = compute_accumulation(readers, "DBZH", 0, method)
+        out = compute_accumulation(readers, "RR", 0, method)
+        assert out["averaged_in"] == "native"
         got = np.array(
             [[np.nan if v is None else v for v in row] for row in out["values"]], dtype=float
         )
@@ -120,17 +135,39 @@ class TestAccumulation:
     def test_cell_without_any_echo(self) -> None:
         a, b = _const(1.0), _const(3.0)
         a[2, 2] = b[2, 2] = np.nan
-        readers = {"a": _reader(a), "b": _reader(b)}
-        assert compute_accumulation(readers, "DBZH", 0, "max")["values"][2][2] is None
-        assert compute_accumulation(readers, "DBZH", 0, "mean")["values"][2][2] is None
-        assert compute_accumulation(readers, "DBZH", 0, "sum")["values"][2][2] == 0.0
+        readers = {"a": _rr(a), "b": _rr(b)}
+        assert compute_accumulation(readers, "RR", 0, "max")["values"][2][2] is None
+        assert compute_accumulation(readers, "RR", 0, "mean")["values"][2][2] is None
+        assert compute_accumulation(readers, "RR", 0, "sum")["values"][2][2] == 0.0
 
     def test_shape_mismatch_trims_to_common(self) -> None:
-        small = _reader(np.full((100, 20), 2.0), az=AZ[:100], rng=RNG[:20])
-        full = _reader(_const(4.0))
-        out = compute_accumulation({"s": small, "f": full}, "DBZH", 0, "mean")
+        small = _rr(np.full((100, 20), 2.0), az=AZ[:100], rng=RNG[:20])
+        full = _rr(_const(4.0))
+        out = compute_accumulation({"s": small, "f": full}, "RR", 0, "mean")
         assert (out["n_az"], out["n_range"]) == (100, 20)
         assert out["values"][0][0] == pytest.approx(3.0)
+
+    @pytest.mark.parametrize("units", ["dBZ", None])  # by units, else by the name DBZH
+    def test_reflectivity_mean_is_linear(self, units: str | None) -> None:
+        """Known answer: 20 and 40 dBZ are Z = 100 and 10000 mm6 m-3; the mean Z is 5050,
+        i.e. 37.03 dBZ (the dBZ average 30 would understate it by 7 dB)."""
+        readers = {"a": _reader(_const(20.0), units=units), "b": _reader(_const(40.0), units=units)}
+        out = compute_accumulation(readers, "DBZH", 0, "mean")
+        assert out["values"][0][0] == pytest.approx(10 * np.log10(5050.0), abs=1e-4)
+        assert out["values"][0][0] == pytest.approx(37.03, abs=0.01)
+        assert out["averaged_in"] == "linear"
+
+    def test_reflectivity_max_is_unchanged(self) -> None:
+        readers = {"a": _reader(_const(20.0)), "b": _reader(_const(40.0))}
+        assert compute_accumulation(readers, "DBZH", 0, "max")["values"][0][0] == 40.0
+
+    def test_summing_decibels_is_refused(self) -> None:
+        readers = {"a": _reader(_const(20.0), units="dBZ"), "b": _reader(_const(40.0))}
+        with pytest.raises(ValueError, match="decibels"):
+            compute_accumulation(readers, "DBZH", 0, "sum")
+        zdr = {"a": _reader(_const(1.0), var="ZDR", units="dB")}
+        with pytest.raises(ValueError, match="decibels"):
+            compute_accumulation(zdr, "ZDR", 0, "sum")
 
     def test_no_valid_data_reports_reason(self) -> None:
         with pytest.raises(ValueError, match="No valid data"):

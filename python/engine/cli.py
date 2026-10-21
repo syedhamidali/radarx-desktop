@@ -922,9 +922,15 @@ def expand_inputs(items: Sequence[str]) -> list[str]:
 
     ``-`` reads names from stdin (one per line, ``#`` comments allowed), a folder becomes the
     radar files inside it, a pattern with ``* ? [`` is globbed (and must match something), and
-    anything else is taken as it is. Order is kept and duplicates are dropped.
+    anything else is taken as it is (a Zarr store, a folder with ``.zgroup`` / ``zarr.json``, is
+    one volume). Order is kept and duplicates are dropped.
     """
     from engine.api_results import XrdInputError
+
+    def is_zarr_store(path: str) -> bool:  # engine.reader's test, without importing xarray here
+        return any(
+            os.path.isfile(os.path.join(path, m)) for m in (".zgroup", ".zmetadata", "zarr.json")
+        )
 
     out: list[str] = []
     for raw in items:
@@ -933,7 +939,9 @@ def expand_inputs(items: Sequence[str]) -> list[str]:
             out += expand_inputs([ln for ln in lines if ln and not ln.startswith("#")])
             continue
         path = os.path.expanduser(raw)
-        if os.path.isdir(path):
+        if os.path.isdir(path) and is_zarr_store(path):
+            out.append(path)  # a Zarr store is one volume, not a folder of files
+        elif os.path.isdir(path):
             found = sorted(
                 os.path.join(path, name)
                 for name in os.listdir(path)
