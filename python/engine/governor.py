@@ -55,13 +55,14 @@ ENV_MODE = "RADARX_GOVERNOR"  # "auto" (default) | "off" | "strict"
 FREE_FRACTION = 0.8
 TOTAL_FRACTION = 0.6
 DISK_FRACTION = 0.9  # leave 10 % of the free disk untouched
+HARD_FRACTION = 0.75  # automatic hard limit: lossy reductions / refusals only above this
 
 # ---------------------------------------------------------------------------------------------
 # Calibration. Measured on an Apple M1 Pro (10 cores, 16 GB), Python 3.14, xradar 0.12, radarx
 # 0.5, NEXRAD Level II KHPX20211211_015357_V06 (6.7 MB on disk, 19 sweeps, 720 x 1832 gates,
 # decoded size D = 461 MB as counted by reader.tree_memory_bytes), plus KNQA/KPAH/KVWX of the
 # same event, in fresh processes (peak RSS, wall time incl. opening the files):
-#   open + full read           3.4 s   +660 MB      -> read_peak 1.45 D
+#   open + full read           3.4 s   +660 MB      -> read_peak 1.45 D (KTLX 2013: 2.1 s, 1.52 D)
 #   "Reflectivity QC" all sweeps 6.6 s  +680 MB      -> qc time 0.009 s per decoded MB
 #   mosaic composite, 2 radars 7.2 s   +760 MB  (723 x 628 cells, 31 levels)
 #   mosaic composite, 4 radars 11.6 s  +1390 MB (723 x 796 cells)  -> ~0.68 D per radar
@@ -78,9 +79,9 @@ DISK_FRACTION = 0.9  # leave 10 % of the free disk untouched
 CAL: dict[str, float] = {
     "base_rss": 130 * MB,  # engine + numpy/xarray/xradar/radarx loaded
     "ref_decoded": 461 * MB,  # D of the calibration volume
-    "open_s_per_file_mb_l2": 0.30,  # bz2 Level II: seconds per MB on disk (open + first read)
+    "open_s_per_decoded_mb_l2": 0.005,  # Level II open + full read: s per decoded MB (+0.3 s)
     "open_s_per_decoded_mb": 0.004,  # NetCDF/HDF5 and others: seconds per decoded MB
-    "read_peak": 1.45,  # x D, a fully read volume
+    "read_peak": 1.55,  # x D, a fully read volume
     "lazy_peak": 0.25,  # x D, a volume read lazily, one sweep / one moment at a time
     "qc_s_per_mb": 0.009,
     "qc_peak": 0.55,  # x D on top of the read
@@ -143,13 +144,22 @@ class MachineBudget:
     disk_budget: int | None
     source: str  # "auto" | "cli" | "env"
     notes: list[str] = field(default_factory=list)
+    # Hard limit: above it data is reduced (stated) or the operation refused. With an explicit
+    # budget it equals the budget; automatically it is 75 % of physical RAM (the OS can free
+    # caches and compress memory between the comfortable budget and this limit).
+    hard_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        if not self.hard_bytes:
+            self.hard_bytes = self.budget_bytes
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def text(self) -> str:
         lines = [
-            f"memory  budget {_fmt_bytes(self.budget_bytes)} ({self.source})"
+            f"memory  budget {_fmt_bytes(self.budget_bytes)} ({self.source}), hard limit "
+            f"{_fmt_bytes(self.hard_bytes)}"
             + f"  |  free now {_fmt_bytes(self.available_ram)} of {_fmt_bytes(self.total_ram)}",
             f"cores   {self.cpu_count}",
             f"disk    {_fmt_bytes(self.disk_free)} free in {self.disk_path}",
@@ -239,6 +249,8 @@ class Plan:
         return {
             "operation": self.operation,
             "fits_as_asked": self.estimate.peak_bytes <= self.budget.budget_bytes,
+            "runs": self.refusal is None,
+            "within_hard_limit_as_asked": self.estimate.peak_bytes <= self.budget.hard_bytes,
             "estimate": self.estimate.to_dict(),
             "final": self.final.to_dict(),
             "reductions": [r.to_dict() for r in self.reductions],
@@ -250,23 +262,25 @@ class Plan:
     def text(self) -> str:
         e, f = self.estimate, self.final
         head = (
-            f"{self.operation:<8} peak {_fmt_bytes(e.peak_bytes):>9}  time {_fmt_s(e.seconds):>8}"
+            f"{self.operation:<13} peak {_fmt_bytes(e.peak_bytes):>9}  time {_fmt_s(e.seconds):>8}"
         )
         if self.refusal:
-            out = [head + "  -> WILL NOT RUN", f"         {self.refusal}"]
-            out += [f"         - {o}" for o in self.options]
+            out = [head + "  -> WILL NOT RUN", f"              {self.refusal}"]
+            out += [f"              - {o}" for o in self.options]
             return "\n".join(out)
+        tight = f.peak_bytes > self.budget.budget_bytes
+        note = "  (above the comfortable budget: other programs may slow down)" if tight else ""
         if not self.reductions:
-            return head + "  -> fits as asked"
+            return head + "  -> runs as asked" + note
         out = [
             head
             + f"  -> fits with {len(self.reductions)} change(s): peak {_fmt_bytes(f.peak_bytes)}, time {_fmt_s(f.seconds)}"  # noqa: E501
         ]
         out += [
-            f"         - {r.what} ({'lossless' if r.lossless else 'stated reduction'}): {r.scientific_loss}"  # noqa: E501
+            f"              - {r.what} ({'lossless' if r.lossless else 'stated reduction'}): {r.scientific_loss}"  # noqa: E501
             for r in self.reductions
         ]
-        return "\n".join(out)
+        return "\n".join(out) + (f"\n              {note.strip()}" if note else "")
 
     def warnings(self) -> list[str]:
         return [r.sentence() for r in self.reductions]
@@ -410,6 +424,11 @@ def machine_budget(
         disk_budget=int(free * DISK_FRACTION) if free is not None else None,
         source=source,
         notes=notes,
+        hard_bytes=(
+            max(int(budget), int(total * HARD_FRACTION))
+            if source == "auto" and total
+            else int(budget)
+        ),
     )
 
 
@@ -525,7 +544,7 @@ def describe_inputs(paths: Sequence[str], probe: int = 1) -> list[InputVolume]:
 
 def _open_seconds(v: InputVolume) -> float:
     if v.fmt == "nexrad_level2" or _is_level2(v.path):
-        return max(0.3, CAL["open_s_per_file_mb_l2"] * v.size_bytes / MB)
+        return 0.3 + CAL["open_s_per_decoded_mb_l2"] * v.decoded_bytes / MB
     return max(0.1, CAL["open_s_per_decoded_mb"] * v.decoded_bytes / MB)
 
 
@@ -757,7 +776,13 @@ def estimate(op: str, vols: Sequence[InputVolume], **params: Any) -> Estimate:
 
 
 def _fits(e: Estimate, b: MachineBudget) -> bool:
+    """Within the comfortable budget: above it, only lossless strategies are applied."""
     return e.peak_bytes <= b.budget_bytes
+
+
+def _fits_hard(e: Estimate, b: MachineBudget) -> bool:
+    """Within the hard limit: above it, data is reduced (stated) or the operation refused."""
+    return e.peak_bytes <= b.hard_bytes
 
 
 def plan(
@@ -819,14 +844,14 @@ def plan(
             )
         )
     # (c) coarser grid, (d) fewer levels ---------------------------------------------------
-    if not _fits(cur, budget) and op in ("mosaic", "winds", "animate") and not strict:
+    if not _fits_hard(cur, budget) and op in ("mosaic", "winds", "animate") and not strict:
         key = "dx_m" if op == "winds" else "resolution_m"
         grid = dict(params.get("grid") or {})
         g0 = (winds_grid if op == "winds" else mosaic_grid)(_unique_radars(vols), grid)
         start = g0[key]
         limit = 5000.0
         for _ in range(MAX_COARSEN):
-            if _fits(cur, budget) or grid.get(key, start) * 2 > limit:
+            if _fits_hard(cur, budget) or grid.get(key, start) * 2 > limit:
                 break
             trial = {**grid, key: grid.get(key, start) * 2}
             est = estimate(op, vols, **{**params, "grid": trial})
@@ -853,7 +878,7 @@ def plan(
         trial = {**grid, zkey: z0 * 2}
         est = estimate(op, vols, **{**params, "grid": trial})
         if (
-            not _fits(cur, budget)
+            not _fits_hard(cur, budget)
             and z0 * 2 <= (2000.0 if op == "winds" else 5000.0)
             and est.peak_bytes < cur.peak_bytes
         ):
@@ -872,13 +897,13 @@ def plan(
                 )
             )
     # (e) temporal thinning ---------------------------------------------------------------
-    if (not _fits(cur, budget) or slow(cur)) and op in ("cells", "animate") and not strict:
+    if (not _fits_hard(cur, budget) or slow(cur)) and op in ("cells", "animate") and not strict:
         every = 1
-        while (not _fits(cur, budget) or slow(cur)) and every < MAX_THIN:
+        while (not _fits_hard(cur, budget) or slow(cur)) and every < MAX_THIN:
             est = estimate(op, vols, **{**params, "every": every + 1})
-            if not _fits(cur, budget) and est.peak_bytes >= cur.peak_bytes:
+            if not _fits_hard(cur, budget) and est.peak_bytes >= cur.peak_bytes:
                 break  # thinning saves time, not memory: it cannot make this fit
-            if est.seconds >= cur.seconds:
+            if est.seconds > 0.9 * cur.seconds:  # less than 10 % faster: not worth the loss
                 break
             every += 1
             cur = est
@@ -887,7 +912,7 @@ def plan(
             reductions.append(
                 Reduction(
                     "thinning",
-                    f"every {every}th volume used",
+                    f"only every {_ordinal(every)} volume used",
                     "the full time series does not fit"
                     + (f" the time limit of {_fmt_s(float(max_s))}" if max_s else ""),
                     1.0 - 1.0 / every,
@@ -898,12 +923,12 @@ def plan(
                 )
             )
     # (f) spatial crop around the area of interest -----------------------------------------
-    if not _fits(cur, budget) and op in ("mosaic", "winds", "animate") and not strict:
+    if not _fits_hard(cur, budget) and op in ("mosaic", "winds", "animate") and not strict:
         grid = dict(params.get("grid") or {})
         g = (winds_grid if op == "winds" else mosaic_grid)(_unique_radars(vols), grid)
         r0 = g["max_range_km"]
         r = r0
-        while not _fits(cur, budget) and r * 0.75 >= 50.0:
+        while not _fits_hard(cur, budget) and r * 0.75 >= 50.0:
             trial = {**grid, "max_range_km": round(r * 0.75)}
             est = estimate(op, vols, **{**params, "grid": trial})
             if est.peak_bytes >= cur.peak_bytes:
@@ -923,14 +948,18 @@ def plan(
                     dropped_unit="of the area not analysed",
                 )
             )
+    if slow(cur):
+        cur.assumptions.append(
+            f"still about {_fmt_s(cur.seconds)}, over the time limit of {_fmt_s(float(max_s))}"
+        )
     p.final = cur
     p.params = params
     reductions[:] = [r for r in reductions if stated(r)]
-    if not _fits(cur, budget):
+    if not _fits_hard(cur, budget):
         tried = f" even after {len(reductions)} allowed reduction(s)" if reductions else ""
         p.refusal = (
             f"{op} needs about {_fmt_bytes(cur.peak_bytes)}{tried}; this machine allows "
-            f"{_fmt_bytes(budget.budget_bytes)}"
+            f"{_fmt_bytes(budget.hard_bytes)}"
             + (" (strict mode: only lossless changes allowed)" if strict else "")
         )
         p.options = _options(op, vols, budget, cur.peak_bytes)
@@ -1054,6 +1083,22 @@ def check_export(reader: Any, fmt: str, path: str | os.PathLike[str] | None = No
     if not p.fits:
         raise BudgetRefusalError(p.refusal + ". You can: " + "; ".join(p.options), p)
     return p
+
+
+def check_tree_export(dtree: Any, fmt: str, path: str | os.PathLike[str] | None = None) -> None:
+    """Like :func:`check_export` for a DataTree about to be written (no-op if it fits)."""
+    if mode() == "off":
+        return
+    try:
+        from engine.reader import tree_memory_bytes
+
+        v = InputVolume(str(path or ""), "radar", None, 0, int(tree_memory_bytes(dtree)))
+        p = plan("export", [v], machine_budget(path), fmt=fmt)
+    except Exception as exc:
+        logger.info("governor: no export estimate: %s", exc)
+        return
+    if not p.fits:
+        raise BudgetRefusalError(p.refusal + ". You can: " + "; ".join(p.options), p)
 
 
 # =============================================================================================
@@ -1220,7 +1265,7 @@ def report_text(rep: Mapping[str, Any]) -> str:
     for p in rep["plans"]:
         lines.append(p.text())
         for a in p.final.assumptions:
-            lines.append(f"         note: {a}")
+            lines.append(f"              note: {a}")
     return "\n".join(lines)
 
 
@@ -1243,6 +1288,11 @@ def _fmt_bytes(n: float | None) -> str:
     if n >= GB:
         return f"{n / GB:.1f} GB"
     return f"{n / MB:.0f} MB"
+
+
+def _ordinal(n: int) -> str:
+    suffix = "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
 
 
 def _fmt_s(s: float) -> str:
