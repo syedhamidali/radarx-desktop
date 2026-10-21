@@ -780,3 +780,23 @@ def test_help_of_the_package_is_a_guide() -> None:
         assert word in text
     for name in ("open", "info", "plot", "run", "pipeline", "mosaic", "winds", "export", "cells"):
         assert name in api.__all__
+
+
+def test_plot_colourbar_label_uses_udunits_spelling() -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from engine.api_results import plot_ppi
+
+    fig = plot_ppi(
+        np.zeros((4, 3)),
+        np.array([0.0, 90.0, 180.0, 270.0]),
+        np.array([1000.0, 2000.0, 3000.0]),
+        units="meters per seconds",
+        label="VRADH",
+    )
+    labels = [a.get_ylabel() for a in fig.axes]
+    plt.close(fig)
+    assert "VRADH (m s-1)" in labels and not any("meters" in t for t in labels)

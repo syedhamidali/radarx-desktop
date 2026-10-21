@@ -321,6 +321,11 @@ def plot_ppi(
         cbar = fig.colorbar(mesh, ax=ax, pad=0.02, fraction=0.046)
         text = label or ""
         if units:
+            from engine.cfwrite import normalize_units
+
+            # the file's free-text spelling ("meters per seconds") in UDUNITS form ("m s-1")
+            units = normalize_units(units)
+        if units and units != "1":
             text = f"{text} ({units})" if text else units
         if text:
             cbar.set_label(text)
@@ -1032,7 +1037,10 @@ class Mosaic:
                     fontsize=8,
                 )
         cbar = fig.colorbar(mesh, ax=ax, pad=0.02, fraction=0.046)
-        cbar.set_label(f"{r.variable} ({r.units})" if r.units else r.variable)
+        from engine.cfwrite import normalize_units
+
+        cb_units = normalize_units(r.units)
+        cbar.set_label(f"{r.variable} ({cb_units})" if cb_units else r.variable)
         if title is None:
             height = f" at {r.height_m:g} m" if r.product == "cappi" and r.height_m else ""
             when = f" | {r.analysis_time}" if r.analysis_time else ""
