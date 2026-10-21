@@ -13,6 +13,11 @@
   import { buildSectionGrid, isPlain, type Grid } from '../utils/crossSectionRaster';
   import { maskOf, maskPredicate, valueMasks } from '../stores/valueMask';
   import { drawRaster } from '../utils/crossSectionDraw';
+  import { activeFileId } from '../stores/fileManager';
+  import { activeDerived } from '../stores/derived';
+  import { layerMap } from '../stores/layers';
+  import { probeTag, variableTarget } from '../utils/probeProvenance';
+  import ProbeProvenanceTag from './ProbeProvenanceTag.svelte';
 
   let { data = null, cmapName = 'turbo', vmin = 0, vmax = 60 }: {
     data?: CrossSectionData | null;
@@ -44,6 +49,8 @@
   let hoverDist = $state(0);
   let hoverHeight = $state(0);
   let hoverValue = $state<number | null>(null);
+  /** Provenance class of the sectioned variable (once per variable, not per mouse move). */
+  const probeProv = $derived(probeTag($layerMap, variableTarget($activeFileId, data?.variable, $activeDerived)));
 
   // Margins for axis labels
   const margin = { top: 20, right: 52, bottom: 45, left: 60 };
@@ -537,7 +544,7 @@
       <span class="tt-label">H:</span> {hoverHeight.toFixed(2)} km
       {#if hoverValue !== null}
         <span class="tt-sep">|</span>
-        <span class="tt-val">{hoverValue.toFixed(2)} {data?.units ?? ''}</span>
+        <span class="tt-val">{hoverValue.toFixed(2)} {data?.units ?? ''}</span><ProbeProvenanceTag tag={probeProv} />
       {/if}
     </div>
   {/if}

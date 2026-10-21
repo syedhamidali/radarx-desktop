@@ -23,7 +23,10 @@
     radarToLatLon,
   } from '../utils/geoProjection';
   import { resolveBasemap, basemapTileUrl } from '../utils/basemaps';
-  import { mosaicLayer, mosaicProbe, probeMosaic, clearMosaicProbe, type MosaicLayer } from '../stores/mosaic';
+  import { mosaicLayer, mosaicResult, mosaicProbe, probeMosaic, clearMosaicProbe, type MosaicLayer } from '../stores/mosaic';
+  import { layerMap } from '../stores/layers';
+  import { probeTag } from '../utils/probeProvenance';
+  import ProbeProvenanceTag from './ProbeProvenanceTag.svelte';
   import { windLayer } from '../stores/wind';
   import { drawWindLayer, type WindLayer } from '../utils/wind';
 
@@ -52,6 +55,12 @@
   $: wlayer = $windLayer;
   $: mosaicShown = !!layer && layer.visible;
   $: probing = mosaicShown && !!layer?.view;
+  // Provenance class of the probed map layer: recomputed when the layer changes, not per move.
+  $: mapProv = probeTag($layerMap, {
+    type: 'map',
+    mosaicId: $mosaicResult?.mosaic_id ?? null,
+    provenanceType: $mosaicResult?.provenance_type ?? null,
+  });
 
   $: basemap = resolveBasemap($settings.mapStyle, $settings.theme.mode);
   $: provider = basemap.provider;
@@ -606,7 +615,7 @@
         class="mosaic-tooltip"
         style="left: {Math.min($mosaicProbe.x + 14, Math.max(0, containerWidth - 190))}px; top: {Math.max(4, $mosaicProbe.y - 8)}px"
       >
-        <div class="mt-value" class:muted={pr.value === null}>{fmtValue(pr.value, pr.units)}</div>
+        <div class="mt-value" class:muted={pr.value === null}>{fmtValue(pr.value, pr.units)}<ProbeProvenanceTag tag={mapProv} /></div>
         <div class="mt-pos">{pr.lat.toFixed(3)}, {pr.lon.toFixed(3)}</div>
         {#each pr.radars as r (r.name)}
           <div class="mt-radar">

@@ -117,6 +117,8 @@ export interface MosaicHeader {
   /** The value mask the product was made with (hidden cells are empty), and its wording. */
   value_mask?: ValueMask | null;
   value_mask_text?: string | null;
+  /** Set by a QPE map layer (shown through this layer): RETRIEVED, or ADJUSTED to rain gauges. */
+  provenance_type?: string;
   elapsed_ms: number;
   png_bytes: number;
   chunks: number;
