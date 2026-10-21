@@ -1111,7 +1111,8 @@ def cmd_check(args: argparse.Namespace, out: Out) -> int:
             rep["fix_plan"] = quality.fix_plan_lines(rep, saved)
         reports.append(rep)
     if out.json:
-        out.emit_json(reports[0] if len(reports) == 1 and len(files) == 1 else reports)
+        # always a list (one report per file), also for one file: one shape for scripts
+        out.emit_json(reports)
     else:
         for i, rep in enumerate(reports):
             if i:
