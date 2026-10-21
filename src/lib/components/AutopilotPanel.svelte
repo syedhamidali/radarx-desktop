@@ -4,6 +4,8 @@
    * and estimates, Run with progress and cancel, the results gallery, and the rule table with
    * its evidence. Nothing runs until the user presses Run (stores/autopilot.ts).
    */
+  import { budgetLine } from '../utils/autopilotText';
+  import { isWebMode } from '../utils/env';
   import { state as auto, busy, close, reset, run, cancel, toggleStep, setOutDir, setBudget, inspect, planNow, type Step } from '../stores/autopilot';
 
   let { onopen }: { onopen?: (paths: string[]) => void } = $props();
@@ -20,6 +22,14 @@
   const selectedSeconds = $derived(($auto.plan?.steps ?? []).filter((s) => $auto.selected[s.id]).reduce((a, s) => a + s.estimate.seconds, 0));
   const radars = $derived(Object.values($auto.inventory?.radars ?? {}).filter((r) => r.name !== 'UNKNOWN'));
 
+  async function reveal(path: string) {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('reveal_in_folder', { path });
+    } catch (err) {
+      console.warn('[Autopilot] show in folder failed:', err);
+    }
+  }
   function startFromText() {
     const list = pathText.split('\n').map((s) => s.trim()).filter(Boolean);
     if (list.length) inspect(list);
@@ -60,7 +70,7 @@
       <div class="prog">
         <div class="bar"><div class="fill" style:width={`${$auto.progress.pct}%`}></div></div>
         <div class="ptext"><span class="mono">{String($auto.progress.pct).padStart(3, ' ')}%</span> {$auto.progress.text}</div>
-        <button class="quiet" onclick={cancel}>Cancel</button>
+        <button class="quiet" onclick={cancel} disabled={$auto.cancelling}>{$auto.cancelling ? 'Cancelling...' : 'Cancel'}</button>
       </div>
     {/if}
 
@@ -104,7 +114,7 @@
     {#if $auto.plan}
       {@const g = $auto.plan.governor}
       <h3>Plan <span class="dim small">ranked; estimates are rough (ESTIMATE)</span></h3>
-      <p class="lede small">Budget {mb(g.budget_bytes)} of {mb(g.machine.ram_bytes)} RAM. {g.reductions.length ? `${g.reductions.length} reduction(s) decided by the governor, each stated below and in the run record.` : 'No reductions needed for this data.'}</p>
+      <p class="lede small"><span class="mono">{budgetLine(g)}</span>. {g.reductions.length ? `${g.reductions.length} reduction(s) decided by the governor, each stated below and in the run record.` : 'No reductions needed for this data.'}</p>
       {#each $auto.plan.steps as s (s.id)}
         <details class="step {stepState(s)}">
           <summary>
@@ -141,7 +151,7 @@
 
       <h3>Run</h3>
       <label class="field">Results folder <input type="text" value={$auto.outDir} oninput={(e) => setOutDir((e.currentTarget as HTMLInputElement).value)} disabled={$busy} /></label>
-      <label class="field">Memory budget (GB, blank = 60 % of RAM)
+      <label class="field">Memory budget (GB; blank = automatic: the smaller of 60 % of RAM and 90 % of the memory available now)
         <input type="number" min="0.5" step="0.5" value={$auto.budgetGb ?? ''} oninput={(e) => setBudget((e.currentTarget as HTMLInputElement).value ? Number((e.currentTarget as HTMLInputElement).value) : null)} onchange={planNow} disabled={$busy} />
       </label>
       <p class="small dim">{$auto.plan.consent} Each output carries its provenance and the reductions; a run record and a one-page summary are written next to the results.</p>
@@ -160,18 +170,20 @@
 
     {#if $auto.record}
       <h3>Results</h3>
+      {#if $auto.notice}<p class="notice">{$auto.notice}</p>{/if}
       <ul class="plain">
         {#each $auto.record.steps as s}
-          <li><span class="status {s.status.split(' ')[0]}">{s.status}</span> {s.title}{s.elapsed_s ? ` (${s.elapsed_s} s)` : ''}{s.error ? `: ${s.error}` : ''}</li>
+          <li><span class="status {s.status.split(' ')[0]}">{s.status}</span> {s.title}{s.elapsed_s ? ` (${s.elapsed_s} s)` : ''}{s.error && s.error !== 'cancelled' ? `: ${s.error}` : ''}{s.status === 'cancelled' && s.files?.length ? `: ${s.files.length} file${s.files.length === 1 ? '' : 's'} written before the cancel kept` : ''}</li>
         {/each}
       </ul>
       <p class="small">Written to <code>{$auto.record.out_dir}</code> (SUMMARY.md, run_record.json).</p>
       {#if $auto.gallery.length}
         <div class="gallery">
-          {#each $auto.gallery as g (g.path)}
+          {#each $auto.gallery as g, i (`${i}:${g.path}`)}
             <figure>
               {#if g.png}<img src={`data:image/png;base64,${g.png}`} alt={g.name} />{:else}<div class="file mono">{g.name.split('.').pop()}</div>{/if}
-              {#if onopen && /\.(nc|zarr)$/i.test(g.name)}<button class="link" onclick={() => onopen?.([g.path])}>open in viewer</button>{/if}
+              {#if onopen && g.viewer}<button class="link" onclick={() => onopen?.([g.path])}>open in viewer</button>
+              {:else if /\.(nc|csv)$/i.test(g.name) && !isWebMode()}<button class="link" onclick={() => reveal(g.path)} title="A map grid, not a radar volume: open it in a GIS or xarray">show in folder</button>{/if}
               <figcaption class="small">{g.name}</figcaption>
             </figure>
           {/each}
@@ -182,7 +194,7 @@
 
   <div class="foot">
     {#if $auto.plan}
-      <button class="primary" onclick={run} disabled={$busy || selectedCount === 0 || !$auto.outDir}>Run {selectedCount} step{selectedCount === 1 ? '' : 's'} ({mins(selectedSeconds)})</button>
+      <button class="primary" onclick={run} disabled={$busy || selectedCount === 0 || !$auto.outDir}>{$auto.notice ? 'Run again (resumes)' : `Run ${selectedCount} step${selectedCount === 1 ? '' : 's'} (${mins(selectedSeconds)})`}</button>
       <button class="quiet" onclick={() => inspect($auto.inputs)} disabled={$busy}>Inspect again</button>
     {/if}
     <button class="quiet" onclick={reset} disabled={$busy}>Clear</button>
@@ -216,6 +228,7 @@
   .small { font-size: var(--fs-xs); }
   .mono { font-family: var(--font-mono); }
   .err { color: var(--c-alarm); margin: 0; }
+  .notice { margin: 0; padding: var(--space-1) var(--space-2); border-left: 3px solid var(--c-caution); background: var(--c-field); color: var(--c-text-dim); line-height: 1.5; font-size: var(--fs-xs); }
   .warn-text { color: var(--c-caution); margin: 0; }
   textarea, input[type='text'], input[type='number'] { width: 100%; box-sizing: border-box; background: var(--c-field); color: var(--c-text); border: 1px solid var(--c-border); border-radius: var(--radius-xs); padding: var(--space-1) var(--space-2); font-family: var(--font-mono); font-size: var(--fs-xs); }
   .field { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-xs); color: var(--c-text-dim); }

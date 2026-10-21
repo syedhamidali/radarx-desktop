@@ -687,7 +687,8 @@ def write_cfradial1(
     ds = finalize_dataset(ds, reference=ref)
     ds.attrs = attrs
     ds.encoding = {}
-    ds.to_netcdf(str(path), format="NETCDF4", engine="netcdf4")
+    with hdf5_guard.new_file(path):
+        ds.to_netcdf(str(path), format="NETCDF4", engine="netcdf4")
 
 
 # ---------------------------------------------------------------------------
@@ -822,7 +823,8 @@ def write_cfradial2(
         masked=masked,
         action="export CfRadial2 NetCDF",
     )
-    tree.to_netcdf(str(path), engine="netcdf4", format="NETCDF4")
+    with hdf5_guard.new_file(path):
+        tree.to_netcdf(str(path), engine="netcdf4", format="NETCDF4")
 
 
 def _zarr_encoding(var: xr.Variable) -> dict[str, Any]:

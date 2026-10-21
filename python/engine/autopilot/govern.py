@@ -5,8 +5,9 @@ reduction. The coefficients are rough ESTIMATES (seconds per decoded MB, memory 
 from the measured runs in docs/PERFORMANCE.md and the data check timings; they are shown as such
 ("~") and recorded in the run record, never presented as measurements of this run.
 
-* memory budget: ``--budget-gb`` or 60 % of physical RAM (same rule as the open-file budget,
-  ``engine.reader.max_open_bytes``), minus what is open already;
+* memory budget: ``--budget-gb``, or else the smaller of 60 % of physical RAM (same share as
+  the open-file budget, ``engine.reader.max_open_bytes``) and 90 % of the memory available now
+  (when psutil can tell), never below 512 MB; :func:`budget_explained` says which one applied;
 * a step whose inputs do not fit at once is chunked (one volume at a time; mosaic / winds hold one
   time step = one volume per radar);
 * long series are subsampled for the heavy products (movie, mosaic per step, winds per step) to
@@ -63,18 +64,51 @@ def machine() -> dict[str, Any]:
         "ram_bytes": total,
         "available_bytes": avail,
         "cpus": os.cpu_count(),
-        "budget_rule": "60 % of physical RAM unless --budget-gb is given",
+        "budget_rule": (
+            "--budget-gb if given, else the smaller of 60 % of physical RAM and 90 % of the "
+            "memory available now"
+        ),
+    }
+
+
+RAM_SHARE = 0.6
+AVAILABLE_SHARE = 0.9
+MIN_BUDGET = 512 * 1024**2
+
+
+def budget_explained(budget_gb: float | None, mach: dict[str, Any]) -> dict[str, Any]:
+    """The memory budget and where it came from, so the panel can show the numbers.
+
+    ``source`` is ``"given"`` (``--budget-gb``), ``"ram"`` (60 % of physical RAM),
+    ``"available"`` (90 % of the memory available now, when that is smaller) or ``"minimum"``.
+    """
+    if budget_gb and budget_gb > 0:
+        b = int(budget_gb * 1024**3)
+        return {
+            "bytes": b,
+            "source": "given",
+            "ram_share_bytes": None,
+            "available_share_bytes": None,
+        }
+    total = mach.get("ram_bytes") or 8 * 1024**3
+    from_ram = int(total * RAM_SHARE)
+    avail = mach.get("available_bytes")
+    from_avail = int(avail * AVAILABLE_SHARE) if avail else None
+    b, source = from_ram, "ram"
+    if from_avail is not None and from_avail < b:
+        b, source = from_avail, "available"
+    if b < MIN_BUDGET:
+        b, source = MIN_BUDGET, "minimum"
+    return {
+        "bytes": b,
+        "source": source,
+        "ram_share_bytes": from_ram,
+        "available_share_bytes": from_avail,
     }
 
 
 def budget_bytes(budget_gb: float | None, mach: dict[str, Any]) -> int:
-    if budget_gb and budget_gb > 0:
-        return int(budget_gb * 1024**3)
-    total = mach.get("ram_bytes") or 8 * 1024**3
-    b = int(total * 0.6)
-    if mach.get("available_bytes"):
-        b = min(b, int(mach["available_bytes"] * 0.9))
-    return max(b, 512 * 1024**2)
+    return int(budget_explained(budget_gb, mach)["bytes"])
 
 
 def _decoded_bytes(inv: dict[str, Any], paths: list[str]) -> tuple[int, int]:

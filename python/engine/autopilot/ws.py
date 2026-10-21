@@ -9,9 +9,14 @@ Protocol (JSON; a request carries ``request_id`` that the reply echoes)::
     <- {type: "auto_plan_result", request_id, inventory, plan}
 
     -> {type: "auto_run", request_id, inventory, plan, step_ids: [...], out_dir}
-    <- progress ..., {type: "auto_run_result", request_id, record, gallery: [{name, path, png?}]}
+    <- progress ..., {type: "auto_run_result", request_id, record,
+                      gallery: [{step, name, path, viewer, png?}]}
 
-    -> {type: "auto_cancel", request_id}      <- {type: "auto_cancelled", request_id}
+    -> {type: "auto_cancel", request_id}      <- {type: "auto_cancelled", request_id, found}
+
+``auto_cancelled`` with ``found`` only acknowledges the request: a running ``auto_run`` stops after
+the current volume and still answers ``auto_run_result`` (the record marks the step cancelled and
+lists what was written before). ``auto_cancelled`` without ``found`` ends a request (inspect).
     <- {type: "auto_error", request_id, kind, message}
 
 Consent: ``auto_run`` runs only the ``step_ids`` the user ticked, into the ``out_dir`` they chose.
@@ -31,6 +36,8 @@ from engine.autopilot.inspect import AutopilotError
 _CANCELS: dict[str, threading.Event] = {}
 _LOCK = threading.Lock()
 MAX_PNG_BYTES = 3 * 1024 * 1024
+# step kinds whose NetCDF outputs are radar volumes (sweeps), so "open in viewer" fits them
+VIEWER_KINDS = {"qc", "module"}
 
 
 def cancel_event(request_id: Any) -> threading.Event:
@@ -108,9 +115,14 @@ def run(
         inv, pl, out_dir=out_dir, step_ids=step_ids, progress=progress, cancel=cancel_fn
     )
     gallery: list[dict[str, Any]] = []
+    kinds = {s.get("id"): s.get("kind") for s in pl.get("steps", []) if isinstance(s, dict)}
     for s in record["steps"]:
-        for f in s.get("files", []):
+        for f in s.get("files") or []:
             item: dict[str, Any] = {"step": s["id"], "name": Path(f).name, "path": f}
+            # radar volumes open in the viewer; map grids (mosaic, winds, rainfall) do not
+            item["viewer"] = kinds.get(s["id"]) in VIEWER_KINDS and f.lower().endswith(
+                (".nc", ".zarr")
+            )
             if f.lower().endswith(".png"):
                 try:
                     p = Path(f)

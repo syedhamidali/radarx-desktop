@@ -2239,4 +2239,5 @@ def write_netcdf(rec: WindRecord, path: str | Path) -> None:
         for n, v in ds.data_vars.items()
         if v.dtype.kind == "f"
     }
-    ds.to_netcdf(path, engine="netcdf4", format="NETCDF4", encoding=enc)
+    with hdf5_guard.new_file(path):
+        ds.to_netcdf(path, engine="netcdf4", format="NETCDF4", encoding=enc)

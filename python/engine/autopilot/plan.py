@@ -24,7 +24,8 @@ def make_plan(
     """The plan for ``inv`` (from :func:`engine.autopilot.inspect_inputs`). JSON-able."""
     t0 = time.perf_counter()
     mach = govern.machine()
-    budget = govern.budget_bytes(budget_gb, mach)
+    budget_why = govern.budget_explained(budget_gb, mach)
+    budget = int(budget_why["bytes"])
     situation = classify(inv)
     table = evaluate_rules(inv)
     steps: list[dict[str, Any]] = []
@@ -65,6 +66,7 @@ def make_plan(
         "governor": {
             "machine": mach,
             "budget_bytes": budget,
+            "budget_source": budget_why["source"],
             "total_seconds_estimate": round(total_s),
             "peak_memory_bytes_estimate": peak,
             "reductions": reductions,
@@ -79,14 +81,33 @@ def make_plan(
     }
 
 
+_BUDGET_WHY = {
+    "given": "as given",
+    "ram": "60 % of RAM",
+    "available": "90 % of the memory available now, smaller than 60 % of RAM",
+    "minimum": "the 512 MB minimum",
+}
+
+
+def budget_line(governor: dict[str, Any]) -> str:
+    """``RAM 17.2 GB, available 3.0 GB -> budget 2.7 GB (why)``: the numbers behind the budget."""
+    m = governor.get("machine") or {}
+    parts = [f"RAM {(m.get('ram_bytes') or 0) / 1e9:.1f} GB"]
+    if m.get("available_bytes"):
+        parts.append(f"available {m['available_bytes'] / 1e9:.1f} GB")
+    why = _BUDGET_WHY.get(str(governor.get("budget_source")), "")
+    return f"{', '.join(parts)} -> budget {governor['budget_bytes'] / 1e9:.1f} GB" + (
+        f" ({why})" if why else ""
+    )
+
+
 def format_plan(plan: dict[str, Any], inv: dict[str, Any] | None = None) -> str:
     """Plain-text plan for the terminal."""
     lines = [f"Situation: {plan['situation']['label']}"]
     lines += [f"  {e}" for e in plan["situation"]["evidence"]]
     g = plan["governor"]
     lines.append(
-        f"Budget: {g['budget_bytes'] / 1e9:.1f} GB of "
-        f"{(g['machine'].get('ram_bytes') or 0) / 1e9:.0f} GB RAM; "
+        f"Budget: {budget_line(g)}; "
         f"~{g['total_seconds_estimate'] / 60:.1f} min for the enabled steps (ESTIMATE)"
     )
     lines.append("")

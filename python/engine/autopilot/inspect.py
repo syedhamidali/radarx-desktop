@@ -44,6 +44,43 @@ def _progress(fn: ProgressFn | None, pct: int, text: str) -> None:
         fn(int(max(0, min(100, pct))), text)
 
 
+def _walk(root: Path) -> list[Path]:
+    """Every entry under ``root`` that is a file or a Zarr store, following symlinked folders.
+
+    A symlink inside the folder the user gave is part of their case (a case folder made of links
+    to an archive is common), so it is followed wherever it points; each real folder is walked at
+    most once, so a link loop or two links to the same folder cannot repeat or never end. Zarr
+    stores are returned whole, not walked into.
+    """
+    out: list[Path] = []
+    visited: set[str] = set()
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            real = os.path.realpath(d)
+            if real in visited:
+                continue
+            visited.add(real)
+            entries = sorted(os.scandir(d), key=lambda e: e.name)
+        except OSError:
+            continue
+        subdirs: list[Path] = []
+        for e in entries:
+            p = Path(e.path)
+            try:
+                is_dir = e.is_dir(follow_symlinks=True)
+            except OSError:
+                continue
+            if is_dir and not e.name.endswith(".zarr"):
+                if not e.name.startswith("."):
+                    subdirs.append(p)
+            else:
+                out.append(p)
+        stack.extend(reversed(subdirs))
+    return out
+
+
 def expand_inputs(items: Any) -> list[Path]:
     """Files, folders (recursive) and globs -> unique radar-file candidates (sorted)."""
     import glob
@@ -70,11 +107,7 @@ def expand_inputs(items: Any) -> list[Path]:
         for m in matches:
             p = Path(m)
             if p.is_dir() and not p.name.endswith(".zarr"):
-                for child in sorted(p.rglob("*")):
-                    if child.is_dir() and not child.name.endswith(".zarr"):
-                        continue
-                    if any(part.endswith(".zarr") for part in child.parent.parts):
-                        continue  # inside a zarr store
+                for child in _walk(p):
                     add(child)
             elif p.exists():
                 add(p)
