@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -122,6 +123,15 @@ EVENTS = [
 ]
 
 
+VOLUME_NAME = re.compile(r"^[A-Z]{4}\d{8}_\d{6}_V0\d(\.gz)?$")
+
+
+def is_volume(path: Path) -> bool:
+    """A complete Level II archive file (not a ``<name>.XXXXXXXX`` part left by an interrupted
+    download, not a cache or a record)."""
+    return path.is_file() and VOLUME_NAME.match(path.name) is not None
+
+
 def window(ev: dict) -> tuple[datetime, datetime]:
     t0 = datetime.fromisoformat(ev["start"]).replace(tzinfo=timezone.utc)
     return t0, t0 + timedelta(hours=float(ev["hours"]))
@@ -165,6 +175,9 @@ def download(ev: dict, root: Path, *, max_mb: float = 600.0) -> dict:
     """Fetch the event's files into ``root/<id>_<radar>/``; returns the record (sizes, count)."""
     folder = root / f"{ev['id']}_{ev['radar']}"
     folder.mkdir(parents=True, exist_ok=True)
+    for p in folder.iterdir():  # parts of an interrupted download (boto3 writes <name>.XXXXXXXX)
+        if p.is_file() and "_V0" in p.name and not is_volume(p):
+            p.unlink()
     keys = list_keys(ev)
     total = sum(k["size"] for k in keys)
     if total > max_mb * 1e6:
@@ -235,6 +248,9 @@ def main() -> int:
         return 0
     root = Path(args.dir).expanduser()
     root.mkdir(parents=True, exist_ok=True)
+    from watchdog import start_watchdog
+
+    start_watchdog(max_rss_gb=6.0, min_free_disk_gb=20.0, max_swap_gb=8.0)
     records = []
     for e in events:
         print(f"{e['id']} {e['radar']} {e['start']} ...", file=sys.stderr, flush=True)

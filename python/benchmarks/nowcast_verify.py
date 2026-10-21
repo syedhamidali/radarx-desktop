@@ -35,7 +35,8 @@ from engine.nowcast import ensemble as ens
 from engine.nowcast import frames as nf
 from engine.nowcast import harness
 from engine.nowcast import verify as vf
-from nowcast_events import EVENTS
+from nowcast_events import EVENTS, is_volume
+from watchdog import peak_rss_gb, start_watchdog
 
 LEAD_MIN = 90.0
 STEP_MIN = 5.0
@@ -49,25 +50,67 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def frames_of(ev: dict, root: Path, workers: int = 1) -> nf.FrameSequence | None:
+def raw_volumes(folder: Path) -> list[Path]:
+    return sorted(p for p in folder.iterdir() if is_volume(p))
+
+
+def frames_of(
+    ev: dict, root: Path, workers: int = 1, *, delete_volumes: bool = False
+) -> nf.FrameSequence | None:
+    """The event's frames: from the cache, or gridded from the volumes (and cached).
+
+    With ``delete_volumes`` the Level II files are removed once the cache is written: the
+    frames (a few MB) are all the harness needs, the volumes (hundreds of MB) can be fetched
+    again with ``nowcast_events.py --download``.
+    """
     folder = root / f"{ev['id']}_{ev['radar']}"
     cache = folder / f"{ev['id']}_frames.nc"
-    if cache.exists():
-        return nf.from_netcdf([cache])
-    files = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix not in (".nc", ".json"))
-    if not files:
-        return None
-    t0 = time.perf_counter()
-    seq = nf.from_radar_files(
-        files,
-        resolution_m=RESOLUTION_M,
-        max_range_km=MAX_RANGE_KM,
-        workers=workers,
-        progress=lambda p, m: log(f"    [{p:3d}%] {m}") if p % 20 == 0 else None,
-    )
-    log(f"  {ev['id']}: {seq.n} frames gridded in {time.perf_counter() - t0:.0f} s")
-    seq.to_netcdf(cache)
-    return seq
+    if not cache.exists():
+        files = raw_volumes(folder) if folder.is_dir() else []
+        if not files:
+            return None
+        t0 = time.perf_counter()
+        seq = nf.from_radar_files(
+            files,
+            resolution_m=RESOLUTION_M,
+            max_range_km=MAX_RANGE_KM,
+            workers=workers,
+            on_error="skip",  # a volume xradar cannot read is left out and noted
+            progress=lambda p, m: log(f"    [{p:3d}%] {m}") if p % 20 == 0 else None,
+        )
+        log(f"  {ev['id']}: {seq.n} frames gridded in {time.perf_counter() - t0:.0f} s")
+        for note in seq.notes:
+            log(f"    note: {note}")
+        seq.to_netcdf(cache)
+    if delete_volumes and cache.exists():
+        files = raw_volumes(folder)
+        freed = sum(p.stat().st_size for p in files)
+        for p in files:
+            p.unlink()
+        if files:
+            log(f"  {ev['id']}: {len(files)} volumes deleted ({freed / 1e6:.0f} MB)")
+    return nf.from_netcdf([cache])
+
+
+def write_manifest(root: Path) -> dict[str, Any]:
+    """``manifest.json`` in the data folder: what is on disk per event and in total."""
+    events = {}
+    total = 0
+    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+        files = list(folder.iterdir())
+        raw = raw_volumes(folder)
+        caches = [p for p in files if p.suffix == ".nc"]
+        size = sum(p.stat().st_size for p in files if p.is_file())
+        total += size
+        events[folder.name] = {
+            "volumes": len(raw),
+            "volumes_mb": round(sum(p.stat().st_size for p in raw) / 1e6, 1),
+            "frames_mb": round(sum(p.stat().st_size for p in caches) / 1e6, 1),
+            "mb": round(size / 1e6, 1),
+        }
+    manifest = {"updated": prov.utc_stamp(), "total_mb": round(total / 1e6, 1), "events": events}
+    (root / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    return manifest
 
 
 def event_facts(seq: nf.FrameSequence) -> dict[str, Any]:
@@ -81,6 +124,7 @@ def event_facts(seq: nf.FrameSequence) -> dict[str, Any]:
         "echo_fraction_ge_20dbz_mean": round(float(ef.mean()), 4),
         "echo_fraction_ge_35dbz_mean": round(float(ef35.mean()), 4),
         "echo_fraction_ge_20dbz_max": round(float(ef.max()), 4),
+        "notes": list(seq.notes),
     }
 
 
@@ -107,10 +151,18 @@ def main() -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--origin-stride", type=int, default=2, help="every n-th origin (2: 10 min)")
-    ap.add_argument("--workers", type=int, default=4, help="processes that grid the volumes")
+    ap.add_argument("--workers", type=int, default=3, help="processes that grid the volumes")
+    ap.add_argument("--max-rss-gb", type=float, default=6.0, help="abort above this memory")
     ap.add_argument("--members", type=int, default=N_MEMBERS)
     ap.add_argument("--skip-tuning", action="store_true", help="use the shipped statistics")
+    ap.add_argument("--frames-only", action="store_true", help="grid (and cache) the frames, stop")
+    ap.add_argument(
+        "--delete-volumes",
+        action="store_true",
+        help="remove the Level II files once an event's frames are cached (disk)",
+    )
     args = ap.parse_args()
+    start_watchdog(max_rss_gb=args.max_rss_gb, min_free_disk_gb=20.0, max_swap_gb=8.0, log=log)
     root = Path(args.dir).expanduser()
     out = Path(args.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
@@ -140,7 +192,7 @@ def main() -> int:
     for ev in events:
         log(f"frames {ev['id']} {ev['radar']}")
         try:
-            seq = frames_of(ev, root, args.workers)
+            seq = frames_of(ev, root, args.workers, delete_volumes=args.delete_volumes)
         except Exception as exc:
             log(f"  {ev['id']}: failed: {exc}")
             record["events"][ev["id"]] = {**ev, "error": str(exc)}
@@ -150,6 +202,10 @@ def main() -> int:
             continue
         seqs[ev["id"]] = seq
         record["events"][ev["id"]] = {**ev, **event_facts(seq)}
+    manifest = write_manifest(root)
+    log(f"data folder {root}: {manifest['total_mb']:.0f} MB (manifest.json)")
+    if args.frames_only:
+        return 0
     stats_path = HERE.parent / "engine" / "nowcast" / "motion_error_default.json"
     if not args.skip_tuning:
         samples: dict[str, list[dict[str, Any]]] = {}
@@ -218,6 +274,7 @@ def main() -> int:
     record["summary"] = summary
     record["per_event"] = per_event
     record["elapsed_s"] = round(time.perf_counter() - t_start, 1)
+    record["peak_rss_gb"] = round(peak_rss_gb(), 2)
     (out / "verification_record.json").write_text(json.dumps(jsonable(record), indent=2) + "\n")
 
     # flat tables --------------------------------------------------------------------------
@@ -284,6 +341,7 @@ def main() -> int:
                 )
     write_csv(out / "scores_per_event.csv", rows)
     make_figures(summary, per_event, record, out)
+    (out / "verification_tables.txt").write_text(markdown_tables(summary, per_event, record))
     log(f"done in {record['elapsed_s']} s -> {out}")
     return 0
 
@@ -298,6 +356,189 @@ LABELS = {
     "global": "Nowcast (one translation)",
     "eulerian": "Eulerian persistence",
 }
+
+
+def _f(v: Any, spec: str = ".2f") -> str:
+    return "-" if v is None else format(v, spec)
+
+
+def _ci(r: dict[str, Any] | None, spec: str = "+.2f") -> str:
+    if not r or r.get("value") is None:
+        return "-"
+    lo, hi = r["ci"]
+    if lo is None:
+        return format(r["value"], spec)
+    return f"{r['value']:{spec}} [{lo:{spec}}, {hi:{spec}}]"
+
+
+def markdown_tables(
+    summary: dict[str, Any], per_event: dict[str, Any], record: dict[str, Any]
+) -> str:
+    """The tables of docs/NOWCAST.md, generated from the run (pasted there by hand)."""
+    thr = summary["thresholds"]
+    leads = summary["leads_min"]
+    show = [ld for ld in leads if ld in (5.0, 10.0, 15.0, 20.0, 30.0, 45.0, 60.0, 90.0)]
+    lines = ["<!-- generated by the verification run; do not edit by hand -->", ""]
+    bm = summary["by_model_lead"]
+    diff = summary["skill_vs_reference"].get("lucas_kanade", {})
+
+    def row(cells: list[str]) -> str:
+        return "| " + " | ".join(cells) + " |"
+
+    def csi(scores: dict[str, Any], t: float) -> Any:
+        return scores.get("categorical", {}).get(t, {}).get("csi")
+
+    def fss9(scores: dict[str, Any], t: float) -> Any:
+        return scores.get("fss", {}).get(t, {}).get(9)
+
+    # events
+    lines += [
+        row(
+            [
+                "id",
+                "radar",
+                "window (UTC)",
+                "season; storm mode",
+                "frames",
+                "cadence",
+                "echo >= 20 dBZ (mean fraction of the covered area)",
+            ]
+        ),
+        "|---|---|---|---|---|---|---|",
+    ]
+    for eid, ev in record["events"].items():
+        if ev.get("role") != "verification" or "error" in ev:
+            continue
+        lines.append(
+            row(
+                [
+                    eid,
+                    ev["radar"],
+                    f"{ev['first'][:16].replace('T', ' ')} to {ev['last'][11:16]}",
+                    f"{ev['season']}; {ev['mode']}",
+                    str(ev["n_frames"]),
+                    f"{ev['step_min']:.1f} min",
+                    f"{100 * ev['echo_fraction_ge_20dbz_mean']:.1f} %",
+                ]
+            )
+        )
+    lines.append("")
+    # pooled scores per lead
+    for t in thr:
+        lines += [
+            f"**Reflectivity >= {t:g} dBZ, pooled over the verification events** (CSI; FSS at "
+            "9 km; the nowcast's CSI minus persistence's with its 95 % block-bootstrap interval "
+            "over events):",
+            "",
+            row(
+                [
+                    "lead",
+                    "CSI nowcast",
+                    "CSI one-vector",
+                    "CSI persistence",
+                    "FSS 9 km nowcast",
+                    "FSS 9 km persistence",
+                    "CSI nowcast - persistence [95 % CI]",
+                ]
+            ),
+            "|---|---|---|---|---|---|---|",
+        ]
+        for ld in show:
+            lk = bm.get("lucas_kanade", {}).get(ld, {})
+            gl = bm.get("global", {}).get(ld, {})
+            eu = bm.get("eulerian", {}).get(ld, {})
+            lines.append(
+                row(
+                    [
+                        f"+{ld:g} min",
+                        _f(csi(lk, t)),
+                        _f(csi(gl, t)),
+                        _f(csi(eu, t)),
+                        _f(fss9(lk, t)),
+                        _f(fss9(eu, t)),
+                        _ci(diff.get(ld, {}).get(f"csi_{t:g}")),
+                    ]
+                )
+            )
+        lines.append("")
+    # rain rate and probabilistic
+    lines += [
+        "**Rain rate (mm/h, WSR-88D Z-R) and the ensemble**, pooled:",
+        "",
+        row(
+            [
+                "lead",
+                "MAE nowcast",
+                "MAE persistence",
+                "MAE difference [95 % CI]",
+                "CRPS ensemble",
+                "spread",
+                "Brier >= 20 dBZ nowcast",
+                "Brier persistence (0/1)",
+                "BSS vs climatology",
+                "ROC area",
+            ]
+        ),
+        "|---|---|---|---|---|---|---|---|---|---|",
+    ]
+    for ld in show:
+        lk = bm.get("lucas_kanade", {}).get(ld, {})
+        eu = bm.get("eulerian", {}).get(ld, {})
+        p = lk.get("prob", {}).get(thr[0], {})
+        pe = eu.get("prob", {}).get(thr[0], {})
+        lines.append(
+            row(
+                [
+                    f"+{ld:g} min",
+                    _f(lk.get("continuous", {}).get("mae"), ".3f"),
+                    _f(eu.get("continuous", {}).get("mae"), ".3f"),
+                    _ci(diff.get(ld, {}).get("mae"), "+.3f"),
+                    _f(lk.get("crps"), ".3f"),
+                    _f(lk.get("spread_mean"), ".3f"),
+                    _f(p.get("brier"), ".4f"),
+                    _f(pe.get("brier"), ".4f"),
+                    _f(p.get("bss_climatology")),
+                    _f(p.get("roc_area")),
+                ]
+            )
+        )
+    lines.append("")
+    # per event at 15 .. 90 min
+    lines += [
+        "**By event** (CSI >= 20 dBZ, nowcast / persistence; the lead at which the nowcast stops "
+        "beating persistence by at least 0.02 CSI, `>90` when it still does at the longest lead):",
+        "",
+        row(["event", "storm mode", "+15", "+30", "+60", "+90 min", "skill lost after"]),
+        "|---|---|---|---|---|---|---|",
+    ]
+    for eid, s in per_event.items():
+        lost = ">90"
+        for ld in leads:
+            lk = csi(s["by_model_lead"].get("lucas_kanade", {}).get(ld, {}), thr[0])
+            eu = csi(s["by_model_lead"].get("eulerian", {}).get(ld, {}), thr[0])
+            if lost == ">90" and lk is not None and eu is not None and lk - eu < 0.02:
+                lost = f"{ld:g} min"
+        cells = []
+        for ld in (15.0, 30.0, 60.0, 90.0):
+            lk = csi(s["by_model_lead"].get("lucas_kanade", {}).get(ld, {}), thr[0])
+            eu = csi(s["by_model_lead"].get("eulerian", {}).get(ld, {}), thr[0])
+            cells.append(f"{_f(lk)} / {_f(eu)}")
+        lines.append(row([eid, record["events"][eid]["mode"], *cells, lost]))
+    lines.append("")
+    st = record.get("motion_error_statistics")
+    if st:
+        keep = [i for i, v in enumerate(st["leads_min"]) if v in show]
+        lines += [
+            "**Motion error used by the ensemble** (standard deviation in m/s of the motion used "
+            "at the origin minus the motion realised over the lead, tuning events only):",
+            "",
+            row(["lead", *(f"+{st['leads_min'][i]:g}" for i in keep)]),
+            "|---|" + "---|" * len(keep),
+            row(["along the motion", *(f"{st['parallel_ms'][i]:.2f}" for i in keep)]),
+            row(["across the motion", *(f"{st['perpendicular_ms'][i]:.2f}" for i in keep)]),
+            "",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def make_figures(
