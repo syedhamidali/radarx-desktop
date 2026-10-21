@@ -49,7 +49,7 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def frames_of(ev: dict, root: Path) -> nf.FrameSequence | None:
+def frames_of(ev: dict, root: Path, workers: int = 1) -> nf.FrameSequence | None:
     folder = root / f"{ev['id']}_{ev['radar']}"
     cache = folder / f"{ev['id']}_frames.nc"
     if cache.exists():
@@ -62,6 +62,7 @@ def frames_of(ev: dict, root: Path) -> nf.FrameSequence | None:
         files,
         resolution_m=RESOLUTION_M,
         max_range_km=MAX_RANGE_KM,
+        workers=workers,
         progress=lambda p, m: log(f"    [{p:3d}%] {m}") if p % 20 == 0 else None,
     )
     log(f"  {ev['id']}: {seq.n} frames gridded in {time.perf_counter() - t0:.0f} s")
@@ -106,6 +107,7 @@ def main() -> int:
     ap.add_argument("--only", default="")
     ap.add_argument("--n-boot", type=int, default=1000)
     ap.add_argument("--origin-stride", type=int, default=2, help="every n-th origin (2: 10 min)")
+    ap.add_argument("--workers", type=int, default=4, help="processes that grid the volumes")
     ap.add_argument("--members", type=int, default=N_MEMBERS)
     ap.add_argument("--skip-tuning", action="store_true", help="use the shipped statistics")
     args = ap.parse_args()
@@ -138,7 +140,7 @@ def main() -> int:
     for ev in events:
         log(f"frames {ev['id']} {ev['radar']}")
         try:
-            seq = frames_of(ev, root)
+            seq = frames_of(ev, root, args.workers)
         except Exception as exc:
             log(f"  {ev['id']}: failed: {exc}")
             record["events"][ev["id"]] = {**ev, "error": str(exc)}

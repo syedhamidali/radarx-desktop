@@ -405,6 +405,47 @@ def _scan_time(reader: Any) -> np.datetime64:
     return scan_meta(reader).time
 
 
+def _grid_group(
+    files: list[str], variable: str, product: str, grid: dict[str, Any]
+) -> dict[str, Any]:
+    """Open the volumes of one frame, grid them, close them; plain arrays and numbers come back
+    (this runs in a worker process when ``workers`` > 1)."""
+    from engine import mosaic as me
+    from engine.reader import RadarReader
+
+    readers = []
+    try:
+        for f in files:
+            rd = RadarReader()
+            rd.open_file(f)
+            readers.append((Path(f).name, rd))
+        rec = me.build_mosaic(
+            readers, variable, product, grid, {"enabled": True}, cache=None, keep_volume=False
+        )
+    except me.MosaicError as exc:
+        raise FrameError(str(exc)) from exc
+    finally:
+        for _, rd in readers:
+            with _suppress():
+                rd.close()
+    if rec.merged_aeqd is None:
+        raise FrameError("the mosaic engine did not return the working grid")
+    return {
+        "merged": np.asarray(rec.merged_aeqd, dtype=np.float32),
+        "covered": rec.covered_aeqd,
+        "bbox": tuple(rec.bbox),
+        "origin": tuple(rec.origin),
+        "x0": float(rec.x0),
+        "y0": float(rec.y0),
+        "cell_m": float(rec.cell_m),
+        "radars": [
+            {"name": r.name, "latitude": r.latitude, "longitude": r.longitude} for r in rec.radars
+        ],
+        "time": me._iso_to_dt64(rec.analysis_time) if rec.analysis_time else None,
+        "warnings": list(rec.warnings),
+    }
+
+
 _NEXRAD_NAME = re.compile(r"^[A-Z]{4}(\d{8})_(\d{6})(?:_|\.|$)")
 
 
@@ -445,17 +486,18 @@ def from_radar_files(
     max_range_km: float = 230.0,
     extent: Any = None,
     group_s: float = 150.0,
+    workers: int = 1,
     progress: ProgressFn | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> FrameSequence:
     """Grid radar volumes into frames with the mosaic engine (needs radarx).
 
+    ``workers`` > 1 grids the frames after the first in that many processes.
     Volumes of several radars taken within ``group_s`` seconds form one frame (their mosaic);
     the grid is fixed from the first frame (or ``extent`` = ``(west, south, east, north)``).
     Composite reflectivity (``product="composite"``) is the default field; ``"cappi"`` uses the
     engine's default CAPPI height.
     """
-    from engine import mosaic as me
     from engine.reader import RadarReader
 
     report = progress or (lambda _p, _m: None)
@@ -491,73 +533,81 @@ def from_radar_files(
     covered: np.ndarray | None = None
     radars: list[dict[str, Any]] = []
     notes: list[str] = []
+
+    def grid_spec() -> dict[str, Any]:
+        spec: dict[str, Any] = {
+            "resolution_m": float(resolution_m),
+            "max_range_km": float(max_range_km),
+            "extent": layout.get("extent") or (extent if extent is not None else "auto"),
+        }
+        if isinstance(spec["extent"], (list, tuple)):
+            w, s, e, n = spec["extent"]
+            spec["extent"] = {"west": w, "south": s, "east": e, "north": n}
+        return spec
+
+    # The first frame fixes the grid; the others can be gridded in parallel processes (opening
+    # and decoding a volume is single-threaded Python work).
+    results: list[dict[str, Any] | None] = [None] * len(groups)
+    report(10, f"Gridding frame 1/{len(groups)}")
+    results[0] = _grid_group([f for _, f in groups[0]], variable, product, grid_spec())
+    first = results[0]
+    w, s, e, n = first["bbox"]
+    layout = {
+        "extent": {"west": w, "south": s, "east": e, "north": n},
+        "origin": first["origin"],
+        "x0": first["x0"],
+        "y0": first["y0"],
+        "cell_m": first["cell_m"],
+        "shape": first["merged"].shape,
+    }
+    rest = list(range(1, len(groups)))
+    if rest and workers > 1:
+        from concurrent.futures import ProcessPoolExecutor
+
+        spec = grid_spec()
+        with ProcessPoolExecutor(max_workers=int(workers)) as pool:
+            futures = {
+                pool.submit(_grid_group, [f for _, f in groups[gi]], variable, product, spec): gi
+                for gi in rest
+            }
+            for done, fut in enumerate(futures, start=1):
+                gi = futures[fut]
+                try:
+                    results[gi] = fut.result()
+                except Exception as exc:
+                    pool.shutdown(cancel_futures=True)
+                    raise FrameError(str(exc)) from exc
+                report(10 + int(85 * done / len(groups)), f"Gridded frame {done + 1}/{len(groups)}")
+                if cancel and cancel():
+                    pool.shutdown(cancel_futures=True)
+                    raise FrameError("cancelled")
+    else:
+        for gi in rest:
+            if cancel and cancel():
+                raise FrameError("cancelled")
+            report(10 + int(85 * gi / len(groups)), f"Gridding frame {gi + 1}/{len(groups)}")
+            results[gi] = _grid_group([f for _, f in groups[gi]], variable, product, grid_spec())
     for gi, grp in enumerate(groups):
-        if cancel and cancel():
-            raise FrameError("cancelled")
-        report(10 + int(85 * gi / len(groups)), f"Gridding frame {gi + 1}/{len(groups)}")
-        readers = []
-        try:
-            for _, f in grp:
-                rd = RadarReader()
-                rd.open_file(f)
-                readers.append((Path(f).name, rd))
-            grid: dict[str, Any] = {
-                "resolution_m": float(resolution_m),
-                "max_range_km": float(max_range_km),
-                "extent": layout.get("extent") or (extent if extent is not None else "auto"),
-            }
-            if isinstance(grid["extent"], (list, tuple)):
-                w, s, e, n = grid["extent"]
-                grid["extent"] = {"west": w, "south": s, "east": e, "north": n}
-            rec = me.build_mosaic(
-                readers,
-                variable,
-                product,
-                grid,
-                {"enabled": True},
-                cache=None,
-                keep_volume=False,
-            )
-        except me.MosaicError as exc:
-            raise FrameError(str(exc)) from exc
-        finally:
-            for _, rd in readers:
-                with _suppress():
-                    rd.close()
-        merged = rec.merged_aeqd
-        if merged is None:
-            raise FrameError("the mosaic engine did not return the working grid")
-        if not layout:
-            w, s, e, n = rec.bbox
-            layout = {
-                "extent": {"west": w, "south": s, "east": e, "north": n},
-                "origin": rec.origin,
-                "x0": rec.x0,
-                "y0": rec.y0,
-                "cell_m": rec.cell_m,
-                "shape": merged.shape,
-            }
-            covered = rec.covered_aeqd
-            radars = [
-                {"name": r.name, "latitude": r.latitude, "longitude": r.longitude}
-                for r in rec.radars
-            ]
+        rec = results[gi]
+        assert rec is not None
+        merged = rec["merged"]
+        if gi == 0:
+            covered = rec["covered"]
+            radars = list(rec["radars"])
         elif merged.shape != layout["shape"]:
             raise FrameError("the grid changed between frames (different extent?)")
         else:
             seen = {r["name"] for r in radars}
-            for r in rec.radars:
-                if r.name not in seen:
-                    radars.append(
-                        {"name": r.name, "latitude": r.latitude, "longitude": r.longitude}
-                    )
-                    seen.add(r.name)
-            if rec.covered_aeqd is not None and covered is not None:
-                covered = covered | rec.covered_aeqd
+            for r in rec["radars"]:
+                if r["name"] not in seen:
+                    radars.append(dict(r))
+                    seen.add(r["name"])
+            if rec["covered"] is not None and covered is not None:
+                covered = covered | rec["covered"]
         # the frame time is the mosaic's analysis time (mean ray time of the volumes); the file
         # names only grouped the volumes
-        tm = me._iso_to_dt64(rec.analysis_time) if rec.analysis_time else np.datetime64("NaT")
-        if np.isnat(tm):
+        tm = rec["time"]
+        if tm is None or np.isnat(tm):
             times_g = [t for t, _ in grp]
             t0 = min(times_g)
             tm = t0 + np.mean(
@@ -566,7 +616,7 @@ def from_radar_files(
         frames.append(np.asarray(merged, dtype=np.float32))
         times.append(np.datetime64(tm, "ns"))
         names.append("+".join(Path(f).name for _, f in grp))
-        for wmsg in rec.warnings:
+        for wmsg in rec["warnings"]:
             if wmsg not in notes:
                 notes.append(wmsg)
     ny, nx = layout["shape"]

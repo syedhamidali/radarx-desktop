@@ -297,29 +297,28 @@ def figure(
         (fr.y[-1] + fr.cell_m / 2) / 1e3,
     ]
     n = 1 + len(picks)
-    fig, axes = plt.subplots(2, n, figsize=(3.3 * n + 0.8, 6.6), constrained_layout=True)
+    fig, axes = plt.subplots(2, n, figsize=(3.3 * n + 0.8, 6.9), constrained_layout=True)
+    fig.get_layout_engine().set(rect=(0, 0.05, 1, 1))  # room for the footer text
     axes = np.atleast_2d(axes)
     is_refl = nc.field == "reflectivity"
-    lo, hi = (
-        (0.0, 65.0)
-        if is_refl
-        else (
-            0.0,
-            max(
-                1.0,
-                float(np.nanpercentile(fr.data[nc.config["origin_index"]], 99.5))
-                if np.isfinite(fr.data[nc.config["origin_index"]]).any()
-                else 10.0,
-            ),
-        )
-    )
-    cm = plt.get_cmap(CMAP_FIELD).copy()
-    cm.set_bad("#e9ebee")
-    cmp = plt.get_cmap(CMAP_PROB).copy()
-    cmp.set_bad("#e9ebee")
-    unit = nc.units
     origin = nc.config["origin_index"]
+    # Three states in every panel: a value (colour scale), observed-but-dry (below the scale,
+    # near white) and not observed / not forecastable (NaN, grey). The scale starts at 5 dBZ
+    # (0.1 mm/h): below it is "dry" in both the observed and the forecast panels.
+    if is_refl:
+        lo, hi = 5.0, 65.0
+    else:
+        top = fr.data[origin]
+        hi = float(np.nanpercentile(top, 99.5)) if np.isfinite(top).any() else 10.0
+        lo, hi = 0.1, max(1.0, hi)
+    cm = plt.get_cmap(CMAP_FIELD).copy()
+    cm.set_bad("#d4d8dd")
+    cm.set_under("#f6f7f8")
+    cmp = plt.get_cmap(CMAP_PROB).copy()
+    cmp.set_bad("#d4d8dd")
+    unit = nc.units
     latest = fr.data[origin].copy()
+    latest[np.isnan(latest) & fr.coverage] = lo - 1.0  # observed, no echo: "dry"
     latest[~fr.coverage] = np.nan
 
     def draw(ax: Any, arr: np.ndarray, title: str, cmap: Any, vmin: float, vmax: float) -> Any:
