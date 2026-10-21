@@ -335,14 +335,3 @@ export function loadCatalogue(): Promise<RadarCatalogue> {
   }
   return loading;
 }
-
-/**
- * Hook for the default-radar picker (another branch builds it): asking to make a site the
- * default dispatches this event with the site; nothing in the settings store is touched here.
- */
-export const DEFAULT_RADAR_EVENT = 'xradar:set-default-radar';
-
-export function requestDefaultRadar(site: CatalogueSite): void {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent(DEFAULT_RADAR_EVENT, { detail: { site } }));
-}
