@@ -75,9 +75,9 @@ The installers are not code-signed by a registered developer (no certificates). 
 - **macOS:** open the dmg and drag the app to Applications. On first launch macOS says it "cannot be opened" or
   "could not verify" it. On macOS 15 and later, right-click -> Open no longer works: go to **System Settings ->
   Privacy & Security**, scroll down to the message about radarx-desktop and click **Open Anyway**. Or, in Terminal:
-  `xattr -dr com.apple.quarantine /Applications/radarx-desktop.app`.
+  `xattr -dr com.apple.quarantine /Applications/Radarx.app`.
 - **Windows:** SmartScreen shows "Windows protected your PC": click More info -> Run anyway.
-- **Linux:** `sudo apt install ./radarx-desktop_*.deb` (or `sudo dnf install ./*.rpm`); no warning.
+- **Linux:** `sudo apt install ./Radarx_*.deb` (or `sudo dnf install ./*.rpm`); no warning.
 
 ## Known limits
 

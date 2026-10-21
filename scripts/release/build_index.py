@@ -11,7 +11,7 @@ Schema (also in docs/RELEASING.md):
     {"schema": 1, "product": "radarx", "latest": "0.3.0",
      "releases": [{"version": "0.3.0", "date": "2026-10-20T10:00:00Z", "notes": "...",
                    "assets": [{"os": "macos", "arch": "aarch64", "kind": "dmg",
-                               "name": "radarx-desktop_0.3.0_aarch64.dmg", "size": 123,
+                               "name": "Radarx_0.3.0_aarch64.dmg", "size": 123,
                                "sha256": "<64 hex>", "url": "https://downloads.../x.dmg"}]}]}
 
 Assets are the installers a person downloads. The updater payloads (`*.app.tar.gz`), signatures,

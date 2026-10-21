@@ -8,11 +8,11 @@ need a free Radarx account to use the app: see {doc}`ACCOUNTS`.
 
 | System | File |
 |---|---|
-| Mac with Apple silicon (M1 and later) | `radarx-desktop_<version>_aarch64.dmg` |
-| Mac with an Intel chip | `radarx-desktop_<version>_x64.dmg` |
-| Windows 10 / 11 | `radarx-desktop_<version>_x64-setup.exe` |
-| Ubuntu / Debian | `radarx-desktop_<version>_amd64.deb` |
-| Fedora / Red Hat | `radarx-desktop-<version>-1.x86_64.rpm` |
+| Mac with Apple silicon (M1 and later) | `Radarx_<version>_aarch64.dmg` |
+| Mac with an Intel chip | `Radarx_<version>_x64.dmg` |
+| Windows 10 / 11 | `Radarx_<version>_x64-setup.exe` |
+| Ubuntu / Debian | `Radarx_<version>_amd64.deb` |
+| Fedora / Red Hat | `Radarx-<version>-1.x86_64.rpm` |
 
 ### Download with curl
 
@@ -35,7 +35,7 @@ Typical values: `macos aarch64 dmg` (Apple silicon), `macos x86_64 dmg` (Intel M
 
 ```bash
 V=0.3.0
-curl -fLO https://downloads.labshope.com/radarx/v$V/radarx-desktop_${V}_aarch64.dmg
+curl -fLO https://downloads.labshope.com/radarx/v$V/Radarx_${V}_aarch64.dmg
 ```
 
 **Check the download.** The folder has a `SHA256SUMS` file in the usual format. A file that does not match must
@@ -62,21 +62,21 @@ The builds are not code-signed yet, so the first launch shows a warning.
 **macOS**
 
 ```bash
-open radarx-desktop_*_aarch64.dmg          # drag the app onto Applications
-open /Applications/radarx-desktop.app
+open Radarx_*_aarch64.dmg          # drag the app onto Applications
+open /Applications/Radarx.app
 ```
 
 If macOS says the app cannot be opened or is "damaged", open *System Settings → Privacy & Security* and click
-*Open Anyway*, or run `xattr -cr /Applications/radarx-desktop.app` once and open it again.
+*Open Anyway*, or run `xattr -cr /Applications/Radarx.app` once and open it again.
 
-**Windows:** run the downloaded `radarx-desktop_<version>_x64-setup.exe` (or `.\radarx-desktop_*_x64-setup.exe`
+**Windows:** run the downloaded `Radarx_<version>_x64-setup.exe` (or `.\Radarx_*_x64-setup.exe`
 in PowerShell). If SmartScreen warns, click *More info → Run anyway*.
 
 **Linux**
 
 ```bash
-sudo apt install ./radarx-desktop_*_amd64.deb         # Ubuntu / Debian
-sudo dnf install ./radarx-desktop-*.x86_64.rpm        # Fedora / Red Hat
+sudo apt install ./Radarx_*_amd64.deb         # Ubuntu / Debian
+sudo dnf install ./Radarx-*.x86_64.rpm        # Fedora / Red Hat
 radarx-desktop                                          # or start it from the application menu
 ```
 
@@ -87,7 +87,7 @@ hand, download and install it the same way over the old one.
 
 ## Open files from the file manager
 
-Right-click a radar file and choose *Open With → radarx-desktop*. NetCDF/CfRadial, HDF5/ODIM, gzip files and
+Right-click a radar file and choose *Open With → Radarx*. NetCDF/CfRadial, HDF5/ODIM, gzip files and
 numbered copies such as `file.nc.1` are registered by extension. On macOS the app is also offered for files with
 no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`).
 
