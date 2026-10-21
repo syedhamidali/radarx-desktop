@@ -401,8 +401,18 @@ class DwdProvider(NetworkProvider):
             dtree = xr.DataTree.from_dict(nodes)
             if root is not None:
                 dtree.dataset = root
-            source = f"{self.folder(s, 'dbzh')}#{key}"
+            # The per-sweep files carry no readable radar name: name the assembled volume so the
+            # file tab, the provenance and exports say which radar and which five-minute slot.
+            dtree.attrs.update(
+                {
+                    "instrument_name": f"DWD {s.upper()}",
+                    "institution": "Deutscher Wetterdienst (DWD) Open Data",
+                    "source": f"opendata.dwd.de vol5minng01 {s} {key}",
+                }
+            )
+            source = f"{self.folder(s, 'dbzh')}dwd-{s}-vol5minng01-{key}"
             schema = reader.adopt_datatree(dtree, source, "odim", source_type="dwd_opendata")
+            schema["instrument_name"] = f"DWD {s.upper()}"
             schema["source_name"] = vol["name"]
             if notes:
                 schema["notes"] = notes
@@ -595,6 +605,11 @@ class FmiProvider(NetworkProvider):
             schema["source"] = url
             schema["source_type"] = "fmi_opendata"
             schema["source_name"] = scan["name"]
+            # The sample files carry no readable radar name ("None"): name the radar for the
+            # file tab, the provenance and exports.
+            schema["instrument_name"] = f"FMI {s.upper()}"
+            with contextlib.suppress(Exception):
+                reader._dtree.attrs["instrument_name"] = f"FMI {s.upper()}"
             reader._source_credit = self.credit()
             return schema
         finally:

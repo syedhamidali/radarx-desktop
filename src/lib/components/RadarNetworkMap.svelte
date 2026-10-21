@@ -33,7 +33,7 @@
   import { consentPrompt as nexradPrompt } from '../stores/radarSites';
   import { consentPrompt as networkPrompt, loadProviders } from '../stores/radarNetworks';
   import { connectionStatus } from '../stores/radarData';
-  import { cssVar } from '../utils/themeColors';
+  import { cssVar, text, textDim, accent, surface } from '../utils/themeColors';
   import RadarNetworkCard from './RadarNetworkCard.svelte';
   import RadarSiteConsent from './RadarSiteConsent.svelte';
 
@@ -45,7 +45,7 @@
   let access = $state<DataAccess[]>([...ACCESS_ORDER]);
   let network = $state('');
   let country = $state('');
-  let selectedId = $state<string | null>(initialSiteId);
+  let selectedId = $state<string | null>(null); // initialSiteId is applied once the catalogue is in
   let now = $state(Date.now());
   let timer: ReturnType<typeof setInterval> | null = null;
 
@@ -213,10 +213,10 @@
     const cell = zoom >= 7.5 ? 1 : 26;
     clusters = clusterSites(filtered, project, width, height, cell);
     markerCount = clusters.length;
-    const ink = cssVar('--c-text', '#e0ebf7');
-    const dim = cssVar('--c-text-dim', '#a6b9cd');
-    const accent = cssVar('--c-accent', '#2bd9f5');
-    const bg = cssVar('--c-surface-1', '#070c16');
+    const ink = text();
+    const dim = textDim();
+    const accentCol = accent();
+    const bg = surface(1);
     mctx.lineWidth = 1.6;
     mctx.font = `600 10px ${cssVar('--font-mono', 'monospace')}`;
     mctx.textAlign = 'center';
@@ -225,7 +225,7 @@
       const many = c.sites.length > 1;
       const sel = !many && c.sites[0].id === selectedId;
       const r = many ? Math.min(14, 6 + Math.sqrt(c.sites.length) * 1.6) : 5.5;
-      drawMarker(mctx, c.access, c.x, c.y, r, ink, dim, accent, bg, sel);
+      drawMarker(mctx, c.access, c.x, c.y, r, ink, dim, accentCol, bg, sel);
       if (many) {
         mctx.fillStyle = ink;
         mctx.fillText(String(c.sites.length), c.x, c.y + 0.5);
@@ -233,7 +233,7 @@
     }
     if (selected) {
       const [x, y] = project(selected.lat, selected.lon);
-      mctx.strokeStyle = accent;
+      mctx.strokeStyle = accentCol;
       mctx.lineWidth = 2;
       mctx.beginPath();
       mctx.arc(x, y, 11, 0, Math.PI * 2);
@@ -346,9 +346,10 @@
 
   function select(s: CatalogueSite) {
     selectedId = s.id;
-    const [x, y] = project(s.lat, s.lon);
-    if (x < 40 || y < 40 || x > width - 40 || y > height - 40) { lon = s.lon; lat = s.lat; }
     if (zoom < 5) zoom = 5;
+    // Centre on the site unless it is already comfortably in view at the new zoom.
+    const [x, y] = project(s.lat, s.lon);
+    if (x < 60 || y < 60 || x > width - 60 || y > height - 60) { lon = s.lon; lat = s.lat; }
     clampView();
     schedule();
   }
@@ -460,7 +461,7 @@
         <p class="fine perf" data-testid="rnm-perf">{markerCount} markers drawn in {frameMs.toFixed(1)} ms, zoom {zoom.toFixed(1)}.</p>
       </aside>
 
-      <div class="map" bind:this={mapEl} onpointerdown={onPointerDown} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={() => (drag = null)} onwheel={onWheel} ondblclick={onDblClick} role="application" aria-label="World map of radar sites; drag to pan, wheel to zoom, click a marker for its card" tabindex="0">
+      <div class="map" bind:this={mapEl} onpointerdown={onPointerDown} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={() => (drag = null)} onwheel={onWheel} ondblclick={onDblClick} role="application" aria-label="World map of radar sites; drag to pan, wheel to zoom, click a marker for its card; arrow keys pan and + or - zoom">
         <canvas class="tiles" bind:this={tileCanvas} style:filter={basemap.provider.url ? basemap.filter : 'none'} style:width="{width}px" style:height="{height}px"></canvas>
         <canvas class="marks" bind:this={markCanvas} style:width="{width}px" style:height="{height}px"></canvas>
         {#if hover}
@@ -527,8 +528,7 @@
   .legend { display: flex; flex-direction: column; gap: 2px; margin-top: auto; padding-top: var(--space-2); border-top: 1px solid var(--c-border); color: var(--c-text-dim); font-size: var(--fs-2xs); }
   .lg b { color: var(--c-text); }
   .fine { margin: 0; color: var(--c-muted); font-size: var(--fs-2xs); }
-  .map { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab; outline: none; touch-action: none; }
-  .map:focus-visible { box-shadow: inset 0 0 0 2px var(--c-accent); }
+  .map { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab; touch-action: none; }
   .map:active { cursor: grabbing; }
   canvas { position: absolute; inset: 0; display: block; }
   .marks { pointer-events: none; }

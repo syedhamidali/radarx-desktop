@@ -102,7 +102,8 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<aside class="rn-card brackets" aria-label="Radar site {site.id}" onkeydown={onKey} onmousedown={stop} onmouseup={stop} onclick={stop} ondblclick={stop} oncontextmenu={stop} onwheel={stop} data-testid="rn-card">
+<!-- Pointer events are stopped too: the map underneath pans and selects on pointerdown/up. -->
+<aside class="rn-card brackets" aria-label="Radar site {site.id}" onkeydown={onKey} onpointerdown={stop} onpointerup={stop} onmousedown={stop} onmouseup={stop} onclick={stop} ondblclick={stop} oncontextmenu={stop} onwheel={stop} data-testid="rn-card">
   <header>
     <div class="ttl">
       <span class="sid mono">{site.id}</span>
@@ -208,9 +209,9 @@
       {#if provider?.archive_only}<p class="fine">Sample days: see the provider description ({provider.description}).</p>{/if}
       {#if listError}<p class="note warn">{listError}</p>{/if}
       {#if scans.length > 0}
-        <div class="list" role="list">
+        <div class="list" aria-label="Volumes of the day">
           {#each scans as s (s.key)}
-            <button type="button" class="row-btn" role="listitem" disabled={s.complete === false} onclick={() => openNetworkScan(site.provider!, site.provider_site!, s)} title={s.complete === false ? 'incomplete volume' : 'Open this volume'}>
+            <button type="button" class="row-btn" disabled={s.complete === false} onclick={() => openNetworkScan(site.provider!, site.provider_site!, s)} title={s.complete === false ? 'incomplete volume' : 'Open this volume'}>
               <span class="mono">{utc(s.scan_time)}</span>
               <span class="dim">{formatBytes(s.size)}{s.sweeps ? `, ${s.sweeps} sweeps` : ''}{s.complete === false ? ' (incomplete)' : ''}</span>
             </button>
