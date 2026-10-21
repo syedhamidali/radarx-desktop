@@ -17,6 +17,7 @@
   import AccountChip from './lib/components/AccountChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
+  import { panelOpen as autopilotOpen, openAutopilot, AUTOPILOT_DROP_MIN } from './lib/stores/autopilot';
   import { updater } from './lib/stores/updater';
   import { reportIssueOpen, openReportIssue, closeReportIssue } from './lib/stores/reportIssue';
   import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
@@ -54,6 +55,7 @@
   const crossDialog = lazy(() => import('./lib/components/CrossSectionDialog.svelte'));
   const palette = lazy(() => import('./lib/components/CommandPalette.svelte'));
   const dataCheckPanel = lazy(() => import('./lib/components/DataCheckPanel.svelte'));
+  const autopilotPanel = lazy(() => import('./lib/components/AutopilotPanel.svelte'));
   const tour = lazy(() => import('./lib/components/OnboardingTour.svelte'));
   const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
@@ -145,6 +147,7 @@
   $effect(() => { if ($crossSectionStore.layout === 'modal') crossDialog.load(); });
   $effect(() => { if (commandPaletteVisible) palette.load(); });
   $effect(() => { if ($dataCheckOpen) dataCheckPanel.load(); });
+  $effect(() => { if ($autopilotOpen) autopilotPanel.load(); });
   $effect(() => { if (onboardingVisible) tour.load(); });
   $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
@@ -298,7 +301,9 @@
         } else if (type === 'drop') {
           isDragOver = false;
           const paths = (event.payload as any).paths as string[] | undefined;
-          if (paths && paths.length > 0) openPaths(paths);
+          // Many files (or a folder) at once: Autopilot inspects and plans; nothing opens by itself.
+          if (paths && paths.length >= AUTOPILOT_DROP_MIN) openAutopilot(paths);
+          else if (paths && paths.length > 0) openPaths(paths);
         }
       });
       // The component may have been destroyed while the listener was registering.
@@ -1134,6 +1139,7 @@
   <ToastContainer />
   {#if updateDialog.component}<updateDialog.component />{/if}
   {#if $dataCheckOpen && dataCheckPanel.component}<dataCheckPanel.component onshowpanel={showPanel} />{/if}
+  {#if $autopilotOpen && autopilotPanel.component}<autopilotPanel.component onopen={openPaths} />{/if}
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
@@ -1150,6 +1156,7 @@
     else if (type === 'report-issue') openReportIssue();
     else if (type === 'export') showPanel('export');
     else if (type === 'data-check') openDataCheck();
+    else if (type === 'autopilot') openAutopilot(get(openFiles).map((f) => f.path));
   }} />
   {/if}
   {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}

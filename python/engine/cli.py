@@ -793,6 +793,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     animate_cli.add_parser(command, _add_input, _add_output, _add_plot)
 
+    # -- auto (Autopilot) ----------------------------------------------------------------
+    from engine.autopilot import cli as autopilot_cli
+
+    autopilot_cli.add_parser(command, _add_input, _add_output)
+
     # -- export --------------------------------------------------------------------------
     p = command(
         "export",
