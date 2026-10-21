@@ -6,14 +6,20 @@ transfer function, lighting, map ground and overlay), loaded in a headless Chrom
 ``src/lib/components/StormClipView.svelte``). Frame *i* is drawn for the clip time *i / fps* in one
 full-quality pass, so the result does not depend on how fast the machine is.
 
-Two optional Python packages are used, and only here (never imported by the rest of the engine):
+The film is encoded by the browser too: the page encodes every frame as soon as it is drawn with the
+browser's own WebCodecs encoders (H.264 + AAC in an MP4; VP9 + Opus in a WebM where the browser has
+no H.264 encoder) and muxes it in memory (``src/lib/utils/clipEncoder.ts``); the engine pulls the
+finished file in chunks and writes it. No video library is linked into the engine for this.
 
-* ``playwright`` drives the system Chrome (``channel="chrome"``; no browser is downloaded);
-* ``av`` (PyAV) encodes H.264. Without it the frames are still written as numbered PNG files and
-  the command says how to encode them (``ffmpeg``).
+Optional Python packages, used only here (never imported by the rest of the engine):
 
-Install both with the ``video`` extra: ``pip install 'radarx-desktop-engine[video]'``. The installed
-app (frozen engine) gets them from the optional movie components pack instead (``engine/movie_pack.py``).
+* ``playwright`` drives the system Chrome (``channel="chrome"``; no browser is downloaded). The
+  installed app gets it from the optional movie components pack (``engine/movie_pack.py``), the
+  Python package from the ``video`` extra: ``pip install 'radarx-desktop-engine[video]'``.
+* ``av`` (PyAV) is the user's own choice (``--encoder pyav``, or the automatic fallback when the
+  browser cannot encode): ``pip install av``. Its PyPI wheels bundle FFmpeg built with GPL parts
+  (libx264), so the project never ships it; without it and without a browser encoder the frames are
+  written as numbered PNG files and the command says how to encode them (``ffmpeg``).
 """
 
 # ruff: noqa: E501
@@ -42,6 +48,13 @@ from engine.animate_tiles import TileCache
 
 INSTALL_VIDEO = "pip install 'radarx-desktop-engine[video]'"
 INSTALL_VIDEO_CHECKOUT = "pip install -e 'python/[video]'"
+INSTALL_AV = "pip install av"
+
+#: ``--encoder``: ``auto`` = the browser's encoder when the page says it can, else PyAV when the user
+#: installed it, else PNG frames; the others force one.
+ENCODERS = ("auto", "browser", "pyav", "png")
+#: Bytes of the finished film pulled from the page per ``evaluate`` call (base64 on the wire).
+ENCODER_CHUNK = 4 * 1024 * 1024
 
 
 def _dependency_error(message: str) -> Exception:
@@ -56,11 +69,11 @@ def _dependency_error(message: str) -> Exception:
 
 
 def have_module(name: str) -> bool:
-    if name in ("playwright", "av"):
+    from engine import movie_pack
+
+    if name in movie_pack.MODULES:
         # The installed app gets these from the optional movie components pack (engine/movie_pack.py),
         # which must be on sys.path before they are looked up.
-        from engine import movie_pack
-
         movie_pack.activate()
     try:
         return importlib.util.find_spec(name) is not None
@@ -69,18 +82,25 @@ def have_module(name: str) -> bool:
 
 
 def video_status() -> dict[str, bool]:
-    """Which of the optional packages ``rxd animate`` uses are importable."""
+    """Which of the optional packages ``rxd animate`` can use are importable (``av`` is never
+    shipped by the project: it is there only when the user installed it)."""
     return {"playwright": have_module("playwright"), "av": have_module("av")}
 
 
 def install_help(missing: list[str]) -> str:
-    names = {"playwright": "Playwright (drives Chrome)", "av": "PyAV (writes the MP4)"}
-    what = " and ".join(names[m] for m in missing)
+    if missing == ["av"]:
+        return (
+            "PyAV is not installed. It is not part of Radarx (its wheels bundle FFmpeg with GPL "
+            f"parts); install it yourself if you want it:\n  {INSTALL_AV}\n"
+            "Without it the film is encoded by Chrome's own encoder (--encoder browser, the default "
+            "when the browser has one), or the frames are written as PNG files that ffmpeg can "
+            "encode (the command prints the line)."
+        )
     return (
-        f"rxd animate needs {what}, which are not installed by default. Install the optional "
-        f"'video' extra:\n  {INSTALL_VIDEO}\n  (from a source checkout: {INSTALL_VIDEO_CHECKOUT})\n"
-        "The system Google Chrome is used: no browser is downloaded. Without PyAV the frames are "
-        "still written as PNG files that ffmpeg can encode (the command prints the line)."
+        "rxd animate needs Playwright (drives Chrome), which is not installed by default. Install "
+        f"the optional 'video' extra:\n  {INSTALL_VIDEO}\n  (from a source checkout: "
+        f"{INSTALL_VIDEO_CHECKOUT})\nThe system Google Chrome is used: no browser is downloaded; "
+        "Chrome also encodes the film."
     )
 
 
@@ -92,6 +112,40 @@ def require_playwright() -> None:
 def require_av() -> None:
     if not have_module("av"):
         raise _dependency_error(install_help(["av"]))
+
+
+def choose_encoder(requested: str, browser_ok: bool, av_ok: bool) -> str:
+    """Which encoder a run uses: ``browser``, ``pyav`` or ``png`` (pure; the callers raise).
+
+    ``auto``: the browser when its page can encode, else PyAV when it is importable, else PNG frames.
+    An explicit choice is returned as asked, so ``resolve_encoder`` can say why it cannot be met."""
+    if requested not in ENCODERS:
+        raise AnimateConfigError(f"--encoder {requested!r}: use {', '.join(ENCODERS)}")
+    if requested == "auto":
+        return "browser" if browser_ok else "pyav" if av_ok else "png"
+    return requested
+
+
+def resolve_encoder(requested: str, support: dict[str, Any], av_ok: bool, sound: bool) -> str:
+    """``choose_encoder`` plus the checks: a forced encoder that is missing, or ``--sound`` with no
+    encoder that can carry the audio, is a dependency error that names the fix."""
+    browser_ok = bool(support.get("choice"))
+    enc = choose_encoder(requested, browser_ok, av_ok)
+    notes = "; ".join(support.get("notes") or []) or "no WebCodecs H.264 or VP9 encoder"
+    if enc == "browser" and not browser_ok:
+        raise _dependency_error(
+            f"--encoder browser: this Chrome cannot encode video ({notes}). Update Google Chrome, "
+            f"or use --encoder pyav after `{INSTALL_AV}`, or --encoder png for the frames."
+        )
+    if enc == "pyav" and not av_ok:
+        require_av()
+    if enc == "png" and sound:
+        raise _dependency_error(
+            f"--sound needs an encoder for the audio, and neither Chrome's ({notes}) nor PyAV "
+            f"(`{INSTALL_AV}`) is available: no film with sound can be written. Drop --sound for "
+            "PNG frames, or install one of them."
+        )
+    return enc
 
 
 def ffmpeg_command(frames_dir: Path, out: Path, fps: float, ext: str = "png") -> str:
@@ -215,7 +269,8 @@ def frontend_fingerprint(dist: Path) -> str:
 
 
 class _Handler(http.server.SimpleHTTPRequestHandler):
-    """/ -> the built app, /bundle/ -> manifest + grids, /tiles/ -> cached map tiles."""
+    """/ -> the built app, /bundle/ -> manifest + grids, /tiles/ -> cached map tiles,
+    /frames/ -> the job's frames already on disk (a resumed job feeds them to the page encoder)."""
 
     def __init__(
         self,
@@ -224,9 +279,11 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
         store: Path | None,
         manifest: Path | None,
         tiles: TileCache,
+        frames: Path | None = None,
         **kw: Any,
     ) -> None:
         self._dist, self._store, self._manifest, self._tiles = dist, store, manifest, tiles
+        self._frames = frames
         super().__init__(*args, **kw)
 
     def do_GET(self) -> None:
@@ -256,6 +313,11 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
             if self._store is not None and "/" not in name:
                 return str(self._store / name)
             return str(self._dist / "__missing__")
+        if clean.startswith("/frames/"):
+            name = clean[len("/frames/") :]
+            if self._frames is not None and "/" not in name and name.startswith("frame_"):
+                return str(self._frames / name)
+            return str(self._dist / "__missing__")
         return str(self._dist / clean.lstrip("/"))
 
     def log_message(self, *args: Any) -> None:  # quiet
@@ -263,10 +325,16 @@ class _Handler(http.server.SimpleHTTPRequestHandler):
 
 
 def serve(
-    dist: Path, store: Path | None, manifest: Path | None, tiles: TileCache
+    dist: Path,
+    store: Path | None,
+    manifest: Path | None,
+    tiles: TileCache,
+    frames: Path | None = None,
 ) -> tuple[socketserver.TCPServer, int]:
     """Start the local server on a free port of 127.0.0.1 (nothing is reachable from outside)."""
-    handler = functools.partial(_Handler, dist=dist, store=store, manifest=manifest, tiles=tiles)
+    handler = functools.partial(
+        _Handler, dist=dist, store=store, manifest=manifest, tiles=tiles, frames=frames
+    )
     socketserver.ThreadingTCPServer.allow_reuse_address = True
     srv = socketserver.ThreadingTCPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -353,13 +421,14 @@ class Renderer:
         offline: bool = False,
         channel: str = "chrome",
         software: bool = False,
+        frames_dir: Path | None = None,
         log: Callable[[str], None] = lambda _m: None,
     ) -> None:
         require_playwright()
         self.log = log
         self.width, self.height = width, height
         self.tiles = TileCache(tile_cache, offline=offline)
-        self.srv, self.port = serve(dist, store, manifest, self.tiles)
+        self.srv, self.port = serve(dist, store, manifest, self.tiles, frames_dir)
         self._pw: Any = None
         self._browser: Any = None
         self.page: Any = None
@@ -465,6 +534,109 @@ class Renderer:
         self._call("(t) => window.__xrClip.renderAt(t)", t)
         return self.page.screenshot(type="png")
 
+    # -- the encoder in the page (clipEncoder.ts) ---------------------------------------------
+
+    def encoder_support(self) -> dict[str, Any]:
+        """What this browser can encode: ``avc``, ``vp9``, ``aac``, ``opus`` flags, ``notes`` and
+        ``choice`` (the container and codecs ``pickCodecs`` would use, or None). An old page without
+        the encoder answers as a browser without WebCodecs."""
+        try:
+            return self.page.evaluate(
+                "() => window.__xrClip.encoderSupport ? window.__xrClip.encoderSupport() : null"
+            ) or {
+                "webcodecs": False,
+                "avc": False,
+                "vp9": False,
+                "aac": False,
+                "opus": False,
+                "choice": None,
+                "notes": ["the app build has no in-page encoder: rebuild it (npm run build)"],
+            }
+        except Exception as exc:
+            msg = str(exc).split("\n")[0].replace("Page.evaluate: ", "")
+            return {
+                "webcodecs": False,
+                "avc": False,
+                "vp9": False,
+                "aac": False,
+                "opus": False,
+                "choice": None,
+                "notes": [msg[:200]],
+            }
+
+    def encoder_start(
+        self,
+        *,
+        crf: int,
+        fps: float,
+        sound: bool,
+        sample_rate: int = 48000,
+        keyframe_s: float = 2.0,
+    ) -> dict[str, Any]:
+        """Open the encoder for a film of the page's size: returns the codecs, container, file
+        extension (``mp4`` or ``webm``) and bit rate chosen."""
+        return self._call(
+            "(o) => window.__xrClip.encoderStart(o)",
+            {
+                "crf": crf,
+                "fps": fps,
+                "sound": sound,
+                "sampleRate": sample_rate,
+                "keyframeS": keyframe_s,
+            },
+        )
+
+    def encode_frame(self, i: int) -> int:
+        """Draw frame ``i`` and encode it in the page (the drawing buffer stays for a screenshot)."""
+        return int(self._call("(i) => window.__xrClip.encodeFrame(i)", i))
+
+    def encode_image(self, i: int, ext: str = "png") -> int:
+        """Encode frame ``i`` from the file already on disk (served at ``/frames/``)."""
+        return int(
+            self._call(
+                "(a) => window.__xrClip.encodeImage(a[0], a[1])",
+                [i, f"/frames/{frame_name(i, ext)}"],
+            )
+        )
+
+    def encode_audio(self, n_frames: int) -> int:
+        """Encode the sound of the last ``render_audio``, fitted to ``n_frames`` frames."""
+        return int(self._call("(n) => window.__xrClip.encodeAudio(n)", n_frames))
+
+    def encoder_finish(self) -> dict[str, Any]:
+        return self._call("() => window.__xrClip.encoderFinish()")
+
+    def encoder_dispose(self) -> None:
+        with contextlib.suppress(Exception):
+            self.page.evaluate("() => window.__xrClip.encoderDispose()")
+
+    def write_encoded(self, out: Path, size: int) -> int:
+        """Pull the finished film from the page in chunks and write it atomically; the byte count."""
+        import base64
+
+        part = out.with_name(out.name + ".part")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        got = 0
+        try:
+            with open(part, "wb") as fh:
+                while got < size:
+                    b64 = self._call(
+                        "(a) => window.__xrClip.encoderRead(a[0], a[1])", [got, ENCODER_CHUNK]
+                    )
+                    chunk = base64.b64decode(b64)
+                    if not chunk:
+                        raise RuntimeError(f"the page gave no data at byte {got} of {size}")
+                    fh.write(chunk)
+                    got += len(chunk)
+        except BaseException:
+            part.unlink(missing_ok=True)
+            raise
+        if got != size:
+            part.unlink(missing_ok=True)
+            raise RuntimeError(f"the film is {size} bytes but {got} were read from the page")
+        part.replace(out)
+        return got
+
     def close(self) -> None:
         for obj, meth in ((self._browser, "close"), (self._pw, "stop")):
             if obj is not None:
@@ -545,6 +717,31 @@ def render_frames(
             progress(n + 1, len(indices), time.perf_counter() - t0)
 
 
+def encode_frames(
+    r: Renderer,
+    frames_dir: Path,
+    n: int,
+    done: set[int],
+    *,
+    ext: str = "png",
+    progress: Callable[[int, int, float], None] | None = None,
+) -> None:
+    """All ``n`` frames in order into the page's encoder: the ones in ``done`` from disk, the others
+    drawn now and also saved to disk (so a stopped job resumes, exactly as the PyAV path)."""
+    t0 = time.perf_counter()
+    todo = n - len(done)
+    k = 0
+    for i in range(n):
+        if i in done:
+            r.encode_image(i, ext)
+            continue
+        r.encode_frame(i)
+        save_frame(r.page.screenshot(type="png"), frames_dir / frame_name(i, ext), ext)
+        k += 1
+        if progress:
+            progress(k, todo, time.perf_counter() - t0)
+
+
 @dataclass
 class AudioTrack:
     """Audio to put in the MP4: 16-bit stereo PCM, shape (samples, 2), at ``sample_rate`` Hz."""
@@ -582,9 +779,10 @@ def encode_mp4(
     metadata: dict[str, str] | None = None,
     audio: AudioTrack | None = None,
 ) -> None:
-    """H.264 (yuv420p, faststart) from the numbered frames; written to ``out.part`` then renamed, so
-    a crash never leaves a broken file under the final name. ``audio``: an AAC 48 kHz stereo track of
-    the same length, interleaved with the video."""
+    """The PyAV path (``--encoder pyav``, the user's own PyAV): H.264 (yuv420p, faststart) from the
+    numbered frames; written to ``out.part`` then renamed, so a crash never leaves a broken file under
+    the final name. ``audio``: an AAC 48 kHz stereo track of the same length, interleaved with the
+    video."""
     require_av()
     import av
     from PIL import Image
@@ -645,6 +843,96 @@ def _encode_audio(container: Any, audio: AudioTrack) -> list[Any]:
         packets.extend(stream.encode(af))
     packets.extend(stream.encode())
     return packets
+
+
+# ---------------------------------------------------------------------------
+# MP4 tags for a film the browser wrote (the muxer in the page writes none)
+# ---------------------------------------------------------------------------
+
+#: ``moov`` containers walked to find the chunk offset tables that move when ``moov`` grows.
+_MP4_CONTAINERS = {b"moov", b"trak", b"mdia", b"minf", b"stbl"}
+#: title / comment -> the iTunes-style keys ffmpeg, QuickTime and VLC read.
+_MP4_TAG_KEYS = {"title": b"\xa9nam", "comment": b"\xa9cmt", "artist": b"\xa9ART"}
+
+
+def _box(kind: bytes, payload: bytes) -> bytes:
+    return (8 + len(payload)).to_bytes(4, "big") + kind + payload
+
+
+def _mp4_udta(tags: dict[str, str]) -> bytes:
+    """A ``udta/meta/ilst`` box with the given tags (UTF-8 ``data`` atoms)."""
+    items = b""
+    for key, value in tags.items():
+        kind = _MP4_TAG_KEYS.get(key)
+        if kind is None or not value:
+            continue
+        data = _box(b"data", (1).to_bytes(4, "big") + bytes(4) + value.encode("utf-8"))
+        items += _box(kind, data)
+    hdlr = _box(b"hdlr", bytes(4) + bytes(4) + b"mdir" + b"appl" + bytes(8) + b"\0")
+    meta = _box(b"meta", bytes(4) + hdlr + _box(b"ilst", items))
+    return _box(b"udta", meta)
+
+
+def _mp4_boxes(data: bytes, start: int, end: int) -> list[tuple[bytes, int, int, int]]:
+    """(type, box start, header size, box end) of the boxes between ``start`` and ``end``."""
+    out = []
+    pos = start
+    while pos + 8 <= end:
+        size = int.from_bytes(data[pos : pos + 4], "big")
+        kind = data[pos + 4 : pos + 8]
+        header = 8
+        if size == 1:
+            size = int.from_bytes(data[pos + 8 : pos + 16], "big")
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header:
+            raise ValueError("malformed MP4 box")
+        out.append((kind, pos, header, pos + size))
+        pos += size
+    return out
+
+
+def _shift_chunk_offsets(moov: bytearray, start: int, end: int, delta: int) -> None:
+    """Add ``delta`` to every ``stco`` / ``co64`` entry inside the container ``start..end``."""
+    for kind, pos, header, box_end in _mp4_boxes(bytes(moov), start, end):
+        if kind in _MP4_CONTAINERS:
+            _shift_chunk_offsets(moov, pos + header, box_end, delta)
+        elif kind in (b"stco", b"co64"):
+            width = 4 if kind == b"stco" else 8
+            count = int.from_bytes(moov[pos + header + 4 : pos + header + 8], "big")
+            p = pos + header + 8
+            for _ in range(count):
+                v = int.from_bytes(moov[p : p + width], "big") + delta
+                moov[p : p + width] = v.to_bytes(width, "big")
+                p += width
+
+
+def write_mp4_tags(path: Path, tags: dict[str, str]) -> None:
+    """Put ``title`` / ``comment`` tags into an MP4 the browser wrote, in place (atomically).
+
+    The page's muxer writes no metadata; the tags carry what the film is (interpolated frames,
+    synthesised sound) and the name of the record file, so they matter. A ``udta`` box is appended
+    to ``moov``; when ``moov`` sits before ``mdat`` (fast start), the chunk offsets are moved by the
+    bytes added so the samples still point to the right place."""
+    data = path.read_bytes()
+    boxes = _mp4_boxes(data, 0, len(data))
+    moov = next((b for b in boxes if b[0] == b"moov"), None)
+    if moov is None:
+        raise ValueError(f"{path.name}: no moov box")
+    _kind, m_start, m_header, m_end = moov
+    if m_header != 8:
+        raise ValueError(f"{path.name}: a 64-bit moov box is not handled")
+    udta = _mp4_udta(tags)
+    body = bytearray(data[m_start:m_end])
+    mdat_after = any(b[0] == b"mdat" and b[1] > m_start for b in boxes)
+    if mdat_after:
+        _shift_chunk_offsets(body, 8, len(body), len(udta))
+    body += udta
+    body[0:4] = len(body).to_bytes(4, "big")
+    tmp = path.with_name(path.name + ".tags")
+    tmp.write_bytes(data[:m_start] + bytes(body) + data[m_end:])
+    tmp.replace(path)
 
 
 def copy_frames(frames_dir: Path, dest: Path, n: int, ext: str = "png") -> None:

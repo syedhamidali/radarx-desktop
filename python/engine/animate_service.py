@@ -7,8 +7,9 @@ same functions as the command line (:mod:`engine.animate`); nothing is spawned i
 Messages (``request_id`` is echoed on every answer):
 
 * ``animate_capabilities {}`` -> ``animate_capabilities {ready, problems: [{what, hint}], sound,
-  renderer, chrome, av, playwright, radarx, default_output_dir, cache_dir, choices}``:
-  what rendering needs, checked up front, each with a fix hint in plain words.
+  encoder: {name, detail, support}, renderer, chrome, av, playwright, radarx, default_output_dir,
+  cache_dir, choices}``: what rendering needs, checked up front, each with a fix hint in plain
+  words; ``encoder`` says who writes the film (``browser``: Chrome's own encoder; ``pyav``; ``none``).
 * ``animate_plan {inputs: [paths], options: {...}}`` -> progress, then
   ``animate_plan_result {plan, report}`` (``rxd animate --no-render``: steps, track, frames, camera)
   or ``animate_error {message}``.
@@ -158,8 +159,33 @@ def find_chrome() -> dict[str, Any]:
     }
 
 
+#: The browser's encoder support, asked once per (renderer build, Chrome) in this process.
+_ENCODER_PROBE: dict[str, dict[str, Any]] = {}
+
+
+def encoder_probe(dist: Path, channel: str = "chrome") -> dict[str, Any]:
+    """Start the clip page once in a headless Chrome and ask what it can encode (cached)."""
+    from engine import animate_render as render
+
+    key = f"{dist}|{render.frontend_fingerprint(dist)}|{channel}"
+    hit = _ENCODER_PROBE.get(key)
+    if hit is not None:
+        return hit
+    try:
+        with render.Renderer(dist, 64, 64, channel=channel, offline=True) as r:
+            got = r.encoder_support()
+            got["browser"] = r.browser_version
+    except Exception as exc:
+        got = {"choice": None, "notes": [str(exc).splitlines()[0][:200]], "browser": None}
+    _ENCODER_PROBE[key] = got
+    return got
+
+
 def capabilities() -> dict[str, Any]:
-    """Everything the Movie Studio needs, checked up front, with a fix hint for each missing piece."""
+    """Everything the Movie Studio needs, checked up front, with a fix hint for each missing piece.
+
+    ``encoder`` says who will write the film: ``browser`` (Chrome's own WebCodecs encoder, the
+    normal case), ``pyav`` (the user's own PyAV, when Chrome cannot encode) or ``none``."""
     from engine import animate_render as render
     from engine.exporter import default_export_dir
 
@@ -176,16 +202,16 @@ def capabilities() -> dict[str, Any]:
     from engine import movie_pack
 
     pack = movie_pack.status()
-    pack_missing = pack["needed"] and not (status["playwright"] and status["av"])
+    pack_missing = pack["needed"] and not status["playwright"]
     if pack_missing:
-        # The installed app: the libraries come as an optional download (the dialog offers it).
+        # The installed app: the library comes as an optional download (the dialog offers it).
         problems.append(
             {
-                "what": "The movie components (Playwright, which drives Chrome, and PyAV, which writes the MP4) are not installed.",
+                "what": "The movie components (Playwright, which drives Chrome) are not installed.",
                 "hint": (
                     pack["problem"]
                     if pack.get("problem")
-                    else "They are an optional download of about 60 MB, kept in your data folder; the card below offers it."
+                    else "They are an optional download of about 45 MB, kept in your data folder; the card below offers it."
                 ),
                 "movie_pack": True,
             }
@@ -201,8 +227,10 @@ def capabilities() -> dict[str, Any]:
     if not chrome["ok"]:
         problems.append({"what": "No browser for the renderer.", "hint": chrome["hint"]})
     renderer: dict[str, Any]
+    dist: Path | None = None
     try:
-        renderer = {"ok": True, "path": str(render.find_frontend(None))}
+        dist = render.find_frontend(None)
+        renderer = {"ok": True, "path": str(dist)}
     except Exception as exc:  # XrdDependencyError with the fix in its text
         text = str(exc)
         renderer = {"ok": False, "hint": text}
@@ -212,13 +240,46 @@ def capabilities() -> dict[str, Any]:
                 "hint": text.split("\n", 1)[1].strip() if "\n" in text else text,
             }
         )
-    av_note = None
-    if not status["av"] and not pack_missing:
-        av_note = (
-            f"PyAV is missing, so no MP4 can be written: the frames would be saved as PNG files. "
-            f"Install the video extra: {render.INSTALL_VIDEO}"
+    # who writes the film: Chrome itself when its page can encode, else the user's PyAV
+    encoder: dict[str, Any] = {"name": "none", "detail": "", "support": None}
+    if status["playwright"] and chrome["ok"] and dist is not None:
+        support = encoder_probe(dist, chrome.get("channel") or "chrome")
+        encoder["support"] = {
+            k: support.get(k) for k in ("avc", "vp9", "aac", "opus", "avcHardware", "notes")
+        }
+        choice = support.get("choice")
+        if choice:
+            encoder["name"] = "browser"
+            encoder["detail"] = (
+                f"Chrome writes the film: {'H.264' if choice['video'] == 'avc' else 'VP9'} "
+                f"{'+ AAC' if choice.get('audio') == 'aac' else '+ Opus' if choice.get('audio') else '(no sound codec)'} "
+                f"in {choice['container'].upper()}"
+            )
+            if choice["video"] != "avc":
+                problems_note = "This Chrome has no H.264 encoder: films are VP9 in WebM (plays in Chrome; QuickTime does not open it)."
+                encoder["detail"] += ". " + problems_note
+        elif status["av"]:
+            encoder["name"] = "pyav"
+            encoder["detail"] = (
+                "PyAV (installed by you) writes the MP4: this Chrome cannot encode video"
+            )
+        else:
+            notes = "; ".join(support.get("notes") or []) or "no WebCodecs encoder"
+            problems.append(
+                {
+                    "what": "No video encoder: this Chrome cannot encode video, and PyAV is not installed.",
+                    "hint": f"Update Google Chrome (it encodes the film itself), or `{render.INSTALL_AV}`. Details: {notes}",
+                }
+            )
+    elif status["av"]:
+        encoder["name"] = "pyav"
+        encoder["detail"] = "PyAV (installed by you) writes the MP4"
+    sound_ok = encoder["name"] == "pyav" or (
+        encoder["name"] == "browser"
+        and bool(
+            (encoder.get("support") or {}).get("aac") or (encoder.get("support") or {}).get("opus")
         )
-        problems.append({"what": "PyAV is missing (it writes the MP4).", "hint": av_note})
+    )
     try:
         out_dir = str(default_export_dir())
     except ValueError:
@@ -233,10 +294,11 @@ def capabilities() -> dict[str, Any]:
         "radarx": radarx,
         "playwright": status["playwright"],
         "av": status["av"],
+        "encoder": encoder,
         "chrome": chrome,
         "renderer": renderer,
         "movie_pack": pack,
-        "sound": render.have_module("engine.animate_sound") and status["av"],
+        "sound": render.have_module("engine.animate_sound") and sound_ok,
         "default_output_dir": out_dir,
         "cache_dir": str(data.default_cache_dir_for(None)),
         "choices": {"cameras": CAMERAS, "palettes": PALETTES, "lights": LIGHTS, "tracks": TRACKS},
