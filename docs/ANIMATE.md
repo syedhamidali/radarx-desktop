@@ -315,7 +315,9 @@ relative to that default (0; from -30 to 20). On the Mayfield case, listener 10 
 at the listener, the thunder-only energy in the 1.5 s after each arrival (the film minus the same film without thunder)
 was 7.9 dB above the wind and rain bed in the median for the observed GLM flashes and 10.8 dB for the modelled ones; the
 loudest thunder samples are about 26 dB above the bed's RMS level. (Measured before the rain was read from the lowest
-gridded level: the bed there was wind only. MEASURED_AFTER) A listener far from the flashes still hears the
+gridded level, when the bed was wind only. With the rain heard, on a 10 s overview of the same case with 12 observed
+GLM flashes, the median went from 8.6 to 7.9 dB above the bed, the rain level reached 0.73 and was above zero for 69%
+of the film, read from the echo at 1 to 2.5 km.) A listener far from the flashes still hears the
 thunder fainter, so check the median in the record (`sound` block, `mix`) rather than assuming it.
 
 **What the film and the files say.** On the film two lines in the lower part: "Sound is SYNTHESISED, not a
