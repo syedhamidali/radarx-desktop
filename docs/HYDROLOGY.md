@@ -4,8 +4,8 @@ From radar volumes to **rain rate, rainfall accumulation and basin-average rainf
 uncertainty and the beam quality shown next to every number, optional adjustment to rain gauges, and
 a CF NetCDF that says how it was made. Built on [radarx](https://radarx.readthedocs.io/en/latest/)
 (rain-rate relations, KDP, attenuation, hydrometeor classification, beam blockage, advection) and the
-mosaic grid of the app. Works from the app (the **Rainfall** panel), the command line (`rxd qpe`,
-`rxd basin`) and Python (`api.qpe`), with the same engine and the same numbers.
+mosaic grid of the app. Works from the app (the **Rainfall** panel), and the command line (`rxd qpe`,
+`rxd basin`), with the same numbers.
 
 ```{admonition} An estimate, never an observation
 :class: warning
@@ -33,18 +33,6 @@ rxd qpe -i 'mayfield/*/*_V06' --resolution-m 2000 -o network.nc
 rxd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked \
         --basins watersheds.geojson --frequency atlas14_6h.json -o adjusted.nc
 rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png
-```
-
-```python
-from engine import api
-
-res = api.qpe(sorted(glob("mayfield/KHPX/*_V06")), out="rain.nc")   # RETRIEVED accumulation
-res.stats()                                   # max, mean, wet area, uncertainty
-res.accumulation, res.accumulation_sigma      # mm, 1-sigma in mm (NumPy, on res.grid)
-res.save("rain.png")                          # colour image + world file for GIS
-res = api.qpe(files, gauges="gauges.csv", basins="basins.geojson", adjust="mfb")
-res.validation["cross_validation"]            # leave-one-gauge-out skill
-res.basin_series.summary()                    # per basin: mean depth, area above thresholds ...
 ```
 
 In the app: open the volumes, expand **Rainfall**, choose the relation, press **Estimate rainfall**.
@@ -280,7 +268,7 @@ reduction factor is applied, so the return period of a large basin is an **upper
 
 ## Accuracy against a known truth
 
-These numbers come from the tests (`python/tests/test_hydro_*.py`); the DSD tests use the radarx forward
+These numbers come from the validation runs of the method; the DSD runs use the radarx forward
 model (T-matrix scattering) on gamma drop size distributions (μ = 3, D<sub>m</sub> 0.9–2.6 mm, N<sub>w</sub>
 10³–10⁴·² mm⁻¹ m⁻³; 2400 gates, S band), the truth being the rain rate of the distribution itself.
 
@@ -352,7 +340,7 @@ open volumes. Peak memory is one decoded volume plus the working set, about 1–
 * **Basins**: the return period compares an area mean with point depths.
 * **Snow**: the Z-S relations are uncertain by a factor of two or more and gauges under-catch snow.
 
-## Command line, Python and app reference
+## Command line and app reference
 
 `rxd qpe` options: `-i` volumes (files, globs, folders), `-o` (`.nc .png .json .csv`), `-p` figure, `-P KEY=VALUE`
 (any estimator option: `zr_a`, `zr_b`, `sigma_z_db`, `phase_policy`, `ml_policy`, `hail_policy`, `kdp_min`,
@@ -365,14 +353,6 @@ open volumes. Peak memory is one decoded volume plus the working set, about 1–
 `rxd basin` is the same pipeline with the basins required and the table / hyetograph as the default outputs.
 Exit codes as in {doc}`CLI`: a wrong option or relation is 2, a missing file 3, a processing failure 1.
 
-Python: `api.qpe(files, **options)` / `Volume.qpe()` return an `engine.hydro.accumulate.QpeResult`
-(`.accumulation`, `.accumulation_sigma`, `.rate_max`, `.rate_last`, `.valid_fraction`, `.quality`, `.flags`,
-`.basin_series`, `.validation`, `.exceedance`, `.provenance()`, `.save()`, `.plot()`, `.to_dataset()`).
-The building blocks are public: `engine.hydro.qpe.estimate_sweep` (one sweep with quality and uncertainty),
-`engine.hydro.accumulate.accumulate`, `engine.hydro.gauges` (`read_gauges`, `GaugeSet.quality_control`,
-`adjust`, `cross_validate`, `metrics`), `engine.hydro.basins` (`BasinSet`, `zonal_stats`,
-`FrequencyTable`, `exceedance`).
-
 Modules (Modules panel, category *Hydrology*): `hydro_qpe` (rain rate of one sweep with uncertainty, beam quality
 and the relation used, as polar fields; "All sweeps → 3D" works) and `hydro_basin_rate` (area-weighted rate over
 basins from one volume).
@@ -380,7 +360,7 @@ basins from one volume).
 App: the **Rainfall** panel (radar volumes shared with the Mosaic panel, estimate, gauges, basins, run; result:
 legend and map layer switcher, summary, method text, notes, gauge scatter with the 1:1 line, validation tables
 by range and amount, residual map, basin table and series chart, export to NetCDF/PNG/JSON/CSV in the desktop
-app). It is a separate lazily loaded chunk; the map layer is the mosaic layer, so the Mosaic panel shows the
+app). The map layer is the mosaic layer, so the Mosaic panel shows the
 same image while it is on the map.
 
 ## References
