@@ -616,7 +616,11 @@ def _run(
         warnings += sound_plan.warnings
         detail(
             f"sound: thunder {sound_plan.thunder} ({len(sound_plan.flashes)} flashes), light-to-sound delay "
-            f"divided by {sound_plan.compress:g} ({sound_plan.compress_source})"
+            + (
+                f"through the film clock (mean time-lapse x{sound_plan.compress:g})"
+                if sound_plan.compress_source.startswith("automatic")
+                else f"divided by {sound_plan.compress:g} ({sound_plan.compress_source})"
+            )
         )
     if not (bundle.manifest["animate"]["winds"]):
         detail("interpolation: translation along the storm motion (no wind retrieval)")
@@ -741,6 +745,14 @@ def _render(
                 note("synthesising the sound (offline Web Audio in Chrome)")
                 sound_audio = r.render_audio(48000)
                 sound_track = render.pcm_from_page(sound_audio, n, res.fps)
+                # the label says what the sound was actually made of (wind share at the listener,
+                # a silent rain), decided from the rendered sound before any frame is drawn
+                from engine import animate_sound as snd
+
+                rows = snd.final_label(res.sound_plan, sound_audio)
+                if rows != res.sound_plan.label:
+                    r.set_sound_label(rows)
+                    res.sound_plan.label = rows
             else:
                 res.warnings.append(
                     "--sound: no MP4 is written in this run (only a still or a frame folder), so no audio was made"
@@ -852,13 +864,16 @@ def _finish_sound(res: AnimateResult, audio: dict[str, Any], track: Any, video_p
     rec = snd.record(plan_, audio, sha, res.steps.steps[0].time)
     if plan_.table:
         fpath = video_path.with_suffix(".flashes.csv")
-        snd.write_flash_table(fpath, plan_.table, plan_.flash_distance_km or None)
-        rec["flashes_file"] = str(fpath)
-    if audio.get("windProxyShare", 0) > 0:
-        res.warnings.append(
-            f"sound: for {100 * audio['windProxyShare']:.0f}% of the time there was no retrieved wind at the "
-            "listener, so a proxy from the storm motion and the rain was used there"
+        t0 = res.steps.steps[0].time
+        snd.write_flash_table(
+            fpath,
+            plan_.table,
+            plan_.flash_distance_km or None,
+            chosen_kind=snd.chosen_kinds(plan_.table, audio.get("thunders", []), t0),
+            seed=plan_.seed,
         )
+        rec["flashes_file"] = str(fpath)
+    res.warnings += [w for w in snd.audio_warnings(audio) if w not in res.warnings]
     res.sound = rec
 
 
@@ -1076,9 +1091,33 @@ def sound_report_line(snd: dict[str, Any]) -> str:
             else "the default place (10 km beside the track)"
         )
     )
+    from engine import animate_sound as asnd
+
+    wind = snd.get("wind") or {}
+    winds = (
+        asnd.wind_words(True, wind["share_of_time_retrieved"])
+        if "share_of_time_retrieved" in wind
+        else "wind from the retrieved winds or a proxy"
+    )
+    rain_rec = snd.get("rain") or {}
+    if rain_rec.get("heard") is False:
+        rain = "rain SILENT (its level stayed at zero for the whole film)"
+    elif rain_rec.get("heard") and rain_rec.get("echo_height_km"):
+        hk = rain_rec["echo_height_km"]
+        rain = (
+            f"rain from the reflectivity (heard {100 * rain_rec.get('share_of_time_heard', 0):.0f}% of the time, "
+            f"echo read at {hk['min']:g} to {hk['max']:g} km)"
+        )
+    else:
+        rain = "rain from the reflectivity"
+    timing = (
+        f"thunder delay through the film clock (mean time-lapse x{snd['compress']:g})"
+        if str(snd.get("compress_source", "")).startswith("automatic")
+        else f"delay divided by {snd['compress']:g} ({snd['compress_source']})"
+    )
     return (
-        f"  sound       SYNTHESISED, not a recording: wind from the retrieved winds or a proxy, rain from the reflectivity, "
-        f"{what}{' (flashes drawn)' if th.get('drawn') else ''}; delay divided by {snd['compress']:g} ({snd['compress_source']}); virtual listener at {where}; seed {snd['seed']}"
+        f"  sound       SYNTHESISED, not a recording: {winds}, {rain}, "
+        f"{what}{' (flashes drawn)' if th.get('drawn') else ''}; {timing}; virtual listener at {where}; seed {snd['seed']}"
     )
 
 

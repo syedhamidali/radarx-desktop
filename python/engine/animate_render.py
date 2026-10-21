@@ -447,6 +447,10 @@ class Renderer:
                 ) from exc
             raise RuntimeError(f"could not synthesise the sound: {msg[:300]}") from exc
 
+    def set_sound_label(self, rows: list[str]) -> None:
+        """Replace the sound label drawn on the film (before the frames are drawn)."""
+        self._call("(rows) => window.__xrClip.setSoundLabel(rows)", list(rows))
+
     def frame_png(self, i: int) -> bytes:
         self._call("(i) => window.__xrClip.renderFrame(i)", i)
         return self.page.screenshot(type="png")
