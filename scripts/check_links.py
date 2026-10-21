@@ -6,7 +6,9 @@ Checks, for the top-level ``*.md`` files, ``docs/*.md`` and ``.github/*.md``:
 * relative links and images ``[text](path)``, ``![alt](path)`` point to an existing file or folder,
 * ``#anchors`` (own page or another Markdown file) match a heading, with GitHub's slug rules,
 * MyST roles ``{doc}`name```, and ``{image}``/``{figure}`` directive paths in ``docs/``,
-* every ``docs/*.md`` page is listed in a ``toctree`` reachable from ``docs/index.md`` (Sphinx warns otherwise).
+* every ``docs/*.md`` page is listed in a ``toctree`` reachable from ``docs/index.md`` (Sphinx warns otherwise),
+* the published pages (``docs/*.md`` that are not in ``INTERNAL_PAGES``, and ``docs/changes/*.md``) contain no repository
+  paths, code names, API snippets, build-from-source steps or personal names (``SCRUB_PATTERNS`` below).
 
 External ``http(s)`` links are only counted; add ``--external`` to also request them (needs network).
 
@@ -34,6 +36,38 @@ FENCE = re.compile(r"^(```|~~~).*?^\1", re.M | re.S)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$", re.M)
 TOCTREE = re.compile(r"```\{toctree\}\n(.*?)```", re.S)
+
+
+# What the published documentation must not contain: it is a product manual, not a view of the repository.
+SCRUB_PATTERNS = [
+    (r"github\.com/syedhamidali", "a link to the source repository"),
+    (r"(?i)\bsyedhamidali\b|\bhamid\b|\bsyed\b", "a personal name"),
+    (r"(?<![\w/.-])(?:python|src|src-tauri|scripts|tests|tools|supabase|\.github)/[\w.*{}/-]+", "a repository path"),
+    (r"\bgit (?:clone|checkout|pull|push|commit)\b", "a source-control instruction"),
+    (r"\bimport rxd\b|\brxd\.[A-Za-z_]+\(|\bfrom engine\b|\bimport engine\b|\bengine\.[a-z_]{2,}\b", "the Python API or engine code"),
+    (r"\bnpm (?:ci|install|run)\b|\bcargo (?:build|test|metadata)\b|\bpytest\b|\bruff\b", "a build or test command"),
+    (r"(?i)github actions|\bworkflow\b|\bCI\b", "CI talk"),
+    (r"CONTRIBUTING|THIRD_PARTY_NOTICES|\bserver\.py\b|[\w-]+\.(?:svelte|mjs)\b", "a repository file name"),
+    (r"(?i)\bpull request\b|\bissue #\d+|\bPR #?\d+|#\d{2,3}\b(?!\w)", "an issue or pull request reference"),
+    (r"(?i)\bsource repository\b|\bsource tree\b|\bsource checkout\b|\bcheckout\b", "a reference to the source repository"),
+]
+
+
+def published_pages(internal: set[str]) -> list[Path]:
+    pages = [p for p in sorted((ROOT / "docs").glob("*.md")) if p.stem not in internal]
+    return pages + sorted((ROOT / "docs" / "changes").glob("[0-9]*.md"))
+
+
+def scrub_problems(internal: set[str]) -> list[str]:
+    problems: list[str] = []
+    for page in published_pages(internal):
+        rel = page.relative_to(ROOT).as_posix()
+        for no, line in enumerate(page.read_text().splitlines(), 1):
+            for pattern, what in SCRUB_PATTERNS:
+                m = re.search(pattern, line)
+                if m:
+                    problems.append(f"{rel}:{no}: {what}: {m.group(0)!r}")
+    return problems
 
 
 def md_files() -> list[Path]:
@@ -160,12 +194,14 @@ def main() -> int:
 
     # The published documentation must not refer to pages that are not published (docs/conf.py INTERNAL_PAGES).
     for page in sorted((ROOT / "docs").glob("*.md")):
-        if page.stem in internal or page.stem == "history":
+        if page.stem in internal:
             continue
         text = page.read_text()
         for name in sorted(internal):
             if re.search(rf"\{{doc\}}`(?:[^`<]*<)?{re.escape(name)}>?`|\]\({re.escape(name)}\.md", text):
                 problems.append(f"docs/{page.name}: links to the unpublished page {name} (docs/conf.py INTERNAL_PAGES)")
+
+    problems += scrub_problems(internal)
 
     if args.external:
         for url in sorted(external):

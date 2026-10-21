@@ -312,7 +312,7 @@ here: these are consistency checks. (An earlier version dropped half of the echo
 "snow" because the hydrometeor classification needs the temperature: hence `phase_policy`.)
 
 **Speed and memory** (Apple M-series laptop, NEXRAD Level II with 19 sweeps, 1 km grid, radarx compiled
-kernels): decoding a volume takes 2.5–3 s (the engine's reader, not this code); the rain rate of one volume
+kernels): decoding a volume takes 2.5–3 s (the file reader, not the rain-rate code); the rain rate of one volume
 (two lowest beams, KDP, hybrid, gridding) 0.8–1.1 s; four beams with a 500 m grid 1.9 s; the time
 integration of 20 nodes on a 4-radar 796 × 723 grid 0.8 s per radar pair; 16 volumes of 4 radars: 20 s with
 open volumes. Peak memory is one decoded volume plus the working set, about 1–1.6 GB for NEXRAD.

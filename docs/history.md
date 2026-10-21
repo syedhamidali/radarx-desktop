@@ -51,7 +51,7 @@
   only the file name; the saved panel order keeps the Rainfall and Pipelines panels; impossible colour-bar limits
   are refused; the browser build loads the realistic ground's tiles; stale "not connected" rows are cleared after
   an engine restart; sidebar splitters and panel headers work from the keyboard; the first load is smaller.
-- **Licence:** source-available under the PolyForm Noncommercial License 1.0.0; third-party notices are listed in
+- **Licence:** provided under the PolyForm Noncommercial License 1.0.0; third-party notices are listed in
   {doc}`LICENSES`.
 
 ## 0.2.1

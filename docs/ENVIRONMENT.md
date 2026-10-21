@@ -195,7 +195,7 @@ file, 4 when radarx is missing (the parcel thermodynamics need `pip install rada
 ## Limits, honestly
 
 * **No model, reanalysis, satellite or gauge provider ships yet.** The framework, the local-files provider,
-  one observed-sounding archive (IEM) and the test harness do. The IEM request has been exercised only against
+  one observed-sounding archive (IEM) and a simulated-server test setup do. The IEM request has been exercised only against
   recorded samples and a simulated server; the real service is not part of the automated checks.
 * The IEM terms of use are linked in the provider's licence text, not reproduced; read them before relying on it.
 * A sounding is not one place and one time: the balloon rises at about 5 m/s and drifts with the wind. The panel

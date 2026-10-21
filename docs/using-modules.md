@@ -1,6 +1,6 @@
 # Using modules
 
-Algorithms are plug-in **modules**. Open the *Modules* panel: they are grouped by category (dual-pol, hazards,
+Algorithms are **modules**. Open the *Modules* panel: they are grouped by category (dual-pol, hazards,
 kinematics, storm, quality control, ...), and a module whose input is missing says so instead of failing.
 
 ```{image} images/ui/modules-panel.png
