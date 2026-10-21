@@ -199,6 +199,13 @@
       icon: '\u{1F3AC}',
       action: () => dispatch('action', { type: 'movie-studio' }),
     });
+    actions.push({
+      id: 'radar-map',
+      label: 'Radar network map: which radars exist and which data you can load',
+      category: 'File',
+      icon: '\u{1F5FA}',
+      action: () => dispatch('action', { type: 'radar-map' }),
+    });
 
     return actions;
   }

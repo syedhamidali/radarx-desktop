@@ -31,7 +31,7 @@
   const isConnected = $derived($connectionStatus === 'connected');
 
   // ── State ────────────────────────────────────────────────────────────────
-  let mode = $state<'realtime' | 'archive' | 'arco' | 'network'>('realtime');
+  let mode = $state<'realtime' | 'archive' | 'arco' | 'network' | 'map'>('realtime');
   let stations = $state<Station[]>([]);
   let selectedStation = $state('KLOT');
   let loadingStations = $state(false);
@@ -54,7 +54,7 @@
   let cloudOpUnsub: (() => void) | null = null;
   const CLOUD_OPEN_TIMEOUT_MS = 120_000;
   /** Server errors that belong to the cloud open flows ("open_arco_scan failed: ...", "Invalid input for open_nexrad_l2: ..."). */
-  const OPEN_ERROR_RE = /(?:^|\b(?:in|for)\s+)(?:open_nexrad_realtime|open_nexrad_l2|open_arco_scan)\b/;
+  const OPEN_ERROR_RE = /(?:^|\b(?:in|for)\s+)(?:open_nexrad_realtime|open_nexrad_l2|open_arco_scan|open_network_scan)\b/;
 
   // Radar network (several nearby sites at about the same time → mosaic)
   type NetRow = { id: string; state: 'pending' | 'running' | 'ok' | 'failed'; text: string };
@@ -113,6 +113,12 @@
   function applySiteRequest() {
     const r = takePendingCloudRequest();
     if (!r) return;
+    if (r.action === 'open-network') {
+      // Another open network (DWD, FMI, ...): the consent dialog with the exact size was shown
+      // by the radar network map; the open runs as a tracked operation like any cloud open.
+      openNetworkScan(r.provider, r.site, r.key, r.name);
+      return;
+    }
     selectedStation = r.station;
     if (r.action === 'open') {
       mode = 'realtime';
@@ -305,6 +311,21 @@
     );
   }
 
+  /** One listed volume of another open network (DWD, FMI, ...), from the radar network map. */
+  function openNetworkScan(provider: string, site: string, key: string, name: string) {
+    if (!isConnected || isOpening || netBusy) {
+      addToast('warning', 'Another cloud open is still running; try again when it is done.');
+      return;
+    }
+    beginCloudOp(`network:${provider}:${site}:${key}`, `Opening ${provider.toUpperCase()} ${site} ${name.slice(-24)}`, () =>
+      wsManager.send({ type: 'open_network_scan', provider, site, key }),
+    );
+  }
+
+  function openRadarMap() {
+    window.dispatchEvent(new CustomEvent('xradar:radar-map'));
+  }
+
   // ── Radar network ────────────────────────────────────────────────────────
   /**
    * Send one request and resolve with the first matching `okType` reply, or reject on a
@@ -493,10 +514,27 @@
       <button class="cdp-tab" class:active={mode === 'archive'} on:click={() => { mode = 'archive'; }}>Archive</button>
       <button class="cdp-tab" class:active={mode === 'arco'} on:click={() => { mode = 'arco'; }}>ARCO</button>
       <button class="cdp-tab" class:active={mode === 'network'} data-testid="cdp-tab-network" on:click={() => { mode = 'network'; }}>Network</button>
+      <button class="cdp-tab" class:active={mode === 'map'} data-testid="cdp-tab-map" on:click={() => { mode = 'map'; }}>Map</button>
     </div>
 
+    <!-- World map of every radar: which exist, which data can be loaded -->
+    {#if mode === 'map'}
+      <div class="cdp-section" data-testid="cdp-map">
+        <p class="cdp-hint">
+          A world map of the radars in the bundled catalogue (NEXRAD, the European OPERA network,
+          WMO OSCAR worldwide). Each site says where its position comes from and whether the app
+          can load its data: NEXRAD, DWD (Germany) and the FMI sample (Finland) open directly.
+        </p>
+        <button class="cdp-btn primary full" data-testid="cdp-open-map" on:click={openRadarMap}>Open the radar network map</button>
+        <p class="cdp-hint">Opening a volume from the map asks you first and runs here, in the operations tray.</p>
+        {#if openKey?.startsWith('network:')}
+          <p class="cdp-hint">Downloading {openKey.split(':').slice(1, 3).join(' ')}. Progress and Cancel are in the operations tray (status bar).</p>
+        {/if}
+      </div>
+    {/if}
+
     <!-- Station row -->
-    <div class="cdp-row">
+    <div class="cdp-row" class:cdp-hidden={mode === 'map'}>
       <label class="cdp-label" for="cdp-station">{mode === 'network' ? 'Centre' : 'Station'}</label>
       <div class="cdp-station-row">
         {#if stations.length > 0}
@@ -712,6 +750,8 @@
     align-items: center;
     gap: var(--spacing-sm, 6px);
   }
+
+  .cdp-row.cdp-hidden { display: none; }
 
   .cdp-label {
     font-size: 11px;
