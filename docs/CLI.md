@@ -95,7 +95,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | | `rxd sounding` | a radiosonde file: CAPE, CIN, shear, helicity, freezing level, precipitable water |
 | Combine | `rxd mosaic` | several radars on one map |
 | | `rxd winds` | 3-D winds from two or more radars |
-| | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes |
+| | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes, with an optional synthesised sound track (`--sound`) |
 | Hydrology | `rxd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
 | | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
 | Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
@@ -351,6 +351,7 @@ $ rxd animate -i mayfield -o mayfield.mp4                # the folder with one s
 $ rxd animate -i mayfield -o top.mp4 --camera top-down --duration 30
 $ rxd animate -i mayfield -o custom.mp4 --camera camera.toml --realistic --look-preset "Golden hour" --set exposure=1.4
 $ rxd animate -i mayfield -p still.png --still-at 12      # one frame, to try a camera or a look
+$ rxd animate -i mayfield -o storm.mp4 --winds --sound --flashes-from-glm glm/   # a SYNTHESISED sound track: wind, rain, thunder timed to observed GLM flashes
 ```
 
 ```text

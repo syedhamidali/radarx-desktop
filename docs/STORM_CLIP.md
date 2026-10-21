@@ -111,8 +111,8 @@ in additive blending, and light: the cloud, the ground and the sky brighten arou
 is drawn over the picture (a bolt behind a dense core is not hidden; the cloud around it lights up from inside).
 
 **Sound.** The clip renderer can synthesise wind, rain and thunder from the data, with a listener at the observer
-(position and heading from the camera) and HRTF panning, and add it as an AAC track to the MP4 (`rxd animate` itself
-writes no sound track). The screen says "Synthesised from the data, not a recording". *Wind*: filtered noise whose level
+(position and heading from the camera) and HRTF panning, and add it as an AAC track to the MP4 (`rxd animate --sound` does the same for any camera, with a virtual listener and
+the thunder source of your choice: see {doc}`ANIMATE`). The screen says "Synthesised from the data, not a recording". *Wind*: filtered noise whose level
 and brightness follow the wind speed at the observer: the retrieved multi-Doppler wind of the lowest level around the
 observer (x 0.65 for the ground), with gusts; if there is no wind it is a proxy from the storm motion and the rain,
 labelled "not measured". *Rain*: bright noise whose level follows the reflectivity near the ground over the observer (20
@@ -216,7 +216,7 @@ The low-angle azimuth follows the storm's heading from the track.
   those of the tiles (legible at the top-down and low views, small at the far views).
 - Needs Chrome (GPU) and the renderer files; software GL works but is slow. Resolution is bounded by the GPU's 3D-texture
   and canvas limits.
-- The plain clip has no audio and no wind: it is about the reflectivity cloud.
+- The plain clip has no audio unless `rxd animate --sound` is given ({doc}`ANIMATE`), and no wind: it is about the reflectivity cloud.
 - Realistic version: the light is dusk light, not the real (night) sky; the imagery is the 2021 Sentinel-2 mosaic (a
   summer-biased composite), not the scene of that evening; radar sites and the scale bar are drawn at sea level, not on
   the terrain. The cloud is drawn from 500 m radar data stretched x4 vertically: it looks smooth and soft, not like a
