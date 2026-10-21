@@ -96,10 +96,12 @@ def _roles_present(variables: list[str]) -> dict[str, str]:
     from engine import varmap
 
     found: dict[str, str] = {}
+    keys = {id(r): k for k, r in varmap.ROLES.items()}
     for name in variables:
         role = varmap.role_for_name(name)
-        if role is not None and role.name not in found:
-            found[role.name] = name
+        key = keys.get(id(role)) if role is not None else None
+        if key is not None and key not in found:
+            found[key] = name
     return found
 
 
@@ -350,8 +352,8 @@ def inspect_inputs(
     # 3. per-radar summary
     radars: dict[str, dict[str, Any]] = {}
     for f in files:
-        if "error" in f:
-            continue
+        if "error" in f and f["source"] != "name":
+            continue  # unreadable and nameless: nothing to group it by
         r = radars.setdefault(
             f["radar"],
             {
