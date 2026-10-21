@@ -33,10 +33,10 @@ on the paired Doppler cut is found automatically.
 
 ## Modules
 
-Algorithms are plug-in modules: hydrometeor classification, KDP, QPE, hail, rotation couplets, shear, ZDR arcs and
+Algorithms are modules: hydrometeor classification, KDP, QPE, hail, rotation couplets, shear, ZDR arcs and
 columns, KDP columns, VVP winds, beam blockage, tornado probability, melting layer, QVP, ZDR calibration, storm
 cell detection and more. A result can be a table, an overlay or a new field that you can view in 2D and 3D and
-export. Running a module on all sweeps stores one *derived variable*. See {doc}`MODULES` to write your own.
+export. Running a module on all sweeps stores one *derived variable*. {doc}`MODULES` describes each one.
 
 ```{image} images/modules-hid.png
 :alt: Hydrometeor classification on every sweep
