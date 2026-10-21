@@ -1190,3 +1190,29 @@ def test_command_listing_keeps_the_group_title_apart_from_the_command() -> None:
     for title, items in cli.GROUPS:
         assert f"  {title:<10}{items[0][0]:<12}" in text
         assert len(title) < 10
+
+
+def _sub_commands() -> set[str]:
+    import argparse
+
+    parser = cli.build_parser()
+    (sub,) = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    return set(sub.choices)
+
+
+def test_overview_lists_every_sub_command_and_nothing_else() -> None:
+    """The grouped overview (plain ``rxd``) is a hand-written table: it left out ``auto``. Keep it
+    in step with the parser so a new command cannot be forgotten again."""
+    listed = [name for _, items in cli.GROUPS for name, _ in items]
+    assert len(listed) == len(set(listed)), "a command is listed twice"
+    assert set(listed) == _sub_commands()
+
+
+def test_plain_rxd_and_help_name_every_sub_command(capsys) -> None:
+    code, out, _ = run_cli(capsys)
+    assert code == 0
+    code, help_text, _ = run_cli(capsys, "--help")
+    assert code == 0
+    for name in _sub_commands():
+        assert f"  {name}" in out or f" {name:<12}" in out, f"plain rxd misses {name}"
+        assert name in help_text, f"rxd --help misses {name}"
