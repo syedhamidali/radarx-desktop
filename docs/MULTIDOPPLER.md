@@ -1,10 +1,8 @@
 # Multi-Doppler wind retrieval (dual / multi-radar)
 
 Retrieve the 3-D wind (`u`, `v`, `w`) from the radial velocities of two or more Doppler radars that
-scan the same weather. The retrieval is done by [radarx](https://radarx.readthedocs.io/en/latest/)
-(`radarx.retrieve.multidoppler`); the radars are cone-gridded onto one Cartesian grid with
-`multi_doppler_input` (which uses `grid_radars`, the same gridder as the mosaic). Needs
-`pip install radarx` (Python 3.12+).
+scan the same weather. The retrieval is done by [radarx](https://radarx.readthedocs.io/en/latest/); the radars are cone-gridded onto one
+Cartesian grid with the same gridder as the mosaic. Needs `pip install radarx` (Python 3.12+).
 
 ```{image} images/ui/wind-panel.png
 :alt: The wind panel
@@ -83,20 +81,10 @@ no overlapping coverage, beams never crossing at the minimum angle, no radial ve
 grid too large or too small, missing radarx.
 
 ## Figures
-`engine/windfig.py`: `plot_wind(record_or_dataset, level_km, out_path=None, theme="dark"|"light",
-kind="diagnostic"|"publication")`. *diagnostic* is six panels (reflectivity, speed with vectors,
-crossing angle, radars used with range rings, `w`, vorticity); *publication* is three clean panels
-(reflectivity with vectors, speed, `w`; choose others with `panels=[...]`). The input is a `WindRecord`
-or the Dataset of `to_dataset` / an exported NetCDF. Style rules: wind arrows are **white on dark
-backgrounds and dark on light ones, each with an edge of the opposite colour** (`pivot="mid"`, edge
-width 0.5), so they read over any colour map; reflectivity uses the `cmweather` `ChaseSpectral` map;
-vorticity is smoothed by one grid cell for display. The in-app arrow overlay follows the same rule
-from the basemap theme (`arrowColors` in `utils/wind.ts`).
-
-Examples (real NEXRAD, `docs/images/winds/`): `mayfield_before_raw_aliased.png` vs
-`mayfield_after_analytic.png` / `mayfield_after_variational.png` / `mayfield_publication_light.png`;
-`elreno_before_raw_aliased.png` vs `elreno_after_analytic.png` / `elreno_after_variational.png` /
-`elreno_publication_dark.png`.
+`rxd winds -p winds.png --level-km 3` writes a map of one height (default: the best-covered one) coloured by the chosen
+field. Style rules: wind arrows are **white on dark backgrounds and dark on light ones, each with an edge of the
+opposite colour**, so they read over any colour map; the in-app arrow overlay follows the same rule from the basemap
+theme. Reflectivity uses the `cmweather` `ChaseSpectral` map; vorticity is smoothed by one grid cell for display.
 
 ## Real cases
 Mayfield KY 2021-12-11 ~02:04 UTC (KHPX, KNQA, KPAH, KVWX) and El Reno OK 2013-05-31 ~23:15 UTC (KFDR,
@@ -116,7 +104,7 @@ Nyquist intervals are shifted) but a sweep can still be wrong; the winds are not
 validated (no sounding or profiler comparison).
 
 ## Notes and limits
-- Radarx 0.5.1 (the version in the sidecar venv when this was written) has no `retrieve.vvp`, so
+- radarx 0.5.1 (the version this was written with) has no VVP retrieval, so
   the "fitted from the radars" background is a small local least-squares fit per height layer.
 - The local gridding is fast (tens of ms); typical total time for two volumes at 1 km, 20 levels:
   1-3 s analytic, a few seconds variational.
@@ -156,8 +144,7 @@ meant as an addition to the flow, not a replacement.
 
 ### What the flow animation shows and does not show
 The animation is a picture of the retrieved field and nothing else. These are guarantees of the
-code (the CPU reference `src/lib/utils/windFlow.ts` is pinned by unit tests; the GPU code in
-`flowRenderer.ts` does the same and was checked against it on the Mayfield case: positions and trails
+program (the GPU drawing was checked against a CPU reference on the Mayfield case: positions and trails
 agree to 1e-4 km, no particle was ever found without wind):
 
 1. **Only where the analysis has a wind.** A cell has wind if u and v are finite (and w when the
@@ -201,41 +188,14 @@ governor lowers the number of particles drawn when the GPU is slow; the particle
 when the flow is switched off (after the fade), when the tab is hidden or when the source changes.
 With "prefers-reduced-motion" the animation starts paused.
 
-## Tests
-`python/tests/test_multidoppler.py` builds **synthetic** radar volumes (two sites 70 km apart, radial
-velocities forward-simulated from an imposed wind: uniform plus shear, a non-divergent vortex, a
-convergent anelastic flow with a known `w`, and a fall-speed case) and checks that the recovered
-`u`/`v`/`w` match the imposed wind in the well-observed region, plus the error cases and the
-protocol. `python/tests/test_multidoppler_usability.py` adds: a wind field whose radial velocities were folded
-(Nyquist 12 m/s against winds of 25-35 m/s) is recovered by *Dealias auto* and not by *never*; the
-Nyquist estimate; the automatic lowest level for far-apart radars and the automatic boundary; the
-output checks (counts, masks, thresholds, `keep_raw`); the per-level coverage table; the figures
-(arrow fill/edge colours per theme, panel counts, `cmweather` colour map); and smoke tests on the two
-real cases above that skip when the NEXRAD files are not present (path in `XRADAR_SEVERE_CASES`).
-`src/lib/utils/windFlow.test.mjs` (`npm run test:unit`) tests the flow: uniform flow is a straight line at
-the right speed, solid-body rotation is a circle of the right radius and period, a vertical wind
-raises the particle at w, a particle never enters a cell without wind, a sample with any invalid
-corner is invalid, trails are cut where the wind ends, seeding is only in valid cells, the mask,
-the confidence, the fades and the read-out.
-
-## Protocol
-```
-→ {type:"run_multidoppler", request_id, file_ids,
-   grid:{dx_m, dz_m, z_min_m?, z_max_m, max_range_km, origin?:{lat,lon}, extent?:{x_min_km,x_max_km,y_min_km,y_max_km}},
-   options:{method:"analytic"|"variational", min_crossing_angle, boundary:"auto"|"upward"|"downward"|"obrien",
-            dealias:"auto"|"always"|"never", dealias_max_elevation?, max_speed?|null, max_abs_w?|null,
-            max_uncertainty?|null, keep_raw?, fall_speed_correction,
-            freezing_level:"auto"|"rain"|metres, melting_depth_m,
-            background:{mode:"none"|"vvp"|"uniform"|"manual", u?, v?, profile?:[{height_m,u,v}]},
-            storm_motion?:[u,v], uncertainty?, obs_error?, w_bottom?}}
-← progress…, {type:"multidoppler_result", request_id, wind_id, fields:[{name,units,long_name}…],
-   shape:[n_fields,nz,ny,nx], grid:{nx,ny,nz,x,y,dx,dy,z[],origin_lat,origin_lon,west,south,east,north},
-   radars, coverage_pct, dual_coverage_pct, w_valid_pct, crossing_angle:{min,mean,median,max},
-   field_stats, level_coverage:[{z_m,dual_pct,wind_pct,w_pct}…], qc, dealias:{mode,radars:[…]}, notes:[…],
-   boundary, boundary_requested, background, warnings, timing, elapsed_ms, byte_length, chunks}
-   + `chunks` binary frames: one float32 array of `shape`, C order
-   (fields: u v w speed divergence vorticity uncertainty crossing_angle n_radars dbz)
-← {type:"multidoppler_error", request_id, message}   | {type:"multidoppler_cancelled", request_id}
-→ {type:"multidoppler_cancel", request_id}
-→ {type:"export_multidoppler", wind_id, path, overwrite?}   ← {type:"file_saved", path}
-```
+## How it was checked
+The retrieval was tested on **synthetic** radar volumes (two sites 70 km apart, radial velocities forward-simulated from an
+imposed wind: uniform plus shear, a non-divergent vortex, a convergent anelastic flow with a known `w`, and a fall-speed
+case): the recovered `u`/`v`/`w` match the imposed wind in the well-observed region. A wind field whose radial velocities
+were folded (Nyquist 12 m/s against winds of 25-35 m/s) is recovered by *Dealias auto* and not by *never*. Also
+checked: the Nyquist estimate, the automatic lowest level for far-apart radars and the automatic boundary, the output
+checks (counts, masks, thresholds, `keep_raw`), the per-level coverage table, the figure colours per theme, and the two
+real cases above. The flow animation was tested with known flows: uniform flow is a straight line at the right speed,
+solid-body rotation is a circle of the right radius and period, a vertical wind raises the particle at `w`, a particle
+never enters a cell without wind, a sample with any invalid corner is invalid, trails are cut where the wind ends,
+seeding is only in valid cells, and the mask, the confidence, the fades and the read-out are as described.

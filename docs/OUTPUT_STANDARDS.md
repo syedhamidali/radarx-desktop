@@ -3,14 +3,10 @@
 Every file the engine writes is meant to be **self-describing and reproducible**: it says what it is
 (title, units, standard names), where it came from (source file *names*, software and library
 versions), when and how it was made (UTC time, history, module parameters), and it opens in other
-tools without surprises. The shared helpers are `engine/provenance.py` (global attributes, history,
-CSV/figure/JSON metadata, version lookup) and `engine/cfwrite.py` (CF/CfRadial attribute and encoding
-rules, the CfRadial1/2 and Zarr writers); the CLI and the server call the same functions.
+tools without surprises. The app and the command line write files through the same code, so they produce the same attributes.
 
-The software version stamped into files is `$XRADAR_DESKTOP_VERSION` (set by the desktop shell for the
-packaged engine), else the `version` in `package.json` of a source checkout, else the engine package metadata,
-else `unknown`; library versions (python, xradar, xarray, numpy, netCDF4, zarr, pyproj, radarx) come from the
-installed packages.
+The software version stamped into files is the version of the app or of the `rxd` package that wrote them; library
+versions (python, xradar, xarray, numpy, netCDF4, zarr, pyproj, radarx) come from the installed packages.
 
 Nothing written contains an absolute path of the machine that made it (source files are recorded by
 name only; paths found in module parameters are reduced to file names).
@@ -107,14 +103,10 @@ curl -L -o ~/.cache/xradar-desktop/cf-standard-name-table.xml \
 cfchecks -s ~/.cache/xradar-desktop/cf-standard-name-table.xml -v auto file.nc
 ```
 
-`python/tests/cf_check.py` wraps this for tests (`cfchecker_report(path)` runs the checker on the file and on
-every group of a CfRadial2 file; `structural_problems(path)` is a dependency-free strict check of
-`Conventions`, units/`long_name`, references, flags, time units, placeholder text and absolute paths). The
-tests in `python/tests/test_output_standards.py` run both on synthetic volumes and, when present, on the real
-example files (NEXRAD KTLX, the CPOL sector scan and RHI, the Mayfield radars: mosaic and winds), then read
-every file back and compare values, masks, flags and times. The real-checker tests skip when `cfchecker`,
-`cfunits`, UDUNITS-2 or the standard-name table are missing (`$XRADAR_CF_STANDARD_NAME_TABLE` overrides the
-table path); the structural checks always run.
+The outputs were validated this way with the CF Checker, and with a dependency-free strict check of `Conventions`,
+units and `long_name`, references, flags, time units, placeholder text and absolute paths, on synthetic volumes and on
+the real example files (NEXRAD KTLX, the CPOL sector scan and RHI, the Mayfield radars: mosaic and winds); every file
+was then read back and its values, masks, flags and times compared.
 
 Results of the audit run (CF Checker 4.1.0, standard-name table v95): CfRadial1 and CfRadial2 of the KTLX volume,
 mosaics (CAPPI, composite, echo top), analytic and variational winds, and every synthetic output: **0

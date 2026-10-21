@@ -1,8 +1,8 @@
 # Radar mosaic (multi-radar merge)
 
 Merge one or more open radar volumes onto a shared grid and draw the result on the map. The
-heavy lifting is done by [radarx](https://radarx.readthedocs.io/en/latest/) (`grid_radars`,
-`merge_radars`, `network_bias`), whose compiled kernels run multithreaded. Needs
+heavy lifting is done by [radarx](https://radarx.readthedocs.io/en/latest/) (gridding, weighted merge and network
+bias estimation), whose compiled kernels run multithreaded. Needs
 `pip install "radarx>=0.5.1"` (Python 3.12+).
 
 ```{image} images/ui/mosaic-view.png
@@ -79,7 +79,7 @@ of the mosaic if there is one, else of the wind analysis' own reflectivity grid,
 (**Volume: None**). By default it is shown as an animated **Flow** of thin translucent trails
 (toggle in the toolbar, key `F`); **Animate field** (the echo drifts subtly along the wind) and
 **Arrows** are two more independent toggles. What the animation shows, and what it does not, is
-written down in [MULTIDOPPLER.md](MULTIDOPPLER.md#what-the-flow-animation-shows-and-does-not-show).
+written down in {doc}`the multi-Doppler page <MULTIDOPPLER>` (section "What the flow animation shows and does not show").
 
 ![Flow of the analysis over the mosaic volume](images/wind3d-flow-strip.png)
 
