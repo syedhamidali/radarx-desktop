@@ -4,6 +4,7 @@ the feature and calling the output right)."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -319,7 +320,9 @@ def test_frames_round_trip_through_netcdf(tmp_path) -> None:
     p = seq.to_netcdf(tmp_path / "frames.nc")
     back = fr.from_netcdf([p])
     assert back.n == 3 and back.field == "reflectivity" and back.cell_m == CELL
-    assert np.array_equal(back.data, seq.data, equal_nan=True)
+    # reflectivity is packed to 0.1 dBZ in the file; NaN (no echo / not observed) is kept
+    assert np.array_equal(np.isnan(back.data), np.isnan(seq.data))
+    assert np.nanmax(np.abs(back.data - seq.data)) <= 0.05 + 1e-6
     assert np.array_equal(back.coverage, cov)
     assert back.origin == (36.0, -88.0)
 
@@ -343,6 +346,48 @@ def test_frames_refuse_bad_input() -> None:
             x=np.arange(4),
             y=np.arange(4),
         )
+
+
+def test_unreadable_volume_is_skipped_with_a_note_only_when_asked(monkeypatch, tmp_path) -> None:
+    """The gridding of one volume fails (as a corrupt or unsupported Level II file does): the
+    run stops by default; with ``on_error="skip"`` the frame is left out and a note says so."""
+    data, _ = translated_sequence(1.0, 0.0, n_frames=3)
+    names = [f"KDMX20200810_{16 + k:02d}0104_V06" for k in range(3)]  # the time is in the name
+
+    def fake_grid_group(files, variable, product, grid):
+        name = Path(files[0]).name
+        if name == names[1]:
+            raise fr.FrameError(
+                f"{name}: it looks like a NEXRAD Level II file but could not be read"
+            )
+        k = names.index(name)
+        return {
+            "merged": data[k],
+            "covered": np.ones(data[k].shape, bool),
+            "bbox": (-89.0, 35.0, -87.0, 37.0),
+            "origin": (36.0, -88.0),
+            "x0": -80_000.0,
+            "y0": -80_000.0,
+            "cell_m": CELL,
+            "radars": [{"name": "KDMX", "latitude": 36.0, "longitude": -88.0}],
+            "time": T0 + np.timedelta64(3600 * k, "s"),
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(fr, "_grid_group", fake_grid_group)
+    paths = [tmp_path / n for n in names]
+    with pytest.raises(fr.FrameError, match="could not be read"):
+        fr.from_radar_files(paths)
+    seq = fr.from_radar_files(paths, on_error="skip")
+    assert seq.n == 2 and seq.sources == [names[0], names[2]]
+    assert any(n.startswith(f"{names[1]}: not gridded") for n in seq.notes)
+    # the note survives the frame cache
+    back = fr.from_netcdf([seq.to_netcdf(tmp_path / "frames.nc")])
+    assert back.n == 2 and back.notes == seq.notes
+    # a first frame that fails is skipped too: the grid is then fixed from the next one
+    names[1], names[0] = names[0], names[1]
+    seq = fr.from_radar_files([tmp_path / n for n in sorted(names)], on_error="skip")
+    assert seq.n == 2 and len(seq.notes) == 1
 
 
 def test_forecast_provenance_class_and_chip_text() -> None:

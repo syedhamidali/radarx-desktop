@@ -298,7 +298,7 @@ def figure(
     ]
     n = 1 + len(picks)
     fig, axes = plt.subplots(2, n, figsize=(3.3 * n + 0.8, 6.9), constrained_layout=True)
-    fig.get_layout_engine().set(rect=(0, 0.05, 1, 1))  # room for the footer text
+    fig.get_layout_engine().set(rect=(0, 0.05, 1, 0.96))  # room for the footer and the title
     axes = np.atleast_2d(axes)
     is_refl = nc.field == "reflectivity"
     origin = nc.config["origin_index"]

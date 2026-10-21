@@ -192,11 +192,17 @@ class FrameSequence:
                 "radars": ", ".join(r["name"] for r in self.radars),
                 "sources_per_frame": "; ".join(self.sources),
                 "bbox": ", ".join(f"{v:.4f}" for v in self.gridding.get("bbox", [])),
+                "notes": " | ".join(self.notes),
             },
         )
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        ds.to_netcdf(p, encoding={name: {"zlib": True, "complevel": 4}})
+        enc: dict[str, Any] = {"zlib": True, "complevel": 4}
+        if self.field == FIELD_REFLECTIVITY:
+            # packed to 0.1 dBZ (the Level II data are quantised at 0.5 dBZ): half the size of
+            # float32 before compression, and the frames read back as float32 (NaN kept)
+            enc.update({"dtype": "int16", "scale_factor": 0.1, "_FillValue": -32768})
+        ds.to_netcdf(p, encoding={name: enc})
         return p
 
     def describe(self) -> dict[str, Any]:
@@ -367,6 +373,9 @@ def from_netcdf(
                         for s in str(ds.attrs.get("sources_per_frame", "")).split(";")
                         if s.strip()
                     ],
+                    "notes": [
+                        s.strip() for s in str(ds.attrs.get("notes", "")).split(" | ") if s.strip()
+                    ],
                 }
             elif x.size != ref["x"].size or y.size != ref["y"].size:
                 raise FrameError(f"{path.name}: its grid differs from the first file's")
@@ -390,6 +399,7 @@ def from_netcdf(
         covered=ref["covered"],
         sources=[sources[i] for i in order] if len(sources) == t.size else sources,
         radars=ref["radars"],
+        notes=ref.get("notes", []),
         gridding=ref["gridding"],
     )
 
@@ -417,7 +427,10 @@ def _grid_group(
     try:
         for f in files:
             rd = RadarReader()
-            rd.open_file(f)
+            try:
+                rd.open_file(f)
+            except Exception as exc:  # the reader's own message says what is wrong with it
+                raise FrameError(f"{Path(f).name}: {exc}") from exc
             readers.append((Path(f).name, rd))
         rec = me.build_mosaic(
             readers, variable, product, grid, {"enabled": True}, cache=None, keep_volume=False
@@ -487,6 +500,7 @@ def from_radar_files(
     extent: Any = None,
     group_s: float = 150.0,
     workers: int = 1,
+    on_error: str = "raise",
     progress: ProgressFn | None = None,
     cancel: Callable[[], bool] | None = None,
 ) -> FrameSequence:
@@ -496,15 +510,21 @@ def from_radar_files(
     Volumes of several radars taken within ``group_s`` seconds form one frame (their mosaic);
     the grid is fixed from the first frame (or ``extent`` = ``(west, south, east, north)``).
     Composite reflectivity (``product="composite"``) is the default field; ``"cappi"`` uses the
-    engine's default CAPPI height.
+    engine's default CAPPI height. A volume that cannot be read or gridded stops the run
+    (``on_error="raise"``) or is left out with a note in ``notes`` (``on_error="skip"``: the
+    sequence then has a gap at that time, which the nowcast's time handling allows for).
     """
     from engine.reader import RadarReader
 
+    if on_error not in ("raise", "skip"):
+        raise FrameError("on_error must be 'raise' or 'skip'")
+    skip = on_error == "skip"
     report = progress or (lambda _p, _m: None)
     files = [os.fspath(p) for p in paths]
     if not files:
         raise FrameError("no radar file given")
     report(2, f"Reading the scan times of {len(files)} volumes")
+    notes: list[str] = []
     stamped: list[tuple[np.datetime64, str]] = []
     for i, f in enumerate(files):
         if cancel and cancel():
@@ -516,6 +536,9 @@ def from_radar_files(
                 rd.open_file(f)
                 t = _scan_time(rd)
             except Exception as exc:
+                if skip:
+                    notes.append(f"{Path(f).name}: not gridded: {exc}")
+                    continue
                 raise FrameError(f"{Path(f).name}: {exc}") from exc
             finally:
                 with _suppress():
@@ -525,6 +548,8 @@ def from_radar_files(
         stamped.append((t, f))
         if i % 5 == 0:
             report(2 + int(8 * i / len(files)), f"Read {i + 1}/{len(files)} scan times")
+    if not stamped:
+        raise FrameError("no volume could be read: " + "; ".join(notes))
     groups = group_by_time(stamped, group_s)
     frames: list[np.ndarray] = []
     times: list[np.datetime64] = []
@@ -532,7 +557,6 @@ def from_radar_files(
     layout: dict[str, Any] = {}
     covered: np.ndarray | None = None
     radars: list[dict[str, Any]] = []
-    notes: list[str] = []
 
     def grid_spec() -> dict[str, Any]:
         spec: dict[str, Any] = {
@@ -548,9 +572,21 @@ def from_radar_files(
     # The first frame fixes the grid; the others can be gridded in parallel processes (opening
     # and decoding a volume is single-threaded Python work).
     results: list[dict[str, Any] | None] = [None] * len(groups)
-    report(10, f"Gridding frame 1/{len(groups)}")
-    results[0] = _grid_group([f for _, f in groups[0]], variable, product, grid_spec())
-    first = results[0]
+    first_gi = 0
+    while True:
+        report(10, f"Gridding frame {first_gi + 1}/{len(groups)}")
+        try:
+            results[first_gi] = _grid_group(
+                [f for _, f in groups[first_gi]], variable, product, grid_spec()
+            )
+            break
+        except FrameError as exc:
+            if not skip or first_gi + 1 >= len(groups):
+                raise
+            notes.append(f"{_group_name(groups[first_gi])}: not gridded: {exc}")
+            first_gi += 1
+    first = results[first_gi]
+    assert first is not None
     w, s, e, n = first["bbox"]
     layout = {
         "extent": {"west": w, "south": s, "east": e, "north": n},
@@ -560,7 +596,7 @@ def from_radar_files(
         "cell_m": first["cell_m"],
         "shape": first["merged"].shape,
     }
-    rest = list(range(1, len(groups)))
+    rest = list(range(first_gi + 1, len(groups)))
     if rest and workers > 1:
         from concurrent.futures import ProcessPoolExecutor
 
@@ -575,8 +611,10 @@ def from_radar_files(
                 try:
                     results[gi] = fut.result()
                 except Exception as exc:
-                    pool.shutdown(cancel_futures=True)
-                    raise FrameError(str(exc)) from exc
+                    if not skip:
+                        pool.shutdown(cancel_futures=True)
+                        raise FrameError(str(exc)) from exc
+                    notes.append(f"{_group_name(groups[gi])}: not gridded: {exc}")
                 report(10 + int(85 * done / len(groups)), f"Gridded frame {done + 1}/{len(groups)}")
                 if cancel and cancel():
                     pool.shutdown(cancel_futures=True)
@@ -586,12 +624,20 @@ def from_radar_files(
             if cancel and cancel():
                 raise FrameError("cancelled")
             report(10 + int(85 * gi / len(groups)), f"Gridding frame {gi + 1}/{len(groups)}")
-            results[gi] = _grid_group([f for _, f in groups[gi]], variable, product, grid_spec())
+            try:
+                results[gi] = _grid_group(
+                    [f for _, f in groups[gi]], variable, product, grid_spec()
+                )
+            except FrameError as exc:
+                if not skip:
+                    raise
+                notes.append(f"{_group_name(groups[gi])}: not gridded: {exc}")
     for gi, grp in enumerate(groups):
         rec = results[gi]
-        assert rec is not None
+        if rec is None:
+            continue  # not gridded (noted above)
         merged = rec["merged"]
-        if gi == 0:
+        if gi == first_gi:
             covered = rec["covered"]
             radars = list(rec["radars"])
         elif merged.shape != layout["shape"]:
@@ -615,10 +661,12 @@ def from_radar_files(
             ) * np.timedelta64(1, "s")
         frames.append(np.asarray(merged, dtype=np.float32))
         times.append(np.datetime64(tm, "ns"))
-        names.append("+".join(Path(f).name for _, f in grp))
+        names.append(_group_name(grp))
         for wmsg in rec["warnings"]:
             if wmsg not in notes:
                 notes.append(wmsg)
+    if len(frames) < 1:
+        raise FrameError("no volume could be gridded")
     ny, nx = layout["shape"]
     x = layout["x0"] + np.arange(nx) * layout["cell_m"]
     y = layout["y0"] + np.arange(ny) * layout["cell_m"]
@@ -647,6 +695,10 @@ def from_radar_files(
             "bbox": list(layout["extent"].values()),
         },
     )
+
+
+def _group_name(grp: Sequence[tuple[np.datetime64, str]]) -> str:
+    return "+".join(Path(f).name for _, f in grp)
 
 
 def aeqd_proj4(lat0: float, lon0: float) -> str:
