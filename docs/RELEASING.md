@@ -57,8 +57,8 @@ public address of the bucket is `https://downloads.labshope.com`.
    V=v0.3.1
    curl -fsS https://downloads.labshope.com/radarx/$V/SHA256SUMS
    curl -fsS https://downloads.labshope.com/radarx/$V/latest.json | python3 -m json.tool | head -40
-   curl -fLO https://downloads.labshope.com/radarx/$V/radarx-desktop_0.3.1_aarch64.dmg
-   shasum -a 256 radarx-desktop_0.3.1_aarch64.dmg        # must equal the line in SHA256SUMS
+   curl -fLO https://downloads.labshope.com/radarx/$V/Radarx_0.3.1_aarch64.dmg
+   shasum -a 256 Radarx_0.3.1_aarch64.dmg        # must equal the line in SHA256SUMS
    ```
 
    Every `url` in the candidate manifest must start with `https://downloads.labshope.com/radarx/v0.3.1/`; open the
@@ -110,10 +110,10 @@ manifest) and has sorted keys. Schema version 1:
           "os": "macos",
           "arch": "aarch64",
           "kind": "dmg",
-          "name": "radarx-desktop_0.3.1_aarch64.dmg",
+          "name": "Radarx_0.3.1_aarch64.dmg",
           "size": 118234567,
           "sha256": "5cded49153520ddae78fdb2c49ab87b05fa153ca18a7332f71a9395b9a673f38",
-          "url": "https://downloads.labshope.com/radarx/v0.3.1/radarx-desktop_0.3.1_aarch64.dmg"
+          "url": "https://downloads.labshope.com/radarx/v0.3.1/Radarx_0.3.1_aarch64.dmg"
         }
       ]
     }

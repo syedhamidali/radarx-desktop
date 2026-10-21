@@ -117,7 +117,9 @@ def frontend_candidates(explicit: str | None = None) -> list[Path]:
     # installed desktop app resources (the Tauri installers embed the frontend in the executable
     # today, so these only match a build that ships it as files)
     out += [
-        Path("/Applications/radarx-desktop.app/Contents/Resources/dist"),
+        Path("/Applications/Radarx.app/Contents/Resources/dist"),
+        Path.home() / "Applications/Radarx.app/Contents/Resources/dist",
+        Path("/Applications/radarx-desktop.app/Contents/Resources/dist"),  # 0.3.0 and earlier
         Path.home() / "Applications/radarx-desktop.app/Contents/Resources/dist",
         Path("/usr/lib/radarx-desktop/dist"),
         Path("/opt/radarx-desktop/dist"),
