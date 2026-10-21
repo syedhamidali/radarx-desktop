@@ -1,25 +1,30 @@
-"""The optional *movie components* pack: Playwright and PyAV for the installed app, on demand.
+"""The optional *movie components* pack: Playwright for the installed app, on demand.
 
-The installers freeze the engine with PyInstaller but leave out the two video libraries (Playwright,
-which drives the system Chrome, and PyAV, which writes the MP4: about 180 MB unpacked, which would
-nearly double the app). Instead a zip built by ``scripts/release/build_movie_pack.py`` for each
-OS / architecture and the engine's Python is attached to every release, and the installed app
-downloads it with the user's consent, keeps it in the user's data folder and loads it at run time:
+The installers freeze the engine with PyInstaller but leave out Playwright (which drives the system
+Chrome that draws the frames and encodes the film: about 130 MB unpacked, mostly its Node driver,
+which would add half again to the app). Instead a zip built by
+``scripts/release/build_movie_pack.py`` for each OS / architecture and the engine's Python is
+attached to every release, and the installed app downloads it with the user's consent, keeps it in
+the user's data folder and loads it at run time:
 
     <user data dir>/radarx-desktop/movie-pack/<app version>/   (RADARX_MOVIE_PACK_DIR overrides)
         manifest.json          versions, python tag, os, arch, every file with its sha256, licences
-        playwright/ av/ ...    the libraries, as ``pip install --target`` lays them out
+        playwright/ ...        the libraries, as ``pip install --target`` lays them out
         licenses/              the licence texts of every component
+
+No video library is in the pack: the film (H.264 + AAC in an MP4) is encoded by Chrome's own
+WebCodecs encoders inside the page that draws it (``src/lib/utils/clipEncoder.ts``). PyAV, whose
+wheels bundle an FFmpeg built with GPL parts, is never shipped; a user who installs it themselves
+gets it as a fallback (``rxd animate --encoder pyav``).
 
 What this module does and refuses:
 
 * :func:`status` says whether a pack is installed and whether it fits (same app version, same
   Python tag such as ``cpython-312``, same OS and architecture); :func:`verify` re-hashes every
   file.
-* :func:`activate` puts the pack directory on ``sys.path`` before ``playwright`` / ``av`` are
-  imported (``engine.animate_render.have_module`` calls it). Nothing in the pack is ever executed
-  except by importing those libraries; Playwright's own browser downloads are never used (the
-  system Chrome is).
+* :func:`activate` puts the pack directory on ``sys.path`` before ``playwright`` is imported
+  (``engine.animate_render.have_module`` calls it). Nothing in the pack is ever executed except by
+  importing that library; Playwright's own browser downloads are never used (the system Chrome is).
 * :func:`install` downloads the zip (https, from ``downloads.labshope.com`` unless a test overrides
   the base address), checks the size and the SHA-256 announced by the release index, unpacks into a
   staging folder, refuses zip-slip paths and symlinks, verifies every file against the manifest and
@@ -60,7 +65,7 @@ PACK_HOST = "downloads.labshope.com"
 DEFAULT_BASE_URL = f"https://{PACK_HOST}"
 INDEX_PATH = "radarx/releases.json"
 #: The libraries the pack provides (the names ``have_module`` asks for).
-MODULES = ("playwright", "av")
+MODULES = ("playwright",)
 #: Tests and dry runs: another base address (http://127.0.0.1:port) and another folder.
 ENV_BASE_URL = "RADARX_MOVIE_PACK_BASE_URL"
 ENV_DIR = "RADARX_MOVIE_PACK_DIR"
@@ -268,8 +273,8 @@ _LOCK = threading.Lock()
 def activate() -> bool:
     """Put the installed pack on ``sys.path`` (once); True when a usable pack is active.
 
-    Called before ``playwright`` / ``av`` are looked up. In a development run where the libraries
-    are already installed nothing is changed: the environment's copies win.
+    Called before ``playwright`` is looked up. In a development run where the library is already
+    installed nothing is changed: the environment's copy wins.
     """
     global _ACTIVE
     with _LOCK:

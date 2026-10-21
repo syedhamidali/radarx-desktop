@@ -230,7 +230,7 @@ jobs:
         run: gh release upload "$TAG" dist/*.whl --repo "$GITHUB_REPOSITORY" --clobber
 
   # ---------------------------------------------------------------------------------------------
-  # The optional movie components (Playwright + PyAV, docs/BUNDLING.md): one zip per OS / architecture,
+  # The optional movie components (Playwright only; Chrome encodes the film, docs/BUNDLING.md): one zip per OS / architecture,
   # built with the SAME Python as the frozen engine (the pack holds a compiled extension built for that
   # Python; the engine refuses any other tag). Attached to the draft release next to the installers, so
   # the downloads job checksums and uploads them like everything else; build_index.py lists them under

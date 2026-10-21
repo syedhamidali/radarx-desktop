@@ -13,6 +13,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+
 from engine import animate_render, movie_pack
 
 VERSION = "9.9.9"
@@ -38,11 +39,11 @@ def make_pack(
     bad_hash: str | None = None,
     manifest_patch: dict | None = None,
 ) -> Path:
-    """A small pack with pure-Python stand-ins for the libraries (``playwright`` and ``av``)."""
+    """A small pack with pure-Python stand-ins for the libraries (playwright, its helper pyee)."""
     files = files or {
         "playwright/__init__.py": b"PACK = 'playwright from the pack'\n",
         "playwright/sync_api.py": b"def sync_playwright():\n    return 'fake'\n",
-        "av/__init__.py": b"PACK = 'av from the pack'\n",
+        "pyee/__init__.py": b"PACK = 'pyee from the pack'\n",
         "licenses/playwright/LICENSE": b"Apache-2.0 text\n",
     }
     manifest = {
@@ -54,7 +55,7 @@ def make_pack(
         "arch": movie_pack.arch_name(),
         "components": [
             {"name": "playwright", "version": "1.0", "license": "Apache-2.0"},
-            {"name": "av", "version": "2.0", "license": "BSD-3-Clause"},
+            {"name": "pyee", "version": "2.0", "license": "MIT"},
         ],
         "total_size": sum(len(b) for b in files.values()),
         "files": {
@@ -117,7 +118,7 @@ def test_base_url_only_the_download_host(pack_env, monkeypatch):
     assert movie_pack.base_url("https://evil.example.com") == "http://127.0.0.1:1"
 
 
-# --- install from a local file ---------------------------------------------------------------------
+# --- install from a local file --------------------------------------------------------------------
 
 
 def test_install_from_a_local_zip_then_activate_import_and_remove(pack_env):
@@ -125,7 +126,7 @@ def test_install_from_a_local_zip_then_activate_import_and_remove(pack_env):
     before = set(sys.path)
     st = movie_pack.install(str(zip_path))
     assert st["installed"] and st["usable"] and st["problem"] is None
-    assert [c["name"] for c in st["components"]] == ["playwright", "av"]
+    assert [c["name"] for c in st["components"]] == ["playwright", "pyee"]
     folder = Path(st["path"])
     assert (folder / "playwright" / "sync_api.py").is_file()
     if sys.platform != "win32":
@@ -133,11 +134,11 @@ def test_install_from_a_local_zip_then_activate_import_and_remove(pack_env):
     assert movie_pack.verify(folder) == []
 
     # the loader: have_module() activates the pack before looking the libraries up
-    assert animate_render.have_module("playwright") and animate_render.have_module("av")
+    assert animate_render.have_module("playwright") and animate_render.have_module("pyee")
     assert str(folder) in sys.path and str(folder) not in before
-    import av
+    import pyee
 
-    assert av.PACK == "av from the pack"
+    assert pyee.PACK == "pyee from the pack"
     assert movie_pack.status()["active"] is True
 
     st = movie_pack.remove()
@@ -148,11 +149,11 @@ def test_install_from_a_local_zip_then_activate_import_and_remove(pack_env):
 def test_install_keeps_the_old_pack_when_the_new_one_is_bad(pack_env):
     movie_pack.install(str(make_pack(pack_env / "good.zip")))
     folder = movie_pack.pack_dir()
-    marker = sha(folder / "av" / "__init__.py")
-    bad = make_pack(pack_env / "bad.zip", bad_hash="av/__init__.py")
+    marker = sha(folder / "pyee" / "__init__.py")
+    bad = make_pack(pack_env / "bad.zip", bad_hash="pyee/__init__.py")
     with pytest.raises(movie_pack.MoviePackError, match="does not match its manifest"):
         movie_pack.install(str(bad))
-    assert sha(folder / "av" / "__init__.py") == marker
+    assert sha(folder / "pyee" / "__init__.py") == marker
     assert movie_pack.status()["usable"]
     assert not [p for p in movie_pack.root().iterdir() if p.name.startswith(".")]  # no leftovers
 
@@ -161,11 +162,11 @@ def test_install_replaces_an_older_pack_atomically(pack_env):
     movie_pack.install(str(make_pack(pack_env / "a.zip")))
     files = {
         "playwright/__init__.py": b"PACK = 'second'\n",
-        "av/__init__.py": b"PACK = 'second'\n",
+        "pyee/__init__.py": b"PACK = 'second'\n",
     }
     movie_pack.install(str(make_pack(pack_env / "b.zip", files=files)))
     folder = movie_pack.pack_dir()
-    assert (folder / "av" / "__init__.py").read_bytes() == b"PACK = 'second'\n"
+    assert (folder / "pyee" / "__init__.py").read_bytes() == b"PACK = 'second'\n"
     assert not (folder / "playwright" / "sync_api.py").exists()
     assert sorted(p.name for p in movie_pack.root().iterdir()) == [VERSION]
 
@@ -201,13 +202,13 @@ def test_zip_slip_symlinks_and_unlisted_files_are_refused(pack_env):
             movie_pack.install(str(z))
     z = pack_env / "link.zip"
     with zipfile.ZipFile(z, "w") as zf:
-        info = zipfile.ZipInfo("av/link")
+        info = zipfile.ZipInfo("pyee/link")
         info.external_attr = (stat.S_IFLNK | 0o777) << 16
         zf.writestr(info, b"/etc/passwd")
         zf.writestr(movie_pack.MANIFEST_NAME, "{}")
     with pytest.raises(movie_pack.MoviePackError, match="symbolic link"):
         movie_pack.install(str(z))
-    z = make_pack(pack_env / "extra.zip", extra_unlisted={"av/sneaky.py": b"print(1)\n"})
+    z = make_pack(pack_env / "extra.zip", extra_unlisted={"pyee/sneaky.py": b"print(1)\n"})
     with pytest.raises(movie_pack.MoviePackError, match="does not list"):
         movie_pack.install(str(z))
     (pack_env / "notzip.zip").write_bytes(b"hello")
@@ -219,13 +220,13 @@ def test_zip_slip_symlinks_and_unlisted_files_are_refused(pack_env):
 def test_verify_notices_a_changed_file(pack_env):
     movie_pack.install(str(make_pack(pack_env / "p.zip")))
     folder = movie_pack.pack_dir()
-    (folder / "av" / "__init__.py").write_bytes(b"tampered")
-    assert movie_pack.verify(folder) == ["changed: av/__init__.py"]
-    (folder / "av" / "__init__.py").unlink()
-    assert movie_pack.verify(folder) == ["missing: av/__init__.py"]
+    (folder / "pyee" / "__init__.py").write_bytes(b"tampered")
+    assert movie_pack.verify(folder) == ["changed: pyee/__init__.py"]
+    (folder / "pyee" / "__init__.py").unlink()
+    assert movie_pack.verify(folder) == ["missing: pyee/__init__.py"]
 
 
-# --- download from a host --------------------------------------------------------------------------
+# --- download from a host -------------------------------------------------------------------------
 
 
 class _Server:
@@ -370,7 +371,7 @@ def test_cancel_stops_the_download(host):
     assert not movie_pack.status()["installed"]
 
 
-# --- the Movie Studio messages ---------------------------------------------------------------------
+# --- the Movie Studio messages --------------------------------------------------------------------
 
 
 class _Stub:

@@ -27,7 +27,7 @@
   const DOWNLOADS_HOST = DOWNLOADS_HOST_URL.replace(/^https?:\/\//, '');
   const packNeeded = $derived(!!caps?.problems.some((pr) => pr.movie_pack));
   const avail = $derived($packAvailable);
-  const packMb = $derived(avail?.consent?.size ? (avail.consent.size / 1e6).toFixed(0) : '60');
+  const packMb = $derived(avail?.consent?.size ? (avail.consent.size / 1e6).toFixed(0) : '45');
   const o = $derived($movieOptions);
   const p = $derived($plan);
   const r = $derived($result);
@@ -130,7 +130,7 @@
               <!-- The optional movie components: look up, consent (what / from where / how big / licences), download -->
               <div class="pack" role="group" aria-label="Movie components">
                 <div class="pack-title">Movie components (about {packMb} MB)</div>
-                <p class="pack-text">Needed to draw and write the film: Playwright drives your Google Chrome, PyAV writes the MP4. They are not part of the installer; they are downloaded once from <span class="mono">{DOWNLOADS_HOST}</span> and kept in your data folder (Settings &rsaquo; Data shows them, with Remove).</p>
+                <p class="pack-text">Needed to draw the film: Playwright drives your Google Chrome, which draws the frames and encodes the MP4 with its own codecs. It is not part of the installer; it is downloaded once from <span class="mono">{DOWNLOADS_HOST}</span> and kept in your data folder (Settings &rsaquo; Data shows it, with Remove).</p>
                 {#if $packJob.running}
                   <div class="progress"><div class="bar"><div class="fill" style="width:{pct($packJob)}%"></div></div><div class="msg">{pct($packJob)}% {$packJob.message}</div></div>
                   <div class="row"><button onclick={cancelMoviePackInstall}>Cancel</button></div>
@@ -144,7 +144,7 @@
                       <dt>What</dt><dd>{avail.consent.name}<br />{#each avail.consent.contents as line}<span class="ln">{line}</span>{/each}</dd>
                       <dt>From</dt><dd class="mono">{avail.consent.url}</dd>
                       <dt>Size</dt><dd>{(avail.consent.size / 1e6).toFixed(0)} MB (checked against the published SHA-256 after the download)</dd>
-                      <dt>Licences</dt><dd>Playwright is Apache-2.0; PyAV is BSD-3-Clause and ships the FFmpeg libraries (LGPL, with GPL parts for H.264). The licence texts are kept with the components.</dd>
+                      <dt>Licences</dt><dd>Playwright is Apache-2.0 (its helpers greenlet, pyee and typing_extensions are MIT / PSF). No video library is downloaded: the film is encoded by Chrome itself. The licence texts are kept with the components.</dd>
                     </dl>
                     <div class="row">
                       <button class="primary" onclick={installMoviePack}>Allow once</button>
@@ -382,7 +382,7 @@
                   <span class="dim small mono">{base(r.video)} {mb(r.video_bytes)}, {r.seconds.toFixed(0)} s</span>
                 </div>
               {:else if r.frames_written}
-                <p class="warn">No MP4 could be written (PyAV is missing). The frames are in <span class="mono">{r.frames_written}</span>.{#if r.ffmpeg} To encode them: <span class="mono">{r.ffmpeg}</span>{/if}</p>
+                <p class="warn">No MP4 could be written (this Chrome cannot encode video and PyAV is not installed). The frames are in <span class="mono">{r.frames_written}</span>.{#if r.ffmpeg} To encode them: <span class="mono">{r.ffmpeg}</span>{/if}</p>
               {/if}
               {#each r.warnings as w}<p class="warn">{w}</p>{/each}
               <button class="link" onclick={() => (showRecord = !showRecord)}>{showRecord ? 'Hide' : 'Show'} the record (sidecar)</button>

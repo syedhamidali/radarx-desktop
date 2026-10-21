@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
-   * Settings > Data > Movie components: the optional download of the installed app (Playwright and
-   * PyAV, which the Movie Studio needs to draw and write a film). Shows what is installed, its size
+   * Settings > Data > Movie components: the optional download of the installed app (Playwright,
+   * which the Movie Studio needs to drive the Chrome that draws and encodes a film). Shows what is installed, its size
    * and where it lives, with Remove. Nothing is downloaded here: the Movie Studio asks first.
    */
   import { onMount } from 'svelte';
@@ -31,7 +31,7 @@
   <p class="empty-message mono small">{p.path}</p>
 {:else}
   <p class="empty-message">
-    Not installed. The Movie Studio needs them to render a film (Playwright drives your Google Chrome, PyAV writes the MP4) and offers the download (about 60 MB) when you open it;
+    Not installed. The Movie Studio needs them to render a film (Playwright drives your Google Chrome, which draws and encodes the MP4) and offers the download (about 45 MB) when you open it;
     {#if !p.needed}this engine has its own copies or gets them with the Python package.{:else}they are kept in <span class="mono">{p.root}</span>.{/if}
   </p>
 {/if}

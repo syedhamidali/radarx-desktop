@@ -1,21 +1,25 @@
 #!/usr/bin/env python3
 """Build the optional *movie components* pack for this OS, architecture and Python.
 
-The installers leave Playwright (drives the system Chrome) and PyAV (writes the MP4) out of the
-frozen engine; this script makes the zip the installed app downloads on demand
-(``python/engine/movie_pack.py`` loads it):
+The installers leave Playwright (drives the system Chrome, which draws the frames and encodes the
+film with its own codecs) out of the frozen engine; this script makes the zip the installed app
+downloads on demand (``python/engine/movie_pack.py`` loads it):
 
     radarx-movie-pack-<version>-<os>-<arch>.zip            the pack
     radarx-movie-pack-<version>-<os>-<arch>.manifest.json  its manifest without the file list
                                                            (the release index reads it)
 
-It runs ``pip install --target`` with EXACT pinned versions of playwright, av and what they need
+It runs ``pip install --target`` with EXACT pinned versions of playwright and what it needs
 (greenlet, pyee, typing_extensions), with the SAME interpreter as the frozen engine (the Python tag,
 e.g. ``cpython-312``, is written into the manifest and checked by the engine, because greenlet is a
 compiled extension built for one Python), strips what is never loaded (tests, type stubs, Cython
 headers, bytecode caches, Playwright's trace viewer and recorder UIs), never downloads Playwright's
 own browsers (the pack relies on the system Chrome), copies every component's licence files into
 ``licenses/`` and writes ``manifest.json`` with the SHA-256 of every file.
+
+No video library is in the pack, by design: PyAV's wheels bundle FFmpeg built with GPL parts
+(libx264, libx265), which the PolyForm-Noncommercial app must not ship; the film is encoded by
+Chrome itself (src/lib/utils/clipEncoder.ts). The build refuses a pack that contains ``av``.
 
 Usage:  python scripts/release/build_movie_pack.py --out dist/movie-pack [--version 0.3.1]
         (run it with the engine's Python: the one that built python/dist/xradar-engine)
@@ -47,7 +51,6 @@ MANIFEST_NAME = "manifest.json"
 #: python/pyproject.toml's ``video`` extra accepts.
 PINS: dict[str, str] = {
     "playwright": "1.64.0",
-    "av": "19.0.2",
     "greenlet": "3.5.6",
     "pyee": "14.0.0",
     "typing_extensions": "4.15.0",
@@ -60,11 +63,6 @@ COMPONENTS: dict[str, tuple[str, str, str]] = {
         "drives the system Google Chrome that draws the frames",
         "Apache-2.0",
     ),
-    "av": (
-        "av",
-        "PyAV: writes the MP4 (H.264 video, AAC sound) with the FFmpeg libraries in its wheel",
-        "BSD-3-Clause (PyAV); the bundled FFmpeg libraries are LGPL-2.1-or-later with GPL-2.0-or-later parts (libx264, libx265)",
-    ),
     "greenlet": ("greenlet", "needed by Playwright's synchronous API", "MIT AND PSF-2.0"),
     "pyee": ("pyee", "needed by Playwright (events)", "MIT"),
     "typing_extensions": ("typing_extensions", "needed by pyee", "PSF-2.0"),
@@ -76,7 +74,6 @@ DROP_PATTERNS = [
     r"\.py[co]$",
     r"(^|/)(tests?|testing)(/|$)",
     r"\.(pxd|pxi|pyi|h|hpp|c|cc|cpp)$",
-    r"^av/include/",
     r"^playwright/driver/package/lib/vite/",  # trace viewer, recorder, HTML report UIs
     r"^playwright/driver/package/types/",
     r"^playwright/driver/package/index\.d\.ts$",
@@ -90,15 +87,10 @@ _DROP = [re.compile(p) for p in DROP_PATTERNS]
 #: Licence and notice files of the Node driver inside the playwright wheel (not in its dist-info).
 PLAYWRIGHT_DRIVER_NOTICES = ("LICENSE", "NOTICE", "ThirdPartyNotices.txt")
 
-#: What the bundled FFmpeg is: written into the manifest and the pack's ``licenses/av/`` folder.
-FFMPEG_NOTE = (
-    "The av wheel bundles shared libraries of FFmpeg (libavcodec, libavformat, libavutil, libavfilter, "
-    "libavdevice, libswscale, libswresample) and codecs it is built with (libx264, libx265, libvpx, "
-    "libopus, dav1d, SVT-AV1, libwebp, libvmaf). FFmpeg is licensed under the LGPL-2.1-or-later; built "
-    "with libx264 and libx265 (GPL-2.0-or-later) the combination is distributed under the GPL-2.0-or-later. "
-    "Radarx uses libx264 to write H.264. These libraries are unmodified, separate files loaded at run "
-    "time; their source is at https://ffmpeg.org/ and https://github.com/PyAV-Org/pyav-ffmpeg."
-)
+#: Top-level folders that must never be in a pack (PyAV: GPL-built FFmpeg inside its wheels).
+FORBIDDEN_TOP_LEVEL = ("av", "av.libs")
+#: Shared library names that give an FFmpeg with GPL parts away, wherever they sit.
+FORBIDDEN_LIBRARIES = ("libavcodec", "libavformat", "libx264", "libx265")
 
 
 class PackBuildError(Exception):
@@ -189,7 +181,21 @@ def strip_tree(target: Path) -> tuple[int, int]:
         shutil.rmtree(target / name, ignore_errors=True)
     if (target / "ms-playwright").exists() or any(target.rglob("chrome-linux")):
         raise PackBuildError("a browser was downloaded into the pack; it must never be")
+    check_no_forbidden(target)
     return removed, size
+
+
+def check_no_forbidden(target: Path) -> None:
+    """Refuse a pack with PyAV / FFmpeg in it (GPL parts): the film is encoded by Chrome instead."""
+    for name in FORBIDDEN_TOP_LEVEL:
+        if (target / name).exists():
+            raise PackBuildError(
+                f"{name!r} is in the pack: PyAV (with its GPL-built FFmpeg) must never ship; "
+                "Chrome encodes the film"
+            )
+    for p in target.rglob("*"):
+        if p.is_file() and p.name.startswith(FORBIDDEN_LIBRARIES):
+            raise PackBuildError(f"an FFmpeg library is in the pack: {p.relative_to(target)}")
 
 
 def dist_info(target: Path, dist: str) -> Path:
@@ -234,9 +240,6 @@ def collect_licenses(target: Path) -> list[dict]:
                     tgt = dest / f"driver-{n}"
                     shutil.copyfile(src, tgt)
                     files.append(tgt.relative_to(target).as_posix())
-        if name == "av":
-            (dest / "FFMPEG-NOTICE.txt").write_text(FFMPEG_NOTE + "\n", encoding="utf-8")
-            files.append((dest / "FFMPEG-NOTICE.txt").relative_to(target).as_posix())
         if not files:
             raise PackBuildError(f"{name}: no licence file found to ship")
         entry = {
@@ -247,20 +250,6 @@ def collect_licenses(target: Path) -> list[dict]:
             "license": license_text,
             "license_files": sorted(files),
         }
-        if name == "av":
-            # the shared libraries of FFmpeg and its codecs (av/.dylibs on macOS, av.libs on
-            # Linux, next to the modules on Windows), not PyAV's own extension modules
-            entry["bundled_libraries"] = sorted(
-                p.name
-                for p in target.rglob("*")
-                if p.is_file()
-                and p.relative_to(target).parts[0] in ("av", "av.libs")
-                and p.name.startswith(("lib", "av", "sw"))
-                and (".dylib" in p.name or ".so" in p.name or p.suffix == ".dll")
-                and ".abi3." not in p.name
-                and "cpython" not in p.name
-            )
-            entry["note"] = FFMPEG_NOTE
         out.append(entry)
     return out
 

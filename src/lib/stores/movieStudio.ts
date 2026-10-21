@@ -21,7 +21,7 @@
  *   -> {type:'movie_pack_cancel', request_id} / {type:'movie_pack_remove', request_id}
  *                                                            <- {type:'movie_pack_removed', status}
  *
- * The movie components (Playwright, PyAV) are an optional download of the installed app: the
+ * The movie components (Playwright; Chrome itself encodes the film) are an optional download of the installed app: the
  * dialog asks first (what, from where, how big, licences), the engine downloads only what the
  * release index announced and checks its size and SHA-256.
  *
@@ -108,7 +108,7 @@ export const DEFAULT_OPTIONS: MovieOptions = {
   frameFormat: 'png',
 };
 
-/** The optional movie components pack (Playwright + PyAV) of the installed app. */
+/** The optional movie components pack (Playwright and its helpers; no video library) of the installed app. */
 export interface MoviePackStatus {
   needed: boolean;
   root: string;
@@ -146,6 +146,8 @@ export interface Capabilities {
   renderer: { ok: boolean; path?: string; hint?: string };
   av: boolean;
   playwright: boolean;
+  /** Who writes the film: Chrome's own encoder (the normal case), the user's PyAV, or none. */
+  encoder?: { name: 'browser' | 'pyav' | 'none'; detail: string; support: { avc: boolean; vp9: boolean; aac: boolean; opus: boolean; avcHardware: boolean; notes: string[] } | null };
   radarx: boolean;
   default_output_dir: string;
   cache_dir: string;
@@ -304,7 +306,7 @@ function wire(): void {
       addToast('success', `Movie written: ${r.video.split(/[\\/]/).pop()}`);
       fetchVideo(r.video);
     } else if (r.frames_written) {
-      addToast('warning', `No MP4 could be written (PyAV is missing); the frames are in ${r.frames_written}`, 12000);
+      addToast('warning', `No MP4 could be written (no video encoder); the frames are in ${r.frames_written}`, 12000);
     }
   });
   wsManager.onMessage('animate_cancelled', (m: any) => {

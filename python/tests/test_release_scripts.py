@@ -806,7 +806,7 @@ def _add_pack(folder: Path, v: str, os_: str = "macos", arch: str = "aarch64") -
         "python": "cpython-312",
         "components": [
             {"name": "playwright", "version": "1.64.0", "license": "Apache-2.0", "role": "x"},
-            {"name": "av", "version": "19.0.2", "license": "BSD-3-Clause", "role": "y"},
+            {"name": "greenlet", "version": "3.5.6", "license": "MIT AND PSF-2.0", "role": "y"},
         ],
         "zip": {"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()},
     }
@@ -863,7 +863,7 @@ def test_packs_are_checksummed_uploaded_and_listed_under_components(tmp_path: Pa
         assert c["size"] == len(data) and c["sha256"] == hashlib.sha256(data).hexdigest()
         assert c["contents"] == [
             {"name": "playwright", "version": "1.64.0", "license": "Apache-2.0"},
-            {"name": "av", "version": "19.0.2", "license": "BSD-3-Clause"},
+            {"name": "greenlet", "version": "3.5.6", "license": "MIT AND PSF-2.0"},
         ]
     assert bucket.meta[f"radarx/v0.3.0/{mac}"]["content_type"] == "application/zip"
 
