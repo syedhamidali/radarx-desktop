@@ -277,7 +277,8 @@ export function engineOptions(o: MovieOptions, caps: Capabilities | null, forSti
     map_theme: o.mapTheme,
     frame_format: o.frameFormat,
   };
-  if (o.focus === 'scene' && o.camera === 'orbit') out.camera = 'wide';
+  // "The whole scene": a box of at least 320 km, and the wide camera (if chosen) sees all of it.
+  if (o.focus === 'scene' && o.camera === 'wide') out.view_km = 2 * (out.crop_km as number);
   if (o.start.trim()) out.start = o.start.trim();
   if (o.end.trim()) out.end = o.end.trim();
   if (o.reference.trim() && o.reference.trim().toLowerCase() !== 'auto') out.reference = o.reference.trim();
