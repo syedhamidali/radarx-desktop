@@ -46,6 +46,7 @@ import { modelFlashes, makeFlash, mulberry32, type Flash, type FlashCandidate } 
 import { drawFlashes, flashLight } from './lightningFx';
 import { drawCompassStrip, drawInset } from './clipHud';
 import { renderSoundscape, AUDIO_LABEL, dbToGain, type SoundInput } from './soundscape';
+import { rainAtListener, lowestEcho, rainLevelOfDbz, realDelayS, flashCount, type FilmClock } from './soundSampling';
 import { nightLightingText, soundRowLayout, facingStorm } from './clipLabels';
 
 export interface ClipManifest {
@@ -148,6 +149,8 @@ export interface ClipSettings {
     thunder: 'observed' | 'modelled' | 'off';
     listener?: [number, number];
     compress?: number;
+    /** The compression is the film's own time-lapse: time the thunder through the film clock instead. */
+    compressAuto?: boolean;
     seed?: number;
     flashes?: { t_s: number; x: number; y: number; energy?: number; kind?: 'CG' | 'IC' }[];
     label?: string[];
@@ -177,12 +180,15 @@ export interface AudioRender {
   sampleRate: number;
   frames: number;
   peak: number;
-  thunders: { flash: number; tFlash: number; arrival: number; delay: number; distKm: number; kind: string; source: string; tDataS: number; lat: number; lon: number }[];
+  thunders: { flash: number; tFlash: number; arrival: number; delay: number; delayRealS: number; distKm: number; kind: string; source: string; tDataS: number; lat: number; lon: number }[];
   windMs: { min: number; max: number };
   windSource: string;
   /** Share of the wind samples that had no retrieved wind at the listener and used the labelled proxy instead. */
   windProxyShare: number;
-  rainLevel: { min: number; max: number };
+  rainLevel: { min: number; max: number; mean: number; heardShare: number };
+  /** Heights (km) of the echo the rain level was read from (null: no echo over the listener at all). */
+  rainHeightKm: { min: number; max: number } | null;
+  thunderTiming: 'film clock' | 'divided by compress';
   listener: { mode: 'camera' | 'virtual'; x: number; y: number; lat: number; lon: number; eyeM: number };
   compress: number;
   seed: number;
@@ -1102,7 +1108,7 @@ export class StormClip {
       const n = this.flashes.length;
       const given = this.settings.sound?.flashLabel;
       text(
-        given ? `${given} · ${n}` : obsL ? `Lightning: OBSERVED flashes (${m.lightning?.kind ?? 'lightning data'}), channel shape synthetic · ${n}` : `Lightning: MODELLED from radar echo, NOT observed · ${n} flashes, thinned for the time-lapse`,
+        given ? `${given} · ${flashCount(n)}` : obsL ? `Lightning: OBSERVED flashes (${m.lightning?.kind ?? 'lightning data'}), channel shape synthetic · ${flashCount(n)}` : `Lightning: MODELLED from radar echo, NOT observed · ${n} flashes, thinned for the time-lapse`,
         pad, y0 + (this.settings.camera === 'flight' ? 276 : 210) * u, 16, obsL ? 'rgba(170,230,255,0.97)' : 'rgba(255,190,150,0.98)', 600,
       );
     }
@@ -1247,8 +1253,12 @@ export class StormClip {
     return { x, y, zKm: this.terrainKmAt(x, y) + eyeKm, yawDeg: facingStorm(x, y, st.cx, st.cy), pitchDeg: 0, rKm: 0 };
   }
 
-  /** Wind speed at the listener (m/s) and the rain level 0..1 for clip time `t`; `proxy`: no retrieved wind there, a labelled proxy was used. */
-  private async observerConditions(t: number): Promise<{ wind: number; rain: number; proxy: boolean }> {
+  /**
+   * Wind speed at the listener (m/s) and the rain level 0..1 for clip time `t`; `proxy`: no retrieved
+   * wind there, a labelled proxy was used; `rainZ`: height (km) of the echo the rain level was read
+   * from (null: no echo).
+   */
+  private async observerConditions(t: number): Promise<{ wind: number; rain: number; proxy: boolean; rainZ: number | null }> {
     const st = this.stateAt(t);
     const { k, s } = st;
     const v = await this.volumes.get(k);
@@ -1258,12 +1268,26 @@ export class StormClip {
     const pv = this.listenerAt(t);
     const [ox, oy] = [pv.x, pv.y];
     const flight = this.settings.camera === 'flight' && this.listenerIsCamera();
-    // rain: the echo near the ground over the observer, carried like the cloud; 20 dBZ none, 55 dBZ full
-    const zq = flight ? Math.max(0.5, pv.zKm) : 0.5;
-    const da = dbzAt(v, ox - m[0] * s * dt, oy - m[1] * s * dt, zq);
-    const db = dbzAt(vb, ox + m[0] * (1 - s) * dt, oy + m[1] * (1 - s) * dt, zq);
-    const lv = (d: number) => (Number.isFinite(d) ? Math.max(0, Math.min(1, (d - 20) / 35)) : 0);
-    const rain = (1 - s) * lv(da) + s * lv(db);
+    // rain: the echo at the lowest gridded level with a value over the listener (up to 2.5 km above the
+    // ground; far from the radars nothing is gridded near the ground), carried like the cloud; in
+    // flight the echo at the camera. 20 dBZ none, 55 dBZ full (soundSampling.ts)
+    const ax = ox - m[0] * s * dt, ay = oy - m[1] * s * dt, bx = ox + m[0] * (1 - s) * dt, by = oy + m[1] * (1 - s) * dt;
+    let ra: { level: number; zKm: number | null }, rb: { level: number; zKm: number | null };
+    if (flight) {
+      const zq = Math.max(0.5, pv.zKm);
+      const at = (vol: CartVolume, x: number, y: number) => {
+        const e = lowestEcho(vol, x, y, zq, zq);
+        return e ? { level: rainLevelOfDbz(e.dbz), zKm: e.zKm } : { level: 0, zKm: null };
+      };
+      ra = at(v, ax, ay);
+      rb = at(vb, bx, by);
+    } else {
+      const g = this.terrainKmAt(ox, oy);
+      ra = rainAtListener(v, ax, ay, g);
+      rb = rainAtListener(vb, bx, by, g);
+    }
+    const rain = (1 - s) * ra.level + s * rb.level;
+    const rainZ = s < 0.5 ? ra.zKm ?? rb.zKm : rb.zKm ?? ra.zKm;
     let wind: number | null = null;
     if (this.windSource === 'retrieved') {
       const [wa, wb] = await Promise.all([this.windLoader.get(k), this.windLoader.get(k + 1)]);
@@ -1301,7 +1325,7 @@ export class StormClip {
     }
     // inside the heavy rain of the wall the wind roars: its level rises with the echo at the camera
     if (flight && this.windSource === 'retrieved') wind *= 0.6 + 0.4 * rain;
-    return { wind, rain, proxy };
+    return { wind, rain, proxy, rainZ };
   }
 
   /** Render the soundscape offline; returns 16-bit stereo PCM as base64 plus a report of what it was made from. */
@@ -1318,11 +1342,13 @@ export class StormClip {
     const nS = Math.floor(dur / dtS) + 1;
     const wind = new Float32Array(nS), rain = new Float32Array(nS);
     let proxySamples = 0;
+    const rainZ: number[] = [];
     for (let i = 0; i < nS; i++) {
       const c = await this.observerConditions(i * dtS);
       wind[i] = c.wind;
       rain[i] = c.rain;
       if (c.proxy) proxySamples++;
+      if (c.rainZ !== null) rainZ.push(c.rainZ);
     }
     const compress = this.settings.sound?.compress ?? this.settings.soundCompress ?? 8;
     const seed = this.settings.sound?.seed ?? this.settings.lightningSeed ?? 7;
@@ -1330,6 +1356,18 @@ export class StormClip {
       duration: dur, listener: { dt: 1 / fps, x, y, z, yawDeg: yaw, pitchDeg: pit },
       windMs: wind, rain, dtSeries: dtS, flashes: this.soundFlashes, compress, seed,
     };
+    const first = this.ts[0], last = this.ts[this.ts.length - 1];
+    if (this.settings.sound?.compressAuto) {
+      // the thunder keeps its place in the picture: the real delay is added in data time and mapped
+      // back through the film's own (eased) clock, not divided by the mean time-lapse
+      const clock: FilmClock = {
+        dataAt: (t) => dataTimeAt(t, dur, first, last),
+        filmAt: (td) => clipTimeOf(td, dur, first, last),
+        dataEnd: last,
+        rateAfter: compress,
+      };
+      input.clock = clock;
+    }
     const snd = this.settings.sound;
     if (snd && (snd.thunderDb !== undefined || snd.bedDb !== undefined)) {
       const bed = dbToGain(snd.bedDb ?? 0);
@@ -1347,21 +1385,28 @@ export class StormClip {
     let bin = '';
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
     const flashById = new Map(this.soundFlashes.map((f) => [f.id, f]));
-    const first = this.ts[0], last = this.ts[this.ts.length - 1];
     const thunders = res.thunders.map((th) => {
       const f = flashById.get(th.flashId)!;
       const [lat, lon] = this.latLonOf(f.origin[0], f.origin[1]);
-      return { flash: th.flashId, tFlash: f.t, arrival: th.arrival, delay: th.arrival - f.t, distKm: th.distKm, kind: f.kind, source: f.source, tDataS: dataTimeAt(f.t, dur, first, last), lat, lon };
+      const delayRealS = input.clock ? realDelayS(th.distKm) : (th.arrival - f.t) * compress;
+      return { flash: th.flashId, tFlash: f.t, arrival: th.arrival, delay: th.arrival - f.t, delayRealS, distKm: th.distKm, kind: f.kind, source: f.source, tDataS: dataTimeAt(f.t, dur, first, last), lat, lon };
     });
     const lp = this.listenerAt(0);
     const [llat, llon] = this.latLonOf(lp.x, lp.y);
     return {
       pcm: btoa(bin), sampleRate, frames: n, peak: res.peak, thunders,
       windMs: { min: Math.min(...wind), max: Math.max(...wind) }, windSource: this.windSource, windProxyShare: proxySamples / nS,
-      rainLevel: { min: Math.min(...rain), max: Math.max(...rain) },
+      rainLevel: { min: Math.min(...rain), max: Math.max(...rain), mean: rain.reduce((a, b) => a + b, 0) / Math.max(1, nS), heardShare: rain.filter((r) => r > 0).length / Math.max(1, nS) },
+      rainHeightKm: rainZ.length ? { min: Math.min(...rainZ), max: Math.max(...rainZ) } : null,
+      thunderTiming: input.clock ? 'film clock' : 'divided by compress',
       listener: { mode: this.listenerIsCamera() ? 'camera' : 'virtual', x: lp.x, y: lp.y, lat: llat, lon: llon, eyeM: Math.round((lp.zKm - this.terrainKmAt(lp.x, lp.y)) * 1000) },
       compress, seed, levelsDb: { thunder: snd?.thunderDb ?? 0, bed: snd?.bedDb ?? 0 }, ceiling: input.ceiling ?? 0.95,
     };
+  }
+
+  /** Replace the sound label rows drawn on the film (`rxd animate` writes them from what the sound was actually made of). */
+  setSoundLabel(rows: string[]): void {
+    if (this.settings.sound) this.settings.sound.label = [...rows];
   }
 
   /** Flashes of the clip (time, kind, source, strength): for reports and tests. */
