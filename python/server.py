@@ -4189,15 +4189,27 @@ class ConnectionHandler(EnvironmentMessages):
         kind = msg.get("type")
         request_id = msg.get("request_id")
         if kind == "auto_cancel":
-            await self.send({"type": "auto_cancelled", "request_id": request_id, "found": auto_ws.cancel(request_id)})
+            await self.send(
+                {
+                    "type": "auto_cancelled",
+                    "request_id": request_id,
+                    "found": auto_ws.cancel(request_id),
+                }
+            )
             return
         cancel = auto_ws.cancel_event(request_id)
         try:
             if web.is_web_mode():
-                raise AutopilotError("Autopilot reads local folders: use the desktop app or rxd auto")
+                raise AutopilotError(
+                    "Autopilot reads local folders: use the desktop app or rxd auto"
+                )
             loop = asyncio.get_running_loop()
             progress_sync = self._progress_callback(loop)
-            fn = {"auto_inspect": auto_ws.inspect, "auto_plan": auto_ws.plan, "auto_run": auto_ws.run}[str(kind)]
+            fn = {
+                "auto_inspect": auto_ws.inspect,
+                "auto_plan": auto_ws.plan,
+                "auto_run": auto_ws.run,
+            }[str(kind)]
             if kind != "auto_plan":
                 await self.send_progress(2, "Autopilot...")
             out = await loop.run_in_executor(None, fn, msg, progress_sync, cancel.is_set)
@@ -4206,12 +4218,33 @@ class ConnectionHandler(EnvironmentMessages):
             if "cancel" in str(exc):
                 await self.send({"type": "auto_cancelled", "request_id": request_id})
             else:
-                await self.send({"type": "auto_error", "request_id": request_id, "kind": kind, "message": str(exc)})
+                await self.send(
+                    {
+                        "type": "auto_error",
+                        "request_id": request_id,
+                        "kind": kind,
+                        "message": str(exc),
+                    }
+                )
         except ImportError as exc:
-            await self.send({"type": "auto_error", "request_id": request_id, "kind": kind, "message": f"This step needs a Python package: {exc}"})
+            await self.send(
+                {
+                    "type": "auto_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"This step needs a Python package: {exc}",
+                }
+            )
         except Exception as exc:
             logger.error("Autopilot failed: %s\n%s", exc, traceback.format_exc())
-            await self.send({"type": "auto_error", "request_id": request_id, "kind": kind, "message": f"{type(exc).__name__}: {exc}"})
+            await self.send(
+                {
+                    "type": "auto_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
         finally:
             auto_ws.forget(request_id)
             if kind != "auto_plan":
