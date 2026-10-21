@@ -115,27 +115,27 @@ def govern_step(step: dict[str, Any], inv: dict[str, Any], budget: int) -> dict[
     n_steps = max((len(v) for v in per_radar.values()), default=len(paths))
 
     # concurrency: how many volumes are in memory at once
-    if kind in ("mosaic", "winds"):
-        concurrent = len(radars) or 2
-    else:
-        concurrent = 1
+    concurrent = (len(radars) or 2) if kind in ("mosaic", "winds") else 1
     mem_needed = int(largest * concurrent * MEM_FACTOR.get(kind, 1.5))
     if mem_needed > budget:
         step["refused"] = (
-            f"one time step needs ~{mem_needed / 1e9:.1f} GB ({concurrent} volume(s) x {MEM_FACTOR.get(kind, 1.5)}) "
+            f"one time step needs ~{mem_needed / 1e9:.1f} GB ({concurrent} volume(s) x "
+            f"{MEM_FACTOR.get(kind, 1.5)}) "
             f"but the budget is {budget / 1e9:.1f} GB; raise --budget-gb or give smaller volumes"
         )
     # subsampling of time steps for per-step heavy products
     if kind in ("mosaic", "winds", "movie", "module") and n_steps > MAX_STEPS:
         every = -(-n_steps // MAX_STEPS)
+        est_min = n_steps * SEC_PER_DECODED_GB.get(kind, 10) * largest * concurrent / 1e9 / 60
         reductions.append(
             {
                 "what": f"time steps for {kind}",
                 "from": n_steps,
                 "to": -(-n_steps // every),
                 "every": every,
-                "reason": f"{n_steps} time steps would take ~{n_steps * SEC_PER_DECODED_GB.get(kind, 10) * largest * concurrent / 1e9 / 60:.0f} min; "
-                f"every {every}. volume is used (evenly), the others are listed as skipped in the run record",
+                "reason": f"{n_steps} time steps would take ~{est_min:.0f} min; "
+                f"every {every}. volume is used (evenly), "
+                "the others are listed as skipped in the run record",
             }
         )
         n_eff = -(-n_steps // every)
@@ -154,7 +154,10 @@ def govern_step(step: dict[str, Any], inv: dict[str, Any], budget: int) -> dict[
         "time_steps": n_eff,
         "decoded_bytes": processed_dec,
         "kind": "ESTIMATE",
-        "method": "coefficients from docs/PERFORMANCE.md timings scaled by the decoded size of these files",
+        "method": (
+            "coefficients from docs/PERFORMANCE.md timings scaled by the decoded size "
+            "of these files"
+        ),
     }
     step["reductions"] = reductions
     step["chunking"] = (

@@ -1,4 +1,5 @@
-"""Stage 3: the plan. Ranked, explained steps for exactly this data; refusals say what is missing."""
+"""Stage 3: the plan. Ranked, explained steps for exactly this data; refusals say what is
+missing."""
 
 from __future__ import annotations
 
@@ -67,7 +68,10 @@ def make_plan(
             "total_seconds_estimate": round(total_s),
             "peak_memory_bytes_estimate": peak,
             "reductions": reductions,
-            "note": "Estimates are rough (ESTIMATE); every reduction above is repeated in the run record and the outputs' provenance.",
+            "note": (
+                "Estimates are rough (ESTIMATE); every reduction above is repeated in the "
+                "run record and the outputs' provenance."
+            ),
         },
         "out_dir": out_dir,
         "consent": "Nothing runs, is downloaded or written until the steps are approved.",
@@ -81,7 +85,8 @@ def format_plan(plan: dict[str, Any], inv: dict[str, Any] | None = None) -> str:
     lines += [f"  {e}" for e in plan["situation"]["evidence"]]
     g = plan["governor"]
     lines.append(
-        f"Budget: {g['budget_bytes'] / 1e9:.1f} GB of {(g['machine'].get('ram_bytes') or 0) / 1e9:.0f} GB RAM; "
+        f"Budget: {g['budget_bytes'] / 1e9:.1f} GB of "
+        f"{(g['machine'].get('ram_bytes') or 0) / 1e9:.0f} GB RAM; "
         f"~{g['total_seconds_estimate'] / 60:.1f} min for the enabled steps (ESTIMATE)"
     )
     lines.append("")
@@ -90,7 +95,8 @@ def format_plan(plan: dict[str, Any], inv: dict[str, Any] | None = None) -> str:
         flag = "x" if s["enabled"] else ("-" if s.get("refused") else "m")
         est = s["estimate"]
         lines.append(
-            f"  [{flag}] {s['order']}. {s['title']}  (~{est['seconds']} s, ~{est['memory_bytes'] / 1e9:.1f} GB, {est['volumes']} volumes)"
+            f"  [{flag}] {s['order']}. {s['title']}  (~{est['seconds']} s, "
+            f"~{est['memory_bytes'] / 1e9:.1f} GB, {est['volumes']} volumes)"
         )
         lines.append(f"       why: {s['why']}")
         lines.append(f"       needs: {s['needs']}")
