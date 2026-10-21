@@ -426,7 +426,7 @@
   figure.still img { width: 100%; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
   figcaption { font-size: var(--fs-xs); color: var(--c-muted); }
   .done { display: flex; flex-direction: column; gap: var(--space-2); }
-  .player { width: 100%; max-height: 50vh; background: #000; border-radius: var(--radius-sm); }
+  .player { width: 100%; max-height: 50vh; background: var(--c-bg); border-radius: var(--radius-sm); }
   .foot { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--c-border); }
   @media (max-width: 640px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
   @media (prefers-reduced-motion: reduce) { .progress .fill { transition: none; } }
