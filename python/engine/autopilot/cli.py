@@ -42,9 +42,7 @@ def add_parser(
     p.add_argument(
         "--steps", metavar="IDS", help="comma-separated step ids to run (implies consent for those)"
     )
-    p.add_argument(
-        "--budget-gb", type=float, metavar="N", help="memory budget (default 60 %% of RAM)"
-    )
+    # --budget-gb is a global option of every rxd command (engine/governor_cli.py): not repeated here.
     p.add_argument(
         "--no-check", action="store_true", help="skip the data check during inspection (faster)"
     )
