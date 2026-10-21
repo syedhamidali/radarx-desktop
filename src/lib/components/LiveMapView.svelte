@@ -246,7 +246,7 @@
 {/if}
 
 <style>
-  .live-root { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--c-surface-0); color: var(--c-text); }
+  .live-root { position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; background: var(--c-surface-0); color: var(--c-text); }
   .live-status, .live-radars, .live-loop {
     display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap;
     padding: var(--space-1) var(--space-3); font-size: var(--fs-xs); border-bottom: 1px solid var(--c-border); background: var(--c-surface-1);
@@ -265,7 +265,7 @@
   .live-chip.bad .live-dot { background: var(--c-alarm); }
   @keyframes live-pulse { 50% { opacity: 0.25; } }
   .live-item { color: var(--c-text-dim); white-space: nowrap; }
-  .live-item.msg { color: var(--c-caution); white-space: normal; overflow: hidden; text-overflow: ellipsis; max-width: 48ch; }
+  .live-item.msg { color: var(--c-caution); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 36ch; }
   .live-item select { height: 22px; font-size: var(--fs-xs); margin-left: 4px; }
   .live-spacer { flex: 1; }
   .live-btn { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-xs); }
@@ -282,9 +282,10 @@
     position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; padding: var(--space-5);
   }
   .live-empty p { max-width: 46ch; text-align: center; color: var(--c-text-dim); background: rgba(var(--c-surface-1-rgb), 0.85); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); border: 1px solid var(--c-border); }
+  /* Top-left of the map: the legend sits bottom-centre and the attribution bottom-right. */
   .live-prov {
-    position: absolute; left: var(--space-2); bottom: var(--space-2); display: flex; gap: var(--space-2); align-items: center;
-    max-width: calc(100% - 2 * var(--space-2)); padding: 3px 8px; font-size: var(--fs-2xs); color: var(--c-text-dim);
+    position: absolute; left: var(--space-2); top: var(--space-2); display: flex; gap: var(--space-2); align-items: center;
+    max-width: min(60ch, calc(100% - 2 * var(--space-2))); padding: 3px 8px; font-size: var(--fs-2xs); color: var(--c-text-dim);
     background: rgba(var(--c-surface-1-rgb), 0.9); border: 1px solid var(--c-border); border-radius: var(--radius-sm);
   }
   .live-marker { position: absolute; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs); color: var(--c-text); pointer-events: none; text-shadow: 0 0 3px rgba(var(--c-surface-0-rgb), 0.95); }

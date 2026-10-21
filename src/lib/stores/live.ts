@@ -136,8 +136,12 @@ export const liveShownFrame = derived([_frames, liveShownIndex], ([$f, $i]) => {
 });
 registerJobSource('live', derived(liveState, (s) => (s.phase === 'listing' || s.phase === 'downloading' || s.phase === 'building' ? 1 : 0)));
 
-/** Session-only consent (never stored). */
-export const liveConsent = writable<ConsentState>(NO_CONSENT);
+/**
+ * Session-only consent (never stored), one per step: allowing the listings "while the app is
+ * open" never covers a download, so the exact sizes are always shown at least once.
+ */
+export const liveListConsent = writable<ConsentState>(NO_CONSENT);
+export const liveDownloadConsent = writable<ConsentState>(NO_CONSENT);
 export const liveConsentPrompt = writable<ConsentPrompt | null>(null);
 
 function patch(p: Partial<LiveState>): void {
@@ -150,17 +154,22 @@ function setRadar(station: string, entry: Partial<RadarStatusEntry>): void {
 
 // ── Consent ─────────────────────────────────────────────────────────────────────────────────
 
+function consentOf(step: 'list' | 'download') {
+  return step === 'list' ? liveListConsent : liveDownloadConsent;
+}
+
 function ask(step: 'list' | 'download', text: ConsentText): Promise<ConsentChoice> {
   return new Promise<ConsentChoice>((resolve) => {
     get(liveConsentPrompt)?.answer('cancel');
+    const store = consentOf(step);
     const prompt: ConsentPrompt = {
       step,
       station: '',
       text,
       answer: (choice) => {
         if (get(liveConsentPrompt) === prompt) liveConsentPrompt.set(null);
-        const r = resolveChoice(get(liveConsent), choice);
-        liveConsent.set(r.state);
+        const r = resolveChoice(get(store), choice);
+        store.set(r.state);
         resolve(choice);
       },
     };
@@ -309,7 +318,7 @@ async function runUpdate(): Promise<void> {
   const alive = () => session === mySession && get(liveState).running && !op.signal.aborted;
   try {
     // 1. consent for the listing (first time, or every time after "Allow once")
-    if (needsPrompt(get(liveConsent), 'list')) {
+    if (needsPrompt(get(liveListConsent), 'list')) {
       patch({ phase: 'waiting', message: '' });
       const choice = await ask('list', describeLiveListing(stations, new Date()));
       if (choice === 'cancel' || !alive()) { cancelOp(op.id); if (alive()) stop(); return; }
@@ -344,12 +353,12 @@ async function runUpdate(): Promise<void> {
       return;
     }
     // 4. consent for the downloads, with the exact sizes
-    if (plan.toDownload.length > 0 && needsPrompt(get(liveConsent), 'download')) {
+    if (plan.toDownload.length > 0 && needsPrompt(get(liveDownloadConsent), 'download')) {
       patch({ phase: 'waiting' });
       const choice = await ask('download', describeLiveDownload(plan, get(settings).live.intervalMin));
       if (choice === 'cancel' || !alive()) { cancelOp(op.id); if (alive()) stop(); return; }
-      if (choice === 'once') patch({ onceOnly: true });
-      else patch({ onceOnly: false });
+      // The timer runs only when both steps were allowed for the session.
+      patch({ onceOnly: choice === 'once' || !get(liveListConsent).session });
     }
     // 5. download + composite
     patch({ phase: plan.toDownload.length ? 'downloading' : 'building' });

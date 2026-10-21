@@ -1005,7 +1005,7 @@
       </div>
 
       <button class="toolbar-btn" on:pointerenter={() => movieStudio.load()} on:focus={() => movieStudio.load()} on:click={() => { void movieStudio.load(); openMovieStudio(); }} title="Movie Studio: make a storm movie (MP4)" aria-label="Movie Studio">Movie</button>
-      {#if !isWebMode()}
+      {#if !$webUi}
         <button class="toolbar-btn" class:active={viewMode === 'live'} on:pointerenter={() => liveView.load()} on:focus={() => liveView.load()} on:click={openLive} title="Live map: the latest scans of your default radars (asks before downloading)" aria-label="Live map" data-testid="toolbar-live">Live</button>
       {/if}
       <button class="toolbar-btn icon-btn" class:active={$diffMode === 'diff'} on:click={toggleDiffMode} title="Toggle Diff View">
