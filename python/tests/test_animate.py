@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import tracemalloc
 from datetime import datetime, timedelta, timezone
 from itertools import pairwise
@@ -1047,6 +1048,16 @@ class TestRunWithoutRendering:
         assert {v["time_from"] for v in vols} == {"name"} and vols[1]["offset_s"] == 40
         assert "interpolation" in doc["method"] and "observed" in doc["method"]["labels"]
         assert "nothing_invented" in doc["method"] and doc["frames"]["frames"] == 480
+        # no local folders by default: names and paths inside the input folder only
+        assert all("local_path" not in v and "path" not in v for v in vols)
+        assert all(not os.path.isabs(v["relative_path"]) for v in vols)
+        assert str(tmp_path) not in json.dumps(vols)
+        assert "record_paths" not in doc["parameters"]
+
+    def test_provenance_full_paths_only_on_request(self, tmp_path):
+        res = animate.run(self.opts(tmp_path, record_paths=True), gridder=SyntheticGridder())
+        vols = animate.provenance(res, {}, None)["input_volumes"]
+        assert all(os.path.isabs(v["local_path"]) for v in vols)
 
     def test_mp4_tags_say_what_the_clip_is(self, tmp_path):
         res = animate.run(self.opts(tmp_path), gridder=SyntheticGridder())

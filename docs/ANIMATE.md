@@ -274,6 +274,9 @@ command line, the date, the versions (engine, radarx, xradar, Python, Playwright
 the renderer), every input volume (radar, volume time, offset from the step, file name and size, where the time came
 from), every parameter, the page settings (the look), the steps, the storm track, the frame plan, the camera,
 the files that were not used and the method in words, so a clip can be checked and repeated later.
+Input files are recorded by name and by their path inside the input folder (`KTLX/KTLX20130520_...`), so the
+record can be shared without showing your folders; `--record-paths` also writes each file's full local path
+(field `local_path`).
 
 ## All options
 
@@ -283,7 +286,7 @@ the files that were not used and the method in words, so a clip can be checked a
 | Group | Options |
 |---|---|
 | clip | `--duration S` or `--timelapse X` (length = data span / X + 3 s), `--fps 30`, `--size 1920x1080`, `--title`, `--subtitle`, `--credit` |
-| storm and grids | `--cell-dbz 45`, `--track cells\|linear\|eye`, `--crop-km 60`, `--detail-m 500`, `--winds`, `--cache-dir`, `--fresh` |
+| storm and grids | `--cell-dbz 45`, `--track cells\|linear\|eye`, `--crop-km 60`, `--detail-m 500`, `--winds`, `--cache-dir`, `--fresh`, `--record-paths` |
 | camera | `--camera NAME\|FILE`, `--target-lag`, `--fov`, `--view-km`, `--vexag`, and for `window`: `--observer X,Y`, `--observer-dist`, `--observer-upwind`, `--observer-side`, `--eye-m`, `--pan`, `--pitch` |
 | look | `--look FILE`, `--look-preset NAME`, `--set KEY=VALUE`, `--realistic`, `--ground`, `--storm-style`, `--palette`, `--light`, `--sea`, `--map-theme`, `--basemap`, `--lightning-model` |
 | render | `--tile-cache DIR`, `--offline`, `--app-dist DIR`, `--browser CHANNEL`, `--software`, `--crf 18`, `--x264-preset medium`, `--frame-format png\|jpg`, `--keep-frames`, `--no-render` |

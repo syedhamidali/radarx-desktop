@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -93,6 +94,7 @@ class AnimateOptions:
     browser: str = "chrome"
     software: bool = False
     command: str = ""  # the command line, recorded in the provenance file
+    record_paths: bool = False  # --record-paths: full local input paths in the provenance file
     crf: int = 18
     preset: str = "medium"
     frame_format: str = "png"
@@ -733,25 +735,37 @@ def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) 
     from engine import animate_render as render
 
     o = res.options
-    params = {k: v for k, v in asdict(o).items() if k not in ("files", "command")}
+    params = {k: v for k, v in asdict(o).items() if k not in ("files", "command", "record_paths")}
+    # input files by name and by their path inside the common input folder (no user folders);
+    # the full local path only with --record-paths, in a field that says so
+    used = [vol for st in res.steps.steps for vol, _off in st.files.values()]
+    try:
+        common = os.path.commonpath([str(v.path.parent) for v in used]) if used else ""
+    except ValueError:  # different drives
+        common = ""
     inputs = []
     for i, st in enumerate(res.steps.steps):
         for radar, (vol, off) in sorted(st.files.items()):
             size = None
             with contextlib.suppress(OSError):
                 size = vol.path.stat().st_size
-            inputs.append(
-                {
-                    "step": i,
-                    "radar": radar,
-                    "volume_time": vol.time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "offset_s": off,
-                    "file": vol.name,
-                    "path": str(vol.path),
-                    "size_bytes": size,
-                    "time_from": vol.source,
-                }
-            )
+            rel = vol.name
+            if common:
+                with contextlib.suppress(ValueError):
+                    rel = Path(os.path.relpath(vol.path, common)).as_posix()
+            entry = {
+                "step": i,
+                "radar": radar,
+                "volume_time": vol.time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "offset_s": off,
+                "file": vol.name,
+                "relative_path": rel,
+                "size_bytes": size,
+                "time_from": vol.source,
+            }
+            if o.record_paths:
+                entry["local_path"] = str(vol.path)
+            inputs.append(entry)
     doc = res.to_dict()
     doc["tool"] = "rxd animate"
     doc["created_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
