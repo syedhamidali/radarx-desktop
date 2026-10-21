@@ -19,6 +19,7 @@
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import { updater } from './lib/stores/updater';
   import { reportIssueOpen, openReportIssue, closeReportIssue } from './lib/stores/reportIssue';
+  import { commandStudioOpen, openCommandStudio } from './lib/stores/commandStudio';
   import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
@@ -59,6 +60,8 @@
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
   const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
   const reportDialog = lazy(() => import('./lib/components/ReportIssueDialog.svelte'));
+  // Command Studio: every rxd command as a form (stores/commandStudio.ts).
+  const commandStudio = lazy(() => import('./lib/components/CommandStudio.svelte'));
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
@@ -150,6 +153,7 @@
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
   $effect(() => { if ($reportIssueOpen) reportDialog.load(); });
+  $effect(() => { if ($commandStudioOpen) commandStudio.load(); });
   $effect(() => { whenIdle(() => envDialog.load()); });
   // Not needed for the first paint: fetched when idle (so its fade-in plays), or at once if it is asked for.
   $effect(() => { whenIdle(() => updateDialog.load()); });
@@ -1148,6 +1152,7 @@
     else if (type === 'show-tour') onboardingVisible = true;
     else if (type === 'about') aboutDialogVisible = true;
     else if (type === 'report-issue') openReportIssue();
+    else if (type === 'command-studio') openCommandStudio();
     else if (type === 'export') showPanel('export');
     else if (type === 'data-check') openDataCheck();
   }} />
@@ -1159,6 +1164,7 @@
   {#if envDialog.component}<envDialog.component />{/if}
   {#if shareHost.component}<shareHost.component />{/if}
   {#if $reportIssueOpen && reportDialog.component}<reportDialog.component onclose={closeReportIssue} />{/if}
+  {#if $commandStudioOpen && commandStudio.component}<commandStudio.component onopen={openPaths} />{/if}
   {#if settingsOpen && settingsDialog.component}
     <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}

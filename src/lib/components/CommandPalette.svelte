@@ -115,6 +115,13 @@
         action: () => dispatch('action', { type: 'show-tour' }),
       },
       {
+        id: 'command-studio',
+        label: 'Command Studio: every rxd command as a form...',
+        category: 'Tools',
+        icon: '⌨',
+        action: () => dispatch('action', { type: 'command-studio' }),
+      },
+      {
         id: 'report-issue',
         label: 'Report an Issue...',
         category: 'App',

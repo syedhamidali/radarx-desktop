@@ -207,6 +207,9 @@ _locks = _LoopLocks()
 # file_id -> cancel flag of the pipeline currently running on that file (see _handle_run_pipeline)
 _PIPELINE_CANCELS: dict[str, threading.Event] = {}
 
+# request_id -> cancel flag of a Command Studio run (see _handle_cli_run)
+_CLI_CANCELS: dict[str, threading.Event] = {}
+
 
 class _ConnState:
     """Engine state private to one connection (web mode).
@@ -1291,6 +1294,10 @@ class ConnectionHandler(EnvironmentMessages):
             "run_multidoppler": self._handle_run_multidoppler,
             "multidoppler_cancel": self._handle_multidoppler_cancel,
             "export_multidoppler": self._handle_export_multidoppler,
+            "cli_describe": self._handle_cli_describe,
+            "cli_run": self._handle_cli_run,
+            "cli_cancel": self._handle_cli_cancel,
+            "cli_reveal": self._handle_cli_reveal,
             "get_web_info": self._handle_get_web_info,
             **self._env_handlers(),  # env_* and sounding_open (engine/environment/messages.py)
         }
@@ -4600,6 +4607,76 @@ class ConnectionHandler(EnvironmentMessages):
         request_id = msg.get("request_id")
         if isinstance(request_id, str) and request_id:
             _multidoppler_cancel_event(request_id).set()
+
+    # ------------------------------------------------------------------
+    # Command Studio: every rxd command as a form (engine/cli_schema.py)
+    # ------------------------------------------------------------------
+
+    async def _handle_cli_describe(self, msg: dict[str, Any]) -> None:
+        """``{type: "cli_describe", request_id}`` -> ``{type: "cli_schema", request_id, ...}``."""
+        from engine import cli_schema
+
+        schema = await asyncio.get_running_loop().run_in_executor(None, cli_schema.describe)
+        await self.send({"type": "cli_schema", "request_id": msg.get("request_id"), **schema})
+
+    async def _handle_cli_run(self, msg: dict[str, Any]) -> None:
+        """``{type: "cli_run", request_id, argv: [...], cwd?}`` -> progress, then ``cli_result``.
+
+        The command runs in the engine (one at a time, the ``cli`` lock); a failure of any kind
+        is a ``cli_result`` with a friendly message, never an error frame or a traceback.
+        """
+        from engine import cli_schema
+
+        request_id = msg.get("request_id")
+        argv = msg.get("argv")
+        reply: dict[str, Any] = {"type": "cli_result", "request_id": request_id}
+        if self.session is not None:  # web mode: the engine's files are not the visitor's
+            text = "Command Studio runs commands on this computer: it is part of the desktop app."
+            await self.send({**reply, **cli_schema.refused(text)})
+            return
+        if not isinstance(argv, list) or not all(isinstance(a, str) for a in argv):
+            text = "cli_run needs 'argv', a list of words."
+            await self.send({**reply, **cli_schema.refused(text)})
+            return
+        cwd = msg.get("cwd") if isinstance(msg.get("cwd"), str) else None
+        cancel = threading.Event()
+        key = str(request_id or "")
+        _CLI_CANCELS[key] = cancel
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        await self.send_progress(2, f"rxd {argv[0] if argv else ''}: starting")
+        try:
+            result = await _run_holding(
+                _locks.get("cli"),
+                lambda: cli_schema.run_command(
+                    argv, progress=progress_sync, is_cancelled=cancel.is_set, cwd=cwd
+                ),
+            )
+        except BaseException:
+            cancel.set()  # the worker stops at its next progress tick
+            raise
+        finally:
+            if _CLI_CANCELS.get(key) is cancel:
+                del _CLI_CANCELS[key]
+            await self.send_progress(100, "Command finished")
+        await self.send({**reply, **result})
+
+    async def _handle_cli_cancel(self, msg: dict[str, Any]) -> None:
+        """``{type: "cli_cancel", request_id}``: stop that command at its next progress tick."""
+        event = _CLI_CANCELS.get(str(msg.get("request_id") or ""))
+        if event is not None:
+            event.set()
+
+    async def _handle_cli_reveal(self, msg: dict[str, Any]) -> None:
+        """``{type: "cli_reveal", path}``: show a produced file in the system file manager."""
+        from engine import cli_schema
+
+        path = msg.get("path")
+        if self.session is not None or not isinstance(path, str) or not path:
+            return
+        error = cli_schema.reveal(path)
+        if error:
+            await self.send_error(f"cli_reveal: {error}")
 
     async def _handle_export_multidoppler(self, msg: dict[str, Any]) -> None:
         """``{type: "export_multidoppler", wind_id, path, overwrite?}`` -> ``file_saved``."""
