@@ -45,7 +45,7 @@ import { decodeWindStep, stormRelativeField, type WindStep, type MorphField } fr
 import { modelFlashes, makeFlash, mulberry32, type Flash, type FlashCandidate } from './lightning';
 import { drawFlashes, flashLight } from './lightningFx';
 import { drawCompassStrip, drawInset } from './clipHud';
-import { renderSoundscape, AUDIO_LABEL, type SoundInput } from './soundscape';
+import { renderSoundscape, AUDIO_LABEL, dbToGain, type SoundInput } from './soundscape';
 import { nightLightingText, soundRowLayout, facingStorm } from './clipLabels';
 
 export interface ClipManifest {
@@ -151,6 +151,14 @@ export interface ClipSettings {
     seed?: number;
     flashes?: { t_s: number; x: number; y: number; energy?: number; kind?: 'CG' | 'IC' }[];
     label?: string[];
+    /** Draw the flashes of the thunder source in the picture, at the flash time the thunder is timed to. `flashKind` and `flashLabel` say what they are on screen. */
+    drawFlashes?: boolean;
+    flashKind?: 'glm' | 'file' | 'modelled';
+    flashLabel?: string;
+    /** Level of the thunder and of the wind and rain bed, dB relative to the default mix; `ceiling`: highest sample (0..1). */
+    thunderDb?: number;
+    bedDb?: number;
+    ceiling?: number;
   };
   /** Credit line at the bottom (default: NEXRAD Level II). `rxd animate` names the radars it was given. */
   radarCredit?: string;
@@ -178,6 +186,9 @@ export interface AudioRender {
   listener: { mode: 'camera' | 'virtual'; x: number; y: number; lat: number; lon: number; eyeM: number };
   compress: number;
   seed: number;
+  /** Thunder and bed level relative to the default mix (dB) and the highest sample allowed. */
+  levelsDb: { thunder: number; bed: number };
+  ceiling: number;
 }
 
 export class StormClip {
@@ -727,6 +738,11 @@ export class StormClip {
     else if (snd.thunder === 'observed') {
       const recs = snd.flashes ?? this.manifest.lightning?.flashes ?? [];
       this.soundFlashes = this.observedFlashes(recs, snd.seed ?? this.settings.lightningSeed ?? 7);
+      if (snd.drawFlashes) {
+        // the very flashes the thunder is timed to are the ones drawn: the light and the thunder share one flash time
+        this.flashes = this.soundFlashes;
+        this.lightningSource = 'observed';
+      }
     } else if (snd.thunder === 'modelled') this.soundFlashes = this.flashes;
     else this.soundFlashes = [];
   }
@@ -1084,8 +1100,9 @@ export class StormClip {
     if (this.lightningSource !== 'off') {
       const obsL = this.lightningSource === 'observed';
       const n = this.flashes.length;
+      const given = this.settings.sound?.flashLabel;
       text(
-        obsL ? `Lightning: OBSERVED flashes (${m.lightning?.kind ?? 'lightning data'}), channel shape synthetic · ${n}` : `Lightning: MODELLED from radar echo, NOT observed · ${n} flashes, thinned for the time-lapse`,
+        given ? `${given} · ${n}` : obsL ? `Lightning: OBSERVED flashes (${m.lightning?.kind ?? 'lightning data'}), channel shape synthetic · ${n}` : `Lightning: MODELLED from radar echo, NOT observed · ${n} flashes, thinned for the time-lapse`,
         pad, y0 + (this.settings.camera === 'flight' ? 276 : 210) * u, 16, obsL ? 'rgba(170,230,255,0.97)' : 'rgba(255,190,150,0.98)', 600,
       );
     }
@@ -1180,7 +1197,7 @@ export class StormClip {
       const lb: string[] = [];
       if (stylised) {
         la.push(this.lightKind === 'night'
-          ? nightLightingText(this.lightningSource)
+          ? nightLightingText(this.settings.sound?.flashKind === 'file' && this.lightningSource === 'observed' ? 'file' : this.lightningSource)
           : this.lightKind === 'overcast'
             ? `Stylised lighting, not a photograph: thick overcast, dim filtered light; the real scene was at night (the real sun was ${Math.round(Math.abs(this.sun?.realElevationDeg ?? 0))}° below the horizon)`
             : this.sun?.daylightAssumed
@@ -1313,6 +1330,12 @@ export class StormClip {
       duration: dur, listener: { dt: 1 / fps, x, y, z, yawDeg: yaw, pitchDeg: pit },
       windMs: wind, rain, dtSeries: dtS, flashes: this.soundFlashes, compress, seed,
     };
+    const snd = this.settings.sound;
+    if (snd && (snd.thunderDb !== undefined || snd.bedDb !== undefined)) {
+      const bed = dbToGain(snd.bedDb ?? 0);
+      input.levels = { wind: bed, rain: bed, thunder: dbToGain(snd.thunderDb ?? 0) };
+    }
+    if (snd?.ceiling !== undefined) input.ceiling = snd.ceiling;
     const res = await renderSoundscape(input, sampleRate);
     const n = res.left.length;
     const pcm = new Int16Array(n * 2);
@@ -1337,7 +1360,7 @@ export class StormClip {
       windMs: { min: Math.min(...wind), max: Math.max(...wind) }, windSource: this.windSource, windProxyShare: proxySamples / nS,
       rainLevel: { min: Math.min(...rain), max: Math.max(...rain) },
       listener: { mode: this.listenerIsCamera() ? 'camera' : 'virtual', x: lp.x, y: lp.y, lat: llat, lon: llon, eyeM: Math.round((lp.zKm - this.terrainKmAt(lp.x, lp.y)) * 1000) },
-      compress, seed,
+      compress, seed, levelsDb: { thunder: snd?.thunderDb ?? 0, bed: snd?.bedDb ?? 0 }, ceiling: input.ceiling ?? 0.95,
     };
   }
 

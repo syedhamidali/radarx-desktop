@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   windGain, windCutoffHz, rainGain, thunderGain, thunderCutoffHz, thunderTail, thunderOf, gustSeries, sampleSeries,
-  AUDIO_LABEL, sumTree,
+  AUDIO_LABEL, sumTree, dbToGain,
 } from './soundscape.ts';
 import { makeFlash, thunderDelay } from './lightning.ts';
 
@@ -106,4 +106,10 @@ test('sources are summed by a pairwise tree: no node has more than two inputs an
     assert.ok(leaves.every(reaches), `${n} sources: one does not reach the output`);
     assert.equal(made, Math.max(0, n - 1), 'a binary tree of n leaves has n - 1 sums');
   }
+});
+
+test('levels in decibels become linear gains', () => {
+  assert.equal(dbToGain(0), 1);
+  assert.ok(Math.abs(dbToGain(20) - 10) < 1e-12 && Math.abs(dbToGain(-6.0206) - 0.5) < 1e-4);
+  assert.ok(dbToGain(6) > dbToGain(3) && dbToGain(-12) < dbToGain(-3));
 });

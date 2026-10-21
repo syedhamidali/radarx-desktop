@@ -26,6 +26,11 @@ export const AUDIO_LABEL = 'Synthesised from the data, not a recording';
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
 
+/** Linear gain of a level in decibels. */
+export function dbToGain(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
 /** Loudness of the wind bed for a wind speed (m/s): rises steadily with the speed. */
 export function windGain(speedMs: number): number {
   const v = Math.max(0, speedMs);
@@ -192,6 +197,8 @@ export interface SoundInput {
   seed?: number;
   /** Overall level of each part, 0..1 (1 = default). */
   levels?: { wind?: number; rain?: number; thunder?: number };
+  /** Highest sample the render may reach (0..1, default 0.95): a hotter render is scaled down, never up. */
+  ceiling?: number;
 }
 
 function noiseBuffer(ctx: BaseAudioContext, seconds: number, seed: number, pinkish = true): AudioBuffer {
@@ -428,10 +435,11 @@ export async function renderSoundscape(input: SoundInput, sampleRate = 48000): P
   let peak = 0;
   for (let i = 0; i < left.length; i++) peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
   // keep a little headroom: scale a hot render down (never up)
-  if (peak > 0.95) {
-    const k = 0.95 / peak;
+  const ceiling = input.ceiling ?? 0.95;
+  if (peak > ceiling) {
+    const k = ceiling / peak;
     for (let i = 0; i < left.length; i++) { left[i] *= k; right[i] *= k; }
-    peak = 0.95;
+    peak = ceiling;
   }
   return { left, right, thunders, peak, sampleRate };
 }

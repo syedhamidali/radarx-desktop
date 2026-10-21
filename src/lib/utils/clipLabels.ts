@@ -7,9 +7,10 @@
  * The line that says how the night picture is lit. It names modelled lightning only when modelled
  * flashes are drawn; without drawn flashes it must not claim any lightning light.
  */
-export function nightLightingText(lightning: 'observed' | 'modelled' | 'off'): string {
+export function nightLightingText(lightning: 'observed' | 'modelled' | 'off' | 'file'): string {
+  if (lightning === 'file') return 'Night version: no sun, a faint ambient light; lit by lightning drawn at the flash places of the file you gave (stylised)';
   if (lightning === 'modelled') return 'Night version: no sun, a faint ambient light; the storm is lit by modelled lightning (stylised, not a photograph)';
-  if (lightning === 'observed') return 'Night version: no sun, a faint ambient light; the storm is lit by lightning drawn at observed flash places (stylised, not a photograph)';
+  if (lightning === 'observed') return 'Night version: no sun, a faint ambient light; lit by lightning drawn at observed flash places (stylised, not a photograph)';
   return 'Night version: no sun, a faint ambient light; no lightning is drawn (stylised, not a photograph)';
 }
 

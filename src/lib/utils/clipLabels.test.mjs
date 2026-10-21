@@ -10,6 +10,8 @@ test('the night line names modelled lightning only when modelled flashes are dra
   assert.match(nightLightingText('off'), /no lightning is drawn/);
   assert.doesNotMatch(nightLightingText('observed'), /modelled/i);
   assert.match(nightLightingText('observed'), /observed flash places/);
+  assert.match(nightLightingText('file'), /file you gave/);
+  assert.doesNotMatch(nightLightingText('file'), /modelled|observed/i);
 });
 
 test('the sound rows sit above the rows already drawn, top row first, and lift the progress bar', () => {
