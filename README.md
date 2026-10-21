@@ -137,7 +137,7 @@ polar fields, not just reflectivity.
 Everything above also runs without the GUI, on the same engine: `rxd info -i FILE`, `rxd plot -i FILE`,
 `rxd run radarx_hid -i FILE --all-sweeps`, `rxd pipeline "Doppler velocity" -i FILE`,
 `rxd mosaic -i F1 F2 F3 -o mosaic.nc -p map.png`, `rxd winds -i F1 F2 ...`, `rxd sounding -i SONDE.csv`, `rxd qpe -i 'folder/*' -o rain.nc`, `rxd export -i FILE -o out.zarr`,
-`rxd animate -i FOLDER -o storm.mp4` (a storm-centred 3D animation, [docs/ANIMATE.md](docs/ANIMATE.md))
+`rxd animate -i FOLDER -o storm.mp4` (a storm-centred 3D animation, with an optional synthesised sound track, [docs/ANIMATE.md](docs/ANIMATE.md))
 (see [docs/CLI.md](docs/CLI.md)). From a notebook: `from engine import api; api.open("FILE").run("radarx_hid")`
 (see [docs/API.md](docs/API.md)).
 

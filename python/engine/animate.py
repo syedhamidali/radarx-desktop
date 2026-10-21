@@ -86,6 +86,21 @@ class AnimateOptions:
     credit: str | None = None
     lightning_model: bool = False
     sea: bool = False
+    # sound (synthesised; off by default, docs/ANIMATE.md)
+    sound: bool = False
+    sound_listener: tuple[float, float] | None = None  # km east / north of the middle of the track
+    sound_compress: float | None = None  # default: the film's time-lapse factor
+    sound_seed: int | None = None
+    flashes: str | None = None  # CSV: time_utc, lat, lon[, type, energy]
+    flashes_from_glm: list[str] = field(
+        default_factory=list
+    )  # folders / files of GLM L2 LCFA netCDF
+    glm_radius_km: float | None = None  # km from the tracked storm centre (30)
+    glm_bin_s: float | None = (
+        None  # strongest flash of every N s of data time (the time-lapse factor)
+    )
+    draw_flashes: bool = False  # show the flashes the thunder follows in the picture
+    sound_thunder_db: float | None = None  # thunder level relative to the default mix (dB)
     # rendering and output
     tile_cache: str | None = None
     offline: bool = False
@@ -119,6 +134,10 @@ class AnimateResult:
     output: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     seconds: float = 0.0
+    sound: dict[str, Any] | None = (
+        None  # what the sound is made of (and, after rendering, the record)
+    )
+    sound_plan: Any = None
 
     # -- the storm -----------------------------------------------------------------------
     def storm_rows(self) -> list[dict[str, Any]]:
@@ -205,6 +224,7 @@ class AnimateResult:
             "output": self.output,
             "warnings": self.warnings,
             "seconds": round(self.seconds, 1),
+            **({"sound": self.sound} if self.sound else {}),
         }
 
 
@@ -254,11 +274,73 @@ def check_options(o: AnimateOptions) -> None:
         )
     from engine import animate_render as render
 
+    check_sound_options(o)
     render.look_settings(render.LookArgs(o.look_preset, o.look_file, o.set_values))  # format only
     if o.ground not in (None, "map", "realistic"):
         raise AnimateConfigError("--ground must be map or realistic")
     if o.storm_style not in (None, "scientific", "realistic"):
         raise AnimateConfigError("--storm-style must be scientific or realistic")
+
+
+def is_sequence_output(output: str | None) -> bool:
+    """True when ``-o`` names a folder of frames rather than an MP4."""
+    if not output:
+        return False
+    return Path(output).suffix.lower() not in (".mp4", ".m4v") or str(output).endswith(("/", "\\"))
+
+
+def check_sound_options(o: AnimateOptions) -> None:
+    """The sound options: they need --sound, and --sound needs somewhere to put the audio."""
+    extras = {
+        "--sound-listener": o.sound_listener is not None,
+        "--sound-compress": o.sound_compress is not None,
+        "--sound-seed": o.sound_seed is not None,
+        "--flashes": bool(o.flashes),
+        "--flashes-from-glm": bool(o.flashes_from_glm),
+        "--glm-radius-km": o.glm_radius_km is not None,
+        "--glm-bin-s": o.glm_bin_s is not None,
+        "--draw-flashes": bool(o.draw_flashes),
+        "--sound-thunder-db": o.sound_thunder_db is not None,
+    }
+    given = [k for k, v in extras.items() if v]
+    if not o.sound:
+        if given:
+            raise AnimateConfigError(
+                f"{', '.join(given)} only matter for the sound: add --sound (the film has no audio otherwise)"
+            )
+        return
+    if o.sound_compress is not None and not 0.1 <= o.sound_compress <= 10000:
+        raise AnimateConfigError(
+            "--sound-compress must be between 0.1 and 10000 (1 = the real delay of sound; "
+            "the default is the film's time-lapse factor)"
+        )
+    if o.sound_thunder_db is not None and not -30 <= o.sound_thunder_db <= 20:
+        raise AnimateConfigError(
+            "--sound-thunder-db must be between -30 and 20 (dB relative to the default mix, 0)"
+        )
+    if o.draw_flashes and not (o.flashes or o.flashes_from_glm or o.lightning_model):
+        raise AnimateConfigError(
+            "--draw-flashes shows the flashes the thunder follows: give --flashes, --flashes-from-glm or --lightning-model"
+        )
+    if o.sound_seed is not None and o.sound_seed < 0:
+        raise AnimateConfigError("--sound-seed must be 0 or more")
+    if o.glm_radius_km is not None and not 1 <= o.glm_radius_km <= 500:
+        raise AnimateConfigError("--glm-radius-km must be between 1 and 500 km")
+    if o.glm_bin_s is not None and o.glm_bin_s <= 0:
+        raise AnimateConfigError("--glm-bin-s must be positive (seconds of data time)")
+    if (o.glm_radius_km is not None or o.glm_bin_s is not None) and not o.flashes_from_glm:
+        raise AnimateConfigError("--glm-radius-km and --glm-bin-s go with --flashes-from-glm")
+    if o.flashes and o.flashes_from_glm:
+        raise AnimateConfigError("give --flashes or --flashes-from-glm, not both")
+    if (o.flashes or o.flashes_from_glm) and o.lightning_model:
+        raise AnimateConfigError(
+            "--lightning-model draws MODELLED flashes and the thunder would follow them; "
+            "--flashes / --flashes-from-glm name OBSERVED flash times. Use one of them."
+        )
+    if o.output and is_sequence_output(o.output):
+        raise AnimateConfigError(
+            "--sound needs an MP4 to put the audio in (-o name.mp4), not a folder of PNG frames"
+        )
 
 
 def default_output_name(refs_plan: plan.StepPlan) -> str:
@@ -346,7 +428,12 @@ def drop_unreadable(
 
 
 def page_settings(
-    o: AnimateOptions, cp: cam.CameraPlan, sp: plan.StepPlan, fps: int, duration: float
+    o: AnimateOptions,
+    cp: cam.CameraPlan,
+    sp: plan.StepPlan,
+    fps: int,
+    duration: float,
+    sound: Any = None,
 ) -> dict[str, Any]:
     """Settings handed to the clip page (``ClipSettings`` in stormClip.ts)."""
     from engine import animate_render as render
@@ -360,7 +447,7 @@ def page_settings(
         "flow": True,
         "lightning": "auto" if o.lightning_model else "off",
         "sea": bool(o.sea),
-        "audio": False,
+        "audio": sound is not None,
         "observedTolS": plan.OBSERVED_TOL_S,
         "radarCredit": radar_credit(o, sp),
         **cp.page_settings(),
@@ -380,6 +467,8 @@ def page_settings(
         s["title"] = o.title
     if o.subtitle:
         s["subtitle"] = o.subtitle
+    if sound is not None:
+        s["sound"] = sound.page_settings()
     return s
 
 
@@ -419,6 +508,8 @@ def _run(
     dist: Path | None = None
     if rendering:
         render.require_playwright()
+        if o.sound and (o.output is not None or o.still is None):
+            render.require_av()  # the audio is muxed with PyAV: never a silent film when sound was asked
         dist = render.find_frontend(o.app_dist)
 
     sp = plan_inputs(o, meta)
@@ -495,6 +586,24 @@ def _run(
             f"longest gap between volumes is {summary['longest_gap_s'] / 60:.0f} min: the echo "
             "between volumes is carried, not observed"
         )
+    sound_plan = None
+    if o.sound:
+        from engine import animate_sound as snd
+
+        sound_plan = snd.plan_sound(
+            o,
+            m,
+            sp.steps[0].time,
+            sp.times_s,
+            duration,
+            plan.timelapse_of(span, duration),
+            any(st.get("wind") for st in m["steps"]),
+        )
+        warnings += sound_plan.warnings
+        detail(
+            f"sound: thunder {sound_plan.thunder} ({len(sound_plan.flashes)} flashes), light-to-sound delay "
+            f"divided by {sound_plan.compress:g} ({sound_plan.compress_source})"
+        )
     if not (bundle.manifest["animate"]["winds"]):
         detail("interpolation: translation along the storm motion (no wind retrieval)")
 
@@ -513,13 +622,16 @@ def _run(
         cache,
         warnings=warnings,
     )
+    if sound_plan is not None:
+        res.sound_plan = sound_plan
+        res.sound = sound_plan.summary()
     if not rendering:
         res.output = {"rendered": False, "reason": "--no-render"}
         res.seconds = time.perf_counter() - t_start
         return res
 
     assert dist is not None and base_settings is not None
-    _render(res, dist, page_settings(o, cp, sp, o.fps, duration), note, detail)
+    _render(res, dist, page_settings(o, cp, sp, o.fps, duration, sound_plan), note, detail)
     res.seconds = time.perf_counter() - t_start
     return res
 
@@ -601,6 +713,17 @@ def _render(
         if r.frame_count() != n:
             raise RuntimeError(f"the page counts {r.frame_count()} frames but the plan has {n}")
         out["page_report"] = r.report()
+        sound_audio: dict[str, Any] | None = None
+        sound_track: render.AudioTrack | None = None
+        if res.sound_plan is not None:
+            if want_video and video_path is not None:
+                note("synthesising the sound (offline Web Audio in Chrome)")
+                sound_audio = r.render_audio(48000)
+                sound_track = render.pcm_from_page(sound_audio, n, res.fps)
+            else:
+                res.warnings.append(
+                    "--sound: no MP4 is written in this run (only a still or a frame folder), so no audio was made"
+                )
 
         if o.still:
             t_still = o.still_at if o.still_at is not None else res.duration / 2
@@ -671,8 +794,13 @@ def _render(
                 preset=o.preset,
                 ext=ext,
                 metadata=mp4_metadata(res, video_path),
+                audio=sound_track,
             )
             out.update({"video": str(video_path), "encoder": "pyav (H.264, yuv420p)"})
+            if sound_track is not None and sound_audio is not None:
+                _finish_sound(res, sound_audio, sound_track, video_path)
+                out["encoder"] = "pyav (H.264, yuv420p; AAC 48 kHz stereo)"
+                out["sound_flashes"] = res.sound.get("flashes_file") if res.sound else None
             out["video_bytes"] = video_path.stat().st_size
             if not o.keep_frames:
                 shutil.rmtree(frames_dir.parent, ignore_errors=True)
@@ -687,16 +815,38 @@ def _render(
     out["provenance"] = write_provenance(res, settings, dist, video_path or sequence_dir)
 
 
+def _finish_sound(res: AnimateResult, audio: dict[str, Any], track: Any, video_path: Path) -> None:
+    """After the MP4 is written: the flash table next to it and the full sound record."""
+    import hashlib
+
+    from engine import animate_sound as snd
+
+    plan_ = res.sound_plan
+    sha = hashlib.sha256(track.pcm.tobytes()).hexdigest()
+    rec = snd.record(plan_, audio, sha, res.steps.steps[0].time)
+    if plan_.table:
+        fpath = video_path.with_suffix(".flashes.csv")
+        snd.write_flash_table(fpath, plan_.table, plan_.flash_distance_km or None)
+        rec["flashes_file"] = str(fpath)
+    if audio.get("windProxyShare", 0) > 0:
+        res.warnings.append(
+            f"sound: for {100 * audio['windProxyShare']:.0f}% of the time there was no retrieved wind at the "
+            "listener, so a proxy from the storm motion and the rain was used there"
+        )
+    res.sound = rec
+
+
 def mp4_metadata(res: AnimateResult, video: Path) -> dict[str, str]:
     """Tags written into the MP4: what it is, and where the full record is."""
     sp = res.steps
+    sound_note = " " + " ".join(res.sound_plan.label) + "." if res.sound_plan is not None else ""
     return {
         "title": res.options.title or res.bundle.manifest["title"],
         "comment": (
             f"rxd animate {_xrd_version()}: {len(sp.steps)} time steps of {', '.join(sp.used_radars)} "
             f"({sp.steps[0].time:%Y-%m-%d %H:%M:%S} to {sp.steps[-1].time:%H:%M:%S} UTC); frames between "
             "volumes are interpolated (carried along the storm motion), not observed, and are "
-            f"labelled so on screen. Parameters and data: {video.with_suffix('').name}.animate.json"
+            f"labelled so on screen.{sound_note} Parameters and data: {video.with_suffix('').name}.animate.json"
         ),
     }
 
@@ -869,6 +1019,31 @@ def _finish_sequence(frames_dir: Path, dest: Path, n: int, ext: str, keep: bool)
 # ---------------------------------------------------------------------------
 
 
+def sound_report_line(snd: dict[str, Any]) -> str:
+    """One line for the terminal report: what the sound is (synthesised) and what drives it."""
+    th = snd["thunder"]
+    what = {
+        "observed_glm": f"thunder timed to {th['flashes']} OBSERVED GLM flashes",
+        "observed_file": f"thunder timed to {th['flashes']} flashes of a file",
+        "modelled": "thunder timed to MODELLED flashes (not observed)",
+        "none": "no thunder (no flashes were given)",
+    }[th["source"]]
+    lis = snd["listener"]
+    where = (
+        "the camera"
+        if lis.get("mode") == "camera"
+        else (
+            f"{lis['requested_km_east_north_of_track_middle'][0]:g},{lis['requested_km_east_north_of_track_middle'][1]:g} km from the middle of the track"
+            if lis.get("requested_km_east_north_of_track_middle")
+            else "the default place (10 km beside the track)"
+        )
+    )
+    return (
+        f"  sound       SYNTHESISED, not a recording: wind from the retrieved winds or a proxy, rain from the reflectivity, "
+        f"{what}{' (flashes drawn)' if th.get('drawn') else ''}; delay divided by {snd['compress']:g} ({snd['compress_source']}); virtual listener at {where}; seed {snd['seed']}"
+    )
+
+
 def format_report(res: AnimateResult, table: Callable[..., str]) -> str:
     """The terminal report: steps and offsets, the storm track, frames, the camera, what was written."""
     sp = res.steps
@@ -965,6 +1140,8 @@ def format_report(res: AnimateResult, table: Callable[..., str]) -> str:
     lines.append(cam_line)
     if res.look:
         lines.append("  look        " + ", ".join(f"{k}={v}" for k, v in res.look.items()))
+    if res.sound:
+        lines.append(sound_report_line(res.sound))
     g = res.bundle.stats
     c = res.cache
     lines.append(

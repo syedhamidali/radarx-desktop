@@ -26,6 +26,11 @@ export const AUDIO_LABEL = 'Synthesised from the data, not a recording';
 
 // ─── Pure helpers ───────────────────────────────────────────────────────────
 
+/** Linear gain of a level in decibels. */
+export function dbToGain(db: number): number {
+  return Math.pow(10, db / 20);
+}
+
 /** Loudness of the wind bed for a wind speed (m/s): rises steadily with the speed. */
 export function windGain(speedMs: number): number {
   const v = Math.max(0, speedMs);
@@ -192,6 +197,8 @@ export interface SoundInput {
   seed?: number;
   /** Overall level of each part, 0..1 (1 = default). */
   levels?: { wind?: number; rain?: number; thunder?: number };
+  /** Highest sample the render may reach (0..1, default 0.95): a hotter render is scaled down, never up. */
+  ceiling?: number;
 }
 
 function noiseBuffer(ctx: BaseAudioContext, seconds: number, seed: number, pinkish = true): AudioBuffer {
@@ -215,6 +222,38 @@ function noiseBuffer(ctx: BaseAudioContext, seconds: number, seed: number, pinki
   return buf;
 }
 
+/** The minimal part of an audio node `sumTree` needs (so it can be tested without Web Audio). */
+export interface SummableNode {
+  connect(to: any): any;
+}
+
+/**
+ * Sum `nodes` into `dest` with a fixed binary tree of unity gains: no node ever has more than two
+ * inputs. A node with many inputs adds them in an order the browser does not fix (it varies from
+ * run to run), and floating-point addition is not associative, so the same clip could differ in the
+ * last bit; with at most two inputs the sum is exact in either order, so the same input gives the
+ * same samples every time. Returns the number of gain nodes made.
+ */
+export function sumTree(ctx: { createGain(): any }, nodes: SummableNode[], dest: any): number {
+  let level = nodes.slice();
+  let made = 0;
+  while (level.length > 1) {
+    const next: SummableNode[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      if (i + 1 < level.length) {
+        const g = ctx.createGain();
+        made++;
+        level[i].connect(g);
+        level[i + 1].connect(g);
+        next.push(g);
+      } else next.push(level[i]);
+    }
+    level = next;
+  }
+  if (level.length) level[0].connect(dest);
+  return made;
+}
+
 /** Schedule the whole soundscape on `ctx` (live or offline). Nothing here depends on real time. */
 export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thunders: Thunder[] } {
   const lv = { wind: 1, rain: 1, thunder: 1, ...(input.levels ?? {}) };
@@ -229,6 +268,8 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
   master.gain.value = 0.85;
   out.connect(master);
   master.connect(ctx.destination);
+  // every source is collected here and summed by a fixed pairwise tree before the compressor (see sumTree)
+  const leaves: AudioNode[] = [];
 
   // listener: position and heading follow the camera. Audio axes: x east, y up, z = -north (so the
   // default forward, -z, is north); metres.
@@ -264,7 +305,7 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
   wGain.gain.value = 0;
   wind.connect(wLow);
   wLow.connect(wGain);
-  wGain.connect(out);
+  leaves.push(wGain);
   const wind2 = ctx.createBufferSource();
   wind2.buffer = noiseBuffer(ctx, 7, seed + 11);
   wind2.loop = true;
@@ -275,7 +316,7 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
   wGain2.gain.value = 0;
   wind2.connect(wBand);
   wBand.connect(wGain2);
-  wGain2.connect(out);
+  leaves.push(wGain2);
   for (let i = 0; i < nSer; i++) {
     const t = i * input.dtSeries;
     const sp = input.windMs[i] * gust[i];
@@ -302,7 +343,7 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
   rain.connect(rHp);
   rHp.connect(rLp);
   rLp.connect(rGain);
-  rGain.connect(out);
+  leaves.push(rGain);
   const nRain = Math.min(input.rain.length, nSer);
   for (let i = 0; i < nRain; i++) rGain.gain.setValueAtTime(rainGain(input.rain[i]) * lv.rain, i * input.dtSeries);
   rain.start(0);
@@ -351,7 +392,7 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
       lp.connect(shelf);
       shelf.connect(g);
       g.connect(pan);
-      pan.connect(out);
+      leaves.push(pan);
       src.start(start, off, dur + 0.1);
     }
     // a close strike: a sharp crack at the first arrival
@@ -376,10 +417,11 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
       ck.connect(hp);
       hp.connect(cg);
       cg.connect(pan);
-      pan.connect(out);
+      leaves.push(pan);
       ck.start(Math.max(0, th.arrival - 0.001), rng() * 0.5, 0.2);
     }
   }
+  sumTree(ctx, leaves, out);
   return { thunders };
 }
 
@@ -393,10 +435,11 @@ export async function renderSoundscape(input: SoundInput, sampleRate = 48000): P
   let peak = 0;
   for (let i = 0; i < left.length; i++) peak = Math.max(peak, Math.abs(left[i]), Math.abs(right[i]));
   // keep a little headroom: scale a hot render down (never up)
-  if (peak > 0.95) {
-    const k = 0.95 / peak;
+  const ceiling = input.ceiling ?? 0.95;
+  if (peak > ceiling) {
+    const k = ceiling / peak;
     for (let i = 0; i < left.length; i++) { left[i] *= k; right[i] *= k; }
-    peak = 0.95;
+    peak = ceiling;
   }
   return { left, right, thunders, peak, sampleRate };
 }
