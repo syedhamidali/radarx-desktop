@@ -476,11 +476,6 @@ def _to_cfradial1(dtree: xr.DataTree, filename: str) -> None:
     """``xradar.io.export.to_cfradial1`` using the faster variable merge."""
     from xradar.io.export import cfradial1 as cf1
 
-    from engine import governor
-
-    # CfRadial1 pads every sweep to one grid (peak ~8 x the decoded volume): refuse with a
-    # clear message (and the alternatives) instead of running out of memory or disk.
-    governor.check_tree_export(dtree, "nc", filename)
     with _fast_cfradial1_mapper():
         cf1.to_cfradial1(dtree=dtree, filename=filename)
 
@@ -1708,6 +1703,11 @@ class RadarExporter:
         progress(10, "Preparing CfRadial1 NetCDF export")
         mask = bool(options.get("mask_no_echo", True))
         vm, vm_params = _volume_value_masks(options, datatree)
+        from engine import governor
+
+        # CfRadial1 pads every sweep to one grid (peak ~8 x the decoded volume): refuse with a
+        # clear message (and the alternatives) instead of running out of memory or disk.
+        governor.check_tree_export(datatree, "nc", output_path)
         with (
             _output_target(output_path, suffix=".nc", prefix="radarx_export_") as target,
             _fast_cfradial1_mapper(),

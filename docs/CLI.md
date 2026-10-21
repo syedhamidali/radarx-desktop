@@ -80,6 +80,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | `-f`, `--format FMT` | only when the `-o` extension is not enough |
 | `-v`, `-q`, `--json` | progress and details (`-vv`: engine log and tracebacks) / only errors / machine-readable output |
 | `--config FILE`, `--print-command` | keep an analysis in a file / print the equivalent full command |
+| `--budget-gb GB` | the memory this run may use (default: chosen from the free memory; see `rxd budget`) |
 
 ## The commands, in the order you work
 
@@ -88,6 +89,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | Look | `rxd info` | format, radar, time, sweeps, variables, Nyquist velocity |
 | | `rxd check` | data-quality report with evidence and a suggested QC recipe ({doc}`DATA_CHECK`) |
 | | `rxd plot` | a PPI picture of one variable |
+| | `rxd budget` | can this computer do it? memory, time and the plan for each operation |
 | Clean | `rxd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |
 | Analyse | `rxd run MODULE` | an algorithm on one sweep or all sweeps (same as `rxd modules run`) |
 | | `rxd modules` | `list` (default) or `show ID` the algorithms |
@@ -410,6 +412,61 @@ rxd export -i KTLX20130520_201643_V06.gz -o qc.nc --pipeline "Reflectivity QC" -
 
 Derived variables only exist inside one run, so `export` can compute them first (`--pipeline RECIPE`,
 `--run MODULE`, repeatable, all sweeps) and write them into the file with `--include-derived`.
+
+### Plan: `budget` (any amount of data)
+
+Before a big job, ask what this computer allows and what each operation would cost on your files.
+Nothing is processed: one file per radar is opened to measure it, the other files are scaled by
+their size.
+
+```bash
+rxd budget -i 'mayfield/*/*_V06'                     # every operation, as text
+rxd budget -i data/ --ops mosaic winds --json        # only some operations, machine-readable
+rxd budget -i data/ --budget-gb 4 --max-minutes 10   # plan for 4 GB and a 10-minute limit
+```
+
+```text
+memory  budget 2.2 GB (auto), hard limit 12.0 GB  |  free now 2.8 GB of 16.0 GB
+cores   10
+disk    16.8 GB free in /home/me/work
+
+inputs  16 file(s), 4 radar(s) KHPX, KNQA, KPAH, KVWX  |  123 MB on disk, about 7.4 GB decoded
+
+read          peak   10.9 GB  time     37 s  -> fits with 1 change(s): peak 913 MB, time 37 s
+              - volumes processed one at a time, memory freed after each (lossless): none
+mosaic        peak    1.7 GB  time     14 s  -> runs as asked
+export NetCDF peak    4.5 GB  time    1 min  -> WILL NOT RUN
+              the output needs about 16.3 GB, only 16.8 GB is free in /home/me/work
+              - write to a disk with more space (-o elsewhere)
+              - use Zarr or CfRadial2 (compressed, about 4 x smaller than NetCDF CfRadial1)
+export Zarr   peak    951 MB  time    1 min  -> runs as asked
+```
+
+Every operation ends in one of three answers:
+
+- **runs as asked**: the estimate fits.
+- **fits with changes**: each change is listed with what it costs scientifically. Lossless changes
+  (one volume at a time, reading lazily) come first; changes that use less data (a coarser grid,
+  fewer levels, only every Nth volume, a shorter range around each radar) are made only when the
+  lossless ones are not enough, and only when they really save memory.
+- **will not run**: even the allowed changes are not enough. The message says what you can change:
+  more memory, fewer radars or files, a smaller area, another output format.
+
+The same decision is taken automatically when `mosaic`, `winds` or a NetCDF `export` runs, with no
+option to set: nothing changes while the job fits. When a change is made it is printed as a warning
+and written into the result file (the `processing_reductions` attribute), so the output always says
+what was left out and why. A job that cannot fit stops at the start with that message, instead of
+running out of memory halfway.
+
+| Setting | Meaning |
+|---|---|
+| `--budget-gb GB` (any command) or `RADARX_BUDGET_GB` | the memory a run may use; without it the budget follows the free memory, and data is reduced only above three quarters of the computer's memory |
+| `RADARX_GOVERNOR=strict` | never reduce data: refuse instead |
+| `RADARX_GOVERNOR=off` | no checks (the old behaviour) |
+
+Estimates come from measured runs on NEXRAD Level II volumes and are approximate (about +-25 %);
+times for the variational wind analysis and for rendering animation frames are rough guesses and
+are marked as such in the output.
 
 ## Input: files, globs, folders, stdin
 
