@@ -3,6 +3,36 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.3.1
+
+- **Name:** the app is called **Radarx** under its icon, in the Start menu, in Applications and in the window title;
+  the installers are named `Radarx_<version>_...`. The About window keeps its three buttons inside the dialog on Windows
+  and macOS.
+- **Movie Studio** (desktop app): make a storm movie without a terminal. Choose the files, see the plan (steps, storm
+  track, observed and interpolated frames) before anything is drawn, zoom on the strongest storm or show the whole scene,
+  preview a frame, pick the scientific or the stylised realistic look, optionally add synthesised sound, render with
+  progress and cancel, and play the result in the app ({doc}`ANIMATE`). The installed app does not include the movie
+  components yet: the Movie Studio says so and points to the Python package.
+- **Command Studio:** every `rxd` command as a form in the app, with files already open offered as one click, live
+  "Copy as command", progress, cancel and the produced files ({doc}`command-studio`).
+- **Autopilot:** drop any set of files and the app inspects them, explains what makes sense for exactly this data (and
+  what does not, and why), estimates time and memory, and runs the steps you approve, recording every decision; the same
+  from the command line as `rxd auto` ({doc}`AUTOPILOT`).
+- **Big data:** a memory and time budget for mosaics, winds and exports. When a job would not fit, it reduces the work
+  in a stated, recorded way or refuses with options instead of failing; `rxd budget` shows the plan and `--budget-gb`
+  sets the budget ({doc}`CLI`).
+- **Sound for storm movies:** `rxd animate --sound` adds a SYNTHESISED sound track (wind from the retrieved winds,
+  rain from the reflectivity, thunder above them, timed to observed GOES GLM flashes, your own flash table or modelled
+  flashes), and `--draw-flashes` shows the flashes at their time and place ({doc}`ANIMATE`).
+- **Command line:** `rxd` can be installed on its own from a Python package that comes with every release
+  ({doc}`installation`); `rxd sounding` labels model and reanalysis profiles as model data, `rxd animate` accepts
+  relative paths, plots show `m s-1` units, `rxd check --json` always gives a list, and movie records no longer carry your
+  folder names unless you ask.
+- **Account:** the Account dialog links to your account on the Radarx website, where you can also sign in, change your
+  profile, see your computers and delete the account.
+- **Documentation:** a User Guide with topic groups, an installation page with checked download commands, and nothing
+  but user documentation.
+
 ## 0.3.0
 
 - **Updates:** the app can find, verify and install new versions by itself (signed updates from the download server;
