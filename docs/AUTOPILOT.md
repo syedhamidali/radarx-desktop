@@ -4,7 +4,9 @@ Give Autopilot any set of inputs - one file, a folder, hundreds of volumes, seve
 several formats, a time series, RHI scans, dual-pol or not - and it decides what can be done with
 exactly that data and how, then runs only what you approve.
 
-* **App:** drop three or more files (or a folder) on the window, or *Command palette > Autopilot*.
+* **App:** drop a folder, or three or more files, on the window, or *Command palette > Autopilot*.
+  Folders are searched all the way down, including folders that are shortcuts (symbolic links) to
+  data elsewhere; each real folder is read once. One or two plain files still open in the viewer.
 * **Command line:** `rxd auto INPUT... [--plan-only] [--yes] [--steps IDS] [--budget-gb N] [-o DIR]`.
 
 ## What it does, in order
@@ -22,12 +24,27 @@ exactly that data and how, then runs only what you approve.
    refused with what is missing (no mosaic without overlap in space and time, no winds without two
    radars with velocity and a wide beam-crossing area, no accumulation without a series, no
    hydrometeor classification without dual-pol fields).
-4. **Governs** resources: a memory budget (60 % of RAM, or `--budget-gb`), one volume at a time
+4. **Governs** resources: a memory budget, one volume at a time
    (one per radar for mosaics and winds), and long series subsampled for the heavy per-step products
-   with the reason stated. A 2 GB input and a 200 GB input both get a sensible plan.
+   with the reason stated. A 2 GB input and a 200 GB input both get a sensible plan. The automatic
+   budget is the smaller of 60 % of the computer's memory and 90 % of the memory free right now
+   (never below 512 MB); the panel shows the numbers, for example
+   `RAM 17.2 GB, available 3.0 GB -> budget 2.7 GB`, so a small budget on a busy computer is no
+   surprise. Type a number in *Memory budget* (or give `--budget-gb`) to set it yourself.
 5. **Runs** the approved steps with progress and cancel, then writes a run record (inputs, software
    and library versions, every decision and its reason, every reduction, the commands) and a
    one-page summary next to the results. A re-run skips the steps that finished.
+6. **Cancel** stops after the current volume. The panel then says which step was cancelled and
+   keeps the list of results written before it (the run record and the summary mark the step
+   *cancelled* and the later ones *not run*); *Run again* resumes, skipping the finished steps.
+
+## Results
+
+Each result is listed with its picture where there is one. A radar volume (quality-controlled data,
+a module's output) has *open in viewer*. A map grid (mosaic, winds, rainfall) is not a radar
+volume, so the viewer does not open it: look at its picture, or use *show in folder* and open the
+NetCDF file in a GIS or xarray. Opening such a grid through *Open file* says the same instead of
+showing an empty view.
 
 ## The rules are visible
 
