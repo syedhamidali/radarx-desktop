@@ -44,9 +44,9 @@ The builds are not code-signed, so the first launch shows a warning:
 
 - **macOS:** drag the app to Applications. If macOS says it "cannot be opened" or is "damaged", open
   **System Settings → Privacy & Security** and click **Open Anyway**, or run
-  `xattr -cr /Applications/radarx-desktop.app` once in Terminal.
+  `xattr -cr /Applications/Radarx.app` once in Terminal.
 - **Windows:** click **More info → Run anyway**.
-- **Linux:** `sudo apt install ./radarx-desktop_*.deb` (or `sudo dnf install ./*.rpm`).
+- **Linux:** `sudo apt install ./Radarx_*.deb` (or `sudo dnf install ./*.rpm`).
 
 The first launch can take up to a minute while the OS scans the app; after that it starts in about a second.
 
@@ -55,7 +55,7 @@ and installs only when you say so; updates are signature-checked, never interrup
 Settings → Updates. Linux `.deb`/`.rpm` installs are told a new version exists and link to the release page. See
 [docs/UPDATES.md](docs/UPDATES.md).
 
-**Open files from the file manager:** right-click a radar file and choose **Open With → radarx-desktop**, or double-click it
+**Open files from the file manager:** right-click a radar file and choose **Open With → Radarx**, or double-click it
 once you have chosen the app (Get Info → Open with → Change All on macOS). NetCDF/CfRadial, HDF5/ODIM and gzip files are
 registered by extension, including numbered copies such as `file.nc.1` or `file.h5.2`. On macOS the app is also offered
 for files with no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`). On Windows, files without an extension need **Open with → Choose another app** once.

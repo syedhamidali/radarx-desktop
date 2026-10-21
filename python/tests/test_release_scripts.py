@@ -57,14 +57,14 @@ def _sig(label: str) -> str:
 
 def installer_names(v: str) -> dict[str, str]:
     return {
-        "mac_arm_tgz": "radarx-desktop_aarch64.app.tar.gz",
-        "mac_intel_tgz": "radarx-desktop_x64.app.tar.gz",
-        "mac_arm_dmg": f"radarx-desktop_{v}_aarch64.dmg",
-        "mac_intel_dmg": f"radarx-desktop_{v}_x64.dmg",
-        "win": f"radarx-desktop_{v}_x64-setup.exe",
-        "appimage": f"radarx-desktop_{v}_amd64.AppImage",
-        "deb": f"radarx-desktop_{v}_amd64.deb",
-        "rpm": f"radarx-desktop-{v}-1.x86_64.rpm",
+        "mac_arm_tgz": "Radarx_aarch64.app.tar.gz",
+        "mac_intel_tgz": "Radarx_x64.app.tar.gz",
+        "mac_arm_dmg": f"Radarx_{v}_aarch64.dmg",
+        "mac_intel_dmg": f"Radarx_{v}_x64.dmg",
+        "win": f"Radarx_{v}_x64-setup.exe",
+        "appimage": f"Radarx_{v}_amd64.AppImage",
+        "deb": f"Radarx_{v}_amd64.deb",
+        "rpm": f"Radarx-{v}-1.x86_64.rpm",
     }
 
 
@@ -328,29 +328,29 @@ def test_rewrite_cli_exit_codes(tmp_path: Path, capsys) -> None:
 
 def test_classify_asset() -> None:
     c = build_index.classify_asset
-    assert c("radarx-desktop_0.3.0_aarch64.dmg") == {
+    assert c("Radarx_0.3.0_aarch64.dmg") == {
         "os": "macos",
         "arch": "aarch64",
         "kind": "dmg",
     }
-    assert c("radarx-desktop_0.3.0_x64.dmg") == {"os": "macos", "arch": "x86_64", "kind": "dmg"}
-    assert c("radarx-desktop_0.3.0_x64-setup.exe") == {
+    assert c("Radarx_0.3.0_x64.dmg") == {"os": "macos", "arch": "x86_64", "kind": "dmg"}
+    assert c("Radarx_0.3.0_x64-setup.exe") == {
         "os": "windows",
         "arch": "x86_64",
         "kind": "exe",
     }
-    assert c("radarx-desktop_0.3.0_arm64_en-US.msi")["arch"] == "aarch64"
-    assert c("radarx-desktop_0.3.0_amd64.deb") == {"os": "linux", "arch": "x86_64", "kind": "deb"}
-    assert c("radarx-desktop-0.3.0-1.x86_64.rpm")["arch"] == "x86_64"
-    assert c("radarx-desktop_0.3.0_aarch64.AppImage") == {
+    assert c("Radarx_0.3.0_arm64_en-US.msi")["arch"] == "aarch64"
+    assert c("Radarx_0.3.0_amd64.deb") == {"os": "linux", "arch": "x86_64", "kind": "deb"}
+    assert c("Radarx-0.3.0-1.x86_64.rpm")["arch"] == "x86_64"
+    assert c("Radarx_0.3.0_aarch64.AppImage") == {
         "os": "linux",
         "arch": "aarch64",
         "kind": "appimage",
     }
     assert c("radarx-windows-x64.zip") == {"os": "windows", "arch": "x86_64", "kind": "zip"}
     for not_an_installer in (
-        "radarx-desktop_aarch64.app.tar.gz",
-        "radarx-desktop_0.3.0_x64-setup.exe.sig",
+        "Radarx_aarch64.app.tar.gz",
+        "Radarx_0.3.0_x64-setup.exe.sig",
         "latest.json",
         "SHA256SUMS",
         "notes.txt",
@@ -359,7 +359,7 @@ def test_classify_asset() -> None:
     with pytest.raises(common.ReleaseError):
         c("radarx-desktop_0.3.0.dmg")  # architecture unknown
     with pytest.raises(common.ReleaseError):
-        c("radarx-desktop_0.3.0_x64.zip")  # system unknown
+        c("Radarx_0.3.0_x64.zip")  # system unknown
 
 
 def test_the_index_lists_only_promoted_versions_newest_first(tmp_path: Path, bucket) -> None:
@@ -388,12 +388,12 @@ def test_index_entries(tmp_path: Path, bucket) -> None:
     assert rel["notes"] == "What is new\n- one\n- two"
     names = [a["name"] for a in rel["assets"]]
     assert names == [
-        "radarx-desktop_0.3.0_aarch64.dmg",
-        "radarx-desktop_0.3.0_x64.dmg",
-        "radarx-desktop_0.3.0_x64-setup.exe",
-        "radarx-desktop_0.3.0_amd64.AppImage",
-        "radarx-desktop_0.3.0_amd64.deb",
-        "radarx-desktop-0.3.0-1.x86_64.rpm",
+        "Radarx_0.3.0_aarch64.dmg",
+        "Radarx_0.3.0_x64.dmg",
+        "Radarx_0.3.0_x64-setup.exe",
+        "Radarx_0.3.0_amd64.AppImage",
+        "Radarx_0.3.0_amd64.deb",
+        "Radarx-0.3.0-1.x86_64.rpm",
     ]
     for a in rel["assets"]:
         assert set(a) == {"os", "arch", "kind", "name", "size", "sha256", "url"}

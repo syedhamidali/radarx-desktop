@@ -88,7 +88,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
           </svg>
-          xradar library documentation
+          xradar library docs
         </button>
         <button class="link-btn" on:click={reportIssue}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -129,6 +129,8 @@
   .about-dialog {
     width: 420px;
     max-width: 90vw;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
     background: var(--c-overlay);
     border: 1px solid var(--c-border-strong);
     border-radius: var(--radius-sm);
@@ -193,7 +195,9 @@
   .about-specs dt { font-size: 9.5px; letter-spacing: var(--ls-label); color: var(--c-muted); }
   .about-specs dd { margin-top: 2px; font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--c-text); user-select: text; }
 
-  .about-links { display: flex; gap: var(--space-2); }
+  /* Three buttons do not fit one row of a 420 px dialog (the middle label is long, system fonts differ):
+     they wrap onto a second row and stay inside the dialog. */
+  .about-links { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); max-width: 100%; }
 
   .link-btn {
     display: inline-flex;
@@ -204,6 +208,8 @@
     color: var(--c-text-dim);
     background: transparent;
     height: auto;
+    white-space: nowrap;
+    max-width: 100%;
   }
   .link-btn:hover { color: var(--c-accent); border-color: var(--c-accent); background: rgba(var(--c-accent-rgb), 0.06); }
 
