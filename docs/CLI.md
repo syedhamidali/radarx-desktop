@@ -59,7 +59,7 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 are on the {doc}`installation` page):
 
 ```bash
-pip install "https://downloads.labshope.com/radarx/v0.3.2/radarx_desktop_engine-0.3.2-py3-none-any.whl"
+pip install "https://downloads.labshope.com/radarx/v0.3.3/radarx_desktop_engine-0.3.3-py3-none-any.whl"
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```
