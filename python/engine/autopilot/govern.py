@@ -22,8 +22,28 @@ from typing import Any
 
 # ESTIMATE coefficients (docs/PERFORMANCE.md: NEXRAD volume ~330 MB decoded; check ~1 s;
 # HID ~3 s/sweep; mosaic ~4 s per radar per step; winds ~20 s per pair; QPE ~2 s per volume)
-SEC_PER_DECODED_GB = {"check": 3.0, "qc": 25.0, "module": 40.0, "cells": 6.0, "mosaic": 12.0, "winds": 60.0, "qpe": 8.0, "plot": 10.0, "movie": 0.0}
-MEM_FACTOR = {"check": 1.2, "qc": 2.5, "module": 2.2, "cells": 1.3, "mosaic": 1.6, "winds": 3.0, "qpe": 1.5, "plot": 1.3, "movie": 1.0}
+SEC_PER_DECODED_GB = {
+    "check": 3.0,
+    "qc": 25.0,
+    "module": 40.0,
+    "cells": 6.0,
+    "mosaic": 12.0,
+    "winds": 60.0,
+    "qpe": 8.0,
+    "plot": 10.0,
+    "movie": 0.0,
+}
+MEM_FACTOR = {
+    "check": 1.2,
+    "qc": 2.5,
+    "module": 2.2,
+    "cells": 1.3,
+    "mosaic": 1.6,
+    "winds": 3.0,
+    "qpe": 1.5,
+    "plot": 1.3,
+    "movie": 1.0,
+}
 MAX_STEPS = 24  # time steps for the per-step products
 DEFAULT_RATIO = 3.5  # decoded bytes per byte on disk when no file was opened (NEXRAD gz)
 
@@ -65,7 +85,7 @@ def _decoded_bytes(inv: dict[str, Any], paths: list[str]) -> tuple[int, int]:
         f = by_path.get(p, {})
         radar = inv["radars"].get(f.get("radar") or "", {})
         ratio = radar.get("memory_ratio") or DEFAULT_RATIO
-        dec = int((f.get("memory_bytes") or f.get("size_bytes", 0) * ratio))
+        dec = int(f.get("memory_bytes") or f.get("size_bytes", 0) * ratio)
         total += dec
         largest = max(largest, dec)
     return total, largest
@@ -75,10 +95,23 @@ def govern_step(step: dict[str, Any], inv: dict[str, Any], budget: int) -> dict[
     """Attach ``estimate``, ``reductions`` and ``refused`` to one step (in place; returned)."""
     kind = step["kind"]
     paths = list(step.get("inputs", []))
-    radars = step.get("radars") or sorted({f["radar"] for f in inv["files"] if f["path"] in set(paths) and f.get("radar")})
+    radars = step.get("radars") or sorted(
+        {f["radar"] for f in inv["files"] if f["path"] in set(paths) and f.get("radar")}
+    )
     reductions: list[dict[str, Any]] = []
     total_dec, largest = _decoded_bytes(inv, paths)
-    per_radar = {r: [p for p in paths if inv["files"][[f["path"] for f in inv["files"]].index(p)].get("radar") == r] for r in radars} if radars else {}
+    per_radar = (
+        {
+            r: [
+                p
+                for p in paths
+                if inv["files"][[f["path"] for f in inv["files"]].index(p)].get("radar") == r
+            ]
+            for r in radars
+        }
+        if radars
+        else {}
+    )
     n_steps = max((len(v) for v in per_radar.values()), default=len(paths))
 
     # concurrency: how many volumes are in memory at once
@@ -108,7 +141,9 @@ def govern_step(step: dict[str, Any], inv: dict[str, Any], budget: int) -> dict[
         n_eff = -(-n_steps // every)
     else:
         n_eff = n_steps
-    processed_dec = largest * concurrent * n_eff if kind in ("mosaic", "winds", "movie") else total_dec
+    processed_dec = (
+        largest * concurrent * n_eff if kind in ("mosaic", "winds", "movie") else total_dec
+    )
     seconds = SEC_PER_DECODED_GB.get(kind, 10.0) * processed_dec / 1e9
     if kind == "movie":
         seconds = 20.0 + 6.0 * n_eff  # rendering by Chrome, per frame step

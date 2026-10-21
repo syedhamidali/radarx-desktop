@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import base64
 import threading
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from engine.autopilot import inspect_inputs, make_plan, run_plan
 from engine.autopilot.inspect import AutopilotError
@@ -56,25 +57,42 @@ def forget(request_id: Any) -> None:
 
 def _inputs(msg: dict[str, Any]) -> list[str]:
     inputs = msg.get("inputs")
-    if not isinstance(inputs, list) or not inputs or not all(isinstance(p, str) and p for p in inputs):
+    if (
+        not isinstance(inputs, list)
+        or not inputs
+        or not all(isinstance(p, str) and p for p in inputs)
+    ):
         raise AutopilotError("'inputs' must be a non-empty list of paths")
     return inputs
 
 
-def inspect(msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Callable[[], bool]) -> dict[str, Any]:
+def inspect(
+    msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Callable[[], bool]
+) -> dict[str, Any]:
     return {"inventory": inspect_inputs(_inputs(msg), progress=progress, cancel=cancel_fn)}
 
 
-def plan(msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Callable[[], bool]) -> dict[str, Any]:
+def plan(
+    msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Callable[[], bool]
+) -> dict[str, Any]:
     inv = msg.get("inventory")
     if not isinstance(inv, dict):
         inv = inspect_inputs(_inputs(msg), progress=progress, cancel=cancel_fn)
     budget = msg.get("budget_gb")
     out_dir = msg.get("out_dir")
-    return {"inventory": inv, "plan": make_plan(inv, budget_gb=float(budget) if budget else None, out_dir=out_dir if isinstance(out_dir, str) else None)}
+    return {
+        "inventory": inv,
+        "plan": make_plan(
+            inv,
+            budget_gb=float(budget) if budget else None,
+            out_dir=out_dir if isinstance(out_dir, str) else None,
+        ),
+    }
 
 
-def run(msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Callable[[], bool]) -> dict[str, Any]:
+def run(
+    msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Callable[[], bool]
+) -> dict[str, Any]:
     inv, pl = msg.get("inventory"), msg.get("plan")
     if not isinstance(inv, dict) or not isinstance(pl, dict):
         raise AutopilotError("auto_run needs the 'inventory' and 'plan' of auto_plan")
@@ -82,9 +100,13 @@ def run(msg: dict[str, Any], progress: Callable[[int, str], None], cancel_fn: Ca
     if not isinstance(out_dir, str) or not out_dir:
         raise AutopilotError("auto_run needs 'out_dir' (where results are written)")
     step_ids = msg.get("step_ids")
-    if step_ids is not None and (not isinstance(step_ids, list) or not all(isinstance(s, str) for s in step_ids)):
+    if step_ids is not None and (
+        not isinstance(step_ids, list) or not all(isinstance(s, str) for s in step_ids)
+    ):
         raise AutopilotError("'step_ids' must be a list of step ids")
-    record = run_plan(inv, pl, out_dir=out_dir, step_ids=step_ids, progress=progress, cancel=cancel_fn)
+    record = run_plan(
+        inv, pl, out_dir=out_dir, step_ids=step_ids, progress=progress, cancel=cancel_fn
+    )
     gallery: list[dict[str, Any]] = []
     for s in record["steps"]:
         for f in s.get("files", []):

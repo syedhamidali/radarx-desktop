@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 EPILOG = (
     "examples:\n"
@@ -24,15 +25,29 @@ EPILOG = (
 )
 
 
-def add_parser(command: Callable[..., argparse.ArgumentParser], add_input: Callable[..., None], add_output: Callable[..., None]) -> argparse.ArgumentParser:
-    p = command("auto", "Autopilot: inspect any set of inputs, plan the analyses that make sense, run the approved ones.", EPILOG)
+def add_parser(
+    command: Callable[..., argparse.ArgumentParser],
+    add_input: Callable[..., None],
+    add_output: Callable[..., None],
+) -> argparse.ArgumentParser:
+    p = command(
+        "auto",
+        "Autopilot: inspect any set of inputs, plan the analyses that make sense, run the approved ones.",
+        EPILOG,
+    )
     add_input(p, "radar files, folders or globs: one file, a series, several radars, mixed")
     add_output(p, "folder for the results, run record and summary (default: ./autopilot_<time>)")
     p.add_argument("--plan-only", action="store_true", help="inspect and plan, run nothing")
     p.add_argument("--yes", "-y", action="store_true", help="run every enabled step without asking")
-    p.add_argument("--steps", metavar="IDS", help="comma-separated step ids to run (implies consent for those)")
-    p.add_argument("--budget-gb", type=float, metavar="N", help="memory budget (default 60 %% of RAM)")
-    p.add_argument("--no-check", action="store_true", help="skip the data check during inspection (faster)")
+    p.add_argument(
+        "--steps", metavar="IDS", help="comma-separated step ids to run (implies consent for those)"
+    )
+    p.add_argument(
+        "--budget-gb", type=float, metavar="N", help="memory budget (default 60 %% of RAM)"
+    )
+    p.add_argument(
+        "--no-check", action="store_true", help="skip the data check during inspection (faster)"
+    )
     p.set_defaults(func=cmd_auto)
     return p
 
@@ -56,7 +71,11 @@ def cmd_auto(args: argparse.Namespace, out: Any) -> int:
         inv = inspect_inputs(files, progress=progress, data_check=not args.no_check)
         if not quiet:
             print("", file=sys.stderr)
-        out_dir = args.output[0] if args.output else f"autopilot_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+        out_dir = (
+            args.output[0]
+            if args.output
+            else f"autopilot_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+        )
         plan = make_plan(inv, budget_gb=args.budget_gb, out_dir=out_dir)
     except AutopilotError as exc:
         raise cli.UsageError(str(exc)) from exc
@@ -66,7 +85,9 @@ def cmd_auto(args: argparse.Namespace, out: Any) -> int:
         else:
             out.result(format_plan(plan, inv))
             if not args.plan_only:
-                out.note("Nothing was run. Add --yes to run the enabled steps, or --steps IDS, with -o DIR.")
+                out.note(
+                    "Nothing was run. Add --yes to run the enabled steps, or --steps IDS, with -o DIR."
+                )
         return cli.EXIT_OK
     step_ids = [s.strip() for s in args.steps.split(",") if s.strip()] if args.steps else None
     try:
@@ -79,7 +100,9 @@ def cmd_auto(args: argparse.Namespace, out: Any) -> int:
         out.emit_json(record)
     else:
         for s in record["steps"]:
-            out.result(f"{s['status']:>10}  {s['title']}" + (f": {s['error']}" if s.get("error") else ""))
+            out.result(
+                f"{s['status']:>10}  {s['title']}" + (f": {s['error']}" if s.get("error") else "")
+            )
         out.wrote(record["summary_path"], record["record_path"])
         out.result(Path(record["summary_path"]).read_text())
     failed = any(s["status"] == "failed" for s in record["steps"])

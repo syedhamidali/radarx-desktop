@@ -4,7 +4,7 @@
    * and estimates, Run with progress and cancel, the results gallery, and the rule table with
    * its evidence. Nothing runs until the user presses Run (stores/autopilot.ts).
    */
-  import { state, busy, close, reset, run, cancel, toggleStep, setOutDir, setBudget, inspect, planNow, type Step } from '../stores/autopilot';
+  import { state as auto, busy, close, reset, run, cancel, toggleStep, setOutDir, setBudget, inspect, planNow, type Step } from '../stores/autopilot';
 
   let { onopen }: { onopen?: (paths: string[]) => void } = $props();
   let showRules = $state(false);
@@ -16,9 +16,9 @@
   const when = (t: string | null) => (t ? t.replace('T', ' ').slice(0, 16) + 'Z' : '-');
   const provClass = (p: string) => (p.startsWith('OBSERVED') ? 'obs' : p.startsWith('RETRIEVED') ? 'ret' : p.startsWith('MODEL') ? 'mod' : 'sty');
 
-  const selectedCount = $derived(Object.values($state.selected).filter(Boolean).length);
-  const selectedSeconds = $derived(($state.plan?.steps ?? []).filter((s) => $state.selected[s.id]).reduce((a, s) => a + s.estimate.seconds, 0));
-  const radars = $derived(Object.values($state.inventory?.radars ?? {}).filter((r) => r.name !== 'UNKNOWN'));
+  const selectedCount = $derived(Object.values($auto.selected).filter(Boolean).length);
+  const selectedSeconds = $derived(($auto.plan?.steps ?? []).filter((s) => $auto.selected[s.id]).reduce((a, s) => a + s.estimate.seconds, 0));
+  const radars = $derived(Object.values($auto.inventory?.radars ?? {}).filter((r) => r.name !== 'UNKNOWN'));
 
   function startFromText() {
     const list = pathText.split('\n').map((s) => s.trim()).filter(Boolean);
@@ -27,7 +27,7 @@
   function stepState(s: Step): string {
     if (s.refused) return 'refused';
     if (s.manual) return 'manual';
-    return $state.selected[s.id] ? 'on' : 'off';
+    return $auto.selected[s.id] ? 'on' : 'off';
   }
 </script>
 
@@ -35,10 +35,10 @@
   <div class="head">
     <div>
       <div class="kicker">AUTOPILOT <span class="dot" class:live={$busy}></span></div>
-      <h2>{$state.plan ? $state.plan.situation.label : $state.phase === 'inspecting' ? 'Inspecting inputs' : 'Analyst'}</h2>
+      <h2>{$auto.plan ? $auto.plan.situation.label : $auto.phase === 'inspecting' ? 'Inspecting inputs' : 'Analyst'}</h2>
       <div class="sub">
-        {#if $state.inventory}
-          {$state.inventory.n_files} files, {mb($state.inventory.total_bytes)} on disk, {radars.length} radar{radars.length === 1 ? '' : 's'}; metadata read in {($state.inventory.elapsed_ms / 1000).toFixed(1)} s
+        {#if $auto.inventory}
+          {$auto.inventory.n_files} files, {mb($auto.inventory.total_bytes)} on disk, {radars.length} radar{radars.length === 1 ? '' : 's'}; metadata read in {($auto.inventory.elapsed_ms / 1000).toFixed(1)} s
         {:else}
           Give files, folders or a whole case: it inspects, plans, and runs only what you approve.
         {/if}
@@ -48,23 +48,23 @@
   </div>
 
   <div class="body">
-    {#if $state.error}<p class="err">{$state.error}</p>{/if}
+    {#if $auto.error}<p class="err">{$auto.error}</p>{/if}
 
-    {#if $state.phase === 'idle' || ($state.phase === 'error' && !$state.inventory)}
+    {#if $auto.phase === 'idle' || ($auto.phase === 'error' && !$auto.inventory)}
       <p class="lede">Drop several files or a folder on the window, or paste paths (one per line):</p>
       <textarea bind:value={pathText} rows="4" placeholder="/data/case/KHPX ..."></textarea>
       <div class="row"><button class="primary" onclick={startFromText} disabled={!pathText.trim()}>Inspect</button></div>
     {/if}
 
-    {#if $state.progress && ($state.phase === 'inspecting' || $state.phase === 'running')}
+    {#if $auto.progress && ($auto.phase === 'inspecting' || $auto.phase === 'running')}
       <div class="prog">
-        <div class="bar"><div class="fill" style:width={`${$state.progress.pct}%`}></div></div>
-        <div class="ptext"><span class="mono">{String($state.progress.pct).padStart(3, ' ')}%</span> {$state.progress.text}</div>
+        <div class="bar"><div class="fill" style:width={`${$auto.progress.pct}%`}></div></div>
+        <div class="ptext"><span class="mono">{String($auto.progress.pct).padStart(3, ' ')}%</span> {$auto.progress.text}</div>
         <button class="quiet" onclick={cancel}>Cancel</button>
       </div>
     {/if}
 
-    {#if $state.inventory}
+    {#if $auto.inventory}
       <h3>Inventory <span class="tag ret">metadata only</span></h3>
       <div class="tiles">
         {#each radars as r (r.name)}
@@ -78,8 +78,8 @@
               <span class="chip" class:yes={!!r.band}>{r.band ? `${r.band} band` : 'band ?'}</span>
               {#if r.gaps.length}<span class="chip warn">{r.gaps.length} gap{r.gaps.length === 1 ? '' : 's'}</span>{/if}
             </div>
-            {#if $state.inventory.checks[r.name]}
-              {@const c = $state.inventory.checks[r.name]}
+            {#if $auto.inventory.checks[r.name]}
+              {@const c = $auto.inventory.checks[r.name]}
               <div class="trow dim">
                 {#if c.error}check failed{:else}check: {c.counts?.warning ?? 0} warning, {c.counts?.notice ?? 0} notice{/if}
               </div>
@@ -87,28 +87,28 @@
           </div>
         {/each}
       </div>
-      {#if $state.inventory.pairs.length}
+      {#if $auto.inventory.pairs.length}
         <ul class="plain">
-          {#each $state.inventory.pairs as p}
+          {#each $auto.inventory.pairs as p}
             <li>{p.a}-{p.b}: {p.distance_km} km{p.overlap_space ? ', coverage overlaps' : ', no overlap'}{p.dual_doppler ? `, beam crossing ok on ${Math.round(p.dual_doppler.good_fraction * 100)} % of the shared area` : ''}</li>
           {/each}
         </ul>
       {/if}
-      {#if $state.inventory.unreadable.length}
-        <p class="small warn-text">{$state.inventory.unreadable.length} file(s) could not be opened: {$state.inventory.unreadable.map((u) => u.name).join(', ')}</p>
+      {#if $auto.inventory.unreadable.length}
+        <p class="small warn-text">{$auto.inventory.unreadable.length} file(s) could not be opened: {$auto.inventory.unreadable.map((u) => u.name).join(', ')}</p>
       {/if}
-      <button class="link" onclick={() => (showFiles = !showFiles)}>{showFiles ? 'Hide' : 'Show'} the {$state.inputs.length} input path(s)</button>
-      {#if showFiles}<ul class="plain mono small">{#each $state.inputs as p}<li>{p}</li>{/each}</ul>{/if}
+      <button class="link" onclick={() => (showFiles = !showFiles)}>{showFiles ? 'Hide' : 'Show'} the {$auto.inputs.length} input path(s)</button>
+      {#if showFiles}<ul class="plain mono small">{#each $auto.inputs as p}<li>{p}</li>{/each}</ul>{/if}
     {/if}
 
-    {#if $state.plan}
-      {@const g = $state.plan.governor}
+    {#if $auto.plan}
+      {@const g = $auto.plan.governor}
       <h3>Plan <span class="dim small">ranked; estimates are rough (ESTIMATE)</span></h3>
       <p class="lede small">Budget {mb(g.budget_bytes)} of {mb(g.machine.ram_bytes)} RAM. {g.reductions.length ? `${g.reductions.length} reduction(s) decided by the governor, each stated below and in the run record.` : 'No reductions needed for this data.'}</p>
-      {#each $state.plan.steps as s (s.id)}
+      {#each $auto.plan.steps as s (s.id)}
         <details class="step {stepState(s)}">
           <summary>
-            <input type="checkbox" checked={!!$state.selected[s.id]} disabled={!!s.refused || !!s.manual || $busy} onchange={(e) => toggleStep(s.id, (e.currentTarget as HTMLInputElement).checked)} onclick={(e) => e.stopPropagation()} />
+            <input type="checkbox" checked={!!$auto.selected[s.id]} disabled={!!s.refused || !!s.manual || $busy} onchange={(e) => toggleStep(s.id, (e.currentTarget as HTMLInputElement).checked)} onclick={(e) => e.stopPropagation()} />
             <span class="order mono">{s.order}</span>
             <span class="stitle">{s.title}</span>
             <span class="est mono">{mins(s.estimate.seconds)} · {mb(s.estimate.memory_bytes)} · {s.estimate.volumes} vol</span>
@@ -130,27 +130,27 @@
           <ul class="plain small">{#each s.evidence as e}<li>{e}</li>{/each}</ul>
         </details>
       {/each}
-      {#if $state.plan.refusals.length}
+      {#if $auto.plan.refusals.length}
         <h3>Not possible with this data</h3>
-        <ul class="plain">{#each $state.plan.refusals as r}<li><b>{r.what}</b>: missing {r.missing}</li>{/each}</ul>
+        <ul class="plain">{#each $auto.plan.refusals as r}<li><b>{r.what}</b>: missing {r.missing}</li>{/each}</ul>
       {/if}
-      {#if $state.plan.notes.length}
+      {#if $auto.plan.notes.length}
         <h3>Be aware</h3>
-        <ul class="plain">{#each $state.plan.notes as n}<li>{n}</li>{/each}</ul>
+        <ul class="plain">{#each $auto.plan.notes as n}<li>{n}</li>{/each}</ul>
       {/if}
 
       <h3>Run</h3>
-      <label class="field">Results folder <input type="text" value={$state.outDir} oninput={(e) => setOutDir((e.currentTarget as HTMLInputElement).value)} disabled={$busy} /></label>
+      <label class="field">Results folder <input type="text" value={$auto.outDir} oninput={(e) => setOutDir((e.currentTarget as HTMLInputElement).value)} disabled={$busy} /></label>
       <label class="field">Memory budget (GB, blank = 60 % of RAM)
-        <input type="number" min="0.5" step="0.5" value={$state.budgetGb ?? ''} oninput={(e) => setBudget((e.currentTarget as HTMLInputElement).value ? Number((e.currentTarget as HTMLInputElement).value) : null)} onchange={planNow} disabled={$busy} />
+        <input type="number" min="0.5" step="0.5" value={$auto.budgetGb ?? ''} oninput={(e) => setBudget((e.currentTarget as HTMLInputElement).value ? Number((e.currentTarget as HTMLInputElement).value) : null)} onchange={planNow} disabled={$busy} />
       </label>
-      <p class="small dim">{$state.plan.consent} Each output carries its provenance and the reductions; a run record and a one-page summary are written next to the results.</p>
+      <p class="small dim">{$auto.plan.consent} Each output carries its provenance and the reductions; a run record and a one-page summary are written next to the results.</p>
 
       <button class="link" onclick={() => (showRules = !showRules)}>{showRules ? 'Hide' : 'Show'} the decision rules and their evidence</button>
       {#if showRules}
         <table class="rules">
           <tbody>
-            {#each $state.plan.rules as r}
+            {#each $auto.plan.rules as r}
               <tr class:fired={r.fired}><td class="mono">{r.fired ? 'fired' : 'quiet'}</td><td><b>{r.title}</b><ul class="plain small">{#each r.evidence as e}<li>{e}</li>{/each}</ul></td></tr>
             {/each}
           </tbody>
@@ -158,21 +158,21 @@
       {/if}
     {/if}
 
-    {#if $state.record}
+    {#if $auto.record}
       <h3>Results</h3>
       <ul class="plain">
-        {#each $state.record.steps as s}
+        {#each $auto.record.steps as s}
           <li><span class="status {s.status.split(' ')[0]}">{s.status}</span> {s.title}{s.elapsed_s ? ` (${s.elapsed_s} s)` : ''}{s.error ? `: ${s.error}` : ''}</li>
         {/each}
       </ul>
-      <p class="small">Written to <code>{$state.record.out_dir}</code> (SUMMARY.md, run_record.json).</p>
-      {#if $state.gallery.length}
+      <p class="small">Written to <code>{$auto.record.out_dir}</code> (SUMMARY.md, run_record.json).</p>
+      {#if $auto.gallery.length}
         <div class="gallery">
-          {#each $state.gallery as g (g.path)}
+          {#each $auto.gallery as g (g.path)}
             <figure>
               {#if g.png}<img src={`data:image/png;base64,${g.png}`} alt={g.name} />{:else}<div class="file mono">{g.name.split('.').pop()}</div>{/if}
-              <figcaption class="small">{g.name}</figcaption>
               {#if onopen && /\.(nc|zarr)$/i.test(g.name)}<button class="link" onclick={() => onopen?.([g.path])}>open in viewer</button>{/if}
+              <figcaption class="small">{g.name}</figcaption>
             </figure>
           {/each}
         </div>
@@ -181,9 +181,9 @@
   </div>
 
   <div class="foot">
-    {#if $state.plan}
-      <button class="primary" onclick={run} disabled={$busy || selectedCount === 0 || !$state.outDir}>Run {selectedCount} step{selectedCount === 1 ? '' : 's'} ({mins(selectedSeconds)})</button>
-      <button class="quiet" onclick={() => inspect($state.inputs)} disabled={$busy}>Inspect again</button>
+    {#if $auto.plan}
+      <button class="primary" onclick={run} disabled={$busy || selectedCount === 0 || !$auto.outDir}>Run {selectedCount} step{selectedCount === 1 ? '' : 's'} ({mins(selectedSeconds)})</button>
+      <button class="quiet" onclick={() => inspect($auto.inputs)} disabled={$busy}>Inspect again</button>
     {/if}
     <button class="quiet" onclick={reset} disabled={$busy}>Clear</button>
     <span class="grow"></span>

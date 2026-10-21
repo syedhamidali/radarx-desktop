@@ -13,8 +13,9 @@ their output (docs/SCIENCE.md) and the equivalent ``rxd`` command template.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
 Inventory = dict[str, Any]
 
@@ -39,7 +40,9 @@ class Rule:
 RULES: list[Rule] = []
 
 
-def rule(rule_id: str, title: str, rank: int = 50) -> Callable[[Callable[[Inventory], Outcome]], Callable[[Inventory], Outcome]]:
+def rule(
+    rule_id: str, title: str, rank: int = 50
+) -> Callable[[Callable[[Inventory], Outcome]], Callable[[Inventory], Outcome]]:
     def deco(fn: Callable[[Inventory], Outcome]) -> Callable[[Inventory], Outcome]:
         RULES.append(Rule(rule_id, title, fn, rank))
         return fn
@@ -61,13 +64,21 @@ def classify(inv: Inventory) -> dict[str, Any]:
     series = [r for r in radars.values() if r["n_files"] > 1]
     rhi = [r for r in radars.values() if r["rhi"]]
     ppi = [r for r in radars.values() if "ppi" in r["kinds"]]
-    ev.append(f"{inv['n_files']} file(s), {n_r} radar(s): {', '.join(sorted(radars)) or 'none identified'}")
+    ev.append(
+        f"{inv['n_files']} file(s), {n_r} radar(s): {', '.join(sorted(radars)) or 'none identified'}"
+    )
     for r in radars.values():
         ev.append(
             f"{r['name']}: {r['n_files']} volume(s)"
-            + (f" from {r['t0']} to {r['t1']}" if r['t1'] and r['t1'] != r['t0'] else f" at {r['t0']}" if r['t0'] else "")
-            + (f", cadence {r['cadence_s']} s" if r['cadence_s'] else "")
-            + (f", {len(r['gaps'])} gap(s)" if r['gaps'] else "")
+            + (
+                f" from {r['t0']} to {r['t1']}"
+                if r["t1"] and r["t1"] != r["t0"]
+                else f" at {r['t0']}"
+                if r["t0"]
+                else ""
+            )
+            + (f", cadence {r['cadence_s']} s" if r["cadence_s"] else "")
+            + (f", {len(r['gaps'])} gap(s)" if r["gaps"] else "")
         )
     if n_r == 0:
         kind = "unknown"
@@ -108,7 +119,9 @@ def _files_of(inv: Inventory, radar: str) -> list[str]:
     return [f["path"] for f in inv["files"] if f.get("radar") == radar and "error" not in f]
 
 
-def _check_findings(inv: Inventory, radar: str, severity: tuple[str, ...] = ("warning", "notice")) -> list[dict[str, Any]]:
+def _check_findings(
+    inv: Inventory, radar: str, severity: tuple[str, ...] = ("warning", "notice")
+) -> list[dict[str, Any]]:
     rep = inv.get("checks", {}).get(radar) or {}
     return [f for f in rep.get("findings", []) if f["severity"] in severity]
 
@@ -120,15 +133,22 @@ def _check_findings(inv: Inventory, radar: str, severity: tuple[str, ...] = ("wa
 
 @rule("inventory", "Inventory and data check", rank=0)
 def _r_inventory(inv: Inventory) -> Outcome:
-    ev = [f"{inv['n_files']} file(s), {inv['total_bytes'] / 1e6:.0f} MB on disk, {inv['n_opened']} opened for metadata"]
+    ev = [
+        f"{inv['n_files']} file(s), {inv['total_bytes'] / 1e6:.0f} MB on disk, {inv['n_opened']} opened for metadata"
+    ]
     for name, rep in inv.get("checks", {}).items():
         if "error" in rep:
             ev.append(f"{name}: data check failed ({rep['error']})")
             continue
         c = rep.get("counts") or {}
-        ev.append(f"{name}: data check {c.get('warning', 0)} warning(s), {c.get('notice', 0)} notice(s)")
+        ev.append(
+            f"{name}: data check {c.get('warning', 0)} warning(s), {c.get('notice', 0)} notice(s)"
+        )
     if inv.get("unreadable"):
-        ev.append(f"{len(inv['unreadable'])} file(s) could not be opened: " + "; ".join(u["name"] for u in inv["unreadable"][:5]))
+        ev.append(
+            f"{len(inv['unreadable'])} file(s) could not be opened: "
+            + "; ".join(u["name"] for u in inv["unreadable"][:5])
+        )
     return Outcome(
         True,
         ev,
@@ -155,7 +175,13 @@ def _r_qc(inv: Inventory) -> Outcome:
         items = rep.get("recipes") or []
         if items:
             recipes[name] = items
-            ev.append(f"{name}: the data check suggests " + "; ".join(f"{it['role']}: {', '.join(s['step_id'] for s in it['recipe']['steps'])}" for it in items))
+            ev.append(
+                f"{name}: the data check suggests "
+                + "; ".join(
+                    f"{it['role']}: {', '.join(s['step_id'] for s in it['recipe']['steps'])}"
+                    for it in items
+                )
+            )
         else:
             ev.append(f"{name}: no clean-up step suggested by the data check")
     if not recipes:
@@ -184,13 +210,22 @@ def _r_hid(inv: Inventory) -> Outcome:
     ev, ok = [], []
     for r in _radars(inv).values():
         if r["dual_pol"]:
-            ev.append(f"{r['name']}: ZDR, RhoHV, PhiDP present ({', '.join(r['roles'][k] for k in ('zdr', 'rhohv', 'phidp'))}), band {r['band'] or 'not stated'}")
+            ev.append(
+                f"{r['name']}: ZDR, RhoHV, PhiDP present ({', '.join(r['roles'][k] for k in ('zdr', 'rhohv', 'phidp'))}), band {r['band'] or 'not stated'}"
+            )
             ok.append(r["name"])
         else:
             missing = [k for k in ("zdr", "rhohv", "phidp") if k not in r["roles"]]
             ev.append(f"{r['name']}: not dual-pol ({', '.join(missing)} missing)")
     if not ok:
-        return Outcome(False, ev, refusal={"what": "hydrometeor classification", "missing": "dual-polarisation fields (ZDR, RhoHV, PhiDP)"})
+        return Outcome(
+            False,
+            ev,
+            refusal={
+                "what": "hydrometeor classification",
+                "missing": "dual-polarisation fields (ZDR, RhoHV, PhiDP)",
+            },
+        )
     return Outcome(
         True,
         ev,
@@ -214,12 +249,14 @@ def _r_hid(inv: Inventory) -> Outcome:
 def _r_cells(inv: Inventory) -> Outcome:
     ev, series, single = [], [], []
     for r in _radars(inv).values():
-        if not r["has_reflectivity"] or r["rhi"] and "ppi" not in r["kinds"]:
+        if not r["has_reflectivity"] or (r["rhi"] and "ppi" not in r["kinds"]):
             ev.append(f"{r['name']}: no PPI reflectivity")
             continue
         if r["n_files"] > 1:
             series.append(r["name"])
-            ev.append(f"{r['name']}: {r['n_files']} volumes over {r['span_s'] / 60:.0f} min: cells can be linked in time")
+            ev.append(
+                f"{r['name']}: {r['n_files']} volumes over {r['span_s'] / 60:.0f} min: cells can be linked in time"
+            )
         else:
             single.append(r["name"])
             ev.append(f"{r['name']}: one volume: cells can be identified, not tracked")
@@ -232,7 +269,9 @@ def _r_cells(inv: Inventory) -> Outcome:
             "id": "cells",
             "kind": "cells",
             "title": "Storm cells" + (" and tracks" if series else ""),
-            "why": "Reflectivity above 35 dBZ grouped into cells gives size, intensity, motion" + (" and tracks across the series" if series else "") + ".",
+            "why": "Reflectivity above 35 dBZ grouped into cells gives size, intensity, motion"
+            + (" and tracks across the series" if series else "")
+            + ".",
             "needs": "reflectivity on the lowest sweep; a series of one radar for tracks",
             "produces": "cells_<radar>.csv (+ tracks_<radar>.csv with motion vectors)",
             "provenance": "RETRIEVED (threshold segmentation; tracks by overlap and distance)",
@@ -251,15 +290,35 @@ def _r_mosaic(inv: Inventory) -> Outcome:
     for p in inv.get("pairs", []):
         if p["overlap_space"] and (p["time_overlap_s"] is None or p["time_overlap_s"] >= 0):
             good.append(p)
-            ev.append(f"{p['a']}-{p['b']}: {p['distance_km']} km apart, coverage overlaps, time overlap " + ("unknown" if p["time_overlap_s"] is None else f"{p['time_overlap_s'] / 60:.0f} min"))
+            ev.append(
+                f"{p['a']}-{p['b']}: {p['distance_km']} km apart, coverage overlaps, time overlap "
+                + (
+                    "unknown"
+                    if p["time_overlap_s"] is None
+                    else f"{p['time_overlap_s'] / 60:.0f} min"
+                )
+            )
         elif p["overlap_space"]:
-            ev.append(f"{p['a']}-{p['b']}: coverage overlaps but the times are {-p['time_overlap_s'] / 60:.0f} min apart")
+            ev.append(
+                f"{p['a']}-{p['b']}: coverage overlaps but the times are {-p['time_overlap_s'] / 60:.0f} min apart"
+            )
         else:
             ev.append(f"{p['a']}-{p['b']}: {p['distance_km']} km apart, no coverage overlap")
     if not inv.get("pairs"):
-        return Outcome(False, ["one radar (or no site positions): nothing to merge"], refusal={"what": "mosaic", "missing": "a second radar whose coverage overlaps in space and time"})
+        return Outcome(
+            False,
+            ["one radar (or no site positions): nothing to merge"],
+            refusal={
+                "what": "mosaic",
+                "missing": "a second radar whose coverage overlaps in space and time",
+            },
+        )
     if not good:
-        return Outcome(False, ev, refusal={"what": "mosaic", "missing": "radars that overlap in space AND time"})
+        return Outcome(
+            False,
+            ev,
+            refusal={"what": "mosaic", "missing": "radars that overlap in space AND time"},
+        )
     radars = sorted({p["a"] for p in good} | {p["b"] for p in good})
     return Outcome(
         True,
@@ -291,13 +350,29 @@ def _r_winds(inv: Inventory) -> Outcome:
         if g is None:
             ev.append(f"{p['a']}-{p['b']}: no coverage overlap for dual Doppler")
             continue
-        ev.append(f"{p['a']}-{p['b']}: beam crossing >= 30 deg on {g['good_fraction'] * 100:.0f}% of the dual-coverage area ({g['good_crossing_km2']:,} km2; {g['kind']})")
+        ev.append(
+            f"{p['a']}-{p['b']}: beam crossing >= 30 deg on {g['good_fraction'] * 100:.0f}% of the dual-coverage area ({g['good_crossing_km2']:,} km2; {g['kind']})"
+        )
         if g["good_fraction"] >= 0.2 and (p["time_overlap_s"] is None or p["time_overlap_s"] >= 0):
             good.append(p)
     if not inv.get("pairs"):
-        return Outcome(False, ["one radar: no dual-Doppler geometry"], refusal={"what": "multi-Doppler winds", "missing": "a second radar with Doppler velocity 30-150 km away"})
+        return Outcome(
+            False,
+            ["one radar: no dual-Doppler geometry"],
+            refusal={
+                "what": "multi-Doppler winds",
+                "missing": "a second radar with Doppler velocity 30-150 km away",
+            },
+        )
     if not good:
-        return Outcome(False, ev, refusal={"what": "multi-Doppler winds", "missing": "two radars with velocity, overlapping in time, with enough beam-crossing area"})
+        return Outcome(
+            False,
+            ev,
+            refusal={
+                "what": "multi-Doppler winds",
+                "missing": "two radars with velocity, overlapping in time, with enough beam-crossing area",
+            },
+        )
     radars = sorted({p["a"] for p in good} | {p["b"] for p in good})
     return Outcome(
         True,
@@ -326,12 +401,24 @@ def _r_qpe(inv: Inventory) -> Outcome:
             ev.append(f"{r['name']}: no PPI reflectivity")
             continue
         if r["n_files"] < 2:
-            ev.append(f"{r['name']}: one volume: a rain RATE is possible, an accumulation needs a series")
+            ev.append(
+                f"{r['name']}: one volume: a rain RATE is possible, an accumulation needs a series"
+            )
             continue
         ok.append(r["name"])
-        ev.append(f"{r['name']}: {r['n_files']} volumes over {r['span_s'] / 60:.0f} min" + (", dual-pol: hybrid Z/KDP estimator possible" if r["dual_pol"] else ", Z-R only"))
+        ev.append(
+            f"{r['name']}: {r['n_files']} volumes over {r['span_s'] / 60:.0f} min"
+            + (", dual-pol: hybrid Z/KDP estimator possible" if r["dual_pol"] else ", Z-R only")
+        )
     if not ok:
-        return Outcome(False, ev, refusal={"what": "rainfall accumulation", "missing": "a time series (>= 2 volumes) of PPI reflectivity"})
+        return Outcome(
+            False,
+            ev,
+            refusal={
+                "what": "rainfall accumulation",
+                "missing": "a time series (>= 2 volumes) of PPI reflectivity",
+            },
+        )
     return Outcome(
         True,
         ev,
@@ -340,7 +427,12 @@ def _r_qpe(inv: Inventory) -> Outcome:
             "kind": "qpe",
             "title": "Rainfall accumulation with uncertainty",
             "why": "A series of reflectivity volumes: rain rate per volume, accumulated over the period, with the Z-R scatter as uncertainty.",
-            "needs": "radarx; band for the Z-R relation" + ("; dual-pol fields for the hybrid method" if any(_radars(inv)[n]["dual_pol"] for n in ok) else ""),
+            "needs": "radarx; band for the Z-R relation"
+            + (
+                "; dual-pol fields for the hybrid method"
+                if any(_radars(inv)[n]["dual_pol"] for n in ok)
+                else ""
+            ),
             "produces": "qpe_accumulation.nc + .png (mm), uncertainty field",
             "provenance": "RETRIEVED (Z-R / hybrid estimator; uncertainty from the relation's scatter, not from gauges)",
             "inputs": [p for n in ok for p in _files_of(inv, n)],
@@ -359,7 +451,11 @@ def _r_movie(inv: Inventory) -> Outcome:
             ok.append(r["name"])
             ev.append(f"{r['name']}: {r['n_files']} volumes, {r['span_s'] / 60:.0f} min")
     if not ok:
-        return Outcome(False, ev or ["fewer than 3 volumes per radar"], refusal={"what": "animation", "missing": "at least 3 volumes of one radar"})
+        return Outcome(
+            False,
+            ev or ["fewer than 3 volumes per radar"],
+            refusal={"what": "animation", "missing": "at least 3 volumes of one radar"},
+        )
     return Outcome(
         True,
         ev,
@@ -420,7 +516,9 @@ def _r_problems(inv: Inventory) -> Outcome:
     for u in inv.get("unreadable", [])[:5]:
         ev.append(f"{u['name']}: {u['reason']}")
     if inv["radars"].get("UNKNOWN"):
-        ev.append(f"{inv['radars']['UNKNOWN']['n_files']} file(s) of unknown radar/time (not opened; run again with fewer files or name them)")
+        ev.append(
+            f"{inv['radars']['UNKNOWN']['n_files']} file(s) of unknown radar/time (not opened; run again with fewer files or name them)"
+        )
     return Outcome(bool(ev), ev or ["nothing flagged"], note="; ".join(ev) if ev else None)
 
 
@@ -432,7 +530,13 @@ def evaluate_rules(inv: Inventory) -> list[dict[str, Any]]:
             out = r.fn(inv)
         except Exception as exc:  # a broken rule must not hide the others
             out = Outcome(False, [f"rule failed: {type(exc).__name__}: {exc}"])
-        row: dict[str, Any] = {"id": r.id, "title": r.title, "rank": r.rank, "fired": out.fired, "evidence": out.evidence}
+        row: dict[str, Any] = {
+            "id": r.id,
+            "title": r.title,
+            "rank": r.rank,
+            "fired": out.fired,
+            "evidence": out.evidence,
+        }
         if out.step:
             row["step"] = {**out.step, "rule": r.id}
         if out.refusal:

@@ -15,9 +15,10 @@ import json
 import logging
 import time
 import traceback
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from engine.autopilot.inspect import AutopilotError
 
@@ -63,7 +64,15 @@ def _time_steps(step: dict[str, Any], inv: dict[str, Any]) -> list[dict[str, str
         for r, paths in groups.items():
             if r == ref:
                 continue
-            with_t = [(abs((parse_time(by_path[q]["time"]) - parse_time(t)).total_seconds()), q) for q in paths if by_path[q].get("time")] if t else []
+            with_t = (
+                [
+                    (abs((parse_time(by_path[q]["time"]) - parse_time(t)).total_seconds()), q)
+                    for q in paths
+                    if by_path[q].get("time")
+                ]
+                if t
+                else []
+            )
             if with_t:
                 d, q = min(with_t)
                 if d <= 600:
@@ -73,7 +82,13 @@ def _time_steps(step: dict[str, Any], inv: dict[str, Any]) -> list[dict[str, str
     return steps
 
 
-def _run_step(step: dict[str, Any], inv: dict[str, Any], out: Path, progress: ProgressFn | None, cancel: Callable[[], bool] | None) -> dict[str, Any]:
+def _run_step(
+    step: dict[str, Any],
+    inv: dict[str, Any],
+    out: Path,
+    progress: ProgressFn | None,
+    cancel: Callable[[], bool] | None,
+) -> dict[str, Any]:
     from engine import api
 
     kind = step["kind"]
@@ -142,7 +157,9 @@ def _run_step(step: dict[str, Any], inv: dict[str, Any], out: Path, progress: Pr
         steps_t = _time_steps(step, inv)
         kept, skipped = _subsample([json.dumps(s, sort_keys=True) for s in steps_t], step)
         if skipped:
-            notes.append(f"{len(skipped)} time step(s) skipped by the governor (every {next((r['every'] for r in step.get('reductions', []) if r.get('every')), 1)}.)")
+            notes.append(
+                f"{len(skipped)} time step(s) skipped by the governor (every {next((r['every'] for r in step.get('reductions', []) if r.get('every')), 1)}.)"
+            )
         for n, raw in enumerate(kept):
             check_cancel()
             row = json.loads(raw)
@@ -183,12 +200,22 @@ def _run_step(step: dict[str, Any], inv: dict[str, Any], out: Path, progress: Pr
 
 def _summary(record: dict[str, Any]) -> str:
     plan = record["plan"]
-    lines = ["# Autopilot summary", "", f"Run at {record['started']} (UTC) with {record['software']}.", "", f"**Situation:** {plan['situation']['label']}", ""]
+    lines = [
+        "# Autopilot summary",
+        "",
+        f"Run at {record['started']} (UTC) with {record['software']}.",
+        "",
+        f"**Situation:** {plan['situation']['label']}",
+        "",
+    ]
     lines += [f"- {e}" for e in plan["situation"]["evidence"]]
     lines += ["", "## Steps", ""]
     for s in record["steps"]:
         status = s["status"]
-        lines.append(f"- **{s['title']}** - {status}" + (f" ({s['elapsed_s']:.0f} s)" if s.get("elapsed_s") else ""))
+        lines.append(
+            f"- **{s['title']}** - {status}"
+            + (f" ({s['elapsed_s']:.0f} s)" if s.get("elapsed_s") else "")
+        )
         lines.append(f"  - why: {s['why']}")
         lines.append(f"  - provenance: {s['provenance']}")
         if s.get("files"):
@@ -207,8 +234,13 @@ def _summary(record: dict[str, Any]) -> str:
         lines += [f"- {r['what']}: {r['from']} -> {r['to']}: {r['reason']}" for r in reds]
     lines += ["", "## Decisions", ""]
     for r in plan["rules"]:
-        lines.append(f"- {r['id']} ({'fired' if r['fired'] else 'quiet'}): " + "; ".join(r["evidence"][:3]))
-    lines += ["", "Estimates were rough (ESTIMATE); times above are measured. Nothing was downloaded."]
+        lines.append(
+            f"- {r['id']} ({'fired' if r['fired'] else 'quiet'}): " + "; ".join(r["evidence"][:3])
+        )
+    lines += [
+        "",
+        "Estimates were rough (ESTIMATE); times above are measured. Nothing was downloaded.",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -233,7 +265,9 @@ def run_plan(
             state = json.loads(state_path.read_text())
         except ValueError:
             state = {}
-    wanted = set(step_ids) if step_ids is not None else {s["id"] for s in plan["steps"] if s["enabled"]}
+    wanted = (
+        set(step_ids) if step_ids is not None else {s["id"] for s in plan["steps"] if s["enabled"]}
+    )
     chosen = [s for s in plan["steps"] if s["id"] in wanted]
     unknown = wanted - {s["id"] for s in chosen}
     if unknown:
@@ -252,7 +286,10 @@ def run_plan(
     }
     n = len(chosen)
     for i, s in enumerate(chosen):
-        entry = {k: s.get(k) for k in ("id", "title", "why", "provenance", "rxd_command", "reductions", "estimate")}
+        entry = {
+            k: s.get(k)
+            for k in ("id", "title", "why", "provenance", "rxd_command", "reductions", "estimate")
+        }
         if s.get("refused"):
             entry.update(status="refused", error=s["refused"])
             record["steps"].append(entry)
@@ -263,21 +300,37 @@ def run_plan(
             continue
         base = int(100 * i / max(1, n))
         span = int(100 / max(1, n))
-        sub = (lambda pct, text: progress(base + pct * span // 100, f"{i + 1}/{n} {text}")) if progress else None
+        sub = (
+            (
+                lambda pct, text, _b=base, _s=span, _i=i: progress(
+                    _b + pct * _s // 100, f"{_i + 1}/{n} {text}"
+                )
+            )
+            if progress
+            else None
+        )
         t0 = time.perf_counter()
         try:
             res = _run_step(s, inv, out, sub, cancel)
             entry.update(status="done", elapsed_s=round(time.perf_counter() - t0, 1), **res)
             state[s["id"]] = {"status": "done", "files": res["files"], "when": record["started"]}
         except AutopilotError as exc:
-            entry.update(status="cancelled" if "cancel" in str(exc) else "failed", error=str(exc), elapsed_s=round(time.perf_counter() - t0, 1))
+            entry.update(
+                status="cancelled" if "cancel" in str(exc) else "failed",
+                error=str(exc),
+                elapsed_s=round(time.perf_counter() - t0, 1),
+            )
             record["steps"].append(entry)
             if "cancel" in str(exc):
                 break
             continue
         except Exception as exc:
             logger.warning("autopilot step %s failed: %s\n%s", s["id"], exc, traceback.format_exc())
-            entry.update(status="failed", error=f"{type(exc).__name__}: {str(exc)[:300]}", elapsed_s=round(time.perf_counter() - t0, 1))
+            entry.update(
+                status="failed",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+                elapsed_s=round(time.perf_counter() - t0, 1),
+            )
         record["steps"].append(entry)
         state_path.write_text(json.dumps(state, indent=1))
     record["finished"] = datetime.utcnow().isoformat(timespec="seconds")

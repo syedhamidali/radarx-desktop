@@ -21,9 +21,10 @@ import logging
 import math
 import os
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +149,9 @@ def _open_meta(path: Path) -> dict[str, Any]:
             "max_range_km": round(max(rng), 1) if rng else None,
             "memory_bytes": int(info.get("memory_bytes") or 0),
             "size_bytes": int(info.get("size_bytes") or 0),
-            "attrs": {k: attrs[k] for k in ("instrument_name", "station", "site_name") if k in attrs},
+            "attrs": {
+                k: attrs[k] for k in ("instrument_name", "station", "site_name") if k in attrs
+            },
         }
 
 
@@ -182,7 +185,7 @@ def _gaps(times: list[datetime]) -> tuple[float | None, list[dict[str, Any]]]:
     """Median cadence (s) and the gaps longer than 2.5 x cadence."""
     if len(times) < 2:
         return None, []
-    deltas = [(b - a).total_seconds() for a, b in zip(times, times[1:])]
+    deltas = [(b - a).total_seconds() for a, b in zip(times, times[1:], strict=False)]
     srt = sorted(deltas)
     cadence = srt[len(srt) // 2]
     gaps = [
@@ -280,7 +283,10 @@ def inspect_inputs(
     unnamed = [f for f in files if f["radar"] is None]
     if len(unnamed) > 40:
         # names say nothing: opening every file would be the slow part; open a sample and say so
-        keep = sorted({0, len(unnamed) // 2, len(unnamed) - 1} | set(range(0, len(unnamed), max(1, len(unnamed) // 12))))
+        keep = sorted(
+            {0, len(unnamed) // 2, len(unnamed) - 1}
+            | set(range(0, len(unnamed), max(1, len(unnamed) // 12)))
+        )
         reductions.append(
             {
                 "what": "metadata sampling",
@@ -299,7 +305,11 @@ def inspect_inputs(
             groups.setdefault(f["radar"], []).append(f)
     for radar, fl in groups.items():
         fl.sort(key=lambda f: f["time"] or "")
-        idx = list(range(len(fl))) if len(fl) <= OPEN_ALL_BELOW else sorted({0, len(fl) // 2, len(fl) - 1})[:sample_per_radar]
+        idx = (
+            list(range(len(fl)))
+            if len(fl) <= OPEN_ALL_BELOW
+            else sorted({0, len(fl) // 2, len(fl) - 1})[:sample_per_radar]
+        )
         if len(idx) < len(fl):
             reductions.append(
                 {
@@ -325,7 +335,9 @@ def inspect_inputs(
         f.update(meta)
         f["opened"] = True
         if f["radar"] is None:
-            f["radar"] = radar_label(meta["attrs"], meta["latitude"], meta["longitude"], Path(f["path"]).stem)
+            f["radar"] = radar_label(
+                meta["attrs"], meta["latitude"], meta["longitude"], Path(f["path"]).stem
+            )
             f["source"] = "file"
         if f["time"] is None:
             f["time"] = meta["time"]
@@ -374,7 +386,17 @@ def inspect_inputs(
             r["variables"].update(f.get("variables", []))
             for k, v in f.get("roles", {}).items():
                 r["roles"].setdefault(k, v)
-            for key in ("band", "band_how", "latitude", "longitude", "altitude_m", "nyquist_ms", "max_range_km", "n_sweeps", "elevations"):
+            for key in (
+                "band",
+                "band_how",
+                "latitude",
+                "longitude",
+                "altitude_m",
+                "nyquist_ms",
+                "max_range_km",
+                "n_sweeps",
+                "elevations",
+            ):
                 if r[key] is None and f.get(key) is not None:
                     r[key] = f[key]
             if r["representative"] is None:
@@ -423,7 +445,11 @@ def inspect_inputs(
 
     # 5. pairs: distance, coverage overlap, time overlap, dual-Doppler geometry
     pairs: list[dict[str, Any]] = []
-    names = [n for n in radars if radars[n]["latitude"] is not None and radars[n]["longitude"] is not None]
+    names = [
+        n
+        for n in radars
+        if radars[n]["latitude"] is not None and radars[n]["longitude"] is not None
+    ]
     for i, a in enumerate(names):
         for b in names[i + 1 :]:
             ra, rb = radars[a], radars[b]
@@ -435,9 +461,19 @@ def inspect_inputs(
             if ra["t0"] and rb["t0"]:
                 lo = max(ra["t0"], rb["t0"])
                 hi = min(ra["t1"] or ra["t0"], rb["t1"] or rb["t0"])
-                t_overlap = (datetime.fromisoformat(hi) - datetime.fromisoformat(lo)).total_seconds()
-                t_overlap = max(t_overlap, 0.0) if hi >= lo else -(datetime.fromisoformat(lo) - datetime.fromisoformat(hi)).total_seconds()
-            geom = dual_doppler_geometry(d, min(r1, 150.0), min(r2, 150.0)) if overlap_space and d > 10 else None
+                t_overlap = (
+                    datetime.fromisoformat(hi) - datetime.fromisoformat(lo)
+                ).total_seconds()
+                t_overlap = (
+                    max(t_overlap, 0.0)
+                    if hi >= lo
+                    else -(datetime.fromisoformat(lo) - datetime.fromisoformat(hi)).total_seconds()
+                )
+            geom = (
+                dual_doppler_geometry(d, min(r1, 150.0), min(r2, 150.0))
+                if overlap_space and d > 10
+                else None
+            )
             pairs.append(
                 {
                     "a": a,

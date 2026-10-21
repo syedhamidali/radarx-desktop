@@ -11,11 +11,15 @@ from engine.autopilot.rules import classify, evaluate_rules
 
 def _rxd_command(step: dict[str, Any]) -> str:
     inputs = step.get("inputs", [])
-    shown = " ".join(f'"{p}"' for p in inputs[:3]) + (f" ... ({len(inputs)} files)" if len(inputs) > 3 else "")
+    shown = " ".join(f'"{p}"' for p in inputs[:3]) + (
+        f" ... ({len(inputs)} files)" if len(inputs) > 3 else ""
+    )
     return step.get("rxd", "").replace("{inputs}", shown)
 
 
-def make_plan(inv: dict[str, Any], *, budget_gb: float | None = None, out_dir: str | None = None) -> dict[str, Any]:
+def make_plan(
+    inv: dict[str, Any], *, budget_gb: float | None = None, out_dir: str | None = None
+) -> dict[str, Any]:
     """The plan for ``inv`` (from :func:`engine.autopilot.inspect_inputs`). JSON-able."""
     t0 = time.perf_counter()
     mach = govern.machine()
@@ -37,12 +41,19 @@ def make_plan(inv: dict[str, Any], *, budget_gb: float | None = None, out_dir: s
         if row.get("note"):
             notes.append(row["note"])
     # rank: rule rank first (the dependency order), then weight; refused ones last
-    steps.sort(key=lambda s: (bool(s.get("refused")), next(r["rank"] for r in table if r["id"] == s["rule"])))
+    steps.sort(
+        key=lambda s: (
+            bool(s.get("refused")),
+            next(r["rank"] for r in table if r["id"] == s["rule"]),
+        )
+    )
     for n, s in enumerate(steps, 1):
         s["order"] = n
     total_s = sum(s["estimate"]["seconds"] for s in steps if s["enabled"])
     peak = max((s["estimate"]["memory_bytes"] for s in steps if s["enabled"]), default=0)
-    reductions = list(inv.get("reductions", [])) + [r for s in steps for r in s.get("reductions", [])]
+    reductions = list(inv.get("reductions", [])) + [
+        r for s in steps for r in s.get("reductions", [])
+    ]
     return {
         "version": 1,
         "situation": situation,
@@ -78,7 +89,9 @@ def format_plan(plan: dict[str, Any], inv: dict[str, Any] | None = None) -> str:
     for s in plan["steps"]:
         flag = "x" if s["enabled"] else ("-" if s.get("refused") else "m")
         est = s["estimate"]
-        lines.append(f"  [{flag}] {s['order']}. {s['title']}  (~{est['seconds']} s, ~{est['memory_bytes'] / 1e9:.1f} GB, {est['volumes']} volumes)")
+        lines.append(
+            f"  [{flag}] {s['order']}. {s['title']}  (~{est['seconds']} s, ~{est['memory_bytes'] / 1e9:.1f} GB, {est['volumes']} volumes)"
+        )
         lines.append(f"       why: {s['why']}")
         lines.append(f"       needs: {s['needs']}")
         lines.append(f"       produces: {s['produces']}  [{s['provenance']}]")
