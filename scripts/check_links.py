@@ -80,6 +80,13 @@ def check_external(url: str) -> str | None:
         return type(exc).__name__ + ": " + str(exc)[:80]
 
 
+
+def internal_pages() -> set[str]:
+    """The maintainer pages that are not published (INTERNAL_PAGES in docs/conf.py)."""
+    text = (ROOT / "docs" / "conf.py").read_text()
+    block = re.search(r"INTERNAL_PAGES = \[(.*?)\]", text, re.S)
+    return set(re.findall(r'"([^"]+)"', block.group(1))) if block else set()
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--external", action="store_true", help="also request http(s) links")
@@ -143,12 +150,22 @@ def main() -> int:
             if name not in listed:
                 listed.add(name)
                 pending.append(name)
+    internal = internal_pages()
     for page in sorted((ROOT / "docs").glob("*.md")):
-        if page.stem != "index" and page.stem not in listed:
+        if page.stem != "index" and page.stem not in listed and page.stem not in internal:
             problems.append(f"docs/{page.name}: not in any toctree reachable from docs/index.md (Sphinx will warn)")
     for name in sorted(listed):
         if not name.startswith("_api") and not (ROOT / "docs" / f"{name}.md").exists():
             problems.append(f"docs: toctree entry {name!r} has no page")
+
+    # The published documentation must not refer to pages that are not published (docs/conf.py INTERNAL_PAGES).
+    for page in sorted((ROOT / "docs").glob("*.md")):
+        if page.stem in internal or page.stem == "history":
+            continue
+        text = page.read_text()
+        for name in sorted(internal):
+            if re.search(rf"\{{doc\}}`(?:[^`<]*<)?{re.escape(name)}>?`|\]\({re.escape(name)}\.md", text):
+                problems.append(f"docs/{page.name}: links to the unpublished page {name} (docs/conf.py INTERNAL_PAGES)")
 
     if args.external:
         for url in sorted(external):

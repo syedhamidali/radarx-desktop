@@ -33,26 +33,16 @@ layer must show are in {doc}`SCIENCE`; the licences of everything it ships are i
 :hidden:
 :maxdepth: 2
 
-getting-started
-using-the-app
-cli-and-python
+installation
 user-guide
 science-and-trust
-project
+history
 ```
 
 ## Where to go
 
-- {doc}`getting-started`: install it, create your free account, a first tour.
-- {doc}`using-the-app`: open data, the 2D and 3D views, cross-sections and RHI, modules, settings, export.
-- {doc}`cli-and-python`: the `rxd` command, many files at once and the Python API.
-- {doc}`user-guide`: pipelines, storm cells, mosaics, rainfall, multi-Doppler winds, animations and the other tools.
+- {doc}`installation`: download and install it, set up the command line, create your free account.
+- {doc}`user-guide`: opening and viewing data, modules and pipelines, mosaics, winds and rainfall, 3D and
+  animation, the `rxd` command line.
 - {doc}`science-and-trust`: the science policy, output standards, licences, privacy and reporting.
-- {doc}`project`: web service, installers and updates, design, performance and the changelog.
-
-Indices and tables
-==================
-
-- {ref}`genindex`
-- {ref}`modindex`
-- {ref}`search`
+- {doc}`history`: what changed in each version.

@@ -1,20 +1,61 @@
-# User guide
+# User Guide
 
-One page for each analysis tool: how it works, what it needs and what it shows, with its limits.
+This guide shows how to use Radarx: open radar data, look at it in 2D and 3D, clean it, run algorithms, combine
+radars and export the results, in the app and from the command line. Every page says what a tool does, what it
+needs, what it shows and where its limits are.
+
+Everything on screen or in a file is either observed data, a labelled method applied to it, or a labelled
+picture; nothing is invented ({doc}`SCIENCE`).
 
 ```{toctree}
-:maxdepth: 1
-:titlesonly:
+:maxdepth: 2
+:caption: Getting started
 
+usage
+ACCOUNTS
+opening-data
+viewing
+settings
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Working with radar data
+
+using-modules
+MODULES
+PIPELINES
 VARMAP
 DATA_CHECK
-PIPELINES
-MODULES
+RADAR_SITES
+RHI
+CROSSSECTION
 CELLS
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Mosaics, winds and rainfall
+
 MOSAIC
+MULTIDOPPLER
 HYDROLOGY
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: 3D, clips and animation
+
 REALISTIC_3D
 STORM_CLIP
 ANIMATE
-MULTIDOPPLER
+export
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Command line
+
+CLI
+BULK
 ```
