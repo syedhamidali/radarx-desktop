@@ -53,6 +53,7 @@ from engine.account import activity as account_activity
 from engine.account import config as account_config
 from engine.account import core as account_core
 from engine.account.errors import AccountRequired
+from engine.animate_service import AnimateMessages
 from engine.cloud import (
     get_latest_nexrad_l2,
     latest_scan_info,
@@ -853,7 +854,7 @@ def _export_inputs(
     return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
 
 
-class ConnectionHandler(EnvironmentMessages):
+class ConnectionHandler(EnvironmentMessages, AnimateMessages):
     """Manages message routing for a single WebSocket connection, using shared state."""
 
     def __init__(self, ws: ServerConnection, session: web.SessionContext | None = None) -> None:
@@ -1293,6 +1294,7 @@ class ConnectionHandler(EnvironmentMessages):
             "export_multidoppler": self._handle_export_multidoppler,
             "get_web_info": self._handle_get_web_info,
             **self._env_handlers(),  # env_* and sounding_open (engine/environment/messages.py)
+            **self._animate_handlers(),  # animate_* : the Movie Studio (engine/animate_service.py)
         }
         if self.session is not None:
             table.update(

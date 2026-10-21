@@ -177,6 +177,14 @@
       action: () => dispatch('action', { type: 'export' }),
     });
 
+    actions.push({
+      id: 'movie-studio',
+      label: 'Movie Studio: make a storm movie (MP4)',
+      category: 'File',
+      icon: '\u{1F3AC}',
+      action: () => dispatch('action', { type: 'movie-studio' }),
+    });
+
     return actions;
   }
 

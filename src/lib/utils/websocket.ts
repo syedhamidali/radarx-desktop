@@ -425,6 +425,7 @@ class WebSocketManager {
     'multidoppler_result',
     'mosaic_volume',
     'wind_volume',
+    'animate_video',
   ]);
 
   /** Start tracking a binary payload announced by `header`. */
@@ -564,6 +565,9 @@ class WebSocketManager {
     } else if (type === 'mosaic_volume') {
       // uint8 (nz, ny, nx) merged mosaic field for the 3D view
       this._dispatchHandlers('mosaic_volume_ready', { header, data: new Uint8Array(buffer) });
+    } else if (type === 'animate_video') {
+      // the MP4 of a film the Movie Studio just made; the store builds the object URL
+      this._dispatchHandlers('animate_video_ready', { header, data: new Uint8Array(buffer) });
     } else if (type === 'wind_volume') {
       if (buffer.byteLength % 4 !== 0) {
         console.error(`[WS] 'wind_volume' payload is not float32-aligned (${buffer.byteLength} bytes)`);
@@ -725,6 +729,7 @@ class WebSocketManager {
       case 'multidoppler_result':
       case 'mosaic_volume':
       case 'wind_volume':
+      case 'animate_video':
         // JSON header for incoming binary data — wait for the chunk frames
         this.beginBinary(msg);
         break;
