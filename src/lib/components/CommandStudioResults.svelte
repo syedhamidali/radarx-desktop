@@ -108,5 +108,5 @@
   summary { cursor: pointer; font-size: var(--fs-xs); color: var(--c-accent); }
   pre { margin: 6px 0 2px; max-height: 320px; overflow: auto; font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--c-text); }
   .lightbox { position: fixed; inset: 0; z-index: 1200; background: var(--c-scrim); border: none; display: grid; place-items: center; cursor: zoom-out; padding: 24px; }
-  .lightbox img { max-width: 100%; max-height: 100%; box-shadow: var(--shadow-3); background: var(--c-bg); }
+  .lightbox img { max-width: 100%; max-height: 100%; box-shadow: var(--shadow-3); background: var(--c-surface-0); }
 </style>
