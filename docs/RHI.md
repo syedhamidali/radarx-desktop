@@ -1,7 +1,7 @@
 # Range-height (RHI) scans
 
 An RHI keeps the antenna at one azimuth and sweeps it up in elevation, so the rays differ in *elevation*.
-Drawn as a PPI map such a sweep collapses onto one line. radarx-desktop detects RHI sweeps and shows them as
+Drawn as a PPI map such a sweep collapses onto one line. Radarx Desktop detects RHI sweeps and shows them as
 what they are: a vertical cut through the storm, ground range along x and height along y.
 
 ![CPOL RHI, cleaned](images/rhi-cpol-dbz.png)
@@ -62,9 +62,7 @@ A quality mask only applies when the sweep holds that field. A gate with no qual
 (toolbar) switches every step off. **Save PNG** writes the picture with title, colour bar and the caption, and stores the
 caption in the PNG's text metadata. Hovering a gate that the settings hide says so and shows the measured value.
 
-The shared pieces are the cross-section's: `stores/valueMask.ts`, `ValueMaskControl.svelte` and
-`utils/crossSectionRaster.ts` (Gaussian, interpolation); the data flows `entry -> cleaned field -> lookup -> picture`
-(`utils/rhiClean.ts`, `utils/rhiGeometry.ts`, `components/RhiViewer.svelte`).
+The value mask, Gaussian smoothing and interpolation are the same as in the cross-section ({doc}`CROSSSECTION`).
 
 ![The same sweep, raw](images/rhi-cpol-raw.png)
 
@@ -79,15 +77,9 @@ NPOL and the pseudo-RHI cut from a NEXRAD volume:
   Volume, 3D cross-section, modules, mosaics, wind retrieval and storm cells refuse an RHI sweep with a message
   instead of a wrong answer.
 * **Table view** lists elevation instead of azimuth in the first column; **Metadata** and data export are unchanged.
-* **Figure export** (`render_publication_figure`, also behind `rxd plot`) draws an RHI as a range-height plot with
-  `pcolormesh`, the same cleaning (`rhi_clean`: `None` = defaults, `False` = raw, or a dict with `sqi`, `snr`, `rhohv`,
-  `despeckle`, `mask`) and axes (`rhi_view`: `{"height_max": 25, "full": False}`). The caption is part of the figure.
+* **Figure export** (also `rxd plot`) draws an RHI as a range-height plot with the same cleaning and axes as the
+  viewer. The caption is part of the figure.
   Exports show the cleaned gates as measured: smoothing is a drawing step of the viewer only.
-
-## Tests
-
-`python/tests/test_rhi.py` (synthetic RHI, the author's CPOL file when present and the open-radar-data DOW8 RHIs, which run
-on CI) and `src/lib/utils/rhiGeometry.test.mjs`, `rhiClean.test.mjs`, `rhiAutoRange.test.mjs` (`npm run test:unit`).
 
 ## Not done
 

@@ -1,18 +1,17 @@
 # Science policy
 
-radarx-desktop is a research tool. People read numbers, shapes and colours off the screen and put them in
+Radarx Desktop is a research tool. People read numbers, shapes and colours off the screen and put them in
 papers, forecast discussions and reports. So there is one rule above all others:
 
 > **Everything the app shows or writes must follow the science: it is either data with a known source,
 > or a clearly labelled method applied to such data, or a clearly labelled picture. Nothing is
 > invented, and nothing that is not measured is dressed up as measured.**
 
-This page is the policy that every feature, module, pull request and screenshot has to meet. It is short
-on purpose: if a rule here is hard to follow, change the feature, not the rule. The checklist at the end is
-copied into the pull request template.
+This page is the policy that every feature, module and screenshot has to meet. It is short
+on purpose: if a rule here is hard to follow, the feature changes, not the rule.
 
-Where a rule is already implemented, the page says where. Where it is a goal that the code does not yet
-meet (the provenance in the hover read-out and a generated citation block are tracked in issue #63), the page says that too: a policy that
+Where a rule is already implemented, the page says so. Where it is a goal that the program does not yet
+meet (the provenance in the hover read-out and a generated citation block), the page says that too: a policy that
 pretends to be finished is the kind of claim this page forbids.
 
 ## 1. Provenance classes
@@ -44,7 +43,7 @@ information* from *nothing to say*.
 
 - Files the engine writes carry source file *names* (never paths), software and library versions, the UTC
   time, a `history` line per step, and for derived variables the module, parameters and radarx version
-  (`python/engine/provenance.py`, {doc}`OUTPUT_STANDARDS`).
+  ({doc}`OUTPUT_STANDARDS`).
 - Stylised looks are labelled on screen and in clips, and never change the data underneath
   ({doc}`REALISTIC_3D`, {doc}`STORM_CLIP`).
 - Imagery and terrain show their attribution while they are on screen.
@@ -52,15 +51,13 @@ information* from *nothing to say*.
   *simulated* and *stylised* as two chips) and the Layers panel lists each layer with its source, valid
   time and the time offset to the active radar scan; exports carry `data_class`, `data_source`,
   `data_valid_time`, ... ({doc}`ENVIRONMENT`).
-- **Not yet done:** provenance in the hover read-out and a generated citation block (issue #63). Features
-  that bring new data into the app must describe their provenance in their docs page, give their layers a
-  `provenance` object (`python/engine/layer_provenance.py`) and carry it into the export metadata.
+- **Not yet done:** provenance in the hover read-out and a generated citation block.
 
 ## 2. Rules
 
 ### 2.1 Cite the method
 
-A method that is not obvious gets a reference in its docstring and in its docs page: author, year, journal
+A method that is not obvious gets a reference in its documentation: author, year, journal
 or report, and the equation or table used. "Standard" is not a reference. If the implementation departs from
 the paper (a different threshold, a simplification, a fix), say how and why. Algorithms taken from radarx or
 xradar name the library and version.
@@ -69,8 +66,8 @@ xradar name the library and version.
 
 Every retrieval and every derived field has a "limits" paragraph in its docs: the assumptions (wavelength,
 beam filling, attenuation, calibration), where it is known to fail (ground clutter, melting layer, range
-folding, biological echoes), and what the uncertainty is when it is known. Put the short version in the
-module's description so it appears next to the result in the app.
+folding, biological echoes), and what the uncertainty is when it is known. The short version is in the
+module's description, so it appears next to the result in the app.
 
 ### 2.3 No invented data
 
@@ -79,7 +76,7 @@ module's description so it appears next to the result in the app.
   was not scanned).
 - No default that changes the numbers silently. A correction (noise, attenuation, calibration offset) is a
   visible, switchable step, recorded in the output.
-- Test fixtures and demo fields that are synthetic say so, in the file (`simulated_data` where the format has
+- Demo and test fields that are synthetic say so, in the file (`simulated_data` where the format has
   it), in the name, and on screen.
 - Colour scales, transfer functions and exaggeration change how data looks, never what it is. The data
   value under the cursor is always the real value.
@@ -101,17 +98,17 @@ Whenever the app creates values that were not measured at that place or time, it
 
 ### 2.5 Test against known answers
 
-A scientific feature ships with tests whose expected values do not come from running the feature:
+A scientific feature is tested against expected values that do not come from running the feature:
 
 - an analytic case (a uniform wind seen by two radars must be recovered; a solid-body rotation must give the
   known vorticity; the beam height equation against a published table),
-- a published example or a hand-computed value, with its source in the test,
+- a published example or a hand-computed value, with its source,
 - invariants (a mask never changes unmasked values; export then re-open gives the same array; units
   conversions round-trip),
-- real files from `open-radar-data` or the project's test set where the behaviour depends on real
+- real files from the `open-radar-data` collection where the behaviour depends on real
   messiness (missing rays, odd sweep order, sector scans).
 
-"The output looks right" is a review comment, not a test. A bug found with real data gets a regression test
+"The output looks right" is not a test. A bug found with real data gets a regression test
 that fails without the fix.
 
 ### 2.6 Reproducibility: run records
@@ -136,11 +133,9 @@ The app never fetches data behind the user's back and never uploads the user's d
 - Map and terrain tiles are the standing exception: the OpenStreetMap basemap is requested when the map is
   shown (choose "None" in the basemap list to stop that), and Realistic ground fetches imagery and elevation
   only when the user switches it on. The hosts are named in {doc}`REALISTIC_3D` and in
-  `THIRD_PARTY_NOTICES.md`, tiles are cached and rate limited and shown with their attribution, and the app
+  the third-party notices ({doc}`LICENSES`), tiles are cached and rate limited and shown with their attribution, and the app
   must keep working offline.
-- Update checks are the user's choice and send nothing about their data ({doc}`UPDATES`).
-- Tests and CI may download public test data; the app and the engine never do so by themselves. Automated
-  agents and contributors do not commit radar data.
+- Update checks are the user's choice and send nothing about their data ({doc}`settings`).
 
 ### 2.8 Stylised visuals are labelled
 
@@ -163,34 +158,11 @@ say their datum and projection. A number without a unit is a bug.
 ### 2.10 Credit and licence
 
 Data, imagery, colour maps, fonts and code from others are credited where they are used and listed in
-`THIRD_PARTY_NOTICES.md` (generated by `scripts/licenses/generate_notices.py`; see {doc}`LICENSES`). New
+the third-party notices (see {doc}`LICENSES`). New
 sources that are non-commercial or share-alike are flagged in their docs page and in the notices.
 
-## 3. Checklist
+## 3. What is not finished
 
-Copy this into a pull request that adds or changes anything scientific. It is also in
-`.github/pull_request_template.md`.
-
-- [ ] The new output has a **provenance class** (OBSERVED, MODEL/ANALYSIS, RETRIEVED, SIMULATED/STYLISED) and
-      shows what that class requires: source, run/valid time, resolution, method, parameters, uncertainty.
-- [ ] The method is **cited** (docstring and docs page), and departures from the reference are written down.
-- [ ] The **limits** are documented and visible next to the result.
-- [ ] **Nothing is invented**: gaps stay gaps; any interpolation, advection, smoothing or model is declared
-      in the UI, the export and the docs.
-- [ ] A stylised visual is **opt-in, labelled on the image** and does not change the data.
-- [ ] **Tests against known answers** (analytic, published, invariants, real files) are included, and a
-      regression test for every bug fixed.
-- [ ] The result is **reproducible**: a record (inputs, versions, parameters, time) is written to the output.
-- [ ] **No download without consent**; new network hosts are listed in the docs and the content-security
-      policy, and cached.
-- [ ] Units, UTC time, height reference and projection are stated.
-- [ ] New dependencies, data or imagery are in `THIRD_PARTY_NOTICES.md` (run the generator) and pass the
-      licence check; anything non-commercial or share-alike is flagged.
-- [ ] Performance was measured, not assumed (see {doc}`PERFORMANCE` and {doc}`PERFORMANCE_FRONTEND`).
-- [ ] Screenshots were looked at, in dark and light.
-
-## 4. Where this is going
-
-The roadmap items that make this policy visible in the app (provenance chips on every layer and the layers
-panel are done; a generated methods citation and provenance in the hover read-out remain) are
-tracked in issue #63 and the environment-data roadmap (issue #112). The master list is issue #120.
+Provenance chips on every layer and the Layers panel are done. Two things remain: provenance in the hover read-out and a
+generated methods citation block. Features that bring new data into the app describe their provenance on their
+documentation page and carry it into the export metadata.
