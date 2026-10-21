@@ -3,6 +3,30 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.3.2
+
+- **Movies in the installed app:** the Movie Studio can now fetch its movie components on request. They are an
+  optional download of about 42 MB (Playwright, which drives your own Google Chrome), shown with what, where from and
+  how big before anything is downloaded, kept in your app data folder and removable in Settings. The film itself is
+  encoded by Chrome (H.264 and AAC in an MP4; WebM when Chrome has no H.264), so no video library with restrictive
+  licences is shipped; `rxd animate --encoder` chooses ({doc}`ANIMATE`, {doc}`settings`).
+- **Sound:** the rain is now heard (it read the echo at one height where nothing exists far from the radars; it now
+  uses the lowest gridded level up to 2.5 km, and a film whose rain stays silent says so), the screen says "33 flashes",
+  the cloud-to-ground or in-cloud type of observed flashes is marked synthetic (GLM does not report it), thunder
+  arrival follows the film clock, and the wind label comes from what was actually used.
+- **Provenance in the read-out:** the value under the pointer carries the class of the layer it comes from (OBS, RETR,
+  ADJ, MODEL, SIM) in the 2D view, the map views, the cross-sections and RHI ({doc}`SCIENCE`).
+- **Dealiasing:** a new optional *Fold reference* (`zero` or `vad`) for the dealias step fixes a whole-sweep error of a
+  multiple of two Nyquist intervals when the wind is strong and the Nyquist velocity low; the default is unchanged,
+  and the option is refused where its assumption fails (sector scans, one-sided echo) ({doc}`PIPELINES`).
+- **Rainfall and reflectivity:** averaging reflectivity over time is done in linear units (20 and 40 dBZ average to
+  37 dBZ), and summing decibel values is refused ({doc}`HYDROLOGY`).
+- **Files:** the app can reopen the Zarr folders it exported (drop the folder on the window) ({doc}`OUTPUT_STANDARDS`).
+- **Stability:** a desktop connection holds at most 32 requests in flight (ping, sign-in and every cancel always get
+  through).
+- **Smaller:** importing the radar library no longer changes the app's logging, `rxd --help` lists every command
+  including `auto`, and the unused map-provider hosts were removed from the content-security policy.
+
 ## 0.3.1
 
 - **Name:** the app is called **Radarx** under its icon, in the Start menu, in Applications and in the window title;
