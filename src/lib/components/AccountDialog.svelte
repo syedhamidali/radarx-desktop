@@ -5,6 +5,7 @@
   import { focusTrap } from '../utils/focusTrap';
   import { addToast } from '../stores/toasts';
   import { openReportIssue } from '../stores/reportIssue';
+  import { ACCOUNT_URL } from '../utils/brand';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -48,6 +49,15 @@
   async function wipe() {
     if (confirmText !== 'DELETE') return;
     if (await deleteAccount()) onclose();
+  }
+  /** In the system browser (as About opens the website); a new tab in the web build. */
+  async function openLink(url: string) {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open(url);
+    } catch {
+      window.open(url, '_blank');
+    }
   }
   const when = (iso: string) => new Date(iso).toLocaleDateString();
   const whenFull = (iso: string) => new Date(iso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
@@ -131,6 +141,10 @@
 
     <h3>Data we keep</h3>
     <p class="hint">Your name, e-mail, affiliation, what you use radarx for, the computers listed above and the activity above. Radar files and results stay on your machine.</p>
+
+    <div class="row">
+      <button class="linkish" onclick={() => openLink(ACCOUNT_URL)}>Manage your account on the web</button>
+    </div>
 
     <div class="row between">
       <button onclick={async () => { await signOut(); onclose(); }}>Sign out</button>

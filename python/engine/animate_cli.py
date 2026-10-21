@@ -120,6 +120,12 @@ def add_parser(
         help="gridded volumes and frames (default ~/.cache/radarx-desktop/animate, or XRADAR_ANIMATE_CACHE)",
     )
     g.add_argument("--fresh", action="store_true", help="ignore the cache and grid again")
+    g.add_argument(
+        "--record-paths",
+        action="store_true",
+        help="also write each input's full local path into the .animate.json record "
+        "(default: file names and paths relative to the input folder only)",
+    )
 
     g = p.add_argument_group("the clip")
     g.add_argument(
@@ -394,6 +400,9 @@ def expand_animate_inputs(items: Sequence[str]) -> list[str]:
                 continue
         plain.append(raw)
     flush()
+    # ``~`` and relative paths become absolute here (the reader accepts absolute paths only),
+    # as ``api.open`` does for the other commands
+    out = [f if f == "-" else os.path.abspath(os.path.expanduser(f)) for f in out]
     seen: set[str] = set()
     return [f for f in out if not (f in seen or seen.add(f))]
 
@@ -500,6 +509,7 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         browser=args.browser,
         software=args.software,
         command=shlex.join(["rxd", *getattr(args, "argv", [])]),
+        record_paths=getattr(args, "record_paths", False),
         crf=args.crf,
         preset=args.x264_preset,
         frame_format=args.frame_format,

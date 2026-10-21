@@ -343,7 +343,25 @@ def sounding(
     attribution: str = "",
     licence: str = "",
     references: Iterable[str] = (),
+    kind: str = "observed",
 ) -> LayerProvenance:
+    """A vertical profile: a radiosonde (``observed``) or a model/reanalysis column (``model``)."""
+    if kind == "model":
+        return LayerProvenance(
+            kind="model",
+            source=_clean(source) or "model profile",
+            title=f"Model profile {station}".strip(),
+            valid_time=launch_time,
+            method=method
+            or "Model or reanalysis column: pressure, temperature, dew point and wind versus "
+            "height at one grid point.",
+            uncertainty="An estimate of the atmosphere on the model grid, not a measurement: "
+            "it carries the model's resolution and errors (shallow layers and sharp inversions "
+            "may be smoothed).",
+            attribution=attribution,
+            licence=licence,
+            references=list(references),
+        )
     return LayerProvenance(
         kind="observed",
         source=_clean(source) or "radiosonde",

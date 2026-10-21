@@ -143,6 +143,9 @@ QC recipe. It changes nothing and exits 0 even when it finds problems (3 only wh
 read). `--fix-plan -o recipe.json` writes the suggested recipe for `rxd pipeline`. Every check, its
 method and thresholds: {doc}`DATA_CHECK`.
 
+`--json` always prints a list with one report per file, also for a single file. (Before 0.3.0 one
+file gave a single report object, not a list; a script that read it should now take the first item.)
+
 ```console
 $ rxd check -i KTLX20130520_201643_V06.gz --fix-plan -o recipe.json
 ```

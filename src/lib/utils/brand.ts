@@ -24,5 +24,8 @@ export const DOWNLOAD_PAGE_URL = `${WEBSITE_URL}/#download`;
 export const TERMS_URL = `${WEBSITE_URL}/terms.html`;
 export const PRIVACY_URL = `${WEBSITE_URL}/privacy.html`;
 
+/** The account page of the website (profile, computers, deletion, from any browser). */
+export const ACCOUNT_URL = `${WEBSITE_URL}/account.html`;
+
 /** Documentation of the open xradar library the engine is built on (third party, not ours). */
 export const XRADAR_DOCS_URL = 'https://docs.openradarscience.org/projects/xradar/';
