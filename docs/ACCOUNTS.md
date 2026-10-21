@@ -26,6 +26,8 @@ use without an account and supports the licence terms; it is not a security feat
 - **Account dialog** (status bar, click your name): edit name, affiliation and use; see and remove your
   computers; **Activity**: the list of the last 100 events your account has sent, exactly as stored (see
   [The activity log](#the-activity-log)); sign out; delete the account (everything is removed, typed confirmation).
+  **Manage your account on the web** opens the account page of the website
+  (<https://radarx.labshope.com/account.html>) in your browser, for when you are away from the app.
 - **Terminal:** `rxd login` once (e-mail, password typed without echo), then every `rxd` command works.
   `rxd whoami` shows the account, `rxd logout` signs out. Creating the account itself happens in the app (or its
   sign-up screen), where the e-mail code is entered.
