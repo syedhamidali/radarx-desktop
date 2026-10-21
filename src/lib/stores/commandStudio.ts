@@ -282,8 +282,15 @@ function failedResult(message: string): CliResult {
   return { code: 70, status: 'failed', ok: false, message, stdout: '', stderr: '', files: [], command: null, elapsed_ms: 0 };
 }
 
-export function revealFile(path: string): void {
-  void wsManager.send({ type: 'cli_reveal', path });
+/** Show the folder of a produced file in the system file manager (the shell does it, not the engine). */
+export async function revealFile(path: string): Promise<void> {
+  const folder = path.replace(/[\\/][^\\/]*$/, '');
+  try {
+    const { open } = await import('@tauri-apps/plugin-shell');
+    await open(folder || path);
+  } catch {
+    /* no shell plugin (web build): nothing to open */
+  }
 }
 
 /** The folder of a path (without the file name), or '' when there is none. */

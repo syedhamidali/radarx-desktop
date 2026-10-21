@@ -26,8 +26,6 @@ import difflib
 import io
 import os
 import shlex
-import subprocess
-import sys
 import time
 import warnings
 from collections.abc import Callable, Sequence
@@ -425,23 +423,6 @@ def run_command(
 # ---------------------------------------------------------------------------
 # reveal (Show in folder)
 # ---------------------------------------------------------------------------
-
-
-def reveal(path: str) -> str | None:
-    """Show *path* in the system file manager. Returns an error sentence, or None."""
-    p = Path(path)
-    if not p.exists():
-        return f"{p.name} no longer exists."
-    try:
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", "-R", str(p)])
-        elif sys.platform.startswith("win"):
-            subprocess.Popen(["explorer", f"/select,{p}"])
-        else:
-            subprocess.Popen(["xdg-open", str(p.parent if p.is_file() else p)])
-    except OSError as exc:
-        return f"Could not open the file manager: {exc}"
-    return None
 
 
 def shell_line(argv: Sequence[str]) -> str:

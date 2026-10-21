@@ -34,7 +34,6 @@ import math
 import os
 import re
 import shutil
-import subprocess
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -307,16 +306,7 @@ def _available_ram() -> int | None:
             return None
     if sys.platform == "darwin":
         try:
-            txt = subprocess.run(
-                ["vm_stat"], capture_output=True, text=True, timeout=2, check=False
-            ).stdout
-            page = int(re.search(r"page size of (\d+)", txt).group(1))  # type: ignore[union-attr]
-            pages = 0
-            for key in ("Pages free", "Pages inactive", "Pages speculative", "Pages purgeable"):
-                m = re.search(rf"{key}:\s+(\d+)", txt)
-                if m:
-                    pages += int(m.group(1))
-            return pages * page
+            return _mac_available_ram()
         except Exception:
             return None
     if sys.platform == "win32":
@@ -335,6 +325,54 @@ def _available_ram() -> int | None:
         except Exception:
             return None
     return None
+
+
+def _mac_available_ram() -> int:
+    """Free, inactive, speculative and purgeable pages, read with host_statistics64 (no command)."""
+    import ctypes
+    import ctypes.util
+
+    class _VmStat64(ctypes.Structure):
+        _fields_ = [
+            ("free_count", ctypes.c_uint32),
+            ("active_count", ctypes.c_uint32),
+            ("inactive_count", ctypes.c_uint32),
+            ("wire_count", ctypes.c_uint32),
+            ("zero_fill_count", ctypes.c_uint64),
+            ("reactivations", ctypes.c_uint64),
+            ("pageins", ctypes.c_uint64),
+            ("pageouts", ctypes.c_uint64),
+            ("faults", ctypes.c_uint64),
+            ("cow_faults", ctypes.c_uint64),
+            ("lookups", ctypes.c_uint64),
+            ("hits", ctypes.c_uint64),
+            ("purges", ctypes.c_uint64),
+            ("purgeable_count", ctypes.c_uint32),
+            ("speculative_count", ctypes.c_uint32),
+            ("decompressions", ctypes.c_uint64),
+            ("compressions", ctypes.c_uint64),
+            ("swapins", ctypes.c_uint64),
+            ("swapouts", ctypes.c_uint64),
+            ("compressor_page_count", ctypes.c_uint32),
+            ("throttled_count", ctypes.c_uint32),
+            ("external_page_count", ctypes.c_uint32),
+            ("internal_page_count", ctypes.c_uint32),
+            ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+        ]
+
+    libc = ctypes.CDLL(ctypes.util.find_library("c"))
+    stat = _VmStat64()
+    count = ctypes.c_uint32(ctypes.sizeof(stat) // 4)
+    host_vm_info64 = 4
+    libc.mach_host_self.restype = ctypes.c_uint32
+    rc = libc.host_statistics64(
+        libc.mach_host_self(), host_vm_info64, ctypes.byref(stat), ctypes.byref(count)
+    )
+    if rc != 0:
+        raise OSError(f"host_statistics64 returned {rc}")
+    page = os.sysconf("SC_PAGE_SIZE")
+    pages = stat.free_count + stat.inactive_count + stat.speculative_count + stat.purgeable_count
+    return int(pages * page)
 
 
 def current_rss() -> int | None:

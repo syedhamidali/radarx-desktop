@@ -1298,7 +1298,6 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "cli_describe": self._handle_cli_describe,
             "cli_run": self._handle_cli_run,
             "cli_cancel": self._handle_cli_cancel,
-            "cli_reveal": self._handle_cli_reveal,
             "get_web_info": self._handle_get_web_info,
             "auto_inspect": self._handle_autopilot,
             "auto_plan": self._handle_autopilot,
@@ -4746,17 +4745,6 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         event = _CLI_CANCELS.get(str(msg.get("request_id") or ""))
         if event is not None:
             event.set()
-
-    async def _handle_cli_reveal(self, msg: dict[str, Any]) -> None:
-        """``{type: "cli_reveal", path}``: show a produced file in the system file manager."""
-        from engine import cli_schema
-
-        path = msg.get("path")
-        if self.session is not None or not isinstance(path, str) or not path:
-            return
-        error = cli_schema.reveal(path)
-        if error:
-            await self.send_error(f"cli_reveal: {error}")
 
     async def _handle_export_multidoppler(self, msg: dict[str, Any]) -> None:
         """``{type: "export_multidoppler", wind_id, path, overwrite?}`` -> ``file_saved``."""
