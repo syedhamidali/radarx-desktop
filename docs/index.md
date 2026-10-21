@@ -44,5 +44,7 @@ history
 - {doc}`installation`: download and install it, set up the command line, create your free account.
 - {doc}`user-guide`: opening and viewing data, modules and pipelines, mosaics, winds and rainfall, 3D and
   animation, the `rxd` command line.
+- {doc}`tutorial-bulk-data`: a whole event, four radars and 44 volumes, from a dropped folder to results and
+  exports in the app.
 - {doc}`science-and-trust`: the science policy, output standards, licences, privacy and reporting.
 - {doc}`history`: what changed in each version.

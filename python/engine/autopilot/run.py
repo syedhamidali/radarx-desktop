@@ -165,7 +165,10 @@ def _run_step(
         params["threshold_dbz"] = 35.0
     elif kind in ("mosaic", "winds"):
         steps_t = _time_steps(step, inv)
-        kept, skipped = _subsample([json.dumps(s, sort_keys=True) for s in steps_t], step)
+        # Keep the key order of each row: the reference radar comes first and its volume time
+        # labels the step's files. Sorting the keys named the files after another radar's nearest
+        # volume, so two steps could share a label and overwrite each other.
+        kept, skipped = _subsample([json.dumps(s) for s in steps_t], step)
         if skipped:
             notes.append(
                 f"{len(skipped)} time step(s) skipped by the governor (every "
