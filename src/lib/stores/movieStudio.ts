@@ -13,6 +13,17 @@
  *   -> {type:'animate_cancel', request_id}                   <- {type:'animate_cancelled'}
  *   -> {type:'animate_video', request_id, path}              <- header + binary frames (the MP4)
  *   -> {type:'animate_copy', request_id, src, dst}           <- {type:'animate_copied', path, sidecar}
+ *   -> {type:'movie_pack_status', request_id, lookup?, base_url?}
+ *                                                            <- {type:'movie_pack_status', status, available?}
+ *   -> {type:'movie_pack_install', request_id, url, size, sha256, name, base_url}
+ *                                                            <- movie_pack_progress* then movie_pack_installed |
+ *                                                               movie_pack_error | movie_pack_cancelled
+ *   -> {type:'movie_pack_cancel', request_id} / {type:'movie_pack_remove', request_id}
+ *                                                            <- {type:'movie_pack_removed', status}
+ *
+ * The movie components (Playwright; Chrome itself encodes the film) are an optional download of the installed app: the
+ * dialog asks first (what, from where, how big, licences), the engine downloads only what the
+ * release index announced and checks its size and SHA-256.
  *
  * Only the most recent request of each kind is honoured. Every long request is an operation in the
  * operations tray (cancel there or in the dialog).
@@ -23,6 +34,7 @@ import { wsManager } from '../utils/websocket';
 import { beginOp, type OpHandle } from '../utils/requestScheduler';
 import { registerJobSource } from './jobSources';
 import { addToast } from './toasts';
+import { DOWNLOADS_HOST_URL } from '../utils/brand';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -96,15 +108,46 @@ export const DEFAULT_OPTIONS: MovieOptions = {
   frameFormat: 'png',
 };
 
+/** The optional movie components pack (Playwright and its helpers; no video library) of the installed app. */
+export interface MoviePackStatus {
+  needed: boolean;
+  root: string;
+  path: string;
+  app_version: string;
+  python: string;
+  os: string;
+  arch: string;
+  installed: boolean;
+  usable: boolean;
+  active: boolean;
+  problem: string | null;
+  size: number;
+  pack_version: string | null;
+  components: { name: string; version: string; license: string }[];
+  others: string[];
+}
+
+/** What the download host answered: the pack for this release, or why there is none. */
+export interface MoviePackAvailable {
+  ok: boolean;
+  reason?: 'offline' | 'no-release' | 'no-pack' | 'refused';
+  message?: string;
+  component?: { name: string; url: string; size: number; sha256: string; python: string; os: string; arch: string };
+  consent?: { name: string; url: string; host: string; size: number; sha256: string; contents: string[] };
+}
+
 export interface Capabilities {
   ready: boolean;
   plan_ready: boolean;
-  problems: { what: string; hint: string }[];
+  problems: { what: string; hint: string; movie_pack?: boolean }[];
+  movie_pack?: MoviePackStatus;
   sound: boolean;
   chrome: { ok: boolean; path?: string; hint?: string };
   renderer: { ok: boolean; path?: string; hint?: string };
   av: boolean;
   playwright: boolean;
+  /** Who writes the film: Chrome's own encoder (the normal case), the user's PyAV, or none. */
+  encoder?: { name: 'browser' | 'pyav' | 'none'; detail: string; support: { avc: boolean; vp9: boolean; aac: boolean; opus: boolean; avcHardware: boolean; notes: string[] } | null };
   radarx: boolean;
   default_output_dir: string;
   cache_dir: string;
@@ -174,8 +217,14 @@ export const result = writable<RenderResult | null>(null);
 /** Object URL of the finished MP4 (revoked when replaced). */
 export const videoUrl = writable<string | null>(null);
 
-export const anyRunning = derived([planJob, stillJob, renderJob], ([$p, $s, $r]) => $p.running || $s.running || $r.running);
-registerJobSource('movie', derived(renderJob, ($r) => ($r.running ? 1 : 0)));
+/** The movie components pack: its status, what the host offers, and the download job. */
+export const moviePack = writable<MoviePackStatus | null>(null);
+export const packAvailable = writable<MoviePackAvailable | null>(null);
+export const packLookupRunning = writable(false);
+export const packJob = writable<Job>(idle());
+
+export const anyRunning = derived([planJob, stillJob, renderJob, packJob], ([$p, $s, $r, $k]) => $p.running || $s.running || $r.running || $k.running);
+registerJobSource('movie', derived([renderJob, packJob], ([$r, $k]) => ($r.running || $k.running ? 1 : 0)));
 
 let seq = 0;
 const ops = new Map<string, OpHandle>();
@@ -191,6 +240,45 @@ function wire(): void {
   wsManager.onMessage('animate_capabilities', (m: any) => {
     capabilities.set(m as Capabilities);
     capabilitiesError.set(null);
+    if (m.movie_pack) moviePack.set(m.movie_pack as MoviePackStatus);
+  });
+  wsManager.onMessage('movie_pack_status', (m: any) => {
+    packLookupRunning.set(false);
+    if (m.status) moviePack.set(m.status as MoviePackStatus);
+    if (m.available) packAvailable.set(m.available as MoviePackAvailable);
+  });
+  wsManager.onMessage('movie_pack_progress', (m: any) => {
+    const id = m.request_id as string;
+    packJob.update((j) => (j.requestId === id ? { ...j, percent: m.percent ?? j.percent, message: m.message ?? '' } : j));
+    ops.get(id)?.update(String(m.message ?? ''));
+  });
+  wsManager.onMessage('movie_pack_installed', (m: any) => {
+    if (!finish(packJob, m.request_id)) return;
+    if (m.status) moviePack.set(m.status as MoviePackStatus);
+    packAvailable.set(null);
+    addToast('success', 'Movie components installed');
+    loadCapabilities(); // the renderer re-checks what it needs: the pack is now on its path
+  });
+  wsManager.onMessage('movie_pack_removed', (m: any) => {
+    if (m.status) moviePack.set(m.status as MoviePackStatus);
+    packAvailable.set(null);
+    addToast('info', 'Movie components removed');
+    if (get(capabilities)) loadCapabilities();
+  });
+  wsManager.onMessage('movie_pack_cancelled', (m: any) => {
+    const id = m.request_id as string;
+    packJob.update((j) => (j.requestId === id ? { ...j, running: false, requestId: null, message: m.message ?? 'Cancelled' } : j));
+    ops.delete(id);
+  });
+  wsManager.onMessage('movie_pack_error', (m: any) => {
+    const id = m.request_id as string;
+    const text = String(m.message ?? 'The movie components could not be installed');
+    packLookupRunning.set(false);
+    packJob.update((j) => (j.requestId === id ? { ...j, running: false, requestId: null, error: text } : j));
+    if (id?.startsWith('movie-packlookup')) packAvailable.set({ ok: false, reason: 'offline', message: text });
+    if (id?.startsWith('movie-packremove')) addToast('error', text);
+    ops.get(id)?.fail(text);
+    ops.delete(id);
   });
   wsManager.onMessage('animate_progress', (m: any) => {
     const id = m.request_id as string;
@@ -218,7 +306,7 @@ function wire(): void {
       addToast('success', `Movie written: ${r.video.split(/[\\/]/).pop()}`);
       fetchVideo(r.video);
     } else if (r.frames_written) {
-      addToast('warning', `No MP4 could be written (PyAV is missing); the frames are in ${r.frames_written}`, 12000);
+      addToast('warning', `No MP4 could be written (no video encoder); the frames are in ${r.frames_written}`, 12000);
     }
   });
   wsManager.onMessage('animate_cancelled', (m: any) => {
@@ -472,6 +560,74 @@ export async function pickGlmFolder(): Promise<void> {
   } catch (err) {
     addToast('error', `Could not open the folder dialog: ${err}`);
   }
+}
+
+// ── The optional movie components pack ──────────────────────────────────────
+
+/** The local status only (no network): what is installed, where, how big. */
+export function refreshMoviePack(): void {
+  wire();
+  wsManager.send({ type: 'movie_pack_status', request_id: newId('packstatus') }).catch(() => {});
+}
+
+/**
+ * Ask the download host which pack exists for this release (one small request to
+ * downloads.labshope.com; nothing is downloaded). The answer fills `packAvailable`, and the
+ * consent card in the Movie Studio shows what, from where and how big before anything else.
+ */
+export function lookupMoviePack(): void {
+  wire();
+  packAvailable.set(null);
+  packLookupRunning.set(true);
+  packJob.set(idle());
+  wsManager
+    .send({ type: 'movie_pack_status', request_id: newId('packlookup'), lookup: true, base_url: DOWNLOADS_HOST_URL })
+    .catch((err) => {
+      packLookupRunning.set(false);
+      packAvailable.set({ ok: false, reason: 'offline', message: String(err) });
+    });
+}
+
+/** "Allow once": download exactly what the index announced (size and SHA-256 are checked). */
+export function installMoviePack(): void {
+  wire();
+  const a = get(packAvailable);
+  const c = a?.component;
+  if (!a?.ok || !c) return;
+  const requestId = newId('packinstall');
+  packJob.set({ running: true, requestId, percent: 0, message: 'Starting the download...', error: null });
+  const handle = beginOp({
+    kind: 'movie',
+    label: 'Movie components: downloading',
+    slowMs: 30000,
+    timeoutMs: 0,
+    onCancel: () => cancelMoviePackInstall(),
+  });
+  ops.set(requestId, handle);
+  wsManager
+    .send({ type: 'movie_pack_install', request_id: requestId, url: c.url, size: c.size, sha256: c.sha256, name: c.name, base_url: DOWNLOADS_HOST_URL })
+    .catch((err) => {
+      packJob.update((j) => (j.requestId === requestId ? { ...j, running: false, requestId: null, error: String(err) } : j));
+      handle.fail(String(err));
+      ops.delete(requestId);
+    });
+}
+
+export function cancelMoviePackInstall(): void {
+  const id = get(packJob).requestId;
+  if (!id) return;
+  wsManager.send({ type: 'movie_pack_cancel', request_id: id }).catch(() => {});
+  packJob.update((j) => (j.requestId === id ? { ...j, message: 'Stopping...' } : j));
+}
+
+/** "Cancel" on the consent card: forget the offer, download nothing. */
+export function declineMoviePack(): void {
+  packAvailable.set(null);
+}
+
+export function removeMoviePack(): void {
+  wire();
+  wsManager.send({ type: 'movie_pack_remove', request_id: newId('packremove') }).catch((err) => addToast('error', String(err)));
 }
 
 /** Reset the results (keeps the inputs and options). */

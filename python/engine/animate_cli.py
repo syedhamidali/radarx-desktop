@@ -30,9 +30,10 @@ The files are grouped by radar and time; every time step takes each radar's near
 --tolerance-s (files that are not used are listed with the reason). The strongest storm is found
 and tracked, and a 3D camera flies around it in the app's own renderer (headless Chrome). Frames
 between two volumes are interpolated and are labelled so on the screen. Needs the optional extra:
-pip install 'radarx-desktop-engine[video]' (Playwright and PyAV), the system Chrome, and the built
-app (npm run build); --no-render needs none of them. Writes the MP4 at the end, atomically; an
-interrupted job resumes from its cache. --sound adds a SYNTHESISED sound track (wind, rain, thunder; not
+pip install 'radarx-desktop-engine[video]' (Playwright), the system Chrome, and the built app
+(npm run build); --no-render needs none of them. Chrome encodes the film itself (H.264 + AAC in an
+MP4; --encoder chooses PyAV or PNG frames instead), written at the end, atomically; an interrupted
+job resumes from its cache. --sound adds a SYNTHESISED sound track (wind, rain, thunder; not
 a recording). docs/ANIMATE.md has the camera file, the look keys and the sound."""
 
 
@@ -325,8 +326,20 @@ def add_parser(
         action="store_true",
         help="no GPU: Chrome's software renderer (works anywhere, very slow; also the automatic fallback)",
     )
-    g.add_argument("--crf", type=int, default=18, help="x264 quality, lower is better (18)")
-    g.add_argument("--x264-preset", default="medium", help="x264 speed preset (medium)")
+    g.add_argument(
+        "--encoder",
+        choices=["auto", "browser", "pyav", "png"],
+        default="auto",
+        help="who writes the film: auto (Chrome's own encoder when it has one, else PyAV if you "
+        "installed it, else PNG frames with the ffmpeg line), browser, pyav or png",
+    )
+    g.add_argument(
+        "--crf",
+        type=int,
+        default=18,
+        help="quality, lower is better (18): x264's CRF with PyAV, the matching bit rate in Chrome",
+    )
+    g.add_argument("--x264-preset", default="medium", help="x264 speed preset (medium; PyAV only)")
     g.add_argument(
         "--frame-format",
         choices=["png", "jpg"],
@@ -512,6 +525,7 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         record_paths=getattr(args, "record_paths", False),
         crf=args.crf,
         preset=args.x264_preset,
+        encoder=args.encoder,
         frame_format=args.frame_format,
         keep_frames=args.keep_frames,
         no_render=args.no_render,

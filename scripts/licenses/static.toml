@@ -228,3 +228,45 @@ license = "Apache-2.0"
 where = "signature check of the sign-in token in the frozen engine"
 url = "https://www.openssl.org/source/license.html"
 note = "OpenSSL 3.x is Apache-2.0. The wheel also embeds Rust crates under MIT / Apache-2.0 / BSD terms; see the licence files inside the cryptography distribution."
+
+# ---------------------------------------------------------------- vendored JavaScript (in the app bundle)
+# Copied into src/lib/vendor/<name>/ with their LICENSE files (src/lib/vendor/README.md has the versions and the
+# SHA-256 of the npm tarballs); compiled into the frontend bundle, no npm dependency, nothing fetched at run time.
+[[entry]]
+kind = "vendored"
+name = "mp4-muxer 5.2.2"
+license = "MIT"
+where = "src/lib/vendor/mp4-muxer; writes the MP4 container (H.264 + AAC) of a film inside the headless Chrome that draws it (src/lib/utils/clipEncoder.ts). The codecs are the browser's own WebCodecs encoders: no FFmpeg, no x264 anywhere in the app."
+attribution = "Copyright (c) 2023 Vanilagy. LICENSE next to the file."
+url = "https://github.com/Vanilagy/mp4-muxer"
+
+[[entry]]
+kind = "vendored"
+name = "webm-muxer 5.1.4"
+license = "MIT"
+where = "src/lib/vendor/webm-muxer; writes the WebM container (VP9 + Opus) of a film where the browser has no H.264 encoder (the fallback of clipEncoder.ts)"
+attribution = "Copyright (c) 2022 Vanilagy. LICENSE next to the file."
+url = "https://github.com/Vanilagy/webm-muxer"
+
+# ---------------------------------------------------------------- optional components (downloaded on request)
+# The movie components pack (scripts/release/build_movie_pack.py, engine/movie_pack.py): NOT in the installers.
+# The installed app offers it in the Movie Studio with a consent card (what, from where, how big, licences) and
+# keeps it in the user's data folder; the licence texts of every component travel inside the pack (licenses/).
+# No video library is in it: the film is encoded by Chrome itself (see the vendored muxers above). PyAV, whose
+# PyPI wheels bundle an FFmpeg built with GPL parts (libx264, libx265), is never shipped by the project; a user
+# may install it themselves (`pip install av`) as the engine's fallback encoder (`rxd animate --encoder pyav`).
+[[entry]]
+kind = "component"
+name = "Playwright for Python 1.64.0 (with its Node.js driver)"
+license = "Apache-2.0"
+where = "movie components pack; drives the system Google Chrome that draws the frames of a film and encodes it with its own codecs. No browser is downloaded by the app."
+attribution = "Copyright (c) Microsoft Corporation. LICENSE, NOTICE and ThirdPartyNotices.txt of the driver ship in the pack (licenses/playwright)."
+url = "https://github.com/microsoft/playwright-python"
+
+[[entry]]
+kind = "component"
+name = "greenlet 3.5.6, pyee 14.0.0, typing_extensions 4.15.0"
+license = "MIT AND PSF-2.0 / MIT / PSF-2.0"
+where = "movie components pack; what Playwright needs (greenlet is a compiled extension built for the engine's Python)"
+attribution = "Licence files ship in the pack (licenses/greenlet, licenses/pyee, licenses/typing_extensions)."
+url = "https://github.com/python-greenlet/greenlet"

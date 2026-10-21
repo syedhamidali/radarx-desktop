@@ -230,6 +230,8 @@ export class StormClip {
   settings: ClipSettings = { ...DEFAULTS };
   fatal = '';
   mapOk = false;
+  /** The PCM of the last `renderAudio` (the in-page encoder reads it; it is not sent twice). */
+  lastAudio: { pcm: Int16Array; sampleRate: number } | null = null;
   /** The observer's place (km) and eye height above sea level (km, true). */
   private obs: [number, number] = [0, 0];
   private obsEyeKm = 0;
@@ -1381,6 +1383,7 @@ export class StormClip {
       pcm[i * 2] = Math.max(-32768, Math.min(32767, Math.round(res.left[i] * 32767)));
       pcm[i * 2 + 1] = Math.max(-32768, Math.min(32767, Math.round(res.right[i] * 32767)));
     }
+    this.lastAudio = { pcm, sampleRate };
     const bytes = new Uint8Array(pcm.buffer);
     let bin = '';
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));

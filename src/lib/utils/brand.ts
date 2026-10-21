@@ -20,6 +20,9 @@ export const PRODUCT_CREDIT = `Radarx Desktop by ${COMPANY}`;
 /** Where installers are downloaded (the website's download section). */
 export const DOWNLOAD_PAGE_URL = `${WEBSITE_URL}/#download`;
 
+/** The download host (installers, update files, optional components such as the movie components). */
+export const DOWNLOADS_HOST_URL = 'https://downloads.labshope.com';
+
 /** Terms (licence) and privacy notice, as pages of the website. */
 export const TERMS_URL = `${WEBSITE_URL}/terms.html`;
 export const PRIVACY_URL = `${WEBSITE_URL}/privacy.html`;

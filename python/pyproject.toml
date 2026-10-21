@@ -38,9 +38,11 @@ arrow = ["pyarrow>=15.0,<30.0"]
 cfcheck = ["cfchecker>=4.1", "cfunits>=3.3"]
 # Building the self-contained engine shipped inside the installers (python/packaging/).
 bundle = ["pyinstaller>=6.16"]
-# `rxd animate` (docs/ANIMATE.md): Playwright drives the system Chrome that draws the frames, PyAV
-# encodes the MP4. Neither is needed to import or use the rest of the engine; without PyAV the
-# frames are still written as PNG files.
+# `rxd animate` (docs/ANIMATE.md): Playwright drives the system Chrome that draws the frames and
+# encodes the film with its own codecs. Neither package is needed to import or use the rest of the
+# engine. PyAV is a fallback the user chooses (`--encoder pyav`, or automatically when Chrome cannot
+# encode): its PyPI wheels bundle an FFmpeg built with GPL parts, so the project never ships it
+# (not in the installers, not in the movie components pack); installing this extra is your choice.
 video = ["playwright>=1.40,<2.0", "av>=12.0,<20.0"]
 # Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
 radarx = ["radarx>=0.5.1; python_version >= '3.12'"]

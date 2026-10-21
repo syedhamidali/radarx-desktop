@@ -118,6 +118,8 @@ class AnimateOptions:
     record_paths: bool = False  # --record-paths: full local input paths in the provenance file
     crf: int = 18
     preset: str = "medium"
+    # auto: Chrome's own encoder (WebCodecs) when the page says it can, else the user's PyAV, else PNG frames
+    encoder: str = "auto"
     frame_format: str = "png"
     keep_frames: bool = False
     no_render: bool = False
@@ -274,6 +276,8 @@ def check_options(o: AnimateOptions) -> None:
         raise AnimateConfigError(
             "--crf must be between 0 (lossless) and 51; 18 is visually lossless"
         )
+    if o.encoder not in ("auto", "browser", "pyav", "png"):
+        raise AnimateConfigError(f"--encoder {o.encoder!r}: use auto, browser, pyav or png")
     if o.detail_m < 250 or o.detail_m > 5000:
         raise AnimateConfigError("--detail-m must be between 250 and 5000 metres")
     if o.target_lag is not None and not 0 <= o.target_lag <= 1:
@@ -522,8 +526,8 @@ def _run(
     dist: Path | None = None
     if rendering:
         render.require_playwright()
-        if o.sound and (o.output is not None or o.still is None):
-            render.require_av()  # the audio is muxed with PyAV: never a silent film when sound was asked
+        if o.encoder == "pyav":
+            render.require_av()  # asked for explicitly: say so before any gridding
         dist = render.find_frontend(o.app_dist)
 
     sp = plan_inputs(o, meta)
@@ -544,9 +548,12 @@ def _run(
     # the look is checked in the page first: a typo should not cost a gridding run
     base_settings: dict[str, Any] | None = None
     look_changed: dict[str, Any] | None = None
+    encoder = "png"
+    encoder_support: dict[str, Any] = {}
     if rendering:
         assert dist is not None
         probe = page_settings(o, cam.resolve_camera(spec, 36.0, 0.0), sp, o.fps, 36.0)
+        want_video = o.output is not None or o.still is None
         with render.Renderer(
             dist, 320, 180, channel=o.browser, tile_cache=o.tile_cache, offline=True
         ) as r:
@@ -556,6 +563,12 @@ def _run(
                     for k, v in probe.items()
                     if k.startswith("look") or k in ("palette", "light")
                 }
+            )
+            # which encoder writes the film: the same Chrome says what it can encode; a missing one
+            # (or --sound with no encoder for the audio) is refused here, before minutes of gridding
+            encoder_support = r.encoder_support()
+            encoder = render.resolve_encoder(
+                o.encoder, encoder_support, render.video_status()["av"], o.sound and want_video
             )
         base_settings = probe
 
@@ -649,8 +662,17 @@ def _run(
         return res
 
     assert dist is not None and base_settings is not None
+    res.output["encoder_support"] = {
+        k: v for k, v in encoder_support.items() if k in ("avc", "vp9", "aac", "opus", "notes")
+    }
     _render(
-        res, dist, page_settings(o, cp, sp, o.fps, duration, sound_plan), note, detail, on_frame
+        res,
+        dist,
+        page_settings(o, cp, sp, o.fps, duration, sound_plan),
+        note,
+        detail,
+        on_frame,
+        encoder=encoder,
     )
     res.seconds = time.perf_counter() - t_start
     return res
@@ -663,6 +685,8 @@ def _render(
     note: Note,
     detail: Note,
     on_frame: FrameHook | None = None,
+    *,
+    encoder: str = "png",
 ) -> None:
     from engine import animate_render as render
 
@@ -704,23 +728,33 @@ def _render(
     ):
         sequence_dir = video_path  # a folder: PNG sequence is the result
         video_path = None
-    have_av = render.video_status()["av"]
-    if video_path is not None and not have_av:
+    if video_path is not None and encoder == "png":
         sequence_dir = video_path.with_name(video_path.stem + "_frames")
-        out["encoder"] = "none (PyAV not installed)"
-        res.warnings.append(
-            "PyAV is not installed, so no MP4 was written: the frames are saved as numbered "
-            f"PNG files. {render.install_help(['av']).splitlines()[1].strip()} to encode here, or run: "
-            + render.ffmpeg_command(sequence_dir, video_path, res.fps, ext)
-        )
+        line = render.ffmpeg_command(sequence_dir, video_path, res.fps, ext)
+        if o.encoder == "png":
+            out["encoder"] = "none (--encoder png)"
+            res.warnings.append(
+                "--encoder png: no MP4 was written, the frames are saved as numbered PNG files. "
+                f"To encode them: {line}"
+            )
+        else:
+            out["encoder"] = "none (no browser encoder, PyAV not installed)"
+            res.warnings.append(
+                "no video encoder: this Chrome cannot encode video and PyAV is not installed, so "
+                "no MP4 was written: the frames are saved as numbered PNG files. Update Google "
+                f"Chrome, or `{render.INSTALL_AV}` to encode here, or run: {line}"
+            )
         out["ffmpeg"] = render.ffmpeg_command(sequence_dir, video_path, res.fps, ext)
         video_path_wanted = video_path
         video_path = None
     else:
         video_path_wanted = video_path
+    in_page = encoder == "browser" and video_path is not None
 
     still_png: bytes | None = None
-    renderer, info = _start_renderer(o, dist, (w, h), cache, manifest_path, settings, note, detail)
+    renderer, info = _start_renderer(
+        o, dist, (w, h), cache, manifest_path, settings, note, detail, frames_dir=frames_dir
+    )
     with renderer as r:
         detail(f"renderer ready at {info['state']['w']}x{info['state']['h']}, grid {info['grid']}")
         st = info["state"]
@@ -804,7 +838,69 @@ def _render(
                         "so the same film resumes where it stopped"
                     )
 
-            if todo:
+            if in_page:
+                assert video_path is not None
+                enc_info = r.encoder_start(crf=o.crf, fps=res.fps, sound=sound_track is not None)
+                if enc_info["ext"] != "mp4" and video_path.suffix.lower() in (".mp4", ".m4v"):
+                    # no H.264 in this Chrome: VP9 in a WebM, under the honest extension
+                    video_path = video_path.with_suffix(".webm")
+                    res.warnings.append(
+                        "this Chrome has no H.264 encoder: the film is VP9 in a WebM container, "
+                        f"written as {video_path.name} (--encoder pyav after `{render.INSTALL_AV}` "
+                        "makes an MP4)"
+                    )
+                if sound_track is not None and not enc_info.get("audioCodec"):
+                    res.warnings.append(
+                        "this Chrome cannot encode AAC or Opus: the film has no sound track"
+                    )
+                detail(
+                    f"encoding in Chrome: {enc_info['videoCodec']}"
+                    + (f" + {enc_info['audioCodec']}" if enc_info.get("audioCodec") else "")
+                    + f", {enc_info['bitrate'] / 1e6:.1f} Mbit/s, key frame every "
+                    f"{enc_info['keyFrameInterval']} frames"
+                )
+                try:
+                    render.encode_frames(r, frames_dir, n, done, ext=ext, progress=progress)
+                    if sound_track is not None and enc_info.get("audioCodec"):
+                        r.encode_audio(n)
+                    note(f"writing {video_path.name}")
+                    fin = r.encoder_finish()
+                    r.write_encoded(video_path, int(fin["bytes"]))
+                    if fin["container"] == "mp4":
+                        render.write_mp4_tags(video_path, mp4_metadata(res, video_path))
+                except BaseException as exc:
+                    left = n - len(render.existing_frames(frames_dir, n, ext))
+                    note(
+                        f"stopped with {left} of {n} frames still to draw ({type(exc).__name__}): "
+                        "run the same command again to resume"
+                    )
+                    raise
+                finally:
+                    r.encoder_dispose()
+                codec = fin["videoCodec"]
+                out["encoder"] = (
+                    f"browser ({'H.264' if codec.startswith('avc1') else 'VP9'} {codec}"
+                    + (
+                        f"; {'AAC' if fin['audioCodec'] == 'mp4a.40.2' else 'Opus'} 48 kHz stereo"
+                        if fin.get("audioCodec")
+                        else ""
+                    )
+                    + f"; {fin['container']}, Chrome WebCodecs"
+                    + (f", {fin['hardware']}" if fin.get("hardware") else "")
+                    + ")"
+                )
+                out["encoder_report"] = {
+                    k: fin.get(k)
+                    for k in (
+                        "videoCodec",
+                        "audioCodec",
+                        "bitrate",
+                        "keyFrames",
+                        "frames",
+                        "container",
+                    )
+                }
+            elif todo:
                 try:
                     render.render_frames(r, frames_dir, todo, n, ext=ext, progress=progress)
                 except BaseException as exc:
@@ -820,7 +916,15 @@ def _render(
         out["software_renderer"] = r.software
 
     if want_video:
-        if video_path is not None:
+        if video_path is not None and in_page:
+            out["video"] = str(video_path)
+            if sound_track is not None and sound_audio is not None:
+                _finish_sound(res, sound_audio, sound_track, video_path)
+                out["sound_flashes"] = res.sound.get("flashes_file") if res.sound else None
+            out["video_bytes"] = video_path.stat().st_size
+            if not o.keep_frames:
+                shutil.rmtree(frames_dir.parent, ignore_errors=True)
+        elif video_path is not None:
             note(f"encoding {n} frames to {video_path.name}")
             render.encode_mp4(
                 frames_dir,
@@ -967,6 +1071,7 @@ def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) 
         "xradar": _module_version("xradar"),
         "playwright": _module_version("playwright"),
         "av": _module_version("av"),
+        "encoder": res.output.get("encoder"),
         "browser": res.output.get("browser"),
         "app_build": render.frontend_fingerprint(dist) if dist else None,
     }
@@ -1016,6 +1121,7 @@ def _start_renderer(
     settings: dict[str, Any],
     note: Note,
     detail: Note,
+    frames_dir: Path | None = None,
 ):
     """Start Chrome and load the clip; if the GPU path fails, fall back to the software renderer."""
     from engine import animate_render as render
@@ -1032,6 +1138,7 @@ def _start_renderer(
             offline=o.offline,
             channel=o.browser,
             software=software,
+            frames_dir=frames_dir,
             log=detail,
         )
         try:

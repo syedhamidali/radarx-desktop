@@ -230,14 +230,74 @@ jobs:
         run: gh release upload "$TAG" dist/*.whl --repo "$GITHUB_REPOSITORY" --clobber
 
   # ---------------------------------------------------------------------------------------------
+  # The optional movie components (Playwright only; Chrome encodes the film, docs/BUNDLING.md): one zip per OS / architecture,
+  # built with the SAME Python as the frozen engine (the pack holds a compiled extension built for that
+  # Python; the engine refuses any other tag). Attached to the draft release next to the installers, so
+  # the downloads job checksums and uploads them like everything else; build_index.py lists them under
+  # `components`, never as app downloads. The installed app downloads one on request (with consent).
+  # ---------------------------------------------------------------------------------------------
+  movie-pack:
+    name: Movie components (${{ matrix.name }})
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write # attach the files to the draft release (nothing is pushed to the repository)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest
+          - name: macOS x64
+            os: macos-15-intel
+          - name: Linux x64
+            os: ubuntu-22.04
+          - name: Windows x64
+            os: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Must equal the python-version of the `bundle` job above (the frozen engine's Python).
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Build the pack
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+        run: |
+          python -m pip install --upgrade pip
+          python scripts/release/build_movie_pack.py --out dist/movie-pack --version "${TAG#v}"
+          ls -l dist/movie-pack
+
+      - name: Keep the pack as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: movie-pack-${{ runner.os }}-${{ runner.arch }}
+          if-no-files-found: error
+          path: dist/movie-pack/*
+
+      - name: Attach it to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: gh release upload "$TAG" dist/movie-pack/* --repo "$GITHUB_REPOSITORY" --clobber
+
+  # ---------------------------------------------------------------------------------------------
   # Download channel: upload the finished draft release to the download host as a candidate.
   # Writes only radarx/v<version>/ (never radarx/latest.json or radarx/releases.json: those belong to
   # promote-release.yml). Skips itself, successfully, on forks and wherever the R2 secrets are absent.
   # ---------------------------------------------------------------------------------------------
   downloads:
     name: Upload candidate to the download host
-    needs: [bundle, wheel]
-    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success' && needs.wheel.result == 'success'
+    needs: [bundle, wheel, movie-pack]
+    if: startsWith(github.ref, 'refs/tags/v') && needs.bundle.result == 'success' && needs.wheel.result == 'success' && needs.movie-pack.result == 'success'
     runs-on: ubuntu-latest
     # Draft releases are only visible to a token with push access, so reading the draft needs
     # contents: write here (this job never writes to the repository).
@@ -277,7 +337,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      # The files the build jobs attached to the draft release (installers, .sig files, latest.json).
+      # The files the build jobs attached to the draft release (installers, .sig files, latest.json,
+      # the wheel, the movie components packs with their .manifest.json sidecars).
       # `gh release download` finds drafts by tag on current gh versions; if it does not, look the
       # draft up in the release list and download its assets by id.
       - name: Download the draft release files

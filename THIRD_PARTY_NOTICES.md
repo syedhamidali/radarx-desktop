@@ -82,6 +82,20 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 | libc++, libc++abi (LLVM) | Apache-2.0 WITH LLVM-exception | C++ runtime of some wheels |  |  |
 | OpenSSL (statically linked into the cryptography wheel) | Apache-2.0 | signature check of the sign-in token in the frozen engine |  | https://www.openssl.org/source/license.html |
 
+## Vendored JavaScript (copied into src/lib/vendor, compiled into the app)
+
+| Name | Licence | Where used | Attribution / terms | Link |
+| --- | --- | --- | --- | --- |
+| mp4-muxer 5.2.2 | MIT | src/lib/vendor/mp4-muxer; writes the MP4 container (H.264 + AAC) of a film inside the headless Chrome that draws it (src/lib/utils/clipEncoder.ts). The codecs are the browser's own WebCodecs encoders: no FFmpeg, no x264 anywhere in the app. | Copyright (c) 2023 Vanilagy. LICENSE next to the file. | https://github.com/Vanilagy/mp4-muxer |
+| webm-muxer 5.1.4 | MIT | src/lib/vendor/webm-muxer; writes the WebM container (VP9 + Opus) of a film where the browser has no H.264 encoder (the fallback of clipEncoder.ts) | Copyright (c) 2022 Vanilagy. LICENSE next to the file. | https://github.com/Vanilagy/webm-muxer |
+
+## Optional components downloaded on request (not in the installers)
+
+| Name | Licence | Where used | Attribution / terms | Link |
+| --- | --- | --- | --- | --- |
+| Playwright for Python 1.64.0 (with its Node.js driver) | Apache-2.0 | movie components pack; drives the system Google Chrome that draws the frames of a film and encodes it with its own codecs. No browser is downloaded by the app. | Copyright (c) Microsoft Corporation. LICENSE, NOTICE and ThirdPartyNotices.txt of the driver ship in the pack (licenses/playwright). | https://github.com/microsoft/playwright-python |
+| greenlet 3.5.6, pyee 14.0.0, typing_extensions 4.15.0 | MIT AND PSF-2.0 / MIT / PSF-2.0 | movie components pack; what Playwright needs (greenlet is a compiled extension built for the engine's Python) | Licence files ship in the pack (licenses/greenlet, licenses/pyee, licenses/typing_extensions). | https://github.com/python-greenlet/greenlet |
+
 ## Python engine
 
 Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and the packages the PyInstaller spec collects, with everything they require, in the environment the file was generated in. Versions of platform-specific wheels can differ in a release build.
@@ -114,7 +128,7 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 | donfig | 0.8.1.post1 | MIT | classifier | https://github.com/pytroll/donfig |
 | fonttools | 4.62.1 | MIT | License field | http://github.com/fonttools/fonttools |
 | frozenlist | 1.8.0 | Apache-2.0 | License field | https://github.com/aio-libs/frozenlist |
-| fsspec | 2026.4.0 | BSD-3-Clause |  | https://filesystem-spec.readthedocs.io/en/latest/ |
+| fsspec | 2026.9.0 | BSD-3-Clause |  | https://filesystem-spec.readthedocs.io/en/latest/ |
 | google-crc32c | 1.8.0 | Apache-2.0 | licence file LICENSE (detected) | https://github.com/googleapis/python-crc32c |
 | h5netcdf | 1.8.1 | BSD-3-Clause | classifier | https://h5netcdf.org |
 | h5py | 3.16.0 | BSD-3-Clause |  | https://www.h5py.org/ |

@@ -1188,12 +1188,126 @@ class TestOptionalDependencies:
         assert "Playwright" in str(e.value) and "no browser is downloaded" in str(e.value)
         assert type(e.value).__name__ == "XrdDependencyError"
 
-    def test_missing_pyav_names_the_png_fallback(self, monkeypatch):
+    def test_missing_pyav_names_the_browser_and_the_png_fallback(self, monkeypatch):
         monkeypatch.setattr(render, "have_module", lambda name: name != "av")
         with pytest.raises(Exception, match="PyAV") as e:
             render.require_av()
-        assert "PNG files that ffmpeg" in str(e.value)
+        assert "PNG files that ffmpeg" in str(e.value) and "pip install av" in str(e.value)
+        assert "--encoder browser" in str(e.value) and "GPL" in str(e.value)
         assert render.video_status() == {"playwright": True, "av": False} or True
+
+
+SUPPORT_ALL = {"avc": True, "vp9": True, "aac": True, "opus": True, "notes": [], "choice": {"container": "mp4", "ext": "mp4", "video": "avc", "audio": "aac"}}  # fmt: skip
+SUPPORT_NONE = {"avc": False, "vp9": False, "aac": False, "opus": False, "notes": ["no WebCodecs"], "choice": None}  # fmt: skip
+
+
+class TestEncoderChoice:
+    """Who writes the film: pure logic, no browser."""
+
+    def test_auto_prefers_the_browser_then_pyav_then_png(self):
+        assert render.choose_encoder("auto", True, True) == "browser"
+        assert render.choose_encoder("auto", True, False) == "browser"
+        assert render.choose_encoder("auto", False, True) == "pyav"
+        assert render.choose_encoder("auto", False, False) == "png"
+
+    def test_an_explicit_choice_is_kept_and_a_wrong_one_refused(self):
+        for name in ("browser", "pyav", "png"):
+            assert render.choose_encoder(name, False, False) == name
+        with pytest.raises(AnimateConfigError, match="--encoder 'x264'"):
+            render.choose_encoder("x264", True, True)
+
+    def test_resolve_raises_for_a_forced_encoder_that_is_missing(self, monkeypatch):
+        assert render.resolve_encoder("auto", SUPPORT_ALL, False, True) == "browser"
+        assert render.resolve_encoder("auto", SUPPORT_NONE, True, True) == "pyav"
+        assert render.resolve_encoder("png", SUPPORT_ALL, True, False) == "png"
+        with pytest.raises(Exception, match="--encoder browser") as e:
+            render.resolve_encoder("browser", SUPPORT_NONE, True, False)
+        assert "no WebCodecs" in str(e.value) and "pip install av" in str(e.value)
+        monkeypatch.setattr(render, "have_module", lambda name: name != "av")
+        with pytest.raises(Exception, match="PyAV"):
+            render.resolve_encoder("pyav", SUPPORT_ALL, False, False)
+
+    def test_sound_without_any_encoder_is_refused_but_png_frames_are_fine_without_sound(self):
+        with pytest.raises(Exception, match="--sound needs an encoder") as e:
+            render.resolve_encoder("auto", SUPPORT_NONE, False, True)
+        assert type(e.value).__name__ == "XrdDependencyError"
+        assert render.resolve_encoder("auto", SUPPORT_NONE, False, False) == "png"
+
+    def test_cli_option_parsing(self):
+        from engine import animate_cli, cli
+
+        parser = cli.build_parser()
+        args = parser.parse_args(["animate", "-i", "x", "--encoder", "png"])
+        assert animate_cli.options_from_args(args, ["x"]).encoder == "png"
+        args = parser.parse_args(["animate", "-i", "x"])
+        assert animate_cli.options_from_args(args, ["x"]).encoder == "auto"
+        with pytest.raises(Exception, match="--encoder: invalid choice: 'x264'"):
+            parser.parse_args(["animate", "-i", "x", "--encoder", "x264"])
+        with pytest.raises(AnimateConfigError, match="--encoder"):
+            animate.check_options(animate.AnimateOptions(files=["x"], encoder="ffmpeg"))
+
+
+class TestMp4Tags:
+    """Tags for a film the browser wrote: a udta box in moov, chunk offsets moved when moov grows."""
+
+    @staticmethod
+    def _box(kind: bytes, payload: bytes) -> bytes:
+        return (8 + len(payload)).to_bytes(4, "big") + kind + payload
+
+    def _file(self, moov_first: bool) -> tuple[bytes, list[int]]:
+        offsets = [100, 164]
+        stco = self._box(
+            b"stco",
+            bytes(4) + (2).to_bytes(4, "big") + b"".join(o.to_bytes(4, "big") for o in offsets),
+        )
+        moov = self._box(
+            b"moov",
+            self._box(b"mvhd", bytes(100))
+            + self._box(b"trak", self._box(b"mdia", self._box(b"minf", self._box(b"stbl", stco)))),
+        )
+        ftyp = self._box(b"ftyp", b"isom" + bytes(4) + b"isomavc1")
+        mdat = self._box(b"mdat", bytes(64))
+        return (ftyp + moov + mdat if moov_first else ftyp + mdat + moov), offsets
+
+    def _read_offsets(self, data: bytes) -> list[int]:
+        i = data.index(b"stco")
+        n = int.from_bytes(data[i + 8 : i + 12], "big")
+        return [int.from_bytes(data[i + 12 + 4 * k : i + 16 + 4 * k], "big") for k in range(n)]
+
+    def test_offsets_move_only_when_moov_precedes_mdat(self, tmp_path):
+        for moov_first in (True, False):
+            data, offsets = self._file(moov_first)
+            p = tmp_path / f"{moov_first}.mp4"
+            p.write_bytes(data)
+            render.write_mp4_tags(p, {"title": "T", "comment": "interpolated", "ignored": "x"})
+            out = p.read_bytes()
+            assert out.startswith(data[:8]) and b"\xa9cmt" in out and b"\xa9nam" in out
+            assert b"interpolated" in out and b"ignored" not in out
+            udta = out[out.index(b"udta") - 4 :]
+            grown = int.from_bytes(udta[:4], "big")
+            assert len(out) == len(data) + grown
+            want = [o + grown for o in offsets] if moov_first else offsets
+            assert self._read_offsets(out) == want
+            # the moov box grew by exactly the udta box
+            moov_in, moov_out = data.index(b"moov") - 4, out.index(b"moov") - 4
+            size_in = int.from_bytes(data[moov_in : moov_in + 4], "big")
+            size_out = int.from_bytes(out[moov_out : moov_out + 4], "big")
+            assert size_out == size_in + grown
+            assert not p.with_name(p.name + ".tags").exists()
+
+    def test_tags_are_read_back_by_a_decoder(self, tmp_path):
+        av = pytest.importorskip("av")
+        pil_image = pytest.importorskip("PIL.Image")
+        d = tmp_path / "frames"
+        d.mkdir()
+        for i in range(4):
+            pil_image.new("RGB", (64, 48), (i * 40, 40, 90)).save(d / render.frame_name(i))
+        out = tmp_path / "clip.mp4"
+        render.encode_mp4(d, 4, out, 4, (64, 48))  # a real MP4 (moov first: faststart)
+        render.write_mp4_tags(out, {"title": "Title", "comment": "frames are interpolated"})
+        with av.open(str(out)) as c:
+            assert c.metadata["title"] == "Title" and "interpolated" in c.metadata["comment"]
+            assert sum(1 for _ in c.decode(video=0)) == 4
 
     def test_the_package_does_not_import_them_at_start(self):
         import subprocess
@@ -1582,18 +1696,120 @@ def test_end_to_end_png_sequence_and_resume(tmp_path, chrome):
     assert len(list(shutil_dest.glob("frame_*.png"))) == 16
 
 
-def test_end_to_end_without_pyav_writes_png_and_the_ffmpeg_line(tmp_path, chrome, monkeypatch):
-    monkeypatch.setattr(render, "video_status", lambda: {"playwright": True, "av": False})
+def test_end_to_end_encoder_png_writes_frames_and_the_ffmpeg_line(tmp_path, chrome):
     target = tmp_path / "clip.mp4"
     res = animate.run(
-        _e2e_options(tmp_path, str(target)), gridder=SyntheticGridder(fine_shape=(16, 64, 64))
+        _e2e_options(tmp_path, str(target), encoder="png"),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
     )
     assert not target.exists()
     frames = tmp_path / "clip_frames"
     assert len(list(frames.glob("frame_*.png"))) == 16
     assert res.output["video"] is None and res.output["frames_written"] == str(frames)
     assert res.output["ffmpeg"].startswith("ffmpeg -framerate 4 -i ")
-    assert any("PyAV is not installed" in w for w in res.warnings)
+    assert any(w.startswith("--encoder png") for w in res.warnings)
+
+
+def _mp4_streams(path: Path) -> dict:
+    """What is in the MP4: with PyAV when the harness has it, else from the boxes themselves."""
+    try:
+        import av
+    except ImportError:
+        data = path.read_bytes()
+        return {
+            "ftyp": data[4:8] == b"ftyp",
+            "video": b"avc1" in data and b"avcC" in data,
+            "frames": None,
+            "comment": data[data.index(b"\xa9cmt") :][:400].decode("latin-1")
+            if b"\xa9cmt" in data
+            else "",
+        }
+    with av.open(str(path)) as c:
+        v = c.streams.video[0]
+        return {
+            "ftyp": True,
+            "video": v.codec_context.name == "h264" and (v.width, v.height) == (320, 180),
+            "frames": sum(1 for _ in c.decode(video=0)),
+            "comment": c.metadata.get("comment", ""),
+            "duration": float(v.duration * v.time_base),
+        }
+
+
+def test_end_to_end_the_browser_writes_the_mp4_without_pyav(tmp_path, chrome, monkeypatch):
+    """The normal path: Chrome encodes H.264 in the page; PyAV is hidden from the engine."""
+    monkeypatch.setattr(render, "video_status", lambda: {"playwright": True, "av": False})
+    support = render.Renderer.encoder_support
+    seen = {}
+
+    def spy(self):
+        seen.update(support(self))
+        return seen
+
+    monkeypatch.setattr(render.Renderer, "encoder_support", spy)
+    target = tmp_path / "clip.mp4"
+    res = animate.run(
+        _e2e_options(tmp_path, str(target)), gridder=SyntheticGridder(fine_shape=(16, 64, 64))
+    )
+    if not seen.get("choice"):
+        pytest.skip(f"this Chrome cannot encode video: {seen.get('notes')}")
+    if seen["choice"]["video"] != "avc":
+        pytest.skip("this Chrome has no H.264 encoder (VP9/WebM path)")
+    assert target.is_file() and not target.with_name("clip.mp4.part").exists()
+    info = _mp4_streams(target)
+    assert info["ftyp"] and info["video"]
+    assert info["frames"] in (None, 16)
+    assert "interpolated" in info["comment"] and "clip.animate.json" in info["comment"]
+    assert res.output["encoder"].startswith("browser (H.264 avc1.")
+    assert res.output["encoder_report"]["frames"] == 16
+    assert res.output["encoder_report"]["keyFrames"] == 2  # every 2 s at 4 fps, 4 s long
+    assert res.output["video_bytes"] == target.stat().st_size > 1000
+    assert not (tmp_path / "cache" / "jobs" / res.output["job"]).exists()
+    record = json.loads((tmp_path / "clip.animate.json").read_text())
+    assert record["versions"]["encoder"].startswith("browser") and record["versions"]["browser"]
+    assert record["output"]["encoder_support"]["avc"] is True
+
+
+@pytest.mark.parametrize("force", [None, "webm"])
+def test_the_page_encoder_from_frames_on_disk_mp4_and_the_webm_fallback(tmp_path, chrome, force):
+    """The encoder machinery alone (no gridding): frames served from disk through /frames/, the
+    H.264 MP4 path and, forced, the VP9 + Opus WebM path a Chromium without H.264 would take."""
+    from PIL import Image
+
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for i in range(8):
+        Image.new("RGB", (64, 64), (i * 30, 90, 200 - i * 20)).save(frames / render.frame_name(i))
+    dist = render.find_frontend()
+    with render.Renderer(dist, 64, 64, channel="chrome", frames_dir=frames) as r:
+        support = r.encoder_support()
+        if not support.get("choice"):
+            pytest.skip(f"this Chrome cannot encode: {support.get('notes')}")
+        if force == "webm" and not support.get("vp9"):
+            pytest.skip("this Chrome has no VP9 encoder")
+        info = r.encoder_start(crf=18, fps=4, sound=False, force=force)
+        for i in range(8):
+            assert r.encode_image(i) == i + 1
+        fin = r.encoder_finish()
+        out = tmp_path / f"clip.{fin['ext']}"
+        assert r.write_encoded(out, int(fin["bytes"])) == fin["bytes"] == out.stat().st_size
+        r.encoder_dispose()
+    assert fin["frames"] == 8 and fin["keyFrames"] == 1 and info["bitrate"] == 250_000
+    data = out.read_bytes()
+    if force == "webm":
+        assert fin["container"] == "webm" and fin["videoCodec"].startswith("vp09")
+        assert data[:4] == b"\x1a\x45\xdf\xa3" and b"V_VP9" in data  # EBML, Matroska codec id
+    else:
+        assert fin["container"] == "mp4" and fin["videoCodec"].startswith("avc1")
+        assert data[4:8] == b"ftyp" and b"avcC" in data
+        assert data.index(b"moov") < data.index(b"mdat")  # fast start
+    try:
+        import av
+    except ImportError:
+        return
+    with av.open(str(out)) as c:
+        v = c.streams.video[0]
+        assert v.codec_context.name == ("vp9" if force == "webm" else "h264")
+        assert sum(1 for _ in c.decode(video=0)) == 8
 
 
 def test_end_to_end_mp4_and_still(tmp_path, chrome):
@@ -1612,15 +1828,30 @@ def test_end_to_end_mp4_and_still(tmp_path, chrome):
         v = c.streams.video[0]
         assert (v.width, v.height) == (320, 180) and v.codec_context.name == "h264"
         assert sum(1 for _ in c.decode(video=0)) == 16
-    assert res.output["encoder"].startswith("pyav")
+    assert res.output["encoder"].startswith(("browser", "pyav"))
     assert not (tmp_path / "cache" / "jobs" / res.output["job"]).exists()
     # the provenance file sits next to the clip and the tags in the MP4 point to it
     record = json.loads((tmp_path / "clip.animate.json").read_text())
     assert record["frames"]["frames"] == 16 and record["versions"]["browser"]
-    assert record["output"]["video"] == str(target) and record["versions"]["av"]
+    assert record["output"]["video"] == str(target) and record["versions"]["encoder"]
     with av.open(str(target)) as c:
         assert "interpolated" in c.metadata.get("comment", "")
         assert "clip.animate.json" in c.metadata["comment"]
+
+
+def test_end_to_end_pyav_encoder_when_asked(tmp_path, chrome):
+    pytest.importorskip("av")
+    import av
+
+    target = tmp_path / "pyav.mp4"
+    res = animate.run(
+        _e2e_options(tmp_path, str(target), encoder="pyav"),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
+    )
+    assert res.output["encoder"].startswith("pyav")
+    with av.open(str(target)) as c:
+        assert c.streams.video[0].codec_context.name == "h264"
+        assert sum(1 for _ in c.decode(video=0)) == 16
 
 
 def test_only_a_still_renders_no_video(tmp_path, chrome):

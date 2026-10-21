@@ -812,8 +812,48 @@ class TestRecord:
 # ---------------------------------------------------------------------------
 
 
+class _NoEncoderRenderer:
+    """A browser whose page cannot encode (no WebCodecs), for the checks before any gridding."""
+
+    def __init__(self, *_a, **_k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        pass
+
+    def check_look(self, _settings):
+        return {}
+
+    def encoder_support(self):
+        return {"choice": None, "notes": ["WebCodecs is not available in this page"]}
+
+
 class TestMissing:
-    def test_without_pyav_the_command_stops_with_the_install_hint_and_exit_code_4(
+    def test_without_any_encoder_the_command_stops_with_the_hint_and_exit_code_4(
+        self, capsys, case, tmp_path, synthetic, monkeypatch
+    ):
+        # neither Chrome's encoder nor the user's PyAV: a film with sound cannot be written
+        monkeypatch.setattr(render, "have_module", lambda name: name != "av")
+        monkeypatch.setattr(render, "Renderer", _NoEncoderRenderer)
+        monkeypatch.setattr(render, "find_frontend", lambda explicit=None: tmp_path)
+        code, _, err = run_cli(
+            capsys,
+            "animate",
+            "-i",
+            str(case),
+            "-o",
+            str(tmp_path / "x.mp4"),
+            "--cache-dir",
+            str(tmp_path / "c"),
+            "--sound",
+        )
+        assert code == 4 and "pip install av" in err and "--sound" in err and "WebCodecs" in err
+        assert not (tmp_path / "x.mp4").exists() and not list(tmp_path.glob("x_frames"))
+
+    def test_encoder_pyav_asked_for_without_pyav_stops_before_anything(
         self, capsys, case, tmp_path, synthetic, monkeypatch
     ):
         monkeypatch.setattr(render, "have_module", lambda name: name != "av")
@@ -826,10 +866,11 @@ class TestMissing:
             str(tmp_path / "x.mp4"),
             "--cache-dir",
             str(tmp_path / "c"),
-            "--sound",
+            "--encoder",
+            "pyav",
         )
-        assert code == 4 and "pip install 'radarx-desktop-engine[video]'" in err and "PyAV" in err
-        assert not (tmp_path / "x.mp4").exists() and not list(tmp_path.glob("x_frames"))
+        assert code == 4 and "pip install av" in err and "PyAV" in err
+        assert "GPL" in err  # why it is the user's own choice
 
     def test_without_playwright_the_command_stops_with_exit_code_4(
         self, capsys, case, tmp_path, synthetic, monkeypatch

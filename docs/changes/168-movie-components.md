@@ -1,0 +1,1 @@
+- The Movie Studio of the installed app can now render films: the two video libraries it needs (Playwright, which drives your Google Chrome, and PyAV, which writes the MP4) are an optional *movie components* download of about 60 MB, offered with its size, source and licences before anything is fetched, kept in your data folder and removable from Settings › Data.

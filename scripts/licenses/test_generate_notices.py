@@ -82,7 +82,7 @@ def test_every_reviewed_entry_has_a_note():
 def test_committed_policy_and_static_files_parse():
     static = g.collect_static()
     assert static and all({"kind", "name", "license"} <= set(s) for s in static)
-    assert {s["kind"] for s in static} <= {"font", "colormap", "imagery", "data", "native"}
+    assert {s["kind"] for s in static} <= {"font", "colormap", "imagery", "data", "native", "vendored", "component"}
     # the non-commercial imagery must be flagged
     eox = [s for s in static if "Sentinel-2" in s["name"]]
     assert eox and "NON-COMMERCIAL" in eox[0]["flag"]

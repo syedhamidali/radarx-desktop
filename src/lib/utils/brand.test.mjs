@@ -25,6 +25,8 @@ const srcDir = join(root, 'src');
 // Third-party attribution links we are obliged to show. Each entry is a file and the exact URL it may hold.
 const ALLOWED_GITHUB = [
   { file: 'src/lib/utils/terrain.ts', url: 'https://github.com/tilezen/joerd/blob/master/docs/attribution.md' },
+  // the vendored WebM muxer (MIT, unchanged) names itself in the files it writes (the MuxingApp / WritingApp tag)
+  { file: 'src/lib/vendor/webm-muxer/webm-muxer.mjs', url: 'https://github.com/Vanilagy/webm-muxer' },
 ];
 
 function sourceFiles(dir) {

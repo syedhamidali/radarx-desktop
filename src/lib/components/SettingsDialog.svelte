@@ -6,6 +6,7 @@
   import { focusTrap } from '../utils/focusTrap';
   import { isWebMode } from '../utils/env';
   import UpdatesSettings from './UpdatesSettings.svelte';
+  import MoviePackSettings from './MoviePackSettings.svelte';
   import { lazy } from '../utils/lazy.svelte';
   import {
     SHORTCUT_REGISTRY,
@@ -471,6 +472,10 @@
 
             {#if radarSitesSettings.component}
               <div class="settings-section"><radarSitesSettings.component /></div>
+            {/if}
+
+            {#if !$webUi}
+              <div class="settings-section"><MoviePackSettings /></div>
             {/if}
 
             <div class="section-footer">

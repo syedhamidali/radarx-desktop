@@ -383,7 +383,8 @@ def test_index_entries(tmp_path: Path, bucket) -> None:
     folder = prepared_version(tmp_path, bucket, "0.3.0")
     promote_mod.promote(bucket, "v0.3.0")
     rel = json.loads(bucket.get("radarx/releases.json"))["releases"][0]
-    assert set(rel) == {"version", "date", "notes", "assets"}
+    assert set(rel) == {"version", "date", "notes", "assets", "components"}
+    assert rel["components"] == []  # no movie components packs in this synthetic release
     assert rel["date"] == "2026-10-20T10:00:00.000Z"
     assert rel["notes"] == "What is new\n- one\n- two"
     names = [a["name"] for a in rel["assets"]]
@@ -786,3 +787,107 @@ def test_promote_works_against_the_s3_implementation(tmp_path: Path) -> None:
     promote_mod.promote(b, "v0.3.0")
     assert fake.objects["radarx/latest.json"] == fake.objects["radarx/v0.3.0/latest.json"]
     assert json.loads(fake.objects["radarx/releases.json"])["latest"] == "0.3.0"
+
+
+# --- the optional movie components packs (build_movie_pack.py) ------------------------------------
+
+
+def _add_pack(folder: Path, v: str, os_: str = "macos", arch: str = "aarch64") -> str:
+    """A pack zip and its sidecar manifest, as the movie-pack job attaches them to the release."""
+    name = f"radarx-movie-pack-{v}-{os_}-{arch}.zip"
+    data = f"zip {name} {'y' * 64}".encode() * 20
+    (folder / name).write_bytes(data)
+    side = {
+        "schema": 1,
+        "product": "radarx-movie-pack",
+        "version": v,
+        "os": os_,
+        "arch": arch,
+        "python": "cpython-312",
+        "components": [
+            {"name": "playwright", "version": "1.64.0", "license": "Apache-2.0", "role": "x"},
+            {"name": "greenlet", "version": "3.5.6", "license": "MIT AND PSF-2.0", "role": "y"},
+        ],
+        "zip": {"name": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()},
+    }
+    (folder / (name[: -len(".zip")] + ".manifest.json")).write_text(json.dumps(side))
+    return name
+
+
+def test_classify_component() -> None:
+    c = build_index.classify_component
+    assert c("radarx-movie-pack-0.3.1-macos-aarch64.zip") == {
+        "kind": "movie-pack",
+        "version": "0.3.1",
+        "os": "macos",
+        "arch": "aarch64",
+    }
+    assert c("radarx-movie-pack-0.3.1-windows-x86_64.zip")["os"] == "windows"
+    assert c("radarx-movie-pack-0.3.1-macos-aarch64.manifest.json") is None
+    assert c("radarx-windows-x64.zip") is None
+    # a pack is never an installer, and its sidecar is bookkeeping like latest.json
+    assert build_index.classify_asset("radarx-movie-pack-0.3.1-linux-x86_64.zip") is None
+    assert build_index.classify_asset("radarx-movie-pack-0.3.1-linux-x86_64.manifest.json") is None
+    assert common.content_type_of("radarx-movie-pack-0.3.1-linux-x86_64.zip") == "application/zip"
+
+
+def test_packs_are_checksummed_uploaded_and_listed_under_components(tmp_path: Path, bucket) -> None:
+    folder = make_download_dir(tmp_path / "dl", "0.3.0")
+    mac = _add_pack(folder, "0.3.0")
+    win = _add_pack(folder, "0.3.0", "windows", "x86_64")
+    sums = rewrite_latest.prepare_folder(folder, "v0.3.0")
+    assert mac in sums and (mac[:-4] + ".manifest.json") in sums
+    upload(bucket, folder, "0.3.0")
+    promote_mod.verify_candidate(bucket, "v0.3.0")
+    promote_mod.promote(bucket, "v0.3.0")
+    rel = json.loads(bucket.get("radarx/releases.json"))["releases"][0]
+    assert set(rel) == {"version", "date", "notes", "assets", "components"}
+    assert mac not in [a["name"] for a in rel["assets"]]  # not an app download
+    comps = rel["components"]
+    assert [c["name"] for c in comps] == [mac, win]  # macos before windows
+    for c in comps:
+        assert set(c) == {
+            "kind",
+            "os",
+            "arch",
+            "python",
+            "name",
+            "size",
+            "sha256",
+            "url",
+            "contents",
+        }
+        assert c["kind"] == "movie-pack" and c["python"] == "cpython-312"
+        assert c["url"] == f"{BASE}/radarx/v0.3.0/{c['name']}"
+        data = (folder / c["name"]).read_bytes()
+        assert c["size"] == len(data) and c["sha256"] == hashlib.sha256(data).hexdigest()
+        assert c["contents"] == [
+            {"name": "playwright", "version": "1.64.0", "license": "Apache-2.0"},
+            {"name": "greenlet", "version": "3.5.6", "license": "MIT AND PSF-2.0"},
+        ]
+    assert bucket.meta[f"radarx/v0.3.0/{mac}"]["content_type"] == "application/zip"
+
+
+def test_a_pack_without_its_sidecar_or_with_a_wrong_one_refuses_the_index(
+    tmp_path: Path, bucket
+) -> None:
+    folder = make_download_dir(tmp_path / "dl", "0.3.0")
+    name = _add_pack(folder, "0.3.0")
+    (folder / (name[:-4] + ".manifest.json")).unlink()
+    rewrite_latest.prepare_folder(folder, "v0.3.0")
+    upload(bucket, folder, "0.3.0")
+    with pytest.raises(common.ReleaseError, match=r"has no .*manifest\.json"):
+        promote_mod.promote(bucket, "v0.3.0")
+    assert "radarx/releases.json" not in bucket.list_objects("")
+    # a sidecar that describes another file (the zip's sha256 differs)
+    bucket2 = common.LocalBucket(tmp_path / "b2")
+    folder2 = make_download_dir(tmp_path / "dl2", "0.3.0")
+    name = _add_pack(folder2, "0.3.0")
+    side = folder2 / (name[:-4] + ".manifest.json")
+    doc = json.loads(side.read_text())
+    doc["zip"]["sha256"] = "0" * 64
+    side.write_text(json.dumps(doc))
+    rewrite_latest.prepare_folder(folder2, "v0.3.0")
+    upload(bucket2, folder2, "0.3.0")
+    with pytest.raises(common.ReleaseError, match="not the file"):
+        promote_mod.promote(bucket2, "v0.3.0")
