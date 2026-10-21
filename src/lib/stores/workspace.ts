@@ -28,7 +28,7 @@ export interface WorkspaceConfig {
   rightSidebarWidth: number;
   openFiles: string[];
   activeFileIndex: number;
-  viewMode: '2d' | '3d' | 'dualpol';
+  viewMode: '2d' | '3d' | 'dualpol' | 'live';
   selectedVariable: string | null;
   selectedSweep: number;
   zoom: number;
@@ -130,7 +130,7 @@ function sanitizeConfig(raw: unknown, name: string): WorkspaceConfig {
     rightSidebarOpen: typeof raw.rightSidebarOpen === 'boolean' ? raw.rightSidebarOpen : base.rightSidebarOpen,
     leftSidebarWidth: num(raw.leftSidebarWidth, base.leftSidebarWidth, 200, 500),
     rightSidebarWidth: num(raw.rightSidebarWidth, base.rightSidebarWidth, 200, 500),
-    viewMode: ['2d', '3d', 'dualpol'].includes(raw.viewMode as string) ? (raw.viewMode as WorkspaceConfig['viewMode']) : base.viewMode,
+    viewMode: ['2d', '3d', 'dualpol', 'live'].includes(raw.viewMode as string) ? (raw.viewMode as WorkspaceConfig['viewMode']) : base.viewMode,
     openFiles: Array.isArray(raw.openFiles) ? (raw.openFiles as unknown[]).filter((x): x is string => typeof x === 'string') : [],
     rightPanelOrder: order,
     rightPanelCollapsed: collapsed,

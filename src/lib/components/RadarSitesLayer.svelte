@@ -34,6 +34,8 @@
     translateY,
     containerWidth,
     containerHeight,
+    pick,
+    picked,
   }: {
     radarLat: number;
     radarLon: number;
@@ -43,6 +45,10 @@
     translateY: number;
     containerWidth: number;
     containerHeight: number;
+    /** Picker mode (the live map's radar chooser): a click reports the site instead of opening its card. */
+    pick?: (site: RadarSite) => void;
+    /** Sites to draw as chosen (picker mode). */
+    picked?: ReadonlySet<string>;
   } = $props();
 
   let now = $state(Date.now());
@@ -93,8 +99,14 @@
   }
 
   function select(id: string) {
+    if (pick) {
+      const site = sites.find((s) => s.id === id);
+      if (site) pick(site);
+      return;
+    }
     selectedSiteId.set(id === selected ? null : id);
   }
+  const isPicked = (id: string) => picked?.has(id.toUpperCase()) ?? false;
 
   // ── Keyboard: one tab stop, arrows move to the nearest marker in that direction ─────────────
   let rootEl: HTMLDivElement;
@@ -135,7 +147,8 @@
   function label(p: { site: RadarSite }): string {
     const st = stateOf(p.site.id);
     const word = st === 'recent' ? 'latest scan under 10 minutes old' : st === 'stale' ? 'latest scan older than 10 minutes' : 'scan age not checked';
-    return `${p.site.id}, ${p.site.name}${p.site.state ? ', ' + p.site.state : ''}. ${word}.`;
+    const chosen = pick ? (isPicked(p.site.id) ? ' Chosen as a default radar.' : ' Not chosen.') : '';
+    return `${p.site.id}, ${p.site.name}${p.site.state ? ', ' + p.site.state : ''}. ${word}.${chosen}`;
   }
 
   const stop = (e: Event) => e.stopPropagation();
@@ -151,6 +164,7 @@
       class:custom={p.site.custom}
       class:sel={p.site.id === selected}
       class:open={p.site.id === openId}
+      class:picked={isPicked(p.site.id)}
       class:loading={chk === 'loading'}
       data-state={st}
       data-site={p.site.id}
@@ -158,7 +172,7 @@
       style:left="{p.x}px"
       style:top="{p.y}px"
       aria-label={label(p)}
-      aria-pressed={p.site.id === selected}
+      aria-pressed={pick ? isPicked(p.site.id) : p.site.id === selected}
       onclick={(e) => { e.stopPropagation(); select(p.site.id); }}
       onmousedown={stop}
       onmouseup={stop}
@@ -173,7 +187,7 @@
       <span class="rs-mark" aria-hidden="true"></span>
     </button>
     {#if p.label}
-      <span class="rs-lbl" class:sel={p.site.id === selected} style:left="{p.x + 9}px" style:top="{p.y}px" aria-hidden="true">{p.site.id}</span>
+      <span class="rs-lbl" class:sel={p.site.id === selected || isPicked(p.site.id)} style:left="{p.x + 9}px" style:top="{p.y}px" aria-hidden="true">{p.site.id}</span>
     {/if}
   {/each}
 
@@ -183,7 +197,7 @@
     </div>
   {/if}
 
-  {#if selectedSite}
+  {#if selectedSite && !pick}
     <RadarSiteCard site={selectedSite} isOpenFile={selectedSite.id === openId} {now} onclose={() => selectedSiteId.set(null)} />
   {/if}
 </div>
@@ -253,6 +267,12 @@
   .rs-dot.sel .rs-mark {
     border-color: var(--c-accent);
     box-shadow: 0 0 0 1px rgba(var(--c-surface-0-rgb), 0.7), var(--glow-accent);
+  }
+  /* Picker mode: a chosen site is a filled accent dot with a ring (shape and colour). */
+  .rs-dot.picked .rs-mark {
+    border-color: var(--c-accent);
+    background: var(--c-accent);
+    box-shadow: 0 0 0 1px rgba(var(--c-surface-0-rgb), 0.7), 0 0 0 4px rgba(var(--c-accent-rgb), 0.35);
   }
   .rs-dot.loading .rs-mark {
     animation: rs-pulse 1s ease-in-out infinite;
