@@ -115,9 +115,11 @@ is drawn over the picture (a bolt behind a dense core is not hidden; the cloud a
 the thunder source of your choice: see {doc}`ANIMATE`). The screen says "Synthesised from the data, not a recording". *Wind*: filtered noise whose level
 and brightness follow the wind speed at the observer: the retrieved multi-Doppler wind of the lowest level around the
 observer (x 0.65 for the ground), with gusts; if there is no wind it is a proxy from the storm motion and the rain,
-labelled "not measured". *Rain*: bright noise whose level follows the reflectivity near the ground over the observer (20
-to 55 dBZ). *Thunder*: each flash starts thunder that arrives after distance / 343 m/s (shortened by a factor, default 8,
-because the clip is a time-lapse; 1 is the real physics), every segment of the channel at its own arrival time (this makes
+labelled "not measured". *Rain*: bright noise whose level follows the reflectivity at the lowest gridded level with a value over the
+observer, up to 2.5 km above the ground (20 dBZ none to 55 dBZ full, a straight line in dBZ; reflectivity is not a
+rain rate, and far from the radars this is the echo 1 to 2 km up, not the rain at the ground). *Thunder*: each flash starts thunder that arrives after distance / 343 m/s (shortened by a factor, default 8,
+because the clip is a time-lapse; 1 is the real physics; `rxd animate --sound` instead adds the real delay in data time and
+maps it through the film's eased clock), every segment of the channel at its own arrival time (this makes
 the rolling), louder the nearer, a lower low-pass cutoff the farther (3200 Hz / (1 + d / 3.5 km), floor 70 Hz), a longer
 tail the farther, three parts panned from where the channel is, and a sharp crack on top of the rumble for a strike within
 4 km. No samples are used. Every flash is listed with its distance and thunder arrival in the record next to the clip.
@@ -217,6 +219,10 @@ The low-angle azimuth follows the storm's heading from the track.
 - Needs Chrome (GPU) and the renderer files; software GL works but is slow. Resolution is bounded by the GPU's 3D-texture
   and canvas limits.
 - The plain clip has no audio unless `rxd animate --sound` is given ({doc}`ANIMATE`), and no wind: it is about the reflectivity cloud.
+- Sound: the rain follows the echo at the lowest gridded level over the listener (up to 2.5 km above the ground), which
+  far from the radars is the echo 1 to 2 km up, not the rain at the ground; reflectivity is not a rain rate. When it stays
+  silent for the whole film the film and the record say so. The CG / IC type of an observed GLM flash is synthetic (GLM
+  does not give it).
 - Realistic version: the light is dusk light, not the real (night) sky; the imagery is the 2021 Sentinel-2 mosaic (a
   summer-biased composite), not the scene of that evening; radar sites and the scale bar are drawn at sea level, not on
   the terrain. The cloud is drawn from 500 m radar data stretched x4 vertically: it looks smooth and soft, not like a

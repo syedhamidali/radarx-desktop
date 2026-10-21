@@ -8,9 +8,10 @@
  *
  *  - Wind: noise whose loudness and brightness follow the wind speed at the listener (the retrieved
  *    wind at the observer when there is one, otherwise a labelled proxy), with gusts.
- *  - Rain: bright noise whose level follows the reflectivity at the listener.
- *  - Thunder: every flash starts thunder that reaches the listener after distance / 343 m/s (divided
- *    by `compress` in a time-lapse clip, see {@link thunderDelay}). Each part of the channel arrives
+ *  - Rain: bright noise whose level follows the reflectivity at the lowest gridded level with a value
+ *    over the listener (see soundSampling.ts).
+ *  - Thunder: every flash starts thunder that reaches the listener after distance / 343 m/s (in a
+ *    time-lapse clip through the film clock, or divided by `compress`, see {@link thunderDelay}). Each part of the channel arrives
  *    at its own time, which gives the rolling: the envelope is built from the real channel geometry
  *    (distance of every segment to the listener). Loudness falls with distance, the low-pass cutoff
  *    falls with distance (far thunder is a low rumble), a close strike adds a sharp crack. The
@@ -21,6 +22,7 @@
  * The pure helpers at the top have unit tests (soundscape.test.mjs).
  */
 import { SPEED_OF_SOUND_MS, thunderDelay, mulberry32, type Flash } from './lightning.ts';
+import { thunderArrivalFilm, type FilmClock } from './soundSampling.ts';
 
 export const AUDIO_LABEL = 'Synthesised from the data, not a recording';
 
@@ -87,9 +89,10 @@ export interface Thunder {
 
 /**
  * Thunder of a flash for a listener at `listener` (km): arrival times of every channel segment
- * (distance / speed of sound / compress), an envelope per third of the channel in arrival order.
+ * (distance / speed of sound / compress, or through the film `clock` when given), an envelope per
+ * third of the channel in arrival order.
  */
-export function thunderOf(f: Flash, listener: [number, number, number], compress = 1, rate = 200, parts = 3): Thunder {
+export function thunderOf(f: Flash, listener: [number, number, number], compress = 1, rate = 200, parts = 3, clock?: FilmClock): Thunder {
   const n = f.segments.length / 6;
   const segs: { tau: number; a: number; mid: [number, number, number]; r: number }[] = [];
   let dMin = Infinity;
@@ -100,7 +103,7 @@ export function thunderOf(f: Flash, listener: [number, number, number], compress
     const len = Math.hypot(s[i * 6 + 3] - s[i * 6], s[i * 6 + 4] - s[i * 6 + 1], s[i * 6 + 5] - s[i * 6 + 2]);
     const r = Math.hypot(mid[0] - listener[0], mid[1] - listener[1], mid[2] - listener[2]);
     const lw = f.level[i] === 0 ? 1 : f.level[i] === 1 ? 0.5 : 0.3;
-    segs.push({ tau: f.t + thunderDelay(r, compress), a: (len * lw) / (r + 0.6), mid, r });
+    segs.push({ tau: clock ? thunderArrivalFilm(f.t, r, clock) : f.t + thunderDelay(r, compress), a: (len * lw) / (r + 0.6), mid, r });
     if (r < dMin) { dMin = r; nearest = mid; }
   }
   segs.sort((p, q) => p.tau - q.tau);
@@ -194,6 +197,8 @@ export interface SoundInput {
   flashes: Flash[];
   /** Time-lapse compression of the light-to-sound delay (1 = real physics). */
   compress: number;
+  /** The film clock: when given, each thunder arrives at the flash's data time plus the real delay, mapped back to film time (`compress` then only shortens the tail). */
+  clock?: FilmClock;
   seed?: number;
   /** Overall level of each part, 0..1 (1 = default). */
   levels?: { wind?: number; rain?: number; thunder?: number };
@@ -355,7 +360,7 @@ export function buildSoundscape(ctx: BaseAudioContext, input: SoundInput): { thu
   for (const f of input.flashes) {
     const li = Math.min(nL - 1, Math.max(0, Math.round(f.t / tr.dt)));
     const listener: [number, number, number] = [tr.x[li], tr.y[li], tr.z[li]];
-    const th = thunderOf(f, listener, input.compress);
+    const th = thunderOf(f, listener, input.compress, 200, 3, input.clock);
     thunders.push(th);
     if (th.arrival >= input.duration) continue;
     const rng = mulberry32(seed + f.id * 13 + 3);

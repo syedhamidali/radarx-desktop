@@ -31,6 +31,7 @@
       sites: () => clip!.siteXY(),
       debugScaleTerrain: (k: number) => clip!.debugScaleTerrain(k),
       renderAudio: (sr?: number) => clip!.renderAudio(sr),
+      setSoundLabel: (rows: string[]) => clip!.setSoundLabel(rows),
       report: () => clip!.report(),
       setLook: (o: any) => clip!.setLook(o),
       checkLook: (s: any) => clip!.checkLook(s),

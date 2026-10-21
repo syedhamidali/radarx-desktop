@@ -255,7 +255,7 @@ rxd animate -i mayfield --no-render --sound --flashes-from-glm glm/ --json      
 | Sound | What drives it | Provenance |
 |---|---|---|
 | wind | the retrieved multi-Doppler wind at the listener (`--winds`): the lowest level that has a value near the listener, times 0.65 as a stand-in for the ground; the level and the brightness rise with the speed, with gusts. Without `--winds`, or where there is no retrieved wind at the listener, a labelled proxy from the storm motion and the rain is used (the film says "PROXY", and the report says for how much of the time) | retrieved, then synthetic |
-| rain | the reflectivity near the ground over the listener: 20 dBZ is silence, 55 dBZ is full | observed, then synthetic |
+| rain | the reflectivity at the lowest gridded level that has a value over the listener, looked for from the ground up to 2.5 km above it (far from the radars the lowest beams pass overhead and the grid has nothing nearer the ground, so this is often the echo at 1 to 2 km, not the rain at the ground). Reflectivity is not a rain rate: the rain level is a straight line in dBZ, 20 dBZ none and 55 dBZ full, and the loudness is 0.3 times that level to the power 1.4 (before the mix). The record gives the heights that were used | observed, then synthetic |
 | thunder | the time and place of each flash of the thunder source (below); the sound of the thunder is synthetic | observed or modelled times, synthetic sound |
 
 **The listener is virtual.** Audio needs a place to listen from. By default it is a point on the ground 10 km
@@ -267,10 +267,14 @@ shows a view from the sky and the sound is heard from the ground, and the film s
 virtual". How far each flash is, and so how loud and how late its thunder is, follows from this choice; it is not
 a measurement.
 
-**Thunder** reaches the listener after distance / 343 m/s. A film is a time-lapse, so that delay is divided by
-`--sound-compress`; the default is the film's own time-lapse factor (data seconds per film second, printed in the
-report), which puts a thunderclap where it belongs in the film's own time: a x24 film divides by 24 (a flash 10 km
-away is heard about 1.2 s after it), 1 is the real physics (30 to 150 s, longer than most films). Each part of the
+**Thunder** reaches the listener after distance / 343 m/s. A film is a time-lapse, so by default that real delay is
+added to the flash's data time and the result is put back on the film through the film's own clock: the clock eases
+in and out, so the time-lapse runs between about 0.65 and 1.2 times its mean, and a fixed division would put the
+thunder too early in the slow parts and too late in the fast parts. On a x24 film a flash 10 km away is heard about
+1.2 s after it (more where the clock runs slow, less where it runs fast); the thunder of a flash late in the film can
+arrive after its last volume, and then it runs on at the mean time-lapse. `--sound-compress N` instead divides the
+delay by N everywhere (1 is the real physics: 30 to 150 s, longer than most films). The report prints the mean
+time-lapse factor (data seconds per film second). Each part of the
 channel arrives at its own time, which gives the rolling; the thunder is louder and brighter the nearer it is, a
 close strike has a crack, and it is panned from where it is. The thunder source is one of:
 
@@ -297,8 +301,10 @@ modelled ones of `--lightning-model`, which are always drawn), at the place of t
 thunder is timed to, so the viewer sees the flash and hears the thunder arrive after its delay. The screen says what they
 are: "OBSERVED GLM flash (position ~10 km, optical, not a stroke)", "flash from FILE (not checked here)" or "MODELLED
 from radar echo, NOT observed". Only their time and place are data: the branching channel the light is drawn along and
-the thunder rolls along is synthetic, and the type CG or IC of a GLM flash is not known (it is chosen at random, with
-a fixed seed). `--sound-seed` (default 7) fixes the noise: the same options give the same samples, bit for bit, on the
+the thunder rolls along is synthetic, and the type CG or IC of a GLM flash is not known: GLM gives the time, place,
+area, energy and quality of a flash, not whether it reached the ground. The type is chosen at random (with a fixed
+seed) for the shape of the channel and the crack of a close strike, and `name.flashes.csv` writes it with
+`type_source` `synthetic` and a comment line that says so; read back with `--flashes`, a synthetic type is ignored. `--sound-seed` (default 7) fixes the noise: the same options give the same samples, bit for bit, on the
 same computer; another seed gives other noise.
 
 **The mix: thunder above the bed.** The thunder is mixed clearly above the wind and rain, which stay audible but
@@ -308,22 +314,33 @@ sample is kept below -1.9 dBFS so that the AAC track decodes below -1 dBFS. `--s
 relative to that default (0; from -30 to 20). On the Mayfield case, listener 10 km beside the track, wind 10 to 43 m/s
 at the listener, the thunder-only energy in the 1.5 s after each arrival (the film minus the same film without thunder)
 was 7.9 dB above the wind and rain bed in the median for the observed GLM flashes and 10.8 dB for the modelled ones; the
-loudest thunder samples are about 26 dB above the bed's RMS level. A listener far from the flashes still hears the
+loudest thunder samples are about 26 dB above the bed's RMS level. (Measured before the rain was read from the lowest
+gridded level, when the bed was wind only. With the rain heard, on a 10 s overview of the same case with 12 observed
+GLM flashes, the median went from 8.6 to 7.9 dB above the bed, the rain level reached 0.73 and was above zero for 69%
+of the film, read from the echo at 1 to 2.5 km.) A listener far from the flashes still hears the
 thunder fainter, so check the median in the record (`sound` block, `mix`) rather than assuming it.
 
 **What the film and the files say.** On the film two lines in the lower part: "Sound is SYNTHESISED, not a
 recording: wind from the retrieved winds, rain from the reflectivity," and "thunder timed to OBSERVED GLM flashes
 (not drawn); the listener position is virtual" ("drawn" with `--draw-flashes`; with MODELLED, the file name or "no thunder", and "PROXY" for a wind
-that is not retrieved, where that applies). The tags of the MP4 repeat it. In `clip.animate.json` the `sound` block
+that is not retrieved, where that applies). The words are decided from the sound as it was made, before the frames are
+drawn: the wind is "from the retrieved winds" only when the listener had a retrieved wind for the whole film, "from the
+retrieved winds for N% of the film, a proxy otherwise" when it had one part of the time, and "a PROXY" when never. When
+the rain level stays at zero for the whole film (no echo of 20 dBZ or more low over the listener), the film says "rain
+SILENT", the report warns and the record says `"heard": false`, so a silent rain is never hidden behind "rain from the
+reflectivity". The lightning line ends with the number of flashes ("· 33 flashes"). The tags of the MP4 repeat it. In `clip.animate.json` the `sound` block
 has the listener (where it stands, as a position and as latitude and longitude), the compression and how it was
-chosen, the seed, the range of the wind used, how much of it was a proxy, the selection of the GLM flashes, the
-table of the thunder (flash time in UTC and place, the film second of the flash and of the thunder, the delay in the
-film and in real time, the distance), the mix (thunder and bed level, the peak ceiling), whether the flashes are drawn,
+chosen, the seed, the range of the wind used, how much of it was retrieved and how much a proxy, the rain (its range
+and mean level, the share of time it was heard, the heights of the echo it was read from, and a warning when it was
+silent), the selection of the GLM flashes, how the thunder was timed, the table of the thunder (flash time in UTC and
+place, the type and whether it is synthetic, the film second of the flash and of the thunder, the delay in the film and
+in real time, the distance), the mix (thunder and bed level, the peak ceiling), whether the flashes are drawn,
 the audio (codec, length, peak level, a hash of the samples) and the limits.
 
 **Limits of the sound.** It is an illustration. The listener is a virtual point. The wind exists only where two radars
 cross well and has the artefacts of every retrieval (see {doc}`MULTIDOPPLER`), and the ground value is a factor, not a
-measurement; the roar is a noise bed, not what wind sounds like in a tornadic storm. GLM places a flash to about 10 km,
+measurement; the rain follows the echo at the lowest gridded level, often 1 to 2 km up, not the rain at the ground,
+and reflectivity is not a rain rate; the roar is a noise bed, not what wind sounds like in a tornadic storm. GLM places a flash to about 10 km,
 misses some flashes, and the flashes are thinned. There is no tornado, hail, siren or debris sound: nothing in the data
 says anything about them, so do not use the sound to suggest that a tornado was seen or heard. The mix is a choice, not
 a measurement: the thunder is raised and the wind lowered so that the thunder is heard; a real storm can be the other way

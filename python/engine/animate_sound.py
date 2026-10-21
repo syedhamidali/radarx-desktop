@@ -56,8 +56,9 @@ LIMITS = [
     "The sound is synthesised from data; it is not a recording and nobody recorded this storm at this place and time.",
     "The listener is a virtual point on the ground: distances to the flashes are a consequence of that choice, not a measurement.",
     "Wind follows the retrieved multi-Doppler wind at the listener (lowest level times 0.65 as a ground value), which exists only where two radars cross well and has artefacts; where there is none a labelled proxy from the storm motion and the rain is used.",
-    "Rain follows the reflectivity near the ground over the listener (20 dBZ none, 55 dBZ full).",
-    "Thunder: only the time and place of each flash are data (GLM: about 10 km, detection efficiency below 100 %); the flashes are thinned for the time-lapse; the light-to-sound delay is divided by the compression; the sound of the thunder is synthetic.",
+    "Rain follows the reflectivity at the lowest gridded level that has a value over the listener, searched up to 2.5 km above the ground (far from the radars the grid has nothing nearer the ground), so it is the echo aloft, not the rain at the ground; reflectivity is not a rain rate: the loudness is a linear map of dBZ (20 dBZ none, 55 dBZ full), not a rainfall measurement.",
+    "Thunder: only the time and place of each flash are data (GLM: about 10 km, detection efficiency below 100 %); the flashes are thinned for the time-lapse; the real light-to-sound delay is added in data time and mapped through the film's clock (or divided by --sound-compress when given); the sound of the thunder is synthetic.",
+    "GLM does not say whether a flash reached the ground: the cloud-to-ground / in-cloud type of a GLM flash (channel shape, close crack) is drawn at random and marked synthetic in the flash table.",
     "There is no tornado, hail, siren or debris sound: nothing in the data says anything about them.",
     "The mix puts the thunder clearly above the wind and rain bed (the bed stays audible, never silent); a distant listener hears fainter thunder because loudness falls with distance.",
 ]
@@ -120,7 +121,7 @@ def read_flash_table(path: str | os.PathLike[str]):
     if not p.is_file():
         raise AnimateConfigError(f"--flashes: file not found: {p}")
     with open(p, newline="", encoding="utf-8-sig") as fh:
-        rd = csv.DictReader(fh)
+        rd = csv.DictReader(ln for ln in fh if not ln.lstrip().startswith("#"))
         names = {(n or "").strip().lower(): n for n in (rd.fieldnames or [])}
         missing = [c for c in ("time_utc", "lat", "lon") if c not in names]
         if missing:
@@ -140,6 +141,11 @@ def read_flash_table(path: str | os.PathLike[str]):
             if not (-90 <= lat <= 90 and -180 <= lon <= 360):
                 raise AnimateConfigError(f"{where}: lat {lat} / lon {lon} is not a place on Earth")
             kind = (row.get(names["type"]) or "").strip().upper() if "type" in names else ""
+            if (
+                "type_source" in names
+                and (row.get(names["type_source"]) or "").strip().lower() == SYNTHETIC_TYPE
+            ):
+                kind = ""  # a type drawn at random by an earlier run is not data
             if kind not in ("", "CG", "IC"):
                 raise AnimateConfigError(f"{where}: type {kind!r} must be CG or IC (or empty)")
             en = None
@@ -170,28 +176,72 @@ def read_flash_table(path: str | os.PathLike[str]):
     return out
 
 
-def write_flash_table(path: Path, flashes, distance_km: list[float] | None = None) -> None:
-    """Write flashes as the CSV that ``--flashes`` reads (plus the distance to the storm when known)."""
+#: ``type_source`` of a type that was drawn at random (GLM gives no type): never read back as data
+SYNTHETIC_TYPE = "synthetic"
+
+
+def write_flash_table(
+    path: Path,
+    flashes,
+    distance_km: list[float] | None = None,
+    chosen_kind: list[str | None] | None = None,
+    seed: int | None = None,
+) -> None:
+    """Write flashes as the CSV that ``--flashes`` reads (plus the distance to the storm when known).
+
+    ``chosen_kind``: the CG / IC type the clip drew at random for flashes without a type (GLM gives
+    none); it is written with ``type_source`` ``synthetic`` and a comment line says so, and
+    ``read_flash_table`` does not read a synthetic type back as data."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".part")
+    synthetic = [
+        not f.kind and bool(chosen_kind and i < len(chosen_kind) and chosen_kind[i])
+        for i, f in enumerate(flashes)
+    ]
     with open(tmp, "w", newline="", encoding="utf-8") as fh:
+        if any(synthetic):
+            fh.write(
+                "# type: where type_source is 'synthetic' the CG / IC type is SYNTHETIC, drawn at random "
+                f"(seed {seed if seed is not None else DEFAULT_SEED}) for the channel shape and the thunder sound: "
+                "GOES GLM (L2 LCFA) gives the time, place, area, energy and quality of a flash, not whether it "
+                "reached the ground. Not an observation.\n"
+            )
         w = csv.writer(fh)
         head = ["time_utc", "lat", "lon", "type", "energy"]
+        if chosen_kind is not None:
+            head.append("type_source")
         if distance_km is not None:
             head.append("distance_to_storm_km")
         w.writerow(head)
         for i, f in enumerate(flashes):
+            kind = f.kind or (chosen_kind[i] if synthetic[i] and chosen_kind else "") or ""
             row = [
                 f.time.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
                 f"{f.lat:.4f}",
                 f"{f.lon:.4f}",
-                f.kind or "",
+                kind,
                 f"{f.energy:.4f}",
             ]
+            if chosen_kind is not None:
+                row.append(SYNTHETIC_TYPE if synthetic[i] else ("file" if f.kind else ""))
             if distance_km is not None:
                 row.append(f"{distance_km[i]:.1f}")
             w.writerow(row)
     tmp.replace(path)
+
+
+def chosen_kinds(table, thunders: list[dict[str, Any]], t0: datetime) -> list[str | None]:
+    """The CG / IC type the page used for every row of ``table`` (matched by data time), None when unknown."""
+    if not thunders:
+        return [None] * len(table)
+    td = np.array([float(th["tDataS"]) for th in thunders])
+    out: list[str | None] = []
+    for f in table:
+        j = int(np.argmin(np.abs(td - (f.time - t0).total_seconds())))
+        out.append(
+            thunders[j].get("kind") if abs(td[j] - (f.time - t0).total_seconds()) < 1.0 else None
+        )
+    return out
 
 
 def glm_files(items: list[str]) -> list[Path]:
@@ -290,6 +340,7 @@ class SoundPlan:
         s: dict[str, Any] = {
             "thunder": self.page_thunder,
             "compress": self.compress,
+            "compressAuto": self.compress_source.startswith("automatic"),
             "seed": self.seed,
             "label": self.label,
             "thunderDb": THUNDER_DB + self.thunder_db_offset,
@@ -341,14 +392,42 @@ class SoundPlan:
         }
 
 
+def wind_words(wind_retrieved: bool, retrieved_share: float | None = None) -> str:
+    """What the wind of the sound is made of. Before rendering only whether any step has retrieved
+    winds is known; after it, ``retrieved_share``: the share of film time the sampler found a
+    retrieved wind at the listener."""
+    if retrieved_share is None:
+        return (
+            "wind from the retrieved winds where they reach the listener, a proxy elsewhere"
+            if wind_retrieved
+            else "wind a PROXY from the storm motion and the rain (no retrieved winds)"
+        )
+    pct = round(100 * float(retrieved_share))
+    if retrieved_share >= 0.995:
+        return "wind from the retrieved winds"
+    if pct <= 0:
+        return "wind a PROXY from the storm motion and the rain (no retrieved wind at the listener)"
+    return f"wind from the retrieved winds for {pct}% of the film, a proxy otherwise"
+
+
 def label_rows(
-    wind_retrieved: bool, thunder: str, flash_file: str | None = None, drawn: bool = False
+    wind_retrieved: bool,
+    thunder: str,
+    flash_file: str | None = None,
+    drawn: bool = False,
+    *,
+    retrieved_share: float | None = None,
+    rain_heard: bool | None = None,
 ) -> list[str]:
-    """The two lines drawn on the film (and written into its files): what the sound is."""
-    winds = (
-        "wind from the retrieved winds"
-        if wind_retrieved
-        else "wind a PROXY from the storm motion and the rain (no retrieved winds)"
+    """The two lines drawn on the film (and written into its files): what the sound is.
+
+    ``retrieved_share`` and ``rain_heard`` come from the rendered sound (see :func:`final_label`); a
+    rain that stayed silent for the whole film is said on the film."""
+    winds = wind_words(wind_retrieved, retrieved_share)
+    rain = (
+        "rain SILENT (no echo of 20 dBZ or more low over the listener)"
+        if rain_heard is False
+        else "rain from the reflectivity"
     )
     if thunder == "observed_glm":
         th = f"thunder timed to OBSERVED GLM flashes ({'drawn' if drawn else 'not drawn'})"
@@ -359,9 +438,50 @@ def label_rows(
     else:
         th = "no thunder"
     return [
-        f"Sound is SYNTHESISED, not a recording: {winds}, rain from the reflectivity,",
+        f"Sound is SYNTHESISED, not a recording: {winds}, {rain},",
         f"{th}; the listener position is virtual",
     ]
+
+
+def retrieved_share(audio: dict[str, Any]) -> float:
+    """Share of film time with a retrieved wind at the listener, from the rendered sound."""
+    if audio.get("windSource") != "retrieved":
+        return 0.0
+    return max(0.0, min(1.0, 1.0 - float(audio.get("windProxyShare", 0.0))))
+
+
+def rain_heard(audio: dict[str, Any]) -> bool:
+    """True when the rain level rose above zero at some time of the film."""
+    return float(audio.get("rainLevel", {}).get("max", 0.0)) > 0.0
+
+
+def final_label(plan: SoundPlan, audio: dict[str, Any]) -> list[str]:
+    """The label from what the sound was actually made of (wind share at the listener, rain heard or not)."""
+    return label_rows(
+        audio.get("windSource") == "retrieved",
+        plan.thunder,
+        plan.flash_file,
+        plan.draw_flashes,
+        retrieved_share=retrieved_share(audio),
+        rain_heard=rain_heard(audio),
+    )
+
+
+def audio_warnings(audio: dict[str, Any]) -> list[str]:
+    """What the user must be told about the rendered sound."""
+    out = []
+    proxy = float(audio.get("windProxyShare", 0.0))
+    if proxy > 0:
+        out.append(
+            f"sound: for {100 * proxy:.0f}% of the time there was no retrieved wind at the "
+            "listener, so a proxy from the storm motion and the rain was used there"
+        )
+    if not rain_heard(audio):
+        out.append(
+            "sound: the rain level stayed at zero for the whole film (no echo of 20 dBZ or more at the lowest "
+            "gridded level up to 2.5 km above the ground over the listener): the rain is silent; the film says so"
+        )
+    return out
 
 
 def _project(manifest: dict[str, Any]):
@@ -554,23 +674,29 @@ def record(plan: SoundPlan, audio: dict[str, Any], pcm_sha256: str, t0: datetime
     for th in audio.get("thunders", []):
         when = t0 + timedelta(seconds=float(th["tDataS"]))
         lat, lon = float(th["lat"]), float(th["lon"])
+        type_source = "modelled" if th["source"] != "observed" else SYNTHETIC_TYPE
         if (
             flash_rel
         ):  # observed: the flash's own coordinates, not the ones recovered from the scene frame
             j = int(np.argmin(np.abs(np.array(flash_rel) - float(th["tDataS"]))))
             lat, lon = plan.flash_latlon[j]
             when = plan.flash_times[j]
+            if plan.table[j].kind:
+                type_source = "file"
         events.append(
             {
                 "flash_time_utc": when.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
                 "lat": round(lat, 4),
                 "lon": round(lon, 4),
                 "type": th["kind"],
+                "type_source": type_source,
                 "source": th["source"],
                 "flash_clip_s": round(float(th["tFlash"]), 3),
                 "thunder_arrives_clip_s": round(float(th["arrival"]), 3),
                 "delay_clip_s": round(float(th["delay"]), 3),
-                "delay_real_s": round(float(th["delay"]) * audio["compress"], 1),
+                "delay_real_s": round(
+                    float(th.get("delayRealS", float(th["delay"]) * audio["compress"])), 1
+                ),
                 "distance_km": round(float(th["distKm"]), 1),
             }
         )
@@ -602,11 +728,36 @@ def record(plan: SoundPlan, audio: dict[str, Any], pcm_sha256: str, t0: datetime
         "share_of_time_using_proxy": round(float(audio["windProxyShare"]), 3),
         "ground_factor": SURFACE_WIND_FACTOR,
     }
+    rl = audio["rainLevel"]
+    hk = audio.get("rainHeightKm")
+    out["wind"]["share_of_time_retrieved"] = round(retrieved_share(audio), 3)
     out["rain"] = {
-        "level_min": round(float(audio["rainLevel"]["min"]), 3),
-        "level_max": round(float(audio["rainLevel"]["max"]), 3),
-        "rule": "20 dBZ none, 55 dBZ full",
+        "level_min": round(float(rl["min"]), 3),
+        "level_max": round(float(rl["max"]), 3),
+        "heard": rain_heard(audio),
+        "rule": "reflectivity at the lowest gridded level with a value over the listener (up to 2.5 km above the ground), level = (dBZ - 20) / 35 clipped to 0..1 (20 dBZ none, 55 dBZ full); loudness 0.3 x level^1.4; reflectivity is not a rain rate",
     }
+    if "mean" in rl:
+        out["rain"]["level_mean"] = round(float(rl["mean"]), 3)
+        out["rain"]["share_of_time_heard"] = round(float(rl.get("heardShare", 0.0)), 3)
+    if hk is not None:
+        out["rain"]["echo_height_km"] = {
+            "min": round(float(hk["min"]), 2),
+            "max": round(float(hk["max"]), 2),
+        }
+    elif "rainHeightKm" in audio:
+        out["rain"]["echo_height_km"] = None
+    if not out["rain"]["heard"]:
+        out["rain"]["warning"] = (
+            "the rain level stayed at zero for the whole film: no echo of 20 dBZ or more over the listener; "
+            "the rain is silent and the film's label says so"
+        )
+    if audio.get("thunderTiming"):
+        out["thunder"]["timing"] = (
+            "the real light-to-sound delay added in data time and mapped through the film clock"
+            if audio["thunderTiming"] == "film clock"
+            else f"the real light-to-sound delay divided by {audio['compress']:g}"
+        )
     out["thunder"]["events"] = events
     out["audio"] = {
         "codec": "aac",
