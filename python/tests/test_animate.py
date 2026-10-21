@@ -1295,6 +1295,18 @@ class TestCommand:
         )
         assert len(animate_cli.expand_animate_inputs(["-"])) == 4
 
+    def test_relative_and_home_paths_become_absolute(self, case, monkeypatch):
+        import os
+
+        from engine import animate_cli
+
+        monkeypatch.chdir(case)
+        files = animate_cli.expand_animate_inputs(["KAAA"])
+        assert len(files) == 4 and all(os.path.isabs(f) and os.path.exists(f) for f in files)
+        monkeypatch.setenv("HOME", str(case))
+        files = animate_cli.expand_animate_inputs(["~/KAAA"])
+        assert len(files) == 4 and all(os.path.isabs(f) for f in files)
+
     def test_no_files_is_a_usage_error(self, capsys):
         code, _, err = run_cli(capsys, "animate")
         assert code == 2 and "needs radar files" in err

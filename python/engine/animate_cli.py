@@ -331,6 +331,9 @@ def expand_animate_inputs(items: Sequence[str]) -> list[str]:
                 continue
         plain.append(raw)
     flush()
+    # ``~`` and relative paths become absolute here (the reader accepts absolute paths only),
+    # as ``api.open`` does for the other commands
+    out = [f if f == "-" else os.path.abspath(os.path.expanduser(f)) for f in out]
     seen: set[str] = set()
     return [f for f in out if not (f in seen or seen.add(f))]
 
