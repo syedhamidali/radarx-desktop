@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   windGain, windCutoffHz, rainGain, thunderGain, thunderCutoffHz, thunderTail, thunderOf, gustSeries, sampleSeries,
-  AUDIO_LABEL,
+  AUDIO_LABEL, sumTree,
 } from './soundscape.ts';
 import { makeFlash, thunderDelay } from './lightning.ts';
 
@@ -87,4 +87,23 @@ test('gusts are smooth, positive and about 1 on average; series interpolate line
   assert.equal(sampleSeries([0, 10], 1, 0.5), 5);
   assert.equal(sampleSeries([0, 10], 1, 3), 10);
   assert.match(AUDIO_LABEL, /not a recording/i);
+});
+
+test('sources are summed by a pairwise tree: no node has more than two inputs and every source reaches the output', () => {
+  for (const n of [0, 1, 2, 3, 5, 8, 17, 140]) {
+    const fanIn = new Map();
+    const mk = () => {
+      const node = { id: Symbol(), to: [], connect(t) { this.to.push(t); fanIn.set(t, (fanIn.get(t) ?? 0) + 1); } };
+      return node;
+    };
+    const ctx = { createGain: mk };
+    const leaves = Array.from({ length: n }, mk);
+    const dest = { dest: true };
+    const made = sumTree(ctx, leaves, dest);
+    assert.ok([...fanIn.values()].every((c) => c <= 2), `${n} sources: a node has more than two inputs`);
+    // every leaf reaches the destination
+    const reaches = (node) => node === dest || node.to.some(reaches);
+    assert.ok(leaves.every(reaches), `${n} sources: one does not reach the output`);
+    assert.equal(made, Math.max(0, n - 1), 'a binary tree of n leaves has n - 1 sums');
+  }
 });

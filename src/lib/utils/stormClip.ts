@@ -17,8 +17,10 @@
  *    fixed camera on the ground, like one on a window sill, with true vertical scale).
  *  - Lightning: observed flashes of the bundle, or a modelled flash source driven by radar echo.
  *    The two are labelled differently on screen; modelled flashes are never presented as observed.
- *  - Sound: wind, rain and thunder synthesised from the data (soundscape.ts), rendered offline for
- *    the observer camera; labelled "not a recording".
+ *  - Sound: wind, rain and thunder synthesised from the data (soundscape.ts), rendered offline;
+ *    labelled "not a recording". The listener is the observer / flight camera, or (`settings.sound`, used by
+ *    `rxd animate`) a virtual point on the ground; the thunder follows the drawn flashes or the flashes
+ *    named in `settings.sound`.
  */
 
 import { CartesianRenderer, type CamFrame } from './cartesianRenderer';
@@ -44,6 +46,7 @@ import { modelFlashes, makeFlash, mulberry32, type Flash, type FlashCandidate } 
 import { drawFlashes, flashLight } from './lightningFx';
 import { drawCompassStrip, drawInset } from './clipHud';
 import { renderSoundscape, AUDIO_LABEL, type SoundInput } from './soundscape';
+import { nightLightingText, soundRowLayout, facingStorm } from './clipLabels';
 
 export interface ClipManifest {
   version: number;
@@ -63,7 +66,7 @@ export interface ClipManifest {
   storm: { track_km: [number, number][]; track_lonlat: [number, number][]; motion_ms: [number, number]; speed_ms: number; heading_deg: number };
   sites: any[];
   /** Observed flashes (GLM / LMA) read by clipdata.py, positions in the bundle frame. */
-  lightning?: { source: 'observed'; kind: string; file: string; flashes: { t_s: number; x: number; y: number; z?: number; energy?: number }[] } | null;
+  lightning?: { source: 'observed'; kind: string; file: string; flashes: { t_s: number; x: number; y: number; z?: number; energy?: number; kind?: 'CG' | 'IC' }[] } | null;
 }
 
 export interface ClipSettings {
@@ -133,6 +136,22 @@ export interface ClipSettings {
   light?: LightKind;
   /** Show the sound labels (the audio itself is rendered by `renderAudio`). */
   audio?: boolean;
+  /**
+   * Sound of `rxd animate` (the clip tool leaves this out and keeps its own rules: observer / flight
+   * camera, the flashes of the picture). `thunder`: which flashes the thunder follows ('observed': the
+   * `flashes` below, or the bundle's; 'modelled': the modelled flashes drawn in the picture; 'off').
+   * `listener`: where the virtual listener stands, km east / north of the middle of the storm track;
+   * without it the listener is the camera when that stands on the ground (window, flight) and
+   * otherwise the default observer place. `label`: the rows drawn on the picture.
+   */
+  sound?: {
+    thunder: 'observed' | 'modelled' | 'off';
+    listener?: [number, number];
+    compress?: number;
+    seed?: number;
+    flashes?: { t_s: number; x: number; y: number; energy?: number; kind?: 'CG' | 'IC' }[];
+    label?: string[];
+  };
   /** Credit line at the bottom (default: NEXRAD Level II). `rxd animate` names the radars it was given. */
   radarCredit?: string;
   /** A frame counts as "observed" when its data time is within this many seconds of a real volume (default 6). */
@@ -143,6 +162,23 @@ const DEFAULTS: ClipSettings = { fps: 30, duration: 36, vexag: 4, targetLag: 0.3
 
 /** Surface wind from the lowest retrieved level: the wind there is stronger than at the ground. */
 export const SURFACE_WIND_FACTOR = 0.65;
+
+/** What `StormClip.renderAudio` returns: the PCM (16-bit stereo, base64) and what the sound was made from. */
+export interface AudioRender {
+  pcm: string;
+  sampleRate: number;
+  frames: number;
+  peak: number;
+  thunders: { flash: number; tFlash: number; arrival: number; delay: number; distKm: number; kind: string; source: string; tDataS: number; lat: number; lon: number }[];
+  windMs: { min: number; max: number };
+  windSource: string;
+  /** Share of the wind samples that had no retrieved wind at the listener and used the labelled proxy instead. */
+  windProxyShare: number;
+  rainLevel: { min: number; max: number };
+  listener: { mode: 'camera' | 'virtual'; x: number; y: number; lat: number; lon: number; eyeM: number };
+  compress: number;
+  seed: number;
+}
 
 export class StormClip {
   private renderer: CartesianRenderer | null = null;
@@ -183,6 +219,8 @@ export class StormClip {
   /** Flashes of the clip and where they came from. */
   flashes: Flash[] = [];
   lightningSource: 'observed' | 'modelled' | 'off' = 'off';
+  /** The flashes the thunder follows (the drawn ones unless `settings.sound.thunder` says otherwise). */
+  soundFlashes: Flash[] = [];
   windSource: 'retrieved' | 'proxy' = 'proxy';
   private lastFlow = { active: false, nRadars: 0 };
   private flowOffset: [number, number] = [0, 0];
@@ -659,8 +697,41 @@ export class StormClip {
 
   // ── Lightning ───────────────────────────────────────────────────────────
 
+  /** Observed flash records (bundle frame) as flashes with a synthetic channel at their place; only time and place are data. */
+  private observedFlashes(recs: { t_s: number; x: number; y: number; z?: number; energy?: number; kind?: 'CG' | 'IC' }[], seed: number): Flash[] {
+    const sets = this.settings;
+    const first = this.ts[0], last = this.ts[this.ts.length - 1];
+    const rng = mulberry32(seed + 99);
+    return recs
+      .filter((f) => f.t_s >= first && f.t_s <= last)
+      .map((f, i) => {
+        const draw = rng();
+        const kind = f.kind ?? (draw < 0.45 ? 'CG' : 'IC');
+        const zTop = f.z ?? 6 + rng() * 3;
+        const g = this.terrainKmAt(f.x, f.y);
+        const origin: [number, number, number] = [f.x, f.y, zTop];
+        const end: [number, number, number] = kind === 'CG'
+          ? [f.x + (rng() - 0.5) * 6, f.y + (rng() - 0.5) * 6, g]
+          : [f.x + (rng() - 0.5) * 24, f.y + (rng() - 0.5) * 24, zTop + (rng() - 0.5) * 2];
+        return makeFlash({ id: i, t: clipTimeOf(f.t_s, sets.duration, first, last), kind, source: 'observed', origin, end, energy: f.energy, seed });
+      })
+      .sort((a, b) => a.t - b.t);
+  }
+
   /** Observed flashes of the bundle, or a modelled source driven by the strong ice-phase echo. */
   private prepareLightning(): void {
+    this.prepareDrawnLightning();
+    // the thunder follows the drawn flashes unless `rxd animate` chose its own source
+    const snd = this.settings.sound;
+    if (!snd) this.soundFlashes = this.flashes;
+    else if (snd.thunder === 'observed') {
+      const recs = snd.flashes ?? this.manifest.lightning?.flashes ?? [];
+      this.soundFlashes = this.observedFlashes(recs, snd.seed ?? this.settings.lightningSeed ?? 7);
+    } else if (snd.thunder === 'modelled') this.soundFlashes = this.flashes;
+    else this.soundFlashes = [];
+  }
+
+  private prepareDrawnLightning(): void {
     const m = this.manifest;
     const sets = this.settings;
     if (sets.lightning === 'off') { this.flashes = []; this.lightningSource = 'off'; return; }
@@ -668,20 +739,7 @@ export class StormClip {
     const obsF = m.lightning?.flashes;
     if (obsF && obsF.length) {
       this.lightningSource = 'observed';
-      const rng = mulberry32((sets.lightningSeed ?? 7) + 99);
-      this.flashes = obsF
-        .filter((f) => f.t_s >= first && f.t_s <= last)
-        .map((f, i) => {
-          const kind = rng() < 0.45 ? 'CG' : 'IC';
-          const zTop = f.z ?? 6 + rng() * 3;
-          const g = this.terrainKmAt(f.x, f.y);
-          const origin: [number, number, number] = [f.x, f.y, zTop];
-          const end: [number, number, number] = kind === 'CG'
-            ? [f.x + (rng() - 0.5) * 6, f.y + (rng() - 0.5) * 6, g]
-            : [f.x + (rng() - 0.5) * 24, f.y + (rng() - 0.5) * 24, zTop + (rng() - 0.5) * 2];
-          return makeFlash({ id: i, t: clipTimeOf(f.t_s, sets.duration, first, last), kind, source: 'observed', origin, end, energy: f.energy, seed: sets.lightningSeed });
-        })
-        .sort((a, b) => a.t - b.t);
+      this.flashes = this.observedFlashes(obsF, sets.lightningSeed ?? 7);
       return;
     }
     // modelled: rate from the ice-phase echo volume of the steps, places from its strong columns
@@ -1033,7 +1091,10 @@ export class StormClip {
     }
 
     // progress bar with the observation times
-    const lift = this.settings.ground === 'realistic' || this.realistic || this.settings.audio ? 50 : 0;
+    const soundLift = this.settings.audio && this.settings.sound?.label
+      ? soundRowLayout(this.settings.sound.label.length, this.realistic, this.settings.ground === 'realistic').lift
+      : 50;
+    const lift = this.settings.ground === 'realistic' || this.realistic || this.settings.audio ? soundLift : 0;
     const bw = W * 0.56, bx = (W - bw) / 2, by = H - (92 + lift) * u;
     const px = (t: number) => bx + ((t - first) / (last - first)) * bw;
     ctx.fillStyle = 'rgba(8,12,22,0.55)';
@@ -1119,7 +1180,7 @@ export class StormClip {
       const lb: string[] = [];
       if (stylised) {
         la.push(this.lightKind === 'night'
-          ? 'Night version: no sun, a faint ambient light; the storm is lit by modelled lightning (stylised, not a photograph)'
+          ? nightLightingText(this.lightningSource)
           : this.lightKind === 'overcast'
             ? `Stylised lighting, not a photograph: thick overcast, dim filtered light; the real scene was at night (the real sun was ${Math.round(Math.abs(this.sun?.realElevationDeg ?? 0))}° below the horizon)`
             : this.sun?.daylightAssumed
@@ -1130,9 +1191,14 @@ export class StormClip {
         la.push('radar sees rain and ice, not cloud droplets: cloud look and fine detail are stylised, echo position and strength are radar data');
       }
       if (this.settings.ground === 'realistic') lb.push(`vertical scale ×${this.settings.vexag}${this.settings.vexag > 1 ? ' for terrain and storm (relief exaggerated)' : ' (true scale)'}`);
-      if (this.settings.audio) lb.push(`Sound: ${AUDIO_LABEL}; wind ${this.windSource === 'retrieved' ? 'from the retrieved multi-Doppler wind at the observer' : 'a proxy, not measured'}`);
+      const soundRows = this.settings.sound?.label;
+      if (this.settings.audio && !soundRows) lb.push(`Sound: ${AUDIO_LABEL}; wind ${this.windSource === 'retrieved' ? 'from the retrieved multi-Doppler wind at the observer' : 'a proxy, not measured'}`);
       if (la.length) text(la.join(' · '), W / 2, H - 56 * u, 15, 'rgba(235,240,255,0.97)', 600, 'center');
       if (lb.length) text(lb.join(' · '), W / 2, H - 36 * u, 15, 'rgba(235,240,255,0.97)', 600, 'center');
+      if (this.settings.audio && soundRows) {
+        const lay = soundRowLayout(soundRows.length, la.length > 0, lb.length > 0);
+        soundRows.forEach((row, i) => text(row, W / 2, H - lay.fromBottom[i] * u, 15, 'rgba(255,235,150,0.98)', 600, 'center'));
+      }
       const l1 = [
         this.settings.ground === 'realistic' ? IMAGERY_EOX_S2.attribution : '',
         this.settings.ground === 'realistic' ? TERRAIN_ATTRIBUTION : '',
@@ -1146,17 +1212,35 @@ export class StormClip {
 
   // ── Sound ───────────────────────────────────────────────────────────────
 
-  /** Wind speed at the observer (m/s) and the rain level 0..1 for clip time `t`. */
-  private async observerConditions(t: number): Promise<{ wind: number; rain: number }> {
+  /**
+   * Where the sound is heard from. The camera when it stands on the ground (window, flight) and no
+   * listener place was given; otherwise a VIRTUAL listener on the ground: the given place (km from the
+   * middle of the storm track) or the default observer place, facing the storm centre.
+   */
+  private listenerIsCamera(): boolean {
+    return this.pov && !this.settings.sound?.listener;
+  }
+
+  private listenerAt(t: number): { x: number; y: number; zKm: number; yawDeg: number; pitchDeg: number; rKm: number } {
+    if (this.listenerIsCamera()) return this.povAt(t);
+    const l = this.settings.sound?.listener;
+    const [x, y] = l ? [this.anchor[0] + l[0], this.anchor[1] + l[1]] : this.obs;
+    const st = this.stateAt(t);
+    const eyeKm = (this.settings.observer?.eyeM ?? OBSERVER_DEFAULTS.eyeM) / 1000;
+    return { x, y, zKm: this.terrainKmAt(x, y) + eyeKm, yawDeg: facingStorm(x, y, st.cx, st.cy), pitchDeg: 0, rKm: 0 };
+  }
+
+  /** Wind speed at the listener (m/s) and the rain level 0..1 for clip time `t`; `proxy`: no retrieved wind there, a labelled proxy was used. */
+  private async observerConditions(t: number): Promise<{ wind: number; rain: number; proxy: boolean }> {
     const st = this.stateAt(t);
     const { k, s } = st;
     const v = await this.volumes.get(k);
     const vb = await this.volumes.get(k + 1);
     const m = intervalMotion(this.track, k);
     const dt = this.ts[k + 1] - this.ts[k];
-    const pv = this.povAt(t);
+    const pv = this.listenerAt(t);
     const [ox, oy] = [pv.x, pv.y];
-    const flight = this.settings.camera === 'flight';
+    const flight = this.settings.camera === 'flight' && this.listenerIsCamera();
     // rain: the echo near the ground over the observer, carried like the cloud; 20 dBZ none, 55 dBZ full
     const zq = flight ? Math.max(0.5, pv.zKm) : 0.5;
     const da = dbzAt(v, ox - m[0] * s * dt, oy - m[1] * s * dt, zq);
@@ -1193,36 +1277,41 @@ export class StormClip {
       const a = sp(wa, v), b = sp(wb, vb);
       wind = a !== null && b !== null ? a * (1 - s) + b * s : a ?? b;
     }
+    const proxy = wind === null;
     if (wind === null) {
       // a labelled proxy, not a measurement: a light breeze, more when rain is falling on the observer
       wind = 3 + 6 * rain + 0.2 * this.manifest.storm.speed_ms;
     }
     // inside the heavy rain of the wall the wind roars: its level rises with the echo at the camera
     if (flight && this.windSource === 'retrieved') wind *= 0.6 + 0.4 * rain;
-    return { wind, rain };
+    return { wind, rain, proxy };
   }
 
-  /** Render the soundscape of the observer camera offline; returns 16-bit stereo PCM as base64 plus a report. */
-  async renderAudio(sampleRate = 48000): Promise<{ pcm: string; sampleRate: number; frames: number; peak: number; thunders: { flash: number; tFlash: number; arrival: number; delay: number; distKm: number; kind: string; source: string }[]; windMs: { min: number; max: number }; windSource: string }> {
-    if (!this.pov) throw new Error('sound is rendered for the observer and flight cameras');
+  /** Render the soundscape offline; returns 16-bit stereo PCM as base64 plus a report of what it was made from. */
+  async renderAudio(sampleRate = 48000): Promise<AudioRender> {
+    if (!this.pov && !this.settings.sound) throw new Error('sound is rendered for the observer and flight cameras');
     const fps = this.settings.fps, dur = this.settings.duration;
     const nL = Math.ceil(dur * fps) + 1;
     const x = new Float32Array(nL), y = new Float32Array(nL), z = new Float32Array(nL), yaw = new Float32Array(nL), pit = new Float32Array(nL);
     for (let i = 0; i < nL; i++) {
-      const p = this.povAt(i / fps);
+      const p = this.listenerAt(i / fps);
       x[i] = p.x; y[i] = p.y; z[i] = p.zKm; yaw[i] = p.yawDeg; pit[i] = p.pitchDeg;
     }
     const dtS = 0.1;
     const nS = Math.floor(dur / dtS) + 1;
     const wind = new Float32Array(nS), rain = new Float32Array(nS);
+    let proxySamples = 0;
     for (let i = 0; i < nS; i++) {
       const c = await this.observerConditions(i * dtS);
       wind[i] = c.wind;
       rain[i] = c.rain;
+      if (c.proxy) proxySamples++;
     }
+    const compress = this.settings.sound?.compress ?? this.settings.soundCompress ?? 8;
+    const seed = this.settings.sound?.seed ?? this.settings.lightningSeed ?? 7;
     const input: SoundInput = {
       duration: dur, listener: { dt: 1 / fps, x, y, z, yawDeg: yaw, pitchDeg: pit },
-      windMs: wind, rain, dtSeries: dtS, flashes: this.flashes, compress: this.settings.soundCompress ?? 8, seed: this.settings.lightningSeed ?? 7,
+      windMs: wind, rain, dtSeries: dtS, flashes: this.soundFlashes, compress, seed,
     };
     const res = await renderSoundscape(input, sampleRate);
     const n = res.left.length;
@@ -1234,12 +1323,22 @@ export class StormClip {
     const bytes = new Uint8Array(pcm.buffer);
     let bin = '';
     for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    const flashById = new Map(this.flashes.map((f) => [f.id, f]));
+    const flashById = new Map(this.soundFlashes.map((f) => [f.id, f]));
+    const first = this.ts[0], last = this.ts[this.ts.length - 1];
     const thunders = res.thunders.map((th) => {
       const f = flashById.get(th.flashId)!;
-      return { flash: th.flashId, tFlash: f.t, arrival: th.arrival, delay: th.arrival - f.t, distKm: th.distKm, kind: f.kind, source: f.source };
+      const [lat, lon] = this.latLonOf(f.origin[0], f.origin[1]);
+      return { flash: th.flashId, tFlash: f.t, arrival: th.arrival, delay: th.arrival - f.t, distKm: th.distKm, kind: f.kind, source: f.source, tDataS: dataTimeAt(f.t, dur, first, last), lat, lon };
     });
-    return { pcm: btoa(bin), sampleRate, frames: n, peak: res.peak, thunders, windMs: { min: Math.min(...wind), max: Math.max(...wind) }, windSource: this.windSource };
+    const lp = this.listenerAt(0);
+    const [llat, llon] = this.latLonOf(lp.x, lp.y);
+    return {
+      pcm: btoa(bin), sampleRate, frames: n, peak: res.peak, thunders,
+      windMs: { min: Math.min(...wind), max: Math.max(...wind) }, windSource: this.windSource, windProxyShare: proxySamples / nS,
+      rainLevel: { min: Math.min(...rain), max: Math.max(...rain) },
+      listener: { mode: this.listenerIsCamera() ? 'camera' : 'virtual', x: lp.x, y: lp.y, lat: llat, lon: llon, eyeM: Math.round((lp.zKm - this.terrainKmAt(lp.x, lp.y)) * 1000) },
+      compress, seed,
+    };
   }
 
   /** Flashes of the clip (time, kind, source, strength): for reports and tests. */
