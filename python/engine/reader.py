@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import threading
+import warnings
 import weakref
 from collections.abc import Callable, Iterable
 from functools import cache
@@ -426,6 +427,39 @@ def _azimuth_first(opener: Callable[..., xr.DataTree]) -> Callable[[str], xr.Dat
 
     wrapped.__name__ = getattr(opener, "__name__", "open_cfradial2")
     return wrapped
+
+
+#: files that mark a folder as a Zarr store (v2 group / attributes / consolidated, or v3)
+_ZARR_MARKERS = (".zgroup", ".zmetadata", "zarr.json")
+
+
+def is_zarr_store(path: str | os.PathLike[str]) -> bool:
+    """True if *path* is a folder holding a Zarr store (v2 or v3)."""
+    p = Path(path)
+    return p.is_dir() and any((p / m).is_file() for m in _ZARR_MARKERS)
+
+
+def _open_zarr_cfradial2(path: str) -> xr.DataTree:
+    """A CfRadial2-layout Zarr store through xradar's CfRadial2 reader, azimuth first.
+
+    The same normalisation as a CfRadial2 NetCDF file, so the app's Zarr export reopens as the
+    CfRadial2 export of the same volume does. Consolidated metadata is used when present.
+    """
+    import xradar as xd
+
+    opener = getattr(xd.io, "open_cfradial2_datatree", None)
+    if opener is None:  # pragma: no cover - every supported xradar has it
+        raise ImportError("xradar.io.open_cfradial2_datatree is not available")
+    consolidated = (Path(path) / ".zmetadata").is_file()
+    kwargs: dict[str, Any] = {"engine": "zarr", "consolidated": consolidated}
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        try:
+            return opener(path, first_dim="auto", **kwargs)
+        except TypeError as exc:
+            if "first_dim" not in str(exc):
+                raise
+            return opener(path, **kwargs)
 
 
 def _discover_format(path: str) -> str | None:
@@ -863,9 +897,12 @@ class RadarReader:
         if not p.exists():
             raise FileNotFoundError(f"File not found: {path}")
         if p.is_dir():
+            if is_zarr_store(p):
+                return self._open_zarr_store(p)
             raise ValueError(
                 f"Could not open {p.name or p}: it is a folder, not a radar file. "
-                "Open a file inside it."
+                "Open a file inside it (a Zarr store, such as this app's Zarr export, opens as "
+                "a folder: it contains .zgroup or zarr.json)."
             )
         if not os.access(path, os.R_OK):
             raise PermissionError(
@@ -969,6 +1006,29 @@ class RadarReader:
                     self._temp_files.append(open_path)  # the open tree still reads from it
                 else:
                     _unlink_quietly(open_path)
+
+    def _open_zarr_store(self, p: Path) -> dict[str, Any]:
+        """Open a CfRadial2-layout Zarr store (the app's own Zarr export) like a CfRadial2 file."""
+        if not os.access(p, os.R_OK | os.X_OK):
+            raise PermissionError(f"Permission denied reading the folder {p.name}.")
+        try:
+            dtree = _open_zarr_cfradial2(str(p))
+            schema = self._build_schema(dtree, "zarr")
+            if not schema["sweeps"]:
+                raise ValueError("no sweep_<n> groups")
+        except ImportError as exc:
+            raise ValueError(
+                f"Could not open {p.name}: reading Zarr needs the zarr package ({exc})."
+            ) from exc
+        except Exception as exc:
+            raise ValueError(
+                f"Could not open {p.name}: it is a Zarr store, but not a radar volume in the "
+                f"CfRadial2 layout (sweep_0, sweep_1, ... groups) that this app writes ({exc}). "
+                "Open it in Python with xarray.open_datatree(path, engine='zarr')."
+            ) from exc
+        self._commit(dtree, str(p), "zarr")
+        logger.info("Opened %s as a CfRadial2 Zarr store", p)
+        return schema
 
     def open_s3_file(self, s3_path: str) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).

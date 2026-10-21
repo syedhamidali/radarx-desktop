@@ -1917,10 +1917,13 @@ def open(  # noqa: A001 - the documented entry point is api.open(); the builtin 
         raise XrdInputError(
             f"File not found: {raw} (looked for {resolved}). Check the path and the spelling."
         )
-    if os.path.isdir(resolved):
+    from engine.reader import is_zarr_store
+
+    if os.path.isdir(resolved) and not is_zarr_store(resolved):
         raise XrdInputError(
-            f"{raw} is a directory. Give a radar file (for example one *_V06 file), not a folder "
-            "(on the command line a folder is expanded to the radar files inside it)."
+            f"{raw} is a directory. Give a radar file (for example one *_V06 file) or a Zarr "
+            "store, not a folder (on the command line a folder is expanded to the radar files "
+            "inside it)."
         )
     reader = RadarReader()
     try:
