@@ -61,42 +61,50 @@ embedded in the executable, so the bundle configs also ship `dist/` as a resourc
 `RADARX_APP_DIST`, `XRADAR_APP_DIST`, next to the frozen engine, the source checkout's `dist/`, `./dist`, the installed
 apps. Cost: `dist/` is 2.5 MB (146 files), about 0.9 MB compressed in an installer.
 
-The optional `video` extra (Playwright, PyAV) is **not** frozen into the engine: unpacked it is ~180 MB (Playwright's
-Node driver 130 MB, PyAV with its FFmpeg libraries 46 MB) on top of the 220 MB engine, and the spec excludes the
-packages even when the building environment has them. Instead they come as the **movie components pack** below.
-Google Chrome is always the system one.
+The optional `video` extra is **not** frozen into the engine: Playwright is ~133 MB unpacked (its Node driver 117 MB)
+on top of the 220 MB engine, and the spec excludes the packages even when the building environment has them. Instead
+it comes as the **movie components pack** below. Google Chrome is always the system one.
+
+**No video library ships, anywhere.** The film is encoded inside the headless Chrome that draws it: the clip page
+(`src/lib/utils/clipEncoder.ts`) encodes every frame with the browser's WebCodecs `VideoEncoder` (H.264) and
+`AudioEncoder` (AAC) and muxes them with the vendored `mp4-muxer` (MIT, `src/lib/vendor/`); where a Chromium has
+no H.264 encoder it writes VP9 + Opus in WebM with the vendored `webm-muxer`. PyAV (whose PyPI wheels bundle an
+FFmpeg built `--enable-gpl` with x264 / x265, incompatible with the PolyForm-Noncommercial licence) is never in an
+installer, never in the pack and never a hard dependency: `build_movie_pack.py` refuses a pack that contains `av`
+or an FFmpeg library, and the engine uses PyAV only when the user installed it themselves (`--encoder pyav`, or
+the automatic fallback of a browser that cannot encode). The H.264 and AAC codecs are the browser vendor's.
 
 ## The movie components pack
 
 A zip per OS / architecture, built by `scripts/release/build_movie_pack.py` and attached to every release
-(`radarx-movie-pack-<version>-<os>-<arch>.zip`, about 60 MB compressed; see [RELEASING.md](RELEASING.md) for the
+(`radarx-movie-pack-<version>-<os>-<arch>.zip`, about 42 MB compressed; see [RELEASING.md](RELEASING.md) for the
 index and the download host). The installed app offers it in the Movie Studio with a consent card (what, from where,
 how big, licences), downloads it with `engine/movie_pack.py` (https from `downloads.labshope.com` only, size and
 SHA-256 checked against the release index, zip-slip and symlinks refused, every file verified against the pack's
 `manifest.json` before the folder is renamed into place, the previous pack kept until then), keeps it under
-`<user config dir>/radarx-desktop/movie-pack/<version>/` and puts that folder on `sys.path` before `playwright` /
-`av` are imported (`animate_render.have_module`). Nothing from the pack is executed except by importing those
-libraries. Settings › Data lists it with Remove.
+`<user config dir>/radarx-desktop/movie-pack/<version>/` and puts that folder on `sys.path` before `playwright`
+is imported (`animate_render.have_module`). Nothing from the pack is executed except by importing that
+library. Settings › Data lists it with Remove.
 
 ```bash
 python scripts/release/build_movie_pack.py --out dist/movie-pack          # with the engine's Python!
 ```
 
-What the script does: `pip install --target` of the exact pins in `PINS` (playwright, av, greenlet, pyee,
+What the script does: `pip install --target` of the exact pins in `PINS` (playwright, greenlet, pyee,
 typing_extensions; `--no-deps --only-binary=:all:`, `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`: Playwright's own browsers
 are never downloaded, the pack relies on the system Chrome), strips what is never loaded (tests, `.pyi`/`.pxd`
-stubs, bytecode caches, Playwright's trace viewer and recorder UIs, `RECORD`), copies every component's licence
-texts into `licenses/`, writes `manifest.json` (schema, version, `os`, `arch`, `python` = the interpreter's
-`cache_tag` such as `cpython-312`, components with versions and licences, every file with size and SHA-256), zips
-deterministically (executable bits kept for the Node driver) and writes the sidecar
+stubs, bytecode caches, Playwright's trace viewer and recorder UIs, `RECORD`), refuses `av` / FFmpeg libraries,
+copies every component's licence texts into `licenses/`, writes `manifest.json` (schema, version, `os`, `arch`,
+`python` = the interpreter's `cache_tag` such as `cpython-312`, components with versions and licences, every file
+with size and SHA-256), zips deterministically (executable bits kept for the Node driver) and writes the sidecar
 `radarx-movie-pack-<version>-<os>-<arch>.manifest.json` (the manifest without the file list plus the zip's size and
 SHA-256) that `build_index.py` reads.
 
 **The Python tag must match the frozen engine's** (greenlet is a compiled extension built for one CPython minor
-version; PyAV's modules use the stable ABI and FFmpeg is plain shared libraries): the Release workflow builds the
-pack on the same four runners with the same `python-version` as the engine jobs, and the engine refuses a pack
-whose `python` differs from its own. Measured on macOS arm64 (Python 3.14): 60.1 MB compressed, 179.3 MB unpacked,
-318 files; playwright 132.5 MB (its Node driver 117 MB), av 46.2 MB, greenlet 0.3 MB, the rest under 0.5 MB.
+version): the Release workflow builds the pack on the same four runners with the same `python-version` as the
+engine jobs, and the engine refuses a pack whose `python` differs from its own. Measured on macOS arm64 (Python
+3.14): 41.6 MB compressed, 133.0 MB unpacked, 179 files; playwright 132.5 MB (its Node driver 117 MB), greenlet
+0.3 MB, the rest under 0.3 MB.
 
 Environment overrides for tests and dry runs: `RADARX_MOVIE_PACK_DIR` (the folder), `RADARX_MOVIE_PACK_BASE_URL`
 (another host, e.g. a local `http://127.0.0.1:port` standing in for the download host), `RADARX_MOVIE_PACK_ENABLED=1`

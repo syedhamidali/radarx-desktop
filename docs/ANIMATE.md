@@ -35,8 +35,8 @@ resumes where it stopped, like the command line.
 ## Install and what it needs
 
 **In the installed app** the Movie Studio needs the *movie components*, an optional download: Playwright
-(it drives your Google Chrome, which draws the frames) and PyAV (it writes the MP4), about 60 MB to download
-and 180 MB on disk. They are not part of the installer, because they would nearly double it and most people
+(it drives your Google Chrome, which draws the frames and encodes the film), about 42 MB to download
+and 133 MB on disk. They are not part of the installer, because they would add half again to it and most people
 never render a film. When you open the Movie Studio without them, its first box offers the download: it says
 what is fetched, from where (`downloads.labshope.com`), how big it is and under which licences, and nothing is
 downloaded until you choose *Allow once*. The file is checked against its published size and SHA-256, unpacked
@@ -46,36 +46,54 @@ Linux) and loaded by the app's own engine. Each app version has its own pack (th
 engine exactly); *Settings › Data › Movie components* shows what is installed, its size and a *Remove* button.
 Google Chrome stays the one installed on your computer: the app never downloads a browser.
 
-**With the Python package** the same two libraries come from the `video` extra:
+**Who writes the film.** Chrome does: the page that draws the frames encodes each one as soon as it is drawn,
+with the browser's own H.264 encoder, adds the AAC sound of `--sound`, and hands the finished MP4 to `rxd`.
+No video library is installed or downloaded for this. `--encoder` chooses (`auto` is the default):
+
+| `--encoder` | What happens |
+|---|---|
+| `auto` | Chrome's encoder when it has one (every current Google Chrome does); otherwise PyAV if you installed it yourself; otherwise PNG frames |
+| `browser` | Chrome's encoder, or a clear error if this Chrome cannot encode |
+| `pyav` | [PyAV](https://pyav.org/) (`pip install av`), which you install yourself: its wheels bundle an FFmpeg built with GPL parts (x264), so Radarx never ships it; it is a fallback for a Chromium without an H.264 encoder, and the only way to get `--x264-preset` |
+| `png` | no film: the numbered frames and the `ffmpeg` line that encodes them |
+
+A Chromium built without H.264 (some Linux distribution packages) still encodes: the film is then VP9 + Opus
+in a WebM container, written as `name.webm` with a note in the report; `--encoder pyav` gives an MP4 there.
+`--crf` keeps its meaning (18 = visually lossless, higher is smaller): with Chrome it sets the matching target
+bit rate (about 13 Mbit/s for 1080p30 at 18), with PyAV it is x264's CRF. Key frames every 2 s, the MP4
+starts fast (`moov` first), and the `title` / `comment` tags name the record file either way.
+
+**With the Python package** Playwright comes from the `video` extra:
 
 ```bash
 pip install -U radarx                       # gridding the radars (Python >= 3.12), needed for every run
-pip install "radarx-desktop-engine[video] @ <the wheel address>"   # the optional extra: Playwright and PyAV
+pip install "radarx-desktop-engine[video] @ <the wheel address>"   # the optional extra: Playwright (and PyAV, see above)
 ```
 
-(the wheel address is the one from {doc}`installation`; the `[video]` extra adds the two video packages)
+(the wheel address is the one from {doc}`installation`; the `[video]` extra adds Playwright and, as your own
+choice, PyAV; Playwright alone is enough with Google Chrome)
 
 | Needs | Why | When it is missing |
 |---|---|---|
 | `radarx` | merges the radars onto a 3D grid (`rxd mosaic` uses it too) | exit code 4 with the install line |
 | `playwright` (extra `video`) | drives Chrome | exit code 4 with the install line |
-| Google Chrome | the renderer runs in it (the system Chrome, nothing is downloaded) | exit code 4, says to install Chrome or use `--browser ''` after `python -m playwright install chromium` |
-| `av` / PyAV (extra `video`) | encodes H.264, and the AAC sound of `--sound` | the frames are still written as numbered PNG files and the command prints the `ffmpeg` line that makes the MP4; with `--sound` the command stops before drawing (exit code 4 with the install line) rather than write a film without the sound that was asked for |
+| Google Chrome | the renderer runs in it and encodes the film (the system Chrome, nothing is downloaded) | exit code 4, says to install Chrome or use `--browser ''` after `python -m playwright install chromium` |
+| an encoder | Chrome's own (the normal case), or PyAV if you installed it | the frames are still written as numbered PNG files and the command prints the `ffmpeg` line that makes the MP4; with `--sound` the command stops before drawing (exit code 4 with the fix) rather than write a film without the sound that was asked for |
 | the 3D renderer files of the app | the renderer itself | exit code 4 |
 
-Neither Playwright nor PyAV is needed for the rest of `rxd`. `--no-render` needs none of the four rows below
-`radarx`.
+Playwright is not needed for the rest of `rxd`. `--no-render` needs none of the four rows below `radarx`.
 
 **Where the renderer is found.** `--app-dist DIR` names the folder with the app's 3D renderer files. A folder is
 accepted only if it contains the clip renderer; an older one is refused. Without `--app-dist` the folder named by
 the `RADARX_APP_DIST` environment variable is used, then the renderer files of an installed Radarx app (0.3.1 or
 later ships them as plain files in its `frontend` resource folder: `Radarx.app/Contents/Resources/frontend` on
 macOS, the `frontend` folder of the installation on Windows and Linux), so with the app installed nothing else is
-needed. Rendering a clip still needs Google Chrome (the system Chrome) and the optional video components
-(Playwright, and PyAV for the MP4); `--no-render` (the plan) works with every installation. Without PyAV:
+needed. Rendering a clip still needs Google Chrome (the system Chrome) and Playwright; `--no-render` (the plan)
+works with every installation. Without any encoder (a Chromium that cannot encode and no PyAV), or with
+`--encoder png`:
 
 ```console
-$ rxd animate -i mayfield -o mayfield.mp4
+$ rxd animate -i mayfield -o mayfield.mp4 --encoder png
 ...
 wrote mayfield_frames
 to make the MP4 from those frames: ffmpeg -framerate 30 -i 'mayfield_frames/frame_%05d.png' -c:v libx264 -crf 18 -pix_fmt yuv420p -movflags +faststart 'mayfield.mp4'
@@ -385,7 +403,11 @@ Nothing is invented: where the radar has no echo none is drawn, and the look con
   the look, the size, the frame rate and the build of the renderer, so a changed setting starts a new job and never
   mixes frames. Frames are deterministic, so a resumed clip is the same as an uninterrupted one.
 - **The MP4 is written at the end**, to `name.mp4.part` and renamed, so a crash never leaves a broken file
-  under the final name. The working frames are then deleted (`--keep-frames` keeps them). They need disk space:
+  under the final name. Chrome encodes each frame the moment it is drawn and keeps the growing film in its
+  memory (the size of the finished file, a few hundred MB at most for a long 1080p clip); `rxd` pulls it in
+  4 MB pieces when the last frame is done. The frames are still saved to disk as they are drawn, so a resumed
+  job feeds the ones it already has to the encoder and draws only the rest. The working frames are then deleted
+  (`--keep-frames` keeps them). They need disk space:
   a 1080p PNG is about 2 to 3 MB with the realistic look, so 720 frames are about 2 GB; the command checks the free space after the first
   frame and stops with the fix (`--frame-format jpg` is about 3 times smaller, a shorter clip, `--size`, or
   `--cache-dir` on a bigger disk).
@@ -402,8 +424,9 @@ with the flat map takes 0.06 to 0.1 s. The software renderer is several times sl
 Next to the result `rxd animate` writes `clip.animate.json` (`folder/animate.json` for a PNG sequence,
 `still.animate.json` for a still) and puts a short note in the MP4's tags (`title`, `comment`: the radars, the
 time span, that frames between volumes are interpolated, and the name of that file). The record has the
-command line, the date, the versions (engine, radarx, xradar, Python, Playwright, PyAV, Chrome, the build of
-the renderer), every input volume (radar, volume time, offset from the step, file name and size, where the time came
+command line, the date, the versions (engine, radarx, xradar, Python, Playwright, Chrome, the encoder that wrote
+the film with its codecs, PyAV if present, the build of the renderer), every input volume (radar, volume time,
+offset from the step, file name and size, where the time came
 from), every parameter, the page settings (the look), the steps, the storm track, the frame plan, the camera,
 the files that were not used and the method in words, so a clip can be checked and repeated later. With
 `--sound` the record has the `sound` block described above, and the chosen flashes are written next to the film as
@@ -424,7 +447,7 @@ record can be shared without showing your folders; `--record-paths` also writes 
 | camera | `--camera NAME\|FILE`, `--target-lag`, `--fov`, `--view-km`, `--vexag`, and for `window`: `--observer X,Y`, `--observer-dist`, `--observer-upwind`, `--observer-side`, `--eye-m`, `--pan`, `--pitch` |
 | look | `--look FILE`, `--look-preset NAME`, `--set KEY=VALUE`, `--realistic`, `--ground`, `--storm-style`, `--palette`, `--light`, `--sea`, `--map-theme`, `--basemap`, `--lightning-model` |
 | sound | `--sound`, `--sound-listener X,Y`, `--sound-compress N`, `--sound-seed N`, `--sound-thunder-db DB`, `--flashes FILE`, `--flashes-from-glm DIR`, `--glm-radius-km 30`, `--glm-bin-s S`, `--draw-flashes` |
-| render | `--tile-cache DIR`, `--offline`, `--app-dist DIR`, `--browser CHANNEL`, `--software`, `--crf 18`, `--x264-preset medium`, `--frame-format png\|jpg`, `--keep-frames`, `--no-render` |
+| render | `--tile-cache DIR`, `--offline`, `--app-dist DIR`, `--browser CHANNEL`, `--software`, `--encoder auto\|browser\|pyav\|png`, `--crf 18`, `--x264-preset medium` (PyAV only), `--frame-format png\|jpg`, `--keep-frames`, `--no-render` |
 
 A config file holds the same names with `_` or `-`; options on the command line win. An option that does
 not exist is refused with the nearest one:
@@ -450,7 +473,8 @@ error: unrecognized option(s): --tolerence-s. Did you mean --tolerance-s?
 
 Exit codes are those of the other commands: 0 success, 2 a wrong option or setting (a camera or look file,
 a size, a duration, a flash file, a sound option without `--sound`), 3 the input files (none found, none usable, fewer than
-two time steps), 4 a missing Python package, Chrome or the renderer files (also PyAV when `--sound` is given),
+two time steps), 4 a missing Python package, Chrome, an encoder that was asked for, or the renderer files (also
+no encoder at all when `--sound` is given),
 1 the processing failed (no storm found: lower `--cell-dbz`; no GLM flash near the storm).
 
 ## Examples on the real cases

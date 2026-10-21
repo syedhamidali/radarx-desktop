@@ -129,10 +129,10 @@ manifest) and has sorted keys. Schema version 1:
           "os": "macos",
           "arch": "aarch64",
           "python": "cpython-312",
-          "size": 60090257,
+          "size": 41578367,
           "sha256": "…",
           "url": "https://downloads.labshope.com/radarx/v0.3.1/radarx-movie-pack-0.3.1-macos-aarch64.zip",
-          "contents": [{"name": "playwright", "version": "1.64.0", "license": "Apache-2.0"}, {"name": "av", "version": "19.0.2", "license": "BSD-3-Clause"}]
+          "contents": [{"name": "playwright", "version": "1.64.0", "license": "Apache-2.0"}, {"name": "greenlet", "version": "3.5.6", "license": "MIT AND PSF-2.0"}, {"name": "pyee", "version": "14.0.0", "license": "MIT"}, {"name": "typing_extensions", "version": "4.15.0", "license": "PSF-2.0"}]
         }
       ]
     }
