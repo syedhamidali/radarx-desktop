@@ -18,6 +18,20 @@ rxd animate -i mayfield -o storm.mp4 --winds --sound --flashes-from-glm glm/   #
 It is the command-line form of the storm clips of the app ({doc}`STORM_CLIP` has the details of the renderer, the
 realistic look and the cyclone flight).
 
+## In the app: the Movie Studio
+
+The same thing without a terminal: **Movie** in the toolbar (or "Movie Studio" in the command palette) opens a
+dialog with the same six decisions in order. What to film (the files already open, more files, or a folder; a
+time window), the plan before anything is drawn (the time steps, the storm's track, how many frames are observed
+and how many interpolated, the camera; the same as `--no-render`), the focus and camera (zoom on the strongest storm
+or the whole scene, the box size, the presets below, a preview of one frame at a chosen second), the look
+(the scientific colour scale or the realistic look, labelled stylised, with its ground, light and palette; title
+and subtitle), the sound (synthesised, labelled so, only when the engine has it) and the render, with progress
+and a Cancel button in the dialog and in the operations tray. The finished MP4 plays in the dialog, with
+"Show in folder", "Export a copy" and the record next to it (which holds the equivalent `rxd animate` command).
+Everything the renderer needs is checked first and a missing piece is named with the fix. A stopped render
+resumes where it stopped, like the command line.
+
 ## Install and what it needs
 
 ```bash
