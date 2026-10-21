@@ -105,5 +105,10 @@ replaced by raw data.
 
 * Gap-filled and smoothed values are estimates, not measurements.
 * The built-in `dealias` is weaker than radarx's; prefer radarx for strongly sheared flow.
+* The default `region` de-aliasing can fail on difficult scans (strong shear, a mesocyclone, much
+  missing or noisy velocity): look for patches folded by twice the Nyquist velocity. The alternative is
+  UNRAVEL (Louf et al. 2020): Method `unravel` in the app, `-P dealias.method=unravel` on the command
+  line. It is slower and can itself leave small suspect clusters of wrongly unfolded gates, so check the
+  result in both cases.
 * The clutter and biological defaults are conservative starting points tuned on S-band NEXRAD
   data; check the preview ("Removed by") before trusting them on other radars.
