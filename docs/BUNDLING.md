@@ -42,6 +42,30 @@ workflow ([RELEASING.md](RELEASING.md)).
 The bundle configs are separate files because the engine only exists after `build_engine.py`; putting it in
 `tauri.conf.json` would break `cargo check` and `tauri dev`.
 
+## The renderer files (`frontend`)
+
+Movies (`rxd animate`, the Movie Studio) are drawn by the app's own 3D renderer in headless Chrome, which needs the
+built frontend as real files (`dist/` with `index.html` and the storm-clip renderer). The webview loads the copy
+embedded in the executable, so the bundle configs also ship `dist/` as a resource next to the engine:
+
+| | engine | frontend |
+|---|---|---|
+| macOS (`bundle.macOS.files`) | `Radarx.app/Contents/Resources/engine` | `Radarx.app/Contents/Resources/frontend` |
+| Windows (`bundle.resources`) | `<install dir>\engine` | `<install dir>\frontend` |
+| Linux deb/rpm (`bundle.resources`) | `/usr/lib/Radarx/engine` | `/usr/lib/Radarx/frontend` |
+
+`npm run tauri build` runs `npm run build` first, so `dist/` exists before the bundler copies it. The shell sets
+`RADARX_APP_DIST=<resources>/frontend` when it starts the packaged engine (unless the variable is already set), and
+`engine/animate_render.py::frontend_candidates` also looks next to a frozen engine (`<resources>/engine/..` ->
+`<resources>/frontend`) and in the usual install locations, for an `rxd` installed with pip. Order: `--app-dist`,
+`RADARX_APP_DIST`, `XRADAR_APP_DIST`, next to the frozen engine, the source checkout's `dist/`, `./dist`, the installed
+apps. Cost: `dist/` is 2.5 MB (146 files), about 0.9 MB compressed in an installer.
+
+The optional `video` extra (Playwright, PyAV) is **not** frozen into the engine: unpacked it is ~180 MB (Playwright's
+Node driver 130 MB, PyAV with its FFmpeg libraries 46 MB) on top of the 220 MB engine. So the packaged engine reports
+the missing components with the install line, and movies are rendered by an `rxd` installed with pip and the `video`
+extra, which finds the installed app's `frontend` folder by itself. Google Chrome is always the system one.
+
 ## What `build_engine.py` checks
 
 It starts the frozen engine, waits for `READY:<port>`, then drives it like the app does: lists the plugin

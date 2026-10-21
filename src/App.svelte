@@ -17,8 +17,11 @@
   import AccountChip from './lib/components/AccountChip.svelte';
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
+  import { movieStudioOpen, openMovieStudio } from './lib/stores/movieStudio';
+  import { panelOpen as autopilotOpen, openAutopilot, AUTOPILOT_DROP_MIN } from './lib/stores/autopilot';
   import { updater } from './lib/stores/updater';
   import { reportIssueOpen, openReportIssue, closeReportIssue } from './lib/stores/reportIssue';
+  import { commandStudioOpen, openCommandStudio } from './lib/stores/commandStudio';
   import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
@@ -52,13 +55,17 @@
   const timeline = lazy(() => import('./lib/components/Timeline.svelte'));
   const crossDock = lazy(() => import('./lib/components/CrossSectionDock.svelte'));
   const crossDialog = lazy(() => import('./lib/components/CrossSectionDialog.svelte'));
+  const movieStudio = lazy(() => import('./lib/components/MovieStudio.svelte'));
   const palette = lazy(() => import('./lib/components/CommandPalette.svelte'));
   const dataCheckPanel = lazy(() => import('./lib/components/DataCheckPanel.svelte'));
+  const autopilotPanel = lazy(() => import('./lib/components/AutopilotPanel.svelte'));
   const tour = lazy(() => import('./lib/components/OnboardingTour.svelte'));
   const shortcutsSheet = lazy(() => import('./lib/components/ShortcutsSheet.svelte'));
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
   const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
   const reportDialog = lazy(() => import('./lib/components/ReportIssueDialog.svelte'));
+  // Command Studio: every rxd command as a form (stores/commandStudio.ts).
+  const commandStudio = lazy(() => import('./lib/components/CommandStudio.svelte'));
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
   // it opens itself when a download needs the user's approval.
   const envDialog = lazy(() => import('./lib/components/EnvApprovalDialog.svelte'));
@@ -145,11 +152,13 @@
   $effect(() => { if ($crossSectionStore.layout === 'modal') crossDialog.load(); });
   $effect(() => { if (commandPaletteVisible) palette.load(); });
   $effect(() => { if ($dataCheckOpen) dataCheckPanel.load(); });
+  $effect(() => { if ($autopilotOpen) autopilotPanel.load(); });
   $effect(() => { if (onboardingVisible) tour.load(); });
   $effect(() => { if (shortcutsSheetVisible) shortcutsSheet.load(); });
   $effect(() => { if (aboutDialogVisible) aboutDialog.load(); });
   $effect(() => { if (settingsOpen) settingsDialog.load(); });
   $effect(() => { if ($reportIssueOpen) reportDialog.load(); });
+  $effect(() => { if ($commandStudioOpen) commandStudio.load(); });
   $effect(() => { whenIdle(() => envDialog.load()); });
   // Not needed for the first paint: fetched when idle (so its fade-in plays), or at once if it is asked for.
   $effect(() => { whenIdle(() => updateDialog.load()); });
@@ -298,7 +307,9 @@
         } else if (type === 'drop') {
           isDragOver = false;
           const paths = (event.payload as any).paths as string[] | undefined;
-          if (paths && paths.length > 0) openPaths(paths);
+          // Many files (or a folder) at once: Autopilot inspects and plans; nothing opens by itself.
+          if (paths && paths.length >= AUTOPILOT_DROP_MIN) openAutopilot(paths);
+          else if (paths && paths.length > 0) openPaths(paths);
         }
       });
       // The component may have been destroyed while the listener was registering.
@@ -935,6 +946,7 @@
         <button class="view-btn" class:active={viewMode === 'dualpol'} on:pointerenter={() => dualPol.load()} on:focus={() => dualPol.load()} on:click={() => { viewMode = 'dualpol'; syncWorkspace(); }} title="Dual-Pol Analysis Dashboard">DualPol</button>
       </div>
 
+      <button class="toolbar-btn" on:pointerenter={() => movieStudio.load()} on:focus={() => movieStudio.load()} on:click={() => { void movieStudio.load(); openMovieStudio(); }} title="Movie Studio: make a storm movie (MP4)" aria-label="Movie Studio">Movie</button>
       <button class="toolbar-btn icon-btn" class:active={$diffMode === 'diff'} on:click={toggleDiffMode} title="Toggle Diff View">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="9" cy="12" r="6" /><circle cx="15" cy="12" r="6" />
@@ -1134,6 +1146,7 @@
   <ToastContainer />
   {#if updateDialog.component}<updateDialog.component />{/if}
   {#if $dataCheckOpen && dataCheckPanel.component}<dataCheckPanel.component onshowpanel={showPanel} />{/if}
+  {#if $autopilotOpen && autopilotPanel.component}<autopilotPanel.component onopen={openPaths} />{/if}
   {#if palette.component}
   <palette.component bind:visible={commandPaletteVisible} on:close={() => (commandPaletteVisible = false)} on:action={(e) => {
     const { type, value } = e.detail;
@@ -1148,10 +1161,14 @@
     else if (type === 'show-tour') onboardingVisible = true;
     else if (type === 'about') aboutDialogVisible = true;
     else if (type === 'report-issue') openReportIssue();
+    else if (type === 'command-studio') openCommandStudio();
     else if (type === 'export') showPanel('export');
     else if (type === 'data-check') openDataCheck();
+    else if (type === 'movie-studio') { void movieStudio.load(); openMovieStudio(); }
+    else if (type === 'autopilot') openAutopilot(get(openFiles).map((f) => f.path));
   }} />
   {/if}
+  {#if $movieStudioOpen && movieStudio.component}<movieStudio.component />{/if}
   {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}
   {#if shortcutsSheet.component}<shortcutsSheet.component bind:visible={shortcutsSheetVisible} />{/if}
   {#if aboutDialog.component}<aboutDialog.component bind:visible={aboutDialogVisible} />{/if}
@@ -1159,6 +1176,7 @@
   {#if envDialog.component}<envDialog.component />{/if}
   {#if shareHost.component}<shareHost.component />{/if}
   {#if $reportIssueOpen && reportDialog.component}<reportDialog.component onclose={closeReportIssue} />{/if}
+  {#if $commandStudioOpen && commandStudio.component}<commandStudio.component onopen={openPaths} />{/if}
   {#if settingsOpen && settingsDialog.component}
     <settingsDialog.component open={true} on:close={() => (settingsOpen = false)} />
   {/if}

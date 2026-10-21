@@ -582,7 +582,9 @@ def fake_open(monkeypatch):
 def test_cli_check_exit_zero_with_findings_and_json(fake_open, capsys):
     code = fake_open.main(["check", "-i", "aliased.nc", "--json"])
     assert code == 0  # findings are not errors
-    rep = json.loads(capsys.readouterr().out)
+    reps = json.loads(capsys.readouterr().out)
+    assert isinstance(reps, list) and len(reps) == 1  # a list also for one file
+    rep = reps[0]
     assert rep["counts"]["warning"] >= 2 and rep["file"] == "aliased.nc"
     assert {f["id"] for f in rep["findings"]} >= {"velocity_aliasing", "zdr_offset"}
 
@@ -633,7 +635,7 @@ def test_cli_check_real_file(capsys):
     from engine import cli
 
     assert cli.main(["check", "-i", str(KTLX), "--json"]) == 0
-    rep = json.loads(capsys.readouterr().out)
+    (rep,) = json.loads(capsys.readouterr().out)
     assert rep["n_sweeps"] == 17
 
 

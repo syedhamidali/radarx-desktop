@@ -115,7 +115,7 @@ KTLX20130520_201643_V06.gz  (nexrad_level2, 17 sweeps, S band; checked in 1.0 s)
   ...
 $ rxd check -i FILE --fix-plan -o recipe.json     # also writes the suggested recipe(s) as JSON
 $ rxd pipeline recipe_velocity.json -i FILE       # run it yourself
-$ rxd check -i A B C --json                       # a JSON list, one report per file
+$ rxd check -i A B C --json                       # a JSON list, one report per file (also for one file)
 ```
 
 Options follow the {doc}`shared options <CLI>`: `-i`, `--json`, `-v` (adds each finding's method and

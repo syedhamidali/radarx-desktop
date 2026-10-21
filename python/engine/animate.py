@@ -18,6 +18,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
 import shutil
 import time
 from collections.abc import Callable
@@ -32,6 +33,12 @@ from engine import animate_plan as plan
 from engine.animate_plan import AnimateConfigError, AnimatePlanError
 
 Note = Callable[[str], None]
+#: ``on_frame(k, total) -> stop?``: called after every rendered frame (see :func:`run`).
+FrameHook = Callable[[int, int], bool]
+
+
+class AnimateCancelledError(Exception):
+    """The caller asked to stop (the app's Cancel button); nothing is broken, the job can resume."""
 
 
 @dataclass
@@ -108,6 +115,7 @@ class AnimateOptions:
     browser: str = "chrome"
     software: bool = False
     command: str = ""  # the command line, recorded in the provenance file
+    record_paths: bool = False  # --record-paths: full local input paths in the provenance file
     crf: int = 18
     preset: str = "medium"
     frame_format: str = "png"
@@ -478,15 +486,20 @@ def run(
     detail: Note = lambda _m: None,
     gridder: data.Gridder | None = None,
     meta: Callable[[Path], tuple[str, datetime]] | None = None,
+    on_frame: FrameHook | None = None,
 ) -> AnimateResult:
     """Plan, grid, track, plan the frames and (unless ``no_render``) render and write the output.
+
+    ``on_frame(k, total)`` is called after every rendered frame (the app's progress bar); when it
+    returns True the rendering stops with :class:`AnimateCancelledError` (the frames drawn so far stay
+    in the cache, so the same job resumes later).
 
     Needs a signed-in account like everything else (``AccountRequired`` otherwise, docs/ACCOUNTS.md).
     """
     from engine.account import activity, require_account
 
     require_account()
-    result = _run(o, note, detail, gridder, meta)
+    result = _run(o, note, detail, gridder, meta, on_frame)
     activity.record("animate_run")
     return result
 
@@ -497,6 +510,7 @@ def _run(
     detail: Note,
     gridder: data.Gridder | None,
     meta: Callable[[Path], tuple[str, datetime]] | None,
+    on_frame: FrameHook | None = None,
 ) -> AnimateResult:
     t_start = time.perf_counter()
     from engine import animate_render as render
@@ -631,13 +645,20 @@ def _run(
         return res
 
     assert dist is not None and base_settings is not None
-    _render(res, dist, page_settings(o, cp, sp, o.fps, duration, sound_plan), note, detail)
+    _render(
+        res, dist, page_settings(o, cp, sp, o.fps, duration, sound_plan), note, detail, on_frame
+    )
     res.seconds = time.perf_counter() - t_start
     return res
 
 
 def _render(
-    res: AnimateResult, dist: Path, settings: dict[str, Any], note: Note, detail: Note
+    res: AnimateResult,
+    dist: Path,
+    settings: dict[str, Any],
+    note: Note,
+    detail: Note,
+    on_frame: FrameHook | None = None,
 ) -> None:
     from engine import animate_render as render
 
@@ -765,6 +786,11 @@ def _render(
                     note(
                         f"frame {k}/{total} ({per:.2f} s each, about {per * (total - k):.0f} s left)"
                     )
+                if on_frame is not None and on_frame(k, total):
+                    raise AnimateCancelledError(
+                        f"stopped after {k} of {total} frames: the frames drawn so far are kept, "
+                        "so the same film resumes where it stopped"
+                    )
 
             if todo:
                 try:
@@ -883,25 +909,37 @@ def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) 
     from engine import animate_render as render
 
     o = res.options
-    params = {k: v for k, v in asdict(o).items() if k not in ("files", "command")}
+    params = {k: v for k, v in asdict(o).items() if k not in ("files", "command", "record_paths")}
+    # input files by name and by their path inside the common input folder (no user folders);
+    # the full local path only with --record-paths, in a field that says so
+    used = [vol for st in res.steps.steps for vol, _off in st.files.values()]
+    try:
+        common = os.path.commonpath([str(v.path.parent) for v in used]) if used else ""
+    except ValueError:  # different drives
+        common = ""
     inputs = []
     for i, st in enumerate(res.steps.steps):
         for radar, (vol, off) in sorted(st.files.items()):
             size = None
             with contextlib.suppress(OSError):
                 size = vol.path.stat().st_size
-            inputs.append(
-                {
-                    "step": i,
-                    "radar": radar,
-                    "volume_time": vol.time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "offset_s": off,
-                    "file": vol.name,
-                    "path": str(vol.path),
-                    "size_bytes": size,
-                    "time_from": vol.source,
-                }
-            )
+            rel = vol.name
+            if common:
+                with contextlib.suppress(ValueError):
+                    rel = Path(os.path.relpath(vol.path, common)).as_posix()
+            entry = {
+                "step": i,
+                "radar": radar,
+                "volume_time": vol.time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "offset_s": off,
+                "file": vol.name,
+                "relative_path": rel,
+                "size_bytes": size,
+                "time_from": vol.source,
+            }
+            if o.record_paths:
+                entry["local_path"] = str(vol.path)
+            inputs.append(entry)
     doc = res.to_dict()
     doc["tool"] = "rxd animate"
     doc["created_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -115,6 +115,13 @@
         action: () => dispatch('action', { type: 'show-tour' }),
       },
       {
+        id: 'command-studio',
+        label: 'Command Studio: every rxd command as a form...',
+        category: 'Tools',
+        icon: '⌨',
+        action: () => dispatch('action', { type: 'command-studio' }),
+      },
+      {
         id: 'report-issue',
         label: 'Report an Issue...',
         category: 'App',
@@ -168,6 +175,14 @@
       action: () => dispatch('action', { type: 'data-check' }),
     });
 
+    actions.push({
+      id: 'autopilot',
+      label: 'Autopilot: inspect, plan and run analyses for a set of files',
+      category: 'File',
+      icon: '◎',
+      action: () => dispatch('action', { type: 'autopilot' }),
+    });
+
     // Export action
     actions.push({
       id: 'export',
@@ -175,6 +190,14 @@
       category: 'File',
       icon: '\u{1F4BE}',
       action: () => dispatch('action', { type: 'export' }),
+    });
+
+    actions.push({
+      id: 'movie-studio',
+      label: 'Movie Studio: make a storm movie (MP4)',
+      category: 'File',
+      icon: '\u{1F3AC}',
+      action: () => dispatch('action', { type: 'movie-studio' }),
     });
 
     return actions;

@@ -12,6 +12,8 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import os
+import sys
 import tracemalloc
 from datetime import datetime, timedelta, timezone
 from itertools import pairwise
@@ -1047,6 +1049,16 @@ class TestRunWithoutRendering:
         assert {v["time_from"] for v in vols} == {"name"} and vols[1]["offset_s"] == 40
         assert "interpolation" in doc["method"] and "observed" in doc["method"]["labels"]
         assert "nothing_invented" in doc["method"] and doc["frames"]["frames"] == 480
+        # no local folders by default: names and paths inside the input folder only
+        assert all("local_path" not in v and "path" not in v for v in vols)
+        assert all(not os.path.isabs(v["relative_path"]) for v in vols)
+        assert str(tmp_path) not in json.dumps(vols)
+        assert "record_paths" not in doc["parameters"]
+
+    def test_provenance_full_paths_only_on_request(self, tmp_path):
+        res = animate.run(self.opts(tmp_path, record_paths=True), gridder=SyntheticGridder())
+        vols = animate.provenance(res, {}, None)["input_volumes"]
+        assert all(os.path.isabs(v["local_path"]) for v in vols)
 
     def test_mp4_tags_say_what_the_clip_is(self, tmp_path):
         res = animate.run(self.opts(tmp_path), gridder=SyntheticGridder())
@@ -1231,6 +1243,26 @@ class TestOptionalDependencies:
         assert c[0] == tmp_path / "explicit" and c[1] == tmp_path / "env"
         assert any(p.name == "dist" and p.parent.name != "env" for p in c[2:])
 
+    def test_frontend_shipped_next_to_frozen_engine(self, tmp_path, monkeypatch):
+        """An installer: <resources>/engine/xradar-engine finds <resources>/frontend by itself."""
+        exe = tmp_path / "Resources" / "engine" / "xradar-engine"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        front = tmp_path / "Resources" / "frontend"
+        (front / "assets").mkdir(parents=True)
+        (front / "index.html").write_text("<html></html>")
+        (front / "assets" / "app.js").write_text("window.__xrClip = {}")
+        for name in ("RADARX_APP_DIST", "XRADAR_APP_DIST"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(exe))
+        monkeypatch.setattr(sys, "_MEIPASS", str(exe.parent / "_internal"), raising=False)
+        cands = render.frontend_candidates()
+        assert front in cands
+        assert cands.index(front) < cands.index(Path(render.__file__).resolve().parents[2] / "dist")
+        monkeypatch.setenv("RADARX_APP_DIST", str(tmp_path / "set-by-the-shell"))
+        assert render.frontend_candidates()[0] == tmp_path / "set-by-the-shell"
+
     def test_chrome_args_have_no_proxy(self):
         assert "--no-proxy-server" in render.chrome_args()
 
@@ -1294,6 +1326,18 @@ class TestCommand:
             "sys.stdin", io.StringIO("\n".join(str(p) for p in sorted((case / "KAAA").iterdir())))
         )
         assert len(animate_cli.expand_animate_inputs(["-"])) == 4
+
+    def test_relative_and_home_paths_become_absolute(self, case, monkeypatch):
+        import os
+
+        from engine import animate_cli
+
+        monkeypatch.chdir(case)
+        files = animate_cli.expand_animate_inputs(["KAAA"])
+        assert len(files) == 4 and all(os.path.isabs(f) and os.path.exists(f) for f in files)
+        monkeypatch.setenv("HOME", str(case))
+        files = animate_cli.expand_animate_inputs(["~/KAAA"])
+        assert len(files) == 4 and all(os.path.isabs(f) for f in files)
 
     def test_no_files_is_a_usage_error(self, capsys):
         code, _, err = run_cli(capsys, "animate")

@@ -1703,6 +1703,11 @@ class RadarExporter:
         progress(10, "Preparing CfRadial1 NetCDF export")
         mask = bool(options.get("mask_no_echo", True))
         vm, vm_params = _volume_value_masks(options, datatree)
+        from engine import governor
+
+        # CfRadial1 pads every sweep to one grid (peak ~8 x the decoded volume): refuse with a
+        # clear message (and the alternatives) instead of running out of memory or disk.
+        governor.check_tree_export(datatree, "nc", output_path)
         with (
             _output_target(output_path, suffix=".nc", prefix="radarx_export_") as target,
             _fast_cfradial1_mapper(),

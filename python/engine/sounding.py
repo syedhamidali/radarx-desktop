@@ -70,12 +70,16 @@ class Sounding:
     drift: dict[str, Any] | None = None
     #: dew point assumed (dry) above the last reported humidity; K array same length as profile
     dewpoint_filled: Any = None
+    #: "observed" (a radiosonde) or "model" (a model/reanalysis column such as ERA5 or HRRR)
+    data_class: str = "observed"
 
     @property
     def surface_height_m(self) -> float:
         return float(self.profile["height"].values[0])
 
     def drift_note(self) -> str:
+        if self.data_class == "model":
+            return "A model or reanalysis column at one grid point and one time (no balloon drift)."
         if self.drift:
             d = self.drift
             return (
@@ -89,13 +93,16 @@ class Sounding:
         )
 
     def layer_provenance(self) -> layer_provenance.LayerProvenance:
+        model = self.data_class == "model"
         return layer_provenance.sounding(
             station=self.station or self.station_name,
             launch_time=self.launch_time,
-            source=self.source or "radiosonde file",
-            method=f"Radiosonde profile read from {self.file or 'a file'}"
+            source=self.source or ("model profile file" if model else "radiosonde file"),
+            method=("Model or reanalysis profile" if model else "Radiosonde profile")
+            + f" read from {self.file or 'a file'}"
             + (f" ({self.fmt})" if self.fmt else "")
             + "; geopotential heights converted to geometric metres.",
+            kind="model" if model else "observed",
         )
 
     def levels(self, max_levels: int | None = UI_MAX_LEVELS) -> dict[str, Any]:
@@ -135,6 +142,7 @@ class Sounding:
             "launch_time": self.launch_time,
             "source": self.source,
             "format": self.fmt,
+            "data_class": self.data_class,
             "file": self.file,
             "surface_height_m": round(self.surface_height_m, 1),
             "notes": list(self.notes),
@@ -334,6 +342,24 @@ def _col(values: list[str], scale: float = 1.0) -> np.ndarray:
             continue
         out[i] = x * scale
     return out
+
+
+#: Names that mark a profile as model or reanalysis output rather than a radiosonde (kept narrow:
+#: a radiosonde file that mentions e.g. its sonde "model" must stay observed).
+_MODEL_WORDS = re.compile(
+    r"\b(era5|era-5|era-interim|merra-?2|reanalysis|hrrr|gfs|ecmwf|"
+    r"model (?:profile|column|output|analysis|sounding))\b",
+    re.IGNORECASE,
+)
+
+
+def classify_source(*texts: Any) -> str:
+    """``"model"`` when a source text names a model or reanalysis (ERA5, HRRR, ...), else
+    ``"observed"``."""
+    for t in texts:
+        if t and _MODEL_WORDS.search(str(t)):
+            return "model"
+    return "observed"
 
 
 def _finish(built: tuple[Any, list[str], Any], **meta: Any) -> Sounding:
@@ -772,6 +798,9 @@ def parse_csv(text: str, file: str = "", wind_units: str | None = None) -> Sound
         file=file,
     )
     sound.notes[:0] = notes
+    sound.data_class = classify_source(*comments)
+    if sound.data_class == "model":
+        sound.source = "CSV model/reanalysis profile"
     if lat_c is not None and lon_c is not None and np.isfinite(lat_c[0]).any():
         la, lo = lat_c[0], lon_c[0]
         ok = np.isfinite(la) & np.isfinite(lo)
@@ -830,8 +859,15 @@ def from_radarx_profile(ds: Any, *, file: str = "", fmt: str = "") -> Sounding:
         time=str(ds["time"].values)[:19] if "time" in ds.coords else "",
     )
     attrs = ds.attrs
+    declared = str(attrs.get("data_class", attrs.get("kind", ""))).lower()
+    data_class = (
+        "model"
+        if declared in ("model", "model-analysis", "reanalysis")
+        else classify_source(attrs.get("source", ""), attrs.get("title", ""))
+    )
     return _finish(
         built,
+        data_class=data_class,
         station=str(attrs.get("station", "")),
         station_name=str(attrs.get("station_name", "")),
         latitude=_float(ds["latitude"].values) if "latitude" in ds.coords else None,

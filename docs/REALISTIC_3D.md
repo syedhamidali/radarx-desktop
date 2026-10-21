@@ -139,6 +139,10 @@ The **Look…** button of the 3D tab (Storm: Realistic) opens a collapsible pane
 | `tint` | Tint (green - magenta): Negative greener, positive more magenta. | -1 to 1 | 0 |
 
 ### Cloud
+`densityScale` and `lowDbzCutoff` (also as `--set densityScale=...` / `--set lowDbzCutoff=...` in
+`rxd animate`) act only in the realistic style: they shape the cloud colours and opacity. In the scientific
+style the echo is drawn with the dBZ colour scale and these two have no effect.
+
 | key | what it does | range | default |
 |---|---|---|---|
 | `cloudAlbedo` | Cloud whiteness: Reflectivity of the cloud colour (above 1 brightens the body, below greys it). | 0.5 to 1.3 | 1 |

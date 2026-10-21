@@ -18,6 +18,20 @@ rxd animate -i mayfield -o storm.mp4 --winds --sound --flashes-from-glm glm/   #
 It is the command-line form of the storm clips of the app ({doc}`STORM_CLIP` has the details of the renderer, the
 realistic look and the cyclone flight).
 
+## In the app: the Movie Studio
+
+The same thing without a terminal: **Movie** in the toolbar (or "Movie Studio" in the command palette) opens a
+dialog with the same six decisions in order. What to film (the files already open, more files, or a folder; a
+time window), the plan before anything is drawn (the time steps, the storm's track, how many frames are observed
+and how many interpolated, the camera; the same as `--no-render`), the focus and camera (zoom on the strongest storm
+or the whole scene, the box size, the presets below, a preview of one frame at a chosen second), the look
+(the scientific colour scale or the realistic look, labelled stylised, with its ground, light and palette; title
+and subtitle), the sound (synthesised, labelled so, only when the engine has it) and the render, with progress
+and a Cancel button in the dialog and in the operations tray. The finished MP4 plays in the dialog, with
+"Show in folder", "Export a copy" and the record next to it (which holds the equivalent `rxd animate` command).
+Everything the renderer needs is checked first and a missing piece is named with the fix. A stopped render
+resumes where it stopped, like the command line.
+
 ## Install and what it needs
 
 ```bash
@@ -39,9 +53,12 @@ Neither Playwright nor PyAV is needed for the rest of `rxd`. `--no-render` needs
 `radarx`.
 
 **Where the renderer is found.** `--app-dist DIR` names the folder with the app's 3D renderer files. A folder is
-accepted only if it contains the clip renderer; an older one is refused. The installers embed the renderer in the
-program, so its files cannot be used for this today: rendering a clip with `rxd animate` needs a separate copy of
-them, while `--no-render` (the plan) works with every installation. Without PyAV:
+accepted only if it contains the clip renderer; an older one is refused. Without `--app-dist` the folder named by
+the `RADARX_APP_DIST` environment variable is used, then the renderer files of an installed Radarx app (0.3.0 or
+later ships them as plain files in its `frontend` resource folder: `Radarx.app/Contents/Resources/frontend` on
+macOS, the `frontend` folder of the installation on Windows and Linux), so with the app installed nothing else is
+needed. Rendering a clip still needs Google Chrome (the system Chrome) and the optional video components
+(Playwright, and PyAV for the MP4); `--no-render` (the plan) works with every installation. Without PyAV:
 
 ```console
 $ rxd animate -i mayfield -o mayfield.mp4
@@ -377,6 +394,9 @@ from), every parameter, the page settings (the look), the steps, the storm track
 the files that were not used and the method in words, so a clip can be checked and repeated later. With
 `--sound` the record has the `sound` block described above, and the chosen flashes are written next to the film as
 `clip.flashes.csv`.
+Input files are recorded by name and by their path inside the input folder (`KTLX/KTLX20130520_...`), so the
+record can be shared without showing your folders; `--record-paths` also writes each file's full local path
+(field `local_path`).
 
 ## All options
 
@@ -386,7 +406,7 @@ the files that were not used and the method in words, so a clip can be checked a
 | Group | Options |
 |---|---|
 | clip | `--duration S` or `--timelapse X` (length = data span / X + 3 s), `--fps 30`, `--size 1920x1080`, `--title`, `--subtitle`, `--credit` |
-| storm and grids | `--cell-dbz 45`, `--track cells\|linear\|eye`, `--crop-km 60`, `--detail-m 500`, `--winds`, `--cache-dir`, `--fresh` |
+| storm and grids | `--cell-dbz 45`, `--track cells\|linear\|eye`, `--crop-km 60`, `--detail-m 500`, `--winds`, `--cache-dir`, `--fresh`, `--record-paths` |
 | camera | `--camera NAME\|FILE`, `--target-lag`, `--fov`, `--view-km`, `--vexag`, and for `window`: `--observer X,Y`, `--observer-dist`, `--observer-upwind`, `--observer-side`, `--eye-m`, `--pan`, `--pitch` |
 | look | `--look FILE`, `--look-preset NAME`, `--set KEY=VALUE`, `--realistic`, `--ground`, `--storm-style`, `--palette`, `--light`, `--sea`, `--map-theme`, `--basemap`, `--lightning-model` |
 | sound | `--sound`, `--sound-listener X,Y`, `--sound-compress N`, `--sound-seed N`, `--sound-thunder-db DB`, `--flashes FILE`, `--flashes-from-glm DIR`, `--glm-radius-km 30`, `--glm-bin-s S`, `--draw-flashes` |
