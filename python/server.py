@@ -5056,6 +5056,37 @@ async def _dispatch(handler: ConnectionHandler, raw_message: str | bytes) -> Non
 WEB_MAX_INFLIGHT = 16
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+#: Most request tasks one desktop connection may have in flight at once. Generous: the app's
+#: scheduler keeps far fewer than this running; the limit only stops a runaway client from
+#: piling up unbounded work. ``XRADAR_DESKTOP_MAX_INFLIGHT`` overrides it.
+DESKTOP_MAX_INFLIGHT = _env_int("XRADAR_DESKTOP_MAX_INFLIGHT", 32)
+
+#: Messages the desktop in-flight limit never refuses: liveness, the account gate and every
+#: cancel (cheap, and the way the user gets out of a busy engine).
+_ALWAYS_ADMITTED = frozenset({"ping", "get_web_info"}) | AUTH_MESSAGES
+
+#: The answer to a request that arrives while the connection is at its in-flight limit.
+BUSY_REPLY: dict[str, str] = {
+    "type": "error",
+    "code": "busy",
+    "message": "Too many requests in flight; wait for them to finish",
+}
+
+
+def _always_admitted(msg_type: str | None) -> bool:
+    """True for messages the in-flight limit lets through (ping, account, any cancel)."""
+    if msg_type is None:
+        return False
+    return msg_type in _ALWAYS_ADMITTED or "cancel" in msg_type
+
+
 def _web_message_type(raw_message: str | bytes) -> str | None:
     """Cheap peek at a message's ``type`` (for idle accounting); None when not JSON."""
     try:
@@ -5150,13 +5181,7 @@ async def _handle_web_connection(ws: ServerConnection) -> None:
                     break
                 continue
             if len(tasks) >= WEB_MAX_INFLIGHT:
-                await handler.send(
-                    {
-                        "type": "error",
-                        "code": "busy",
-                        "message": "Too many requests in flight; wait for them to finish",
-                    }
-                )
+                await handler.send(dict(BUSY_REPLY))
                 continue
             task = asyncio.get_running_loop().create_task(_dispatch(handler, raw_message))
             tasks.add(task)
@@ -5195,12 +5220,22 @@ async def _handle_connection(ws: ServerConnection) -> None:
     # never blocks pings or other requests. Binary responses stay contiguous thanks
     # to the handler's send lock.
     tasks: set[asyncio.Task[Any]] = set()
+    # Only requests count towards the in-flight limit; ping, account and cancel messages
+    # always run uncounted, so the user can still cancel out of a busy engine.
+    counted: set[asyncio.Task[Any]] = set()
 
     try:
         async for raw_message in ws:
+            admitted = _always_admitted(_web_message_type(raw_message))
+            if not admitted and len(counted) >= DESKTOP_MAX_INFLIGHT:
+                await handler.send(dict(BUSY_REPLY))
+                continue
             task = asyncio.get_running_loop().create_task(_dispatch(handler, raw_message))
             tasks.add(task)
             task.add_done_callback(tasks.discard)
+            if not admitted:
+                counted.add(task)
+                task.add_done_callback(counted.discard)
     except websockets.exceptions.ConnectionClosed as exc:
         logger.info("Client %s disconnected: %s", remote, exc)
     except Exception as exc:

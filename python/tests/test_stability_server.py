@@ -396,6 +396,90 @@ class TestSweepReplyNamesItsFile:
         assert [h["file_id"] for h in headers] == [first, second, second]
 
 
+class TestDesktopInflightLimit:
+    """A desktop connection holds DESKTOP_MAX_INFLIGHT requests; ping, auth, cancel always run."""
+
+    @pytest.fixture()
+    def blocked(self, monkeypatch):
+        """``render`` requests hang until released; everything else goes to the real handler."""
+        import asyncio
+
+        release = asyncio.Event()
+        real = server._dispatch
+
+        async def dispatch(handler, raw):
+            if json.loads(raw).get("type") == "render":
+                await release.wait()
+                await handler.send({"type": "rendered"})
+                return
+            await real(handler, raw)
+
+        monkeypatch.setattr(server, "_dispatch", dispatch)
+        monkeypatch.setattr(server, "DESKTOP_MAX_INFLIGHT", 3)
+        return release
+
+    @pytest.mark.asyncio
+    async def test_excess_requests_get_busy_and_cheap_ones_pass(self, blocked, monkeypatch) -> None:
+        import asyncio
+        import threading
+
+        from tests.web_helpers import FakeWS, wait_for
+
+        ws = FakeWS(origin=None)
+        conn = asyncio.get_running_loop().create_task(server._handle_connection(ws))
+        for _ in range(5):
+            ws.feed({"type": "render"})
+        await wait_for(lambda: ws.types().count("error") == 2)
+        busy = [m for m in ws.sent if m["type"] == "error"]
+        assert all(m["code"] == "busy" and "in flight" in m["message"] for m in busy)
+        # at the limit, ping / account / cancel messages still get through
+        stop = threading.Event()
+        monkeypatch.setitem(server._CLI_CANCELS, "run-1", stop)
+        ws.feed({"type": "ping"})
+        ws.feed({"type": "auth_status"})
+        ws.feed({"type": "cli_cancel", "request_id": "run-1"})
+        await wait_for(lambda: "pong" in ws.types() and "auth_ok" in ws.types())
+        await wait_for(stop.is_set)
+        assert ws.types().count("error") == 2  # none of them was refused
+        blocked.set()  # the three running ones finish: there is room again
+        await wait_for(lambda: ws.types().count("rendered") == 3)
+        ws.feed({"type": "render"})
+        await wait_for(lambda: ws.types().count("rendered") == 4)
+        assert ws.types().count("error") == 2
+        ws.finish()
+        await asyncio.wait_for(conn, 5)
+
+    def test_default_is_generous_and_env_overrides(self, monkeypatch) -> None:
+        assert server.DESKTOP_MAX_INFLIGHT >= 32
+        monkeypatch.setenv("XRADAR_DESKTOP_MAX_INFLIGHT", "8")
+        assert server._env_int("XRADAR_DESKTOP_MAX_INFLIGHT", 32) == 8
+        monkeypatch.setenv("XRADAR_DESKTOP_MAX_INFLIGHT", "zero")
+        assert server._env_int("XRADAR_DESKTOP_MAX_INFLIGHT", 32) == 32
+        monkeypatch.setenv("XRADAR_DESKTOP_MAX_INFLIGHT", "0")
+        assert server._env_int("XRADAR_DESKTOP_MAX_INFLIGHT", 32) == 1
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            "ping",
+            "auth_status",
+            "auth_session",
+            "auth_signout",
+            "cli_cancel",
+            "env_cancel",
+            "animate_cancel",
+            "multidoppler_cancel",
+            "auto_cancel",
+        ],
+    )
+    def test_always_admitted(self, kind: str) -> None:
+        assert server._always_admitted(kind)
+
+    @pytest.mark.parametrize("kind", ["render", "open_file", "run_module", "export", None])
+    def test_requests_are_counted(self, kind) -> None:
+        assert not server._always_admitted(kind)
+
+
 class TestEngineIdentity:
     @pytest.mark.asyncio
     async def test_pong_carries_a_stable_engine_id(self) -> None:
