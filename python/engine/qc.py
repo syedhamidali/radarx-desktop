@@ -342,6 +342,7 @@ def _region_unfold(values: np.ndarray, nyq: float, wrap_az: bool) -> np.ndarray:
 def velocity_dealiasing(
     data: xr.DataArray,
     nyquist_vel: float,
+    reference: str = "none",
 ) -> xr.DataArray:
     """Region-based velocity dealiasing.
 
@@ -359,9 +360,24 @@ def velocity_dealiasing(
         Radial velocity field (2-D, azimuth x range).
     nyquist_vel : float
         Nyquist velocity (m/s) — half the unambiguous velocity interval.
+    reference : {"none", "zero", "vad"}
+        How the absolute fold of the whole sweep is chosen. ``"none"`` (default) keeps the
+        largest region's raw values, so the whole sweep can be off by a multiple of
+        ``2 * nyquist_vel`` (issue #152). ``"zero"`` shifts it so the along-beam wind averages
+        nearest zero around the circle (refused unless the echo covers the full circle);
+        ``"vad"`` uses the constant term of a uniform-wind VAD fit (refused when the echo leaves
+        an azimuth gap wider than 180 degrees). See :mod:`engine.dealias_reference`.
     """
+    from engine.dealias_reference import REFERENCES, fold_reference_shift
+
     if not np.isfinite(nyquist_vel) or nyquist_vel <= 0:
         raise ValueError(f"nyquist_vel must be a positive number, got {nyquist_vel}")
+    if reference not in REFERENCES:
+        raise ValueError(f"reference must be one of {', '.join(REFERENCES)}, got {reference!r}")
+    if reference != "none" and (data.ndim != 2 or "azimuth" not in data.coords):
+        raise ValueError(
+            f"reference {reference!r} needs a 2-D sweep with the azimuth coordinate of the rays"
+        )
 
     values = data.values.astype(np.float64)
     mask = np.isnan(values)
@@ -384,8 +400,17 @@ def velocity_dealiasing(
                 break
             values = values - n_folds * interval
 
+    note = f"nyquist_vel={nyquist_vel}"
+    if reference != "none":
+        az_axis = _azimuth_axis(data)
+        k, how = fold_reference_shift(
+            np.moveaxis(values, az_axis, 0), data.coords["azimuth"].values, nyquist_vel, reference
+        )
+        values = values + k * interval
+        note += f", {how}"
+
     out = data.copy(data=values)
-    out.attrs = {**data.attrs, "qc_dealiased": f"nyquist_vel={nyquist_vel}"}
+    out.attrs = {**data.attrs, "qc_dealiased": note}
     return out
 
 
@@ -588,6 +613,12 @@ QC_REGISTRY: dict[str, dict[str, Any]] = {
                 "label": "Nyquist velocity (m/s)",
                 "min": 1.0,
                 "max": 100.0,
+            },
+            "reference": {
+                "type": "str",
+                "default": "none",
+                "label": "Fold reference",
+                "options": ["none", "zero", "vad"],
             },
         },
         "applicable_variables": ["VRADH", "VRAD", "V", "VEL"],

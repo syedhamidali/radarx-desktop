@@ -23,6 +23,7 @@ from typing import Any
 import numpy as np
 
 from engine._lazy import LazyModule
+from engine.dealias_reference import REFERENCES, fold_reference_shift
 from engine.pipeline import StepOutcome, StepSkippedError, WorkingState, step
 from engine.plugins import param
 
@@ -754,8 +755,21 @@ def range_clip(
         param("max_speed", "number", 0.0, "Max plausible speed (m/s, 0 = off)", min=0, max=150),
         param("wind_speed", "number", 0.0, "Reference wind speed (m/s, 0 = none)", min=0, max=100),
         param("wind_from", "number", 270.0, "Reference wind from (deg)", min=0, max=360, step=5),
+        param(
+            "reference",
+            "select",
+            "none",
+            "Fold reference",
+            options=list(REFERENCES),
+            help=(
+                "Which multiple of 2 x Vn the whole sweep gets. none = as dealiased (can be off "
+                "by 2 x Vn everywhere); zero = along-beam wind averages to zero around the "
+                "circle (needs echo all around); vad = constant term of a uniform-wind VAD fit "
+                "(allows azimuth gaps up to 180 deg). Refused for sector scans."
+            ),
+        ),
     ],
-    kernels=[unfold_velocity, G.covers_full_circle],
+    kernels=[unfold_velocity, G.covers_full_circle, fold_reference_shift],
     script="""
         nyq = {nyquist_velocity} or nyquist_of(ds, fields["VRADH"])
         vel = np.where(keep, fields["VRADH"], np.nan)
@@ -766,6 +780,12 @@ def range_clip(
             out = res.transpose("azimuth", "range").values.astype("float32")
         else:
             out = unfold_velocity(vel, nyq, covers_full_circle(azimuth))
+        if {reference} != "none":
+            try:
+                k, _ = fold_reference_shift(np.where(keep, out, np.nan), azimuth, nyq, {reference})
+                out = out + np.float32(k * 2.0 * nyq)
+            except ValueError as exc:
+                warnings.warn(f"dealias reference not applied: {exc}", stacklevel=1)
         fields["VRADH"] = np.where(np.isfinite(out), out, fields["VRADH"])
     """,
 )
@@ -777,6 +797,7 @@ def dealias(
     max_speed: float,
     wind_speed: float,
     wind_from: float,
+    reference: str = "none",
 ) -> StepOutcome:
     raw = state.fields["VRADH"]
     # Nyquist from the user / the file / the largest raw |V| (estimated on the unmasked sweep).
@@ -802,12 +823,23 @@ def dealias(
     else:
         out = unfold_velocity(masked, nyq, _wrap(state))
         used = "built-in" if method == "builtin" else "built-in (radarx not installed)"
+    notes = [f"{used}, Vn = {nyq:g} m/s ({source})"]
+    if reference != "none":
+        try:
+            k, how = fold_reference_shift(
+                np.where(np.isfinite(masked), out, np.nan), state.azimuth, nyq, reference
+            )
+            out = out + np.float32(k * 2.0 * nyq)
+            notes.append(how)
+        except ValueError as exc:  # sector scan / one-sided echo: say so, keep the sweep as is
+            notes.append(f"reference not applied: {exc}")
     good = np.isfinite(out) & np.isfinite(masked)
     unfolded = good & (np.abs(out - masked) > nyq)
     state.fields["VRADH"] = np.where(np.isfinite(out), out, raw).astype(np.float32)
+    notes[0] += f"; {int(unfolded.sum())} gates unfolded"
     return StepOutcome(
         modified=int(unfolded.sum()),
-        notes=[f"{used}, Vn = {nyq:g} m/s ({source}); {int(unfolded.sum())} gates unfolded"],
+        notes=notes,
         metrics={"nyquist": nyq},
     )
 
