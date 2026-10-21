@@ -11,8 +11,9 @@ What is collected
 * **npm** - the production dependencies of ``package.json`` (and the runtime of Svelte, a dev dependency
   whose runtime is compiled into the bundle), resolved through ``package-lock.json``. No ``npm install`` needed.
 * **Rust** - the normal (not build/dev) dependency closure of ``src-tauri`` from ``cargo metadata``.
-* **Static entries** - fonts, colour maps, map/terrain/imagery services, public data and native libraries
-  that wheels bundle, from ``scripts/licenses/static.toml``.
+* **Static entries** - fonts, colour maps, map/terrain/imagery services, public data, native libraries
+  that wheels bundle, JavaScript vendored into ``src/lib/vendor`` and optional downloads, from
+  ``scripts/licenses/static.toml``.
 
 Policy
 ------
@@ -581,6 +582,7 @@ def render(
         ("imagery", "Map, terrain and imagery services (fetched at run time on request)"),
         ("data", "Data the app can open or fetch (not redistributed with the installers)"),
         ("native", "Native libraries bundled by Python wheels and the Python runtime"),
+        ("vendored", "Vendored JavaScript (copied into src/lib/vendor, compiled into the app)"),
         ("component", "Optional components downloaded on request (not in the installers)"),
     ]
     for kind, title in kinds:

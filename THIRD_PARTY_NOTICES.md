@@ -27,7 +27,6 @@ Components under a licence that is not simply permissive, and the non-commercial
 | imagery | OpenTopoMap tiles | CC-BY-SA (cartography), ODbL-1.0 + SRTM (data) | share-alike | Optional basemap; fetched on request. |
 | native | libquadmath | LGPL-2.1-or-later | weak copyleft (LGPL) | Dynamically linked, unmodified shared library that is a separate file in the engine folder, so a user can replace it. Source: GCC. Confirm in the release build. |
 | native | GNU libiconv | LGPL-2.1-or-later | weak copyleft (LGPL) | Dynamically linked, unmodified shared library that is a separate file in the engine folder. Confirm in the release build and per platform. |
-| component | FFmpeg shared libraries inside the PyAV wheel (libavcodec, libavformat, libavutil, libavfilter, libavdevice, libswscale, libswresample) with libx264, libx265, libvpx, libopus, dav1d, SVT-AV1, libwebp, libvmaf | LGPL-2.1-or-later (FFmpeg); GPL-2.0-or-later for the build as a whole because of libx264 and libx265 | GPL | The PyAV wheels are built from pyav-ffmpeg with --enable-gpl (x264, x265), so the bundled FFmpeg is GPL-2.0-or-later, not merely LGPL. The pack is a separate, optional download that the user installs on request, kept apart from the PolyForm-Noncommercial app; whether that separation is enough (or whether the pack must be rebuilt from an LGPL-only FFmpeg, e.g. without x264/x265, or H.264 written another way) is a question for the lawyer before a release ships the packs. Source: https://ffmpeg.org/ and https://github.com/PyAV-Org/pyav-ffmpeg; a notice with this text ships in the pack (licenses/av/FFMPEG-NOTICE.txt). |
 
 ## Fonts
 
@@ -83,13 +82,18 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 | libc++, libc++abi (LLVM) | Apache-2.0 WITH LLVM-exception | C++ runtime of some wheels |  |  |
 | OpenSSL (statically linked into the cryptography wheel) | Apache-2.0 | signature check of the sign-in token in the frozen engine |  | https://www.openssl.org/source/license.html |
 
+## Vendored JavaScript (copied into src/lib/vendor, compiled into the app)
+
+| Name | Licence | Where used | Attribution / terms | Link |
+| --- | --- | --- | --- | --- |
+| mp4-muxer 5.2.2 | MIT | src/lib/vendor/mp4-muxer; writes the MP4 container (H.264 + AAC) of a film inside the headless Chrome that draws it (src/lib/utils/clipEncoder.ts). The codecs are the browser's own WebCodecs encoders: no FFmpeg, no x264 anywhere in the app. | Copyright (c) 2023 Vanilagy. LICENSE next to the file. | https://github.com/Vanilagy/mp4-muxer |
+| webm-muxer 5.1.4 | MIT | src/lib/vendor/webm-muxer; writes the WebM container (VP9 + Opus) of a film where the browser has no H.264 encoder (the fallback of clipEncoder.ts) | Copyright (c) 2022 Vanilagy. LICENSE next to the file. | https://github.com/Vanilagy/webm-muxer |
+
 ## Optional components downloaded on request (not in the installers)
 
 | Name | Licence | Where used | Attribution / terms | Link |
 | --- | --- | --- | --- | --- |
-| Playwright for Python 1.64.0 (with its Node.js driver) | Apache-2.0 | movie components pack; drives the system Google Chrome that draws the frames of a film. No browser is downloaded by the app. | Copyright (c) Microsoft Corporation. LICENSE, NOTICE and ThirdPartyNotices.txt of the driver ship in the pack (licenses/playwright). | https://github.com/microsoft/playwright-python |
-| PyAV 19.0.2 | BSD-3-Clause | movie components pack; writes the MP4 (H.264 video, AAC sound) | Copyright (c) the PyAV authors; LICENSE.txt and AUTHORS ship in the pack (licenses/av). | https://github.com/PyAV-Org/PyAV |
-| FFmpeg shared libraries inside the PyAV wheel (libavcodec, libavformat, libavutil, libavfilter, libavdevice, libswscale, libswresample) with libx264, libx265, libvpx, libopus, dav1d, SVT-AV1, libwebp, libvmaf | LGPL-2.1-or-later (FFmpeg); GPL-2.0-or-later for the build as a whole because of libx264 and libx265 | movie components pack only (never in the installers); the engine imports PyAV, which loads these unmodified shared libraries, and asks for libx264 to write H.264 |  | https://ffmpeg.org/legal.html |
+| Playwright for Python 1.64.0 (with its Node.js driver) | Apache-2.0 | movie components pack; drives the system Google Chrome that draws the frames of a film and encodes it with its own codecs. No browser is downloaded by the app. | Copyright (c) Microsoft Corporation. LICENSE, NOTICE and ThirdPartyNotices.txt of the driver ship in the pack (licenses/playwright). | https://github.com/microsoft/playwright-python |
 | greenlet 3.5.6, pyee 14.0.0, typing_extensions 4.15.0 | MIT AND PSF-2.0 / MIT / PSF-2.0 | movie components pack; what Playwright needs (greenlet is a compiled extension built for the engine's Python) | Licence files ship in the pack (licenses/greenlet, licenses/pyee, licenses/typing_extensions). | https://github.com/python-greenlet/greenlet |
 
 ## Python engine
@@ -124,7 +128,7 @@ Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and 
 | donfig | 0.8.1.post1 | MIT | classifier | https://github.com/pytroll/donfig |
 | fonttools | 4.62.1 | MIT | License field | http://github.com/fonttools/fonttools |
 | frozenlist | 1.8.0 | Apache-2.0 | License field | https://github.com/aio-libs/frozenlist |
-| fsspec | 2026.4.0 | BSD-3-Clause |  | https://filesystem-spec.readthedocs.io/en/latest/ |
+| fsspec | 2026.9.0 | BSD-3-Clause |  | https://filesystem-spec.readthedocs.io/en/latest/ |
 | google-crc32c | 1.8.0 | Apache-2.0 | licence file LICENSE (detected) | https://github.com/googleapis/python-crc32c |
 | h5netcdf | 1.8.1 | BSD-3-Clause | classifier | https://h5netcdf.org |
 | h5py | 3.16.0 | BSD-3-Clause |  | https://www.h5py.org/ |
