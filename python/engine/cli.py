@@ -54,6 +54,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from engine import _radarx_import
+
+_radarx_import.install()  # radarx must not configure the root logger (issue #91)
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
@@ -385,7 +389,8 @@ GROUPS = (
               ("check", "is the data sound? problems with evidence and a suggested QC recipe"),
               ("plot", "draw a PPI picture of one variable"))),
     ("Clean", (("pipeline", "apply a QC recipe: clutter, dealiasing, speckle ... (list | show | run | script)"),)),
-    ("Analyse", (("run", "run an algorithm: hydrometeor classes, shear, rain rate ... (= modules run)"),
+    ("Analyse", (("auto", "Autopilot: inspect the inputs, plan the analyses that fit, run the approved ones"),
+                 ("run", "run an algorithm: hydrometeor classes, shear, rain rate ... (= modules run)"),
                  ("modules", "list | show the algorithms and their parameters"),
                  ("cells", "find storm cells; several files are tracked in time"),
                  ("sounding", "read a radiosonde file: CAPE, CIN, shear, helicity, freezing level"))),

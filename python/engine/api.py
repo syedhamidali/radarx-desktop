@@ -79,7 +79,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import xarray as xr
 
-from engine import derived, plugins, varmap
+from engine import _radarx_import, derived, plugins, varmap
 from engine.account import AccountRequired, activity, require_account
 from engine.api_results import (
     CellsResult,
@@ -95,6 +95,8 @@ from engine.api_results import (
     plot_ppi,
     save_figure,
 )
+
+_radarx_import.install()  # radarx must not configure the root logger (issue #91)
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt

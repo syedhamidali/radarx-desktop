@@ -49,8 +49,8 @@ function webCsp(engineUrl: string | undefined, supabaseUrl: string = DEFAULT_SUP
         // satellite imagery and elevation tiles of the realistic ground were missing here. The account
         // server (Supabase) is the one other host the page talks to.
         `connect-src 'self' ${engine} ${supabaseUrl} ${TILE_HOSTS}`,
-        `img-src 'self' data: blob: https://api.mapbox.com https://*.tiles.mapbox.com ${TILE_HOSTS}`,
-        "style-src 'self' 'unsafe-inline' https://api.mapbox.com",
+        `img-src 'self' data: blob: ${TILE_HOSTS}`,
+        "style-src 'self' 'unsafe-inline'",
         "font-src 'self' data:",
         "script-src 'self' 'unsafe-inline' blob:",
         "worker-src 'self' blob:",

@@ -46,7 +46,9 @@ from typing import Any
 import numpy as np
 import xarray as xr
 
-from engine import varmap
+from engine import _radarx_import, varmap
+
+_radarx_import.install()  # radarx must not configure the root logger (issue #91)
 
 logger = logging.getLogger(__name__)
 
