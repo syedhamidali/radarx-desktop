@@ -14,13 +14,20 @@
   import {
     movieStudioOpen, movieInputs, movieOptions, capabilities, capabilitiesError,
     planJob, plan, stillJob, still, renderJob, result, videoUrl, anyRunning,
+    packAvailable, packJob, packLookupRunning,
     closeMovieStudio, loadCapabilities, addInputs, removeInput, pickFolder, pickFiles, pickGlmFolder,
     requestPlan, requestStill, startRender, cancel, cancelRender, exportCopy, showInFolder, clearResults,
+    lookupMoviePack, installMoviePack, cancelMoviePackInstall, declineMoviePack,
     type CameraPreset,
   } from '../stores/movieStudio';
+  import { DOWNLOADS_HOST_URL } from '../utils/brand';
 
   const web = isWebMode();
   const caps = $derived($capabilities);
+  const DOWNLOADS_HOST = DOWNLOADS_HOST_URL.replace(/^https?:\/\//, '');
+  const packNeeded = $derived(!!caps?.problems.some((pr) => pr.movie_pack));
+  const avail = $derived($packAvailable);
+  const packMb = $derived(avail?.consent?.size ? (avail.consent.size / 1e6).toFixed(0) : '60');
   const o = $derived($movieOptions);
   const p = $derived($plan);
   const r = $derived($result);
@@ -112,9 +119,49 @@
             <div class="needs-title">Before a film can be rendered</div>
             <ul>
               {#each caps.problems as pr}
-                <li><span class="what">{pr.what}</span><br /><span class="hint mono">{pr.hint}</span></li>
+                {#if pr.movie_pack}
+                  <li><span class="what">{pr.what}</span><br /><span class="hint">{pr.hint}</span></li>
+                {:else}
+                  <li><span class="what">{pr.what}</span><br /><span class="hint mono">{pr.hint}</span></li>
+                {/if}
               {/each}
             </ul>
+            {#if packNeeded}
+              <!-- The optional movie components: look up, consent (what / from where / how big / licences), download -->
+              <div class="pack" role="group" aria-label="Movie components">
+                <div class="pack-title">Movie components (about {packMb} MB)</div>
+                <p class="pack-text">Needed to draw and write the film: Playwright drives your Google Chrome, PyAV writes the MP4. They are not part of the installer; they are downloaded once from <span class="mono">{DOWNLOADS_HOST}</span> and kept in your data folder (Settings &rsaquo; Data shows them, with Remove).</p>
+                {#if $packJob.running}
+                  <div class="progress"><div class="bar"><div class="fill" style="width:{pct($packJob)}%"></div></div><div class="msg">{pct($packJob)}% {$packJob.message}</div></div>
+                  <div class="row"><button onclick={cancelMoviePackInstall}>Cancel</button></div>
+                {:else if $packJob.error}
+                  <p class="err">{$packJob.error}</p>
+                  <div class="row"><button onclick={lookupMoviePack}>Try again</button></div>
+                {:else if avail?.ok && avail.consent}
+                  <div class="consent">
+                    <p class="lead">This contacts the internet. Nothing is downloaded until you agree.</p>
+                    <dl>
+                      <dt>What</dt><dd>{avail.consent.name}<br />{#each avail.consent.contents as line}<span class="ln">{line}</span>{/each}</dd>
+                      <dt>From</dt><dd class="mono">{avail.consent.url}</dd>
+                      <dt>Size</dt><dd>{(avail.consent.size / 1e6).toFixed(0)} MB (checked against the published SHA-256 after the download)</dd>
+                      <dt>Licences</dt><dd>Playwright is Apache-2.0; PyAV is BSD-3-Clause and ships the FFmpeg libraries (LGPL, with GPL parts for H.264). The licence texts are kept with the components.</dd>
+                    </dl>
+                    <div class="row">
+                      <button class="primary" onclick={installMoviePack}>Allow once</button>
+                      <button onclick={declineMoviePack}>Cancel</button>
+                    </div>
+                  </div>
+                {:else if avail && !avail.ok}
+                  <p class="warn">{avail.reason === 'offline' ? 'The download host could not be reached (offline?).' : avail.reason === 'no-pack' || avail.reason === 'no-release' ? 'No movie components exist for this release and computer yet.' : 'Refused.'} {avail.message}</p>
+                  <div class="row"><button onclick={lookupMoviePack}>Try again</button></div>
+                {:else}
+                  <div class="row">
+                    <button class="primary" onclick={lookupMoviePack} disabled={$packLookupRunning}>{$packLookupRunning ? 'Asking the download host...' : 'Download...'}</button>
+                    <span class="dim small">Asks <span class="mono">{DOWNLOADS_HOST}</span> which pack exists for this version (one small request); the download itself is confirmed separately.</span>
+                  </div>
+                {/if}
+              </div>
+            {/if}
             <div class="row">
               <button onclick={loadCapabilities}>Check again</button>
               {#if caps.plan_ready}<span class="dim small">The plan (step 2) works without these.</span>{/if}
@@ -415,6 +462,15 @@
   .needs ul { margin: 0 0 var(--space-2); padding-left: 1.2em; line-height: 1.5; }
   .needs .what { color: var(--c-text); }
   .needs .hint { color: var(--c-text-dim); white-space: pre-wrap; }
+  .pack { border: 1px solid rgba(var(--c-accent-rgb), 0.45); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); margin: 0 0 var(--space-2); display: flex; flex-direction: column; gap: var(--space-2); background: rgba(var(--c-accent-rgb), 0.06); }
+  .pack-title { font-weight: 600; color: var(--c-text); }
+  .pack-text { margin: 0; color: var(--c-text-dim); line-height: 1.5; }
+  .consent { display: flex; flex-direction: column; gap: var(--space-2); }
+  .consent .lead { margin: 0; color: var(--c-text-dim); }
+  .consent dl { display: grid; grid-template-columns: auto 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
+  .consent dt { color: var(--c-muted); }
+  .consent dd { margin: 0; overflow-wrap: anywhere; color: var(--c-text); }
+  .consent .ln { display: block; color: var(--c-text-dim); }
   .progress .bar { height: 6px; background: rgba(var(--c-accent-rgb), 0.12); border-radius: 3px; overflow: hidden; }
   .progress .fill { height: 100%; background: var(--c-accent); transition: width var(--dur-base) var(--ease-in-out); }
   .progress .msg { margin-top: 4px; font-size: var(--fs-xs); color: var(--c-text-dim); }
