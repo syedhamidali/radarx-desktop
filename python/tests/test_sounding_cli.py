@@ -112,3 +112,27 @@ def test_help_lists_the_command_with_the_shared_options() -> None:
         assert flag in text, flag
     sample = [a for n, a in cli.help_examples() if n == "sounding"]
     assert len(sample) >= 3
+
+
+def test_era5_profile_is_labelled_model_not_observed(capsys, tmp_path: Path) -> None:
+    era5 = tmp_path / "era5_column.csv"
+    era5.write_text(
+        "# ERA5 reanalysis column at 33.16N 86.76W (pressure levels)\n"
+        + FIX.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    code, out, _ = run_cli(capsys, "sounding", "-i", era5, "--wind-units", "kt")
+    assert code == 0
+    assert "data class: model" in out and "data class: observed" not in out
+    assert "real balloon drifts" not in out
+    code, out, _ = run_cli(capsys, "sounding", "-i", era5, "--wind-units", "kt", "--json")
+    payload = json.loads(out)
+    assert payload["provenance"]["kind"] == "model"
+    assert payload["data_class"] == "model"
+
+
+def test_radiosonde_mentioning_sonde_model_stays_observed() -> None:
+    from engine import sounding
+
+    assert sounding.classify_source("# Vaisala RS41 sonde model") == "observed"
+    assert sounding.classify_source("source: ERA5 (Copernicus)") == "model"
