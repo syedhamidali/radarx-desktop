@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "../python/dist/xradar-engine": "engine"
+      "../python/dist/xradar-engine": "engine",
+      "../dist": "frontend"
     }
   }
 }
