@@ -243,7 +243,7 @@ def add_parser(
     g.add_argument(
         "--app-dist",
         metavar="DIR",
-        help="the built app (default: <checkout>/dist or XRADAR_APP_DIST)",
+        help="the built app (default: RADARX_APP_DIST, the installed app's frontend folder, or <checkout>/dist)",
     )
     g.add_argument(
         "--browser",

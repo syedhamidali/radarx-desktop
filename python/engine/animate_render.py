@@ -97,39 +97,61 @@ def ffmpeg_command(frames_dir: Path, out: Path, fps: float, ext: str = "png") ->
 # ---------------------------------------------------------------------------
 
 
+# The installers ship the built frontend as plain files in a ``frontend`` folder next to the
+# ``engine`` folder, in the app's resource directory (``bundle.resources`` / ``bundle.macOS.files``):
+#   macOS    Radarx.app/Contents/Resources/{engine,frontend}
+#   Windows  <install dir>/{engine,frontend}
+#   Linux    /usr/lib/Radarx/{engine,frontend}
+# and the desktop shell tells the engine where it is (``RADARX_APP_DIST``).
+APP_DIST_ENV = ("RADARX_APP_DIST", "XRADAR_APP_DIST")
+FRONTEND_RESOURCE = "frontend"
+
+
+def _frozen_candidates() -> list[Path]:
+    """The frontend next to a frozen engine (``<resources>/engine/xradar-engine``)."""
+    if not getattr(sys, "frozen", False):
+        return []
+    out: list[Path] = []
+    roots = [Path(sys.executable).resolve().parent]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(Path(meipass).resolve())
+    for root in roots:
+        # <resources>/engine/xradar-engine -> <resources>/frontend; _MEIPASS is engine/_internal
+        for up in (root, *list(root.parents)[:2]):
+            out.append(up / FRONTEND_RESOURCE)
+        out.append(root / "dist")
+    return out
+
+
 def frontend_candidates(explicit: str | None = None) -> list[Path]:
     """Places where the built app (``dist/``) is looked for, in order."""
     out: list[Path] = []
     if explicit:
         out.append(Path(explicit).expanduser())
-    env = os.environ.get("XRADAR_APP_DIST")
-    if env:
-        out.append(Path(env).expanduser())
+    for name in APP_DIST_ENV:
+        env = os.environ.get(name)
+        if env:
+            out.append(Path(env).expanduser())
+    out += _frozen_candidates()
     here = Path(__file__).resolve()
     out += [
         here.parents[2] / "dist",  # a source checkout (pip install -e python/)
         Path.cwd() / "dist",
         here.parent / "_frontend",  # a wheel that ships the frontend (none does yet)
     ]
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        out.append(Path(meipass) / "dist")
-    # installed desktop app resources (the Tauri installers embed the frontend in the executable
-    # today, so these only match a build that ships it as files)
+    # an installed desktop app, for an engine installed with pip (``rxd animate`` outside the app)
+    for app in ("Radarx.app", "radarx-desktop.app", "xradar-desktop.app"):
+        for apps in (Path("/Applications"), Path.home() / "Applications"):
+            out.append(apps / app / "Contents/Resources" / FRONTEND_RESOURCE)
     out += [
-        Path("/Applications/Radarx.app/Contents/Resources/dist"),
-        Path.home() / "Applications/Radarx.app/Contents/Resources/dist",
-        Path("/Applications/radarx-desktop.app/Contents/Resources/dist"),  # 0.3.0 and earlier
-        Path.home() / "Applications/radarx-desktop.app/Contents/Resources/dist",
-        Path("/usr/lib/radarx-desktop/dist"),
-        Path("/opt/radarx-desktop/dist"),
-        # the app under its former name
-        Path("/Applications/xradar-desktop.app/Contents/Resources/dist"),
-        Path.home() / "Applications/xradar-desktop.app/Contents/Resources/dist",
+        Path("/usr/lib/Radarx") / FRONTEND_RESOURCE,
+        Path("/usr/lib/radarx-desktop") / FRONTEND_RESOURCE,
     ]
     local = os.environ.get("LOCALAPPDATA")
     if local:
-        out.append(Path(local) / "radarx-desktop" / "dist")
+        for name in ("Radarx", "radarx-desktop"):
+            out.append(Path(local) / name / FRONTEND_RESOURCE)
     seen: set[Path] = set()
     return [p for p in out if not (p in seen or seen.add(p))]
 
@@ -163,8 +185,9 @@ def find_frontend(explicit: str | None = None) -> Path:
         "the built app (its frontend) was not found. rxd animate draws with the app's own 3D "
         "renderer, which is in dist/ after `npm run build`:\n"
         "  from a source checkout:   npm ci && npm run build      (rxd then finds <checkout>/dist)\n"
-        "  or point to a build:      --app-dist /path/to/dist     or  XRADAR_APP_DIST=/path/to/dist\n"
-        "The installers embed the frontend in the executable, so they cannot be used for this.\n"
+        "  or point to a build:      --app-dist /path/to/dist     or  RADARX_APP_DIST=/path/to/dist\n"
+        "  (XRADAR_APP_DIST is also read). An installed app (0.3.0 or later) ships these files in its\n"
+        "  'frontend' resource folder, which the app's own engine finds by itself.\n"
         "Looked in: " + "; ".join(tried[:6]) + (" ..." if len(tried) > 6 else "")
     )
 

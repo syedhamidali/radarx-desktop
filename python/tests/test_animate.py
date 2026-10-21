@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import math
+import sys
 import tracemalloc
 from datetime import datetime, timedelta, timezone
 from itertools import pairwise
@@ -1230,6 +1231,26 @@ class TestOptionalDependencies:
         c = render.frontend_candidates(str(tmp_path / "explicit"))
         assert c[0] == tmp_path / "explicit" and c[1] == tmp_path / "env"
         assert any(p.name == "dist" and p.parent.name != "env" for p in c[2:])
+
+    def test_frontend_shipped_next_to_frozen_engine(self, tmp_path, monkeypatch):
+        """An installer: <resources>/engine/xradar-engine finds <resources>/frontend by itself."""
+        exe = tmp_path / "Resources" / "engine" / "xradar-engine"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("")
+        front = tmp_path / "Resources" / "frontend"
+        (front / "assets").mkdir(parents=True)
+        (front / "index.html").write_text("<html></html>")
+        (front / "assets" / "app.js").write_text("window.__xrClip = {}")
+        for name in ("RADARX_APP_DIST", "XRADAR_APP_DIST"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(sys, "executable", str(exe))
+        monkeypatch.setattr(sys, "_MEIPASS", str(exe.parent / "_internal"), raising=False)
+        cands = render.frontend_candidates()
+        assert front in cands
+        assert cands.index(front) < cands.index(Path(render.__file__).resolve().parents[2] / "dist")
+        monkeypatch.setenv("RADARX_APP_DIST", str(tmp_path / "set-by-the-shell"))
+        assert render.frontend_candidates()[0] == tmp_path / "set-by-the-shell"
 
     def test_chrome_args_have_no_proxy(self):
         assert "--no-proxy-server" in render.chrome_args()
