@@ -11,6 +11,7 @@
 - **Cloud**: the *Cloud data* panel opens the latest NEXRAD Level II scan of a station from the public AWS archive,
   browses the archive by date, or opens ARCO / icechunk data. Click a radar marker on the map for the same
   actions per site ({doc}`RADAR_SITES`).
+- **Live**: the live map shows the newest scans of your default radars as one updating composite ({doc}`LIVE`).
 
 ```{image} images/ui/welcome.png
 :alt: The empty window
