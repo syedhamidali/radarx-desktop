@@ -1,0 +1,5 @@
+{
+  "_comment": "Fill in after the first Zenodo upload (docs/zenodo/README.md). concept_doi: the DOI of all versions (always the latest). versions: the DOI of each published version. Leave empty until Zenodo has assigned them: never invent one.",
+  "concept_doi": "",
+  "versions": {}
+}

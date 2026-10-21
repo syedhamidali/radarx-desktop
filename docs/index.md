@@ -37,9 +37,12 @@ installation
 user-guide
 science-and-trust
 history
+cite
 ```
 
-## Where to go
+::::{only} html
+```{rubric} Where to go
+```
 
 - {doc}`installation`: download and install it, set up the command line, create your free account.
 - {doc}`user-guide`: opening and viewing data, modules and pipelines, mosaics, winds and rainfall, 3D and
@@ -48,3 +51,5 @@ history
   exports in the app.
 - {doc}`science-and-trust`: the science policy, output standards, licences, privacy and reporting.
 - {doc}`history`: what changed in each version.
+- {doc}`cite`: how to cite this documentation (its DOI) and the software.
+::::

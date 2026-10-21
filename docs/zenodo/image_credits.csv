@@ -1,0 +1,91 @@
+image,sources,attribution_in_frame,notes
+images/animate-example-low.png,EOX;TERRAIN;NEXRAD,yes,realistic ground; credit line drawn at the bottom of the frame
+images/animate-example-start.png,EOX;TERRAIN;NEXRAD,yes,realistic ground; credit line drawn at the bottom of the frame
+images/app-2d-light.png,OSM;NEXRAD,yes,
+images/app-2d.png,OSM;NEXRAD,yes,
+images/app-3d-light.png,OSM;NEXRAD,no,not published; map draped under the 3D view
+images/app-3d.png,OSM;NEXRAD,no,map draped under the 3D view
+images/cli-hid.png,NEXRAD,,
+images/cli-mosaic.png,NEXRAD,,
+images/cli-pipeline.png,NEXRAD,,
+images/cli-winds.png,NEXRAD,,
+images/crosssection-dock.png,OSM;NEXRAD,yes,
+images/crosssection-large.png,NEXRAD,,
+images/cyclone-looks.png,EOX;TERRAIN;NEXRAD,no,realistic clip (Hurricane Laura); the credit line is not legible at this size; to confirm: imagery assumed from the realistic-ground option used
+images/design-after-about-light.png,,,not published; shows a personal name and a source-hosting button: do not publish
+images/design-after-data.png,OSM;NEXRAD,yes,not published
+images/design-after-light.png,OSM;NEXRAD,yes,not published
+images/design-after-narrow.png,OSM;NEXRAD,yes,not published
+images/design-after-welcome.png,,,not published
+images/design-before-data.png,OSM;NEXRAD,yes,not published
+images/design-before-welcome.png,,,not published
+images/modules-hid.png,OSM;NEXRAD,yes,
+images/mosaic3d-low-angle.png,OSM;NEXRAD,no,map draped under the 3D view
+images/mosaic3d-oblique.png,OSM;NEXRAD,no,map draped under the 3D view
+images/qc-before-after.png,COW,,to confirm: the radar and the origin of the sample file are not recorded
+images/reflectivity.png,NEXRAD,,
+images/rhi-cpol-dbz.png,CPOL,,to confirm: original provider of the sample file
+images/rhi-cpol-raw.png,CPOL,,to confirm: original provider of the sample file
+images/rhi-npol-dbz.png,NPOL,,to confirm: original provider of the sample file
+images/rhi-pseudo-dbz.png,NEXRAD,,pseudo-RHI cut from a NEXRAD volume
+images/storm-palettes.png,EOX;TERRAIN;NEXRAD,no,realistic clips (Mayfield and Hurricane Laura); the credit line is not legible at this size
+images/storm3d-low-angle.png,OSM;NEXRAD,no,map under the 3D clip
+images/storm3d-oblique.png,OSM;NEXRAD,no,map under the 3D clip
+images/storm3d-realistic-low.png,EOX;TERRAIN;NEXRAD,yes,realistic ground; credit line drawn at the bottom of the frame
+images/storm3d-realistic-topdown.png,EOX;TERRAIN;NEXRAD,yes,realistic ground; credit line drawn at the bottom of the frame
+images/storm3d-topdown.png,OSM;NEXRAD,no,map under the 3D clip
+images/tutorial-bulk/batch-export-dark.png,OSM;NEXRAD,yes,
+images/tutorial-bulk/budget-raised-dark.png,NEXRAD,,file inventory only
+images/tutorial-bulk/cancelled-dark.png,NEXRAD,,file inventory only
+images/tutorial-bulk/command-studio-dark.png,,,
+images/tutorial-bulk/inspection-dark.png,NEXRAD,,file inventory only
+images/tutorial-bulk/inspection-light.png,NEXRAD,,file inventory only
+images/tutorial-bulk/layers-dark.png,OSM;NEXRAD,yes,
+images/tutorial-bulk/mosaic-frame.png,NEXRAD,,
+images/tutorial-bulk/mosaic-view-dark.png,OSM;NEXRAD,yes,
+images/tutorial-bulk/movie-studio-dark.png,,,
+images/tutorial-bulk/refused-dark.png,NEXRAD,,file inventory only
+images/tutorial-bulk/results-dark.png,NEXRAD,,thumbnails of track plots
+images/tutorial-bulk/running-dark.png,NEXRAD,,file inventory only
+images/tutorial-bulk/tracks-kpah.png,NEXRAD,,
+images/ui/2d-map-hidden-light.png,NEXRAD,,not published (maintainer page); map tiles off
+images/ui/2d-view.png,OSM;NEXRAD,yes,
+images/ui/3d-map-hidden-dark.png,NEXRAD,,not published (maintainer page); map tiles off
+images/ui/3d-mosaic-map-hidden-light.png,NEXRAD,,not published (maintainer page); map tiles off
+images/ui/3d-view.png,OSM;NEXRAD,no,map draped under the 3D view
+images/ui/cloud-panel.png,,,
+images/ui/derived-2d-light.png,OSM;NEXRAD,yes,not published
+images/ui/derived-2d.png,OSM;NEXRAD,yes,
+images/ui/export-panel.png,,,
+images/ui/metadata.png,NEXRAD,,metadata only
+images/ui/modules-panel.png,,,
+images/ui/modules-result.png,,,
+images/ui/mosaic-panel.png,,,
+images/ui/mosaic-view-light.png,OSM;NEXRAD,yes,not published
+images/ui/mosaic-view.png,OSM;NEXRAD,yes,
+images/ui/pipeline-panel.png,,,not published
+images/ui/pipeline-preview.png,OSM;NEXRAD,yes,
+images/ui/rainfall-basins.png,NEXRAD,,to confirm: origin of the basin polygons (the gauges of the example are synthetic)
+images/ui/rainfall-map.png,OSM;NEXRAD,yes,
+images/ui/rainfall-panel.png,NEXRAD,,not published
+images/ui/rainfall-validation.png,NEXRAD,,the gauges of the example are synthetic (made by the app)
+images/ui/settings-light.png,,,
+images/ui/settings.png,,,
+images/ui/variable-mapping.png,,,
+images/ui/welcome-light.png,,,not published
+images/ui/welcome.png,,,
+images/ui/wind-panel.png,,,
+images/wind3d-arrows.png,OSM;NEXRAD,no,map draped under the 3D view
+images/wind3d-flow-and-field.png,OSM;NEXRAD,no,map draped under the 3D view
+images/wind3d-flow-light.png,OSM;NEXRAD,no,map draped under the 3D view
+images/wind3d-flow-strip.png,OSM;NEXRAD,no,map draped under the 3D view
+images/wind3d-flow.gif,OSM;NEXRAD,no,map draped under the 3D view (animation in the web pages)
+images/wind3d-flow-frame.png,OSM;NEXRAD,no,first frame of the animation (in the PDF)
+images/winds/elreno_after_analytic.png,NEXRAD,,not published
+images/winds/elreno_after_variational.png,NEXRAD,,not published
+images/winds/elreno_before_raw_aliased.png,NEXRAD,,not published
+images/winds/elreno_publication_dark.png,NEXRAD,,not published
+images/winds/mayfield_after_analytic.png,NEXRAD,,not published
+images/winds/mayfield_after_variational.png,NEXRAD,,not published
+images/winds/mayfield_before_raw_aliased.png,NEXRAD,,not published
+images/winds/mayfield_publication_light.png,NEXRAD,,not published

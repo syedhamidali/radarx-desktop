@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "upload_type": "publication",
+    "publication_type": "softwaredocumentation",
+    "title": "Radarx Desktop: User Documentation",
+    "creators": [
+      {
+        "name": "Radarx Desktop by LabShope Technologies",
+        "affiliation": ""
+      }
+    ],
+    "description": "<p>User documentation of Radarx Desktop, a desktop and web application for weather radar data, with a command line (rxd) for the same tasks.</p><p>It covers installation and the user account; opening radar files (NEXRAD Level II, ODIM, CfRadial, IRIS, Rainbow, Furuno, UF and others) and cloud archives; the 2D and 3D views, range-height (RHI) scans and cross-sections; quality control, algorithm modules and pipelines (hydrometeor classification, specific differential phase, storm cells and tracks); multi-radar mosaics; multi-Doppler wind retrieval; radar rainfall accumulation with gauge adjustment and stated uncertainty; 3D storm clips and animation; export to CfRadial, NetCDF, Zarr, CSV and image formats; a tutorial that processes a whole event; the science policy (every layer is labelled as observed, model analysis, retrieved or simulated/stylised, with methods, references and limits); output standards, licences, privacy and how to report problems.</p><p>This record archives the documentation only, as a PDF and as a zip of the HTML site built from the same sources. It does not contain the software or its source code. The software is a separate work, provided by LabShope Technologies under the PolyForm Noncommercial License 1.0.0; see https://radarx.labshope.com.</p><p>Third-party content: some figures show OpenStreetMap map tiles (&copy; OpenStreetMap contributors, ODbL 1.0), Sentinel-2 cloudless imagery (&copy; EOX IT Services GmbH, contains modified Copernicus Sentinel data, CC BY-NC-SA 4.0) and terrain from Terrain Tiles (Mapzen / Tilezen and their sources), and radar data from NOAA NEXRAD Level II and other public archives. These parts keep their own licences and attributions, listed in the chapter 'Images and third-party credits' of the documentation; the licence of this record applies to everything else.</p><p>The concept DOI of this record always resolves to the latest version; each release of the documentation is a new version of the same record.</p>",
+    "access_right": "open",
+    "license": "cc-by-4.0",
+    "keywords": [
+      "weather radar",
+      "radar meteorology",
+      "polarimetric radar",
+      "Doppler radar",
+      "NEXRAD",
+      "quantitative precipitation estimation",
+      "multi-Doppler wind retrieval",
+      "radar mosaic",
+      "software documentation",
+      "user guide"
+    ],
+    "related_identifiers": [
+      {
+        "relation": "documents",
+        "identifier": "https://radarx.labshope.com",
+        "scheme": "url",
+        "resource_type": "software"
+      }
+    ],
+    "language": "eng",
+    "version": "0.3.2",
+    "publication_date": "2026-10-22"
+  }
+}
