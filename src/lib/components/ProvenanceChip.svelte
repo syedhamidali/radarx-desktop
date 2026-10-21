@@ -229,6 +229,7 @@
   .kind-retrieved { --k: var(--c-prov-retrieved); --k-rgb: var(--c-prov-retrieved-rgb); }
   .kind-simulated { --k: var(--c-prov-simulated); --k-rgb: var(--c-prov-simulated-rgb); }
   .kind-stylised { --k: var(--c-prov-stylised); --k-rgb: var(--c-prov-stylised-rgb); border-style: dashed; }
+  .kind-forecast { --k: var(--c-prov-forecast); --k-rgb: var(--c-prov-forecast-rgb); border-style: double; }
   .kind-unknown { border-style: dashed; color: var(--c-muted); }
 
   .prov-pop {
