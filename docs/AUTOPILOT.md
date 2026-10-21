@@ -7,6 +7,9 @@ exactly that data and how, then runs only what you approve.
 * **App:** drop three or more files (or a folder) on the window, or *Command palette > Autopilot*.
 * **Command line:** `rxd auto INPUT... [--plan-only] [--yes] [--steps IDS] [--budget-gb N] [-o DIR]`.
 
+To do the same in the app on a real case, four radars and 44 volumes, follow the tutorial
+{doc}`tutorial-bulk-data`.
+
 ## What it does, in order
 
 1. **Inspects** cheaply: file names and sizes first; then a sample of files per radar is opened for

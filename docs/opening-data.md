@@ -27,6 +27,10 @@ Furuno, IMD, UF, ...), so the name does not matter: `KTLX20130520_201643_V06`, `
 Every open file gets a tab. The files of several radars can be combined into a mosaic ({doc}`MOSAIC`) or a wind
 analysis ({doc}`MULTIDOPPLER`) from the panels of the same name.
 
+Three or more files, or folders, dropped together open the {doc}`Autopilot <AUTOPILOT>` instead: it inspects
+them, plans what the data support and runs only what you approve. The tutorial {doc}`tutorial-bulk-data`
+takes a folder of 44 volumes from four radars through it.
+
 ## Cloud data
 
 ```{image} images/ui/cloud-panel.png
