@@ -3,7 +3,8 @@
     "macOS": {
       "signingIdentity": "-",
       "files": {
-        "Resources/engine": "../python/dist/xradar-engine"
+        "Resources/engine": "../python/dist/xradar-engine",
+        "Resources/frontend": "../dist"
       }
     }
   }

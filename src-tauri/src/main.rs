@@ -26,6 +26,16 @@ static SIDECAR_PID: AtomicU32 = AtomicU32::new(0);
 /// Directory holding the packaged engine (set once at startup from the app's resource dir).
 static BUNDLED_ENGINE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
+/// The built frontend as plain files (`<resources>/frontend`), shipped by the installers so the
+/// engine can draw movies (`rxd animate`, Movie Studio) with the app's own renderer in Chrome.
+static BUNDLED_FRONTEND_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// The shipped frontend folder, when this is an installed app that has one.
+fn bundled_frontend() -> Option<PathBuf> {
+    let dir = BUNDLED_FRONTEND_DIR.get()?;
+    dir.join("index.html").is_file().then(|| dir.clone())
+}
+
 /// File name of the packaged engine executable.
 const ENGINE_EXE: &str = if cfg!(windows) { "xradar-engine.exe" } else { "xradar-engine" };
 
@@ -273,6 +283,12 @@ fn spawn_sidecar(port: u16, token: &str) -> Result<Child, SpawnError> {
         .env("XRADAR_DESKTOP_VERSION", env!("CARGO_PKG_VERSION"))
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
+    // the renderer files for movies; a value set by the user wins
+    if std::env::var_os("RADARX_APP_DIST").is_none() {
+        if let Some(dist) = bundled_frontend() {
+            command.env("RADARX_APP_DIST", dist);
+        }
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -834,6 +850,7 @@ fn main() {
             // Installed app: the packaged engine ships in the resource directory.
             if let Ok(resources) = app.path().resource_dir() {
                 let _ = BUNDLED_ENGINE_DIR.set(resources.join("engine"));
+                let _ = BUNDLED_FRONTEND_DIR.set(resources.join("frontend"));
             }
             let state_arc = Arc::clone(&app.state::<SharedSidecar>().0);
             let app_handle = app.handle().clone();
