@@ -59,7 +59,7 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 are on the {doc}`installation` page):
 
 ```bash
-pip install "https://downloads.labshope.com/radarx/v0.3.0/radarx_desktop_engine-0.3.0-py3-none-any.whl"
+pip install "https://downloads.labshope.com/radarx/v0.3.1/radarx_desktop_engine-0.3.1-py3-none-any.whl"
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```
@@ -146,7 +146,7 @@ QC recipe. It changes nothing and exits 0 even when it finds problems (3 only wh
 read). `--fix-plan -o recipe.json` writes the suggested recipe for `rxd pipeline`. Every check, its
 method and thresholds: {doc}`DATA_CHECK`.
 
-`--json` always prints a list with one report per file, also for a single file. (Before 0.3.0 one
+`--json` always prints a list with one report per file, also for a single file. (Before 0.3.1 one
 file gave a single report object, not a list; a script that read it should now take the first item.)
 
 ```console
@@ -365,7 +365,7 @@ pip install "radarx-desktop-engine[video] @ <the wheel address>"   # Playwright 
 ```
 
 Rendering needs Google Chrome (the system Chrome; no browser is downloaded) and the 3D renderer files of the app:
-an installed Radarx app (0.3.0 or later) ships them and `rxd animate` finds them by itself, or name a folder with
+an installed Radarx app (0.3.1 or later) ships them and `rxd animate` finds them by itself, or name a folder with
 `--app-dist`. Without PyAV the frames are written as numbered PNG files and the `ffmpeg` line that encodes them is printed.
 The terminal report (or `--json`) gives the track, displacement and speed, the time offsets of every radar,
 the share of interpolated frames and the frame count, so a result can be checked without watching the video.

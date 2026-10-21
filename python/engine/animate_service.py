@@ -166,11 +166,18 @@ def capabilities() -> dict[str, Any]:
                 "hint": "Install it with: pip install -U radarx   (Python 3.12 or newer)",
             }
         )
+    frozen = bool(getattr(sys, "frozen", False))
     if not status["playwright"]:
         problems.append(
             {
                 "what": "Playwright is missing (it drives Chrome, which draws the frames).",
-                "hint": f"Install the video extra: {render.INSTALL_VIDEO}",
+                "hint": (
+                    "The movie components are not part of this installer. They will come as an "
+                    "optional download in a later update; until then movies can be made with the "
+                    "Python package (see Installation in the documentation)."
+                    if frozen
+                    else f"Install the video extra: {render.INSTALL_VIDEO}"
+                ),
             }
         )
     chrome = find_chrome()
