@@ -23,6 +23,7 @@ examples:
   rxd animate -i mayfield -o mayfield.mp4 --camera my_camera.toml --look my_look.toml
   rxd animate -i mayfield -p still.png --still-at 12
   rxd animate -i mayfield --no-render --json
+  rxd animate -i mayfield -o storm.mp4 --realistic --light night --sound --flashes-from-glm glm/
   rxd animate -i laura --reference KLCH --tolerance-s 400 --track linear --camera wide -o laura.mp4
 
 The files are grouped by radar and time; every time step takes each radar's nearest volume within
@@ -31,7 +32,8 @@ and tracked, and a 3D camera flies around it in the app's own renderer (headless
 between two volumes are interpolated and are labelled so on the screen. Needs the optional extra:
 pip install 'radarx-desktop-engine[video]' (Playwright and PyAV), the system Chrome, and the built
 app (npm run build); --no-render needs none of them. Writes the MP4 at the end, atomically; an
-interrupted job resumes from its cache. docs/ANIMATE.md has the camera file and the look keys."""
+interrupted job resumes from its cache. --sound adds a SYNTHESISED sound track (wind, rain, thunder; not
+a recording). docs/ANIMATE.md has the camera file, the look keys and the sound."""
 
 
 def add_parser(
@@ -233,6 +235,56 @@ def add_parser(
         help="draw MODELLED lightning (labelled as not observed); off by default",
     )
 
+    g = p.add_argument_group("sound (synthesised from the data, not a recording; off by default)")
+    g.add_argument(
+        "--sound",
+        action="store_true",
+        help="write an AAC 48 kHz stereo track into the MP4: wind from the retrieved winds, rain from the reflectivity, thunder from the flashes named below (none without them)",
+    )
+    g.add_argument(
+        "--sound-listener",
+        metavar="X,Y",
+        help="where the virtual listener stands: km east and north of the middle of the storm's track "
+        "(default: the window-camera place, 10 km to the right of the track and 4 km upwind; with --camera "
+        "window or flight the camera itself)",
+    )
+    g.add_argument(
+        "--sound-compress",
+        type=float,
+        metavar="N",
+        help="the delay between a flash and its thunder is distance / 343 m/s divided by N (1 = real physics; "
+        "default: the film's time-lapse factor, so the thunder keeps its place in the film's own time)",
+    )
+    g.add_argument(
+        "--sound-seed", type=int, metavar="N", help="seed of the noise (7): same seed, same sound"
+    )
+    g.add_argument(
+        "--flashes",
+        metavar="FILE",
+        help="thunder follows the flashes of a CSV (columns time_utc, lat, lon; optional type CG|IC, energy), used as given",
+    )
+    g.add_argument(
+        "--flashes-from-glm",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="thunder follows OBSERVED GOES GLM flashes read from local Level 2 LCFA .nc files (folder, files or pattern; "
+        "nothing is downloaded): the strongest flash of every --glm-bin-s within --glm-radius-km of the tracked storm; "
+        "the chosen flashes are also written next to the film as NAME.flashes.csv",
+    )
+    g.add_argument(
+        "--glm-radius-km",
+        type=float,
+        metavar="KM",
+        help="largest distance of a GLM flash from the tracked storm centre (30)",
+    )
+    g.add_argument(
+        "--glm-bin-s",
+        type=float,
+        metavar="S",
+        help="keep the strongest GLM flash of every S seconds of data time (default: the time-lapse factor, about one thunderclap per film second)",
+    )
+
     g = p.add_argument_group("rendering and output")
     g.add_argument(
         "--tile-cache",
@@ -347,6 +399,7 @@ def parse_size(text: str) -> tuple[int, int]:
 def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
     from engine import animate
     from engine.animate_camera import observer_settings
+    from engine.animate_sound import parse_listener
 
     width, height = parse_size(args.size)
     obs: dict[str, Any] = {}
@@ -420,6 +473,14 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         credit=args.credit,
         lightning_model=args.lightning_model,
         sea=args.sea,
+        sound=args.sound,
+        sound_listener=parse_listener(args.sound_listener) if args.sound_listener else None,
+        sound_compress=args.sound_compress,
+        sound_seed=args.sound_seed,
+        flashes=args.flashes,
+        flashes_from_glm=list(args.flashes_from_glm),
+        glm_radius_km=args.glm_radius_km,
+        glm_bin_s=args.glm_bin_s,
         tile_cache=args.tile_cache,
         offline=args.offline,
         app_dist=args.app_dist,
@@ -465,7 +526,13 @@ def cmd_animate(args: argparse.Namespace, out: Any) -> int:
     if out.json:
         out.files += [
             v
-            for v in (o.get("video"), o.get("still"), o.get("frames_written"), o.get("provenance"))
+            for v in (
+                o.get("video"),
+                o.get("still"),
+                o.get("frames_written"),
+                o.get("provenance"),
+                o.get("sound_flashes"),
+            )
             if v
         ]
         payload = res.to_dict()
@@ -474,7 +541,7 @@ def cmd_animate(args: argparse.Namespace, out: Any) -> int:
         return cli.EXIT_OK
     if not out.quiet:
         out.result(animate.format_report(res, cli._table))
-    for key in ("video", "still", "frames_written", "provenance"):
+    for key in ("video", "still", "frames_written", "provenance", "sound_flashes"):
         if o.get(key):
             out.wrote(o[key])
     if o.get("ffmpeg"):

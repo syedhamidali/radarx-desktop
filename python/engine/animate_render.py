@@ -408,6 +408,20 @@ class Renderer:
     def report(self) -> dict[str, Any]:
         return self._call("() => window.__xrClip.report()")
 
+    def render_audio(self, sample_rate: int = 48000) -> dict[str, Any]:
+        """Synthesise the soundscape in the page (offline Web Audio): 16-bit stereo PCM (base64) and a
+        report of what it was made from. Never returns an empty result: a failure is an error."""
+        try:
+            return self.page.evaluate("(sr) => window.__xrClip.renderAudio(sr)", sample_rate)
+        except Exception as exc:
+            msg = str(exc).split("\n")[0].replace("Page.evaluate: ", "").removeprefix("Error: ")
+            if "OfflineAudioContext" in msg or "AudioContext" in msg:
+                raise _dependency_error(
+                    "this Chrome cannot synthesise the sound (no offline Web Audio): update Google Chrome "
+                    f"(details: {msg[:160]})"
+                ) from exc
+            raise RuntimeError(f"could not synthesise the sound: {msg[:300]}") from exc
+
     def frame_png(self, i: int) -> bytes:
         self._call("(i) => window.__xrClip.renderFrame(i)", i)
         return self.page.screenshot(type="png")
@@ -496,6 +510,30 @@ def render_frames(
             progress(n + 1, len(indices), time.perf_counter() - t0)
 
 
+@dataclass
+class AudioTrack:
+    """Audio to put in the MP4: 16-bit stereo PCM, shape (samples, 2), at ``sample_rate`` Hz."""
+
+    pcm: Any
+    sample_rate: int = 48000
+
+
+def pcm_from_page(audio: dict[str, Any], n_frames: int, fps: float) -> AudioTrack:
+    """The PCM of ``renderAudio`` cut or padded with silence to exactly the length of the video."""
+    import base64
+
+    import numpy as np
+
+    sr = int(audio["sampleRate"])
+    pcm = np.frombuffer(base64.b64decode(audio["pcm"]), dtype="<i2").reshape(-1, 2)
+    want = round(n_frames / fps * sr)
+    if len(pcm) > want:
+        pcm = pcm[:want]
+    elif len(pcm) < want:
+        pcm = np.vstack([pcm, np.zeros((want - len(pcm), 2), dtype="<i2")])
+    return AudioTrack(np.ascontiguousarray(pcm), sr)
+
+
 def encode_mp4(
     frames_dir: Path,
     n: int,
@@ -507,9 +545,11 @@ def encode_mp4(
     preset: str = "medium",
     ext: str = "png",
     metadata: dict[str, str] | None = None,
+    audio: AudioTrack | None = None,
 ) -> None:
     """H.264 (yuv420p, faststart) from the numbered frames; written to ``out.part`` then renamed, so
-    a crash never leaves a broken file under the final name."""
+    a crash never leaves a broken file under the final name. ``audio``: an AAC 48 kHz stereo track of
+    the same length, interleaved with the video."""
     require_av()
     import av
     from PIL import Image
@@ -525,13 +565,21 @@ def encode_mp4(
         stream.width, stream.height = w, h
         stream.pix_fmt = "yuv420p"
         stream.options = {"crf": str(crf), "preset": preset}
+        audio_packets = _encode_audio(container, audio) if audio is not None else []
         for i in range(n):
             img = Image.open(frames_dir / frame_name(i, ext)).convert("RGB")
             if img.size != (w, h):
                 img = img.crop((0, 0, w, h))
             for pkt in stream.encode(av.VideoFrame.from_image(img)):
                 container.mux(pkt)
+            # the audio up to this frame's time goes in with it (a well interleaved file)
+            while audio_packets and audio_packets[0].pts * audio_packets[0].time_base <= (
+                i + 1
+            ) / round(fps):
+                container.mux(audio_packets.pop(0))
         for pkt in stream.encode():
+            container.mux(pkt)
+        for pkt in audio_packets:
             container.mux(pkt)
     except BaseException:
         container.close()
@@ -539,6 +587,29 @@ def encode_mp4(
         raise
     container.close()
     part.replace(out)
+
+
+def _encode_audio(container: Any, audio: AudioTrack) -> list[Any]:
+    """Add an AAC stereo stream to ``container`` and return its packets (muxed by the caller)."""
+    from fractions import Fraction
+
+    import av
+    import numpy as np
+
+    sr = int(audio.sample_rate)
+    stream = container.add_stream("aac", rate=sr)
+    stream.layout = "stereo"
+    stream.bit_rate = 160_000
+    planar = np.ascontiguousarray((audio.pcm.astype(np.float32) / 32768.0).T)
+    packets: list[Any] = []
+    for i0 in range(0, planar.shape[1], 1024):
+        af = av.AudioFrame.from_ndarray(planar[:, i0 : i0 + 1024], format="fltp", layout="stereo")
+        af.sample_rate = sr
+        af.pts = i0
+        af.time_base = Fraction(1, sr)
+        packets.extend(stream.encode(af))
+    packets.extend(stream.encode())
+    return packets
 
 
 def copy_frames(frames_dir: Path, dest: Path, n: int, ext: str = "png") -> None:
