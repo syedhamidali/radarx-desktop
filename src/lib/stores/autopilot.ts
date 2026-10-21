@@ -17,8 +17,8 @@
 import { writable, derived, get } from 'svelte/store';
 import { wsManager } from '../utils/websocket';
 
-/** Dropping at least this many paths opens Autopilot instead of opening every file. */
-export const AUTOPILOT_DROP_MIN = 3;
+/** Dropping at least this many paths (or any folder) opens Autopilot: utils/dropRoute.ts. */
+export { AUTOPILOT_DROP_MIN } from '../utils/dropRoute';
 
 export type Phase = 'idle' | 'inspecting' | 'planning' | 'planned' | 'running' | 'done' | 'error';
 

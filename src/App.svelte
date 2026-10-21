@@ -18,7 +18,8 @@
   import DataCheckChip from './lib/components/DataCheckChip.svelte';
   import { panelOpen as dataCheckOpen, openDataCheck } from './lib/stores/dataCheck';
   import { movieStudioOpen, openMovieStudio } from './lib/stores/movieStudio';
-  import { panelOpen as autopilotOpen, openAutopilot, AUTOPILOT_DROP_MIN } from './lib/stores/autopilot';
+  import { panelOpen as autopilotOpen, openAutopilot } from './lib/stores/autopilot';
+  import { routeDrop, AUTOPILOT_DROP_MIN } from './lib/utils/dropRoute';
   import { updater } from './lib/stores/updater';
   import { reportIssueOpen, openReportIssue, closeReportIssue } from './lib/stores/reportIssue';
   import { commandStudioOpen, openCommandStudio } from './lib/stores/commandStudio';
@@ -306,10 +307,9 @@
           isDragOver = false;
         } else if (type === 'drop') {
           isDragOver = false;
-          const paths = (event.payload as any).paths as string[] | undefined;
-          // Many files (or a folder) at once: Autopilot inspects and plans; nothing opens by itself.
-          if (paths && paths.length >= AUTOPILOT_DROP_MIN) openAutopilot(paths);
-          else if (paths && paths.length > 0) openPaths(paths);
+          const paths = ((event.payload as any).paths as string[] | undefined) ?? [];
+          // Many files, or any folder: Autopilot inspects and plans; nothing opens by itself.
+          void routeDroppedPaths(paths);
         }
       });
       // The component may have been destroyed while the listener was registering.
@@ -525,6 +525,22 @@
     dragDepth = 0;
     isDragOver = false;
     uploadWebFiles(Array.from(e.dataTransfer?.files ?? []));
+  }
+
+  /** Desktop drop: ask the shell which paths are folders, then open or hand to the Autopilot. */
+  async function routeDroppedPaths(paths: string[]) {
+    let kinds: string[] | null = null;
+    if (paths.length > 0 && paths.length < AUTOPILOT_DROP_MIN) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        kinds = await invoke<string[]>('path_kinds', { paths });
+      } catch (err) {
+        console.warn('[App] path_kinds unavailable:', err);
+      }
+    }
+    const route = routeDrop(paths, kinds);
+    if (route === 'autopilot') openAutopilot(paths);
+    else if (route === 'open') openPaths(paths);
   }
 
   /** Welcome screen: open the Cloud Data panel and fetch the latest scan of its station. */
