@@ -13,6 +13,7 @@
   actions per site ({doc}`RADAR_SITES`). Its *Map* tab opens the **radar network map**: every catalogued
   radar in the world, and the networks whose volumes the app loads directly (NEXRAD, DWD, the FMI sample;
   {doc}`RADAR_MAP`).
+- **Live**: the live map shows the newest scans of your default radars as one updating composite ({doc}`LIVE`).
 
 ```{image} images/ui/welcome.png
 :alt: The empty window

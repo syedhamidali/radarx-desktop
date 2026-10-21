@@ -206,6 +206,20 @@
       icon: '\u{1F5FA}',
       action: () => dispatch('action', { type: 'radar-map' }),
     });
+    actions.push({
+      id: 'live-map',
+      label: 'Live map: the latest scans of your default radars',
+      category: 'View',
+      icon: '\u{1F4E1}',
+      action: () => dispatch('action', { type: 'live-map' }),
+    });
+    actions.push({
+      id: 'live-radars',
+      label: 'Live map: choose the default radars...',
+      category: 'View',
+      icon: '\u{1F4CD}',
+      action: () => dispatch('action', { type: 'live-radars' }),
+    });
 
     return actions;
   }

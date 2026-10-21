@@ -10,6 +10,7 @@
   const dispatch = createEventDispatcher<{
     'open-file': void;
     'open-cloud': void;
+    'open-live': void;
     'open-recent': { path: string };
     'load-workspace': { name: string };
   }>();
@@ -109,6 +110,22 @@
         </div>
         {#if !$webUi}<kbd>Ctrl+O</kbd>{/if}
       </button>
+
+      {#if !$webUi}
+        <button class="action-card" on:click={() => dispatch('open-live')} data-testid="welcome-open-live">
+          <div class="action-icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="2.5" />
+              <path d="M7.5 7.5a6.4 6.4 0 0 0 0 9M16.5 7.5a6.4 6.4 0 0 1 0 9" />
+              <path d="M4.6 4.6a10.5 10.5 0 0 0 0 14.8M19.4 4.6a10.5 10.5 0 0 1 0 14.8" />
+            </svg>
+          </div>
+          <div class="action-text">
+            <span class="action-title">Live map</span>
+            <span class="action-desc">The latest scans of your default radars, merged, updating (asks first)</span>
+          </div>
+        </button>
+      {/if}
 
       {#if savedWorkspaces.length > 0}
         <button class="action-card" on:click={() => dispatch('load-workspace', { name: savedWorkspaces[0] })}>

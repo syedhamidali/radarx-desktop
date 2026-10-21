@@ -422,6 +422,7 @@ class WebSocketManager {
     'volume_data',
     'cross_section_3d_data',
     'mosaic_result',
+    'live_frame',
     'multidoppler_result',
     'mosaic_volume',
     'wind_volume',
@@ -562,6 +563,9 @@ class WebSocketManager {
     } else if (type === 'mosaic_result') {
       // PNG bytes + the JSON header; the mosaic store builds the object URL.
       this._dispatchHandlers('mosaic_result_ready', { header, png: new Uint8Array(buffer) });
+    } else if (type === 'live_frame') {
+      // One composite PNG of the live map; the live store builds the object URL.
+      this._dispatchHandlers('live_frame_ready', { header, png: new Uint8Array(buffer) });
     } else if (type === 'mosaic_volume') {
       // uint8 (nz, ny, nx) merged mosaic field for the 3D view
       this._dispatchHandlers('mosaic_volume_ready', { header, data: new Uint8Array(buffer) });
@@ -726,6 +730,7 @@ class WebSocketManager {
       case 'volume_data':
       case 'cross_section_3d_data':
       case 'mosaic_result':
+      case 'live_frame':
       case 'multidoppler_result':
       case 'mosaic_volume':
       case 'wind_volume':

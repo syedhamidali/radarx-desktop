@@ -1273,6 +1273,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "open_nexrad_l2": self._handle_open_nexrad_l2,
             "open_nexrad_realtime": self._handle_open_nexrad_realtime,
             "get_nexrad_latest_info": self._handle_nexrad_latest_info,
+            "live_check": self._handle_live_check,
+            "live_update": self._handle_live_update,
+            "live_stop": self._handle_live_stop,
             "list_arco_scans": self._handle_list_arco_scans,
             "open_arco_scan": self._handle_open_arco_scan,
             "list_network_providers": self._handle_list_network_providers,
@@ -1880,6 +1883,95 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         loop = asyncio.get_running_loop()
         info = await loop.run_in_executor(None, latest_scan_info, station)
         await self.send({"type": "nexrad_latest_info", **info})
+
+    # ── Live map (engine/live.py): newest volume per default radar, one composite ──────────
+
+    async def _live_error(self, request_id: Any, message: str) -> None:
+        await self.send({"type": "live_error", "request_id": request_id, "message": message})
+
+    async def _handle_live_check(self, msg: dict[str, Any]) -> None:
+        """``{type: "live_check", request_id, stations: [...]}`` -> ``live_check_result`` with one
+        :func:`engine.cloud.latest_scan_info` entry per station (listing only, no download) and
+        whether the live cache already holds that volume. A bad request is a ``live_error``."""
+        from engine import live
+
+        request_id = msg.get("request_id")
+        if self.session is not None:
+            await self._live_error(request_id, "The live map is a feature of the desktop app.")
+            return
+        try:
+            stations = live.normalize_stations(msg.get("stations"))
+        except (live.LiveError, ValueError) as exc:
+            await self._live_error(request_id, f"live_check: {exc}")
+            return
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, live.check, stations)
+        await self.send(
+            {"type": "live_check_result", "request_id": request_id, "stations": results}
+        )
+
+    async def _handle_live_update(self, msg: dict[str, Any]) -> None:
+        """``{type: "live_update", request_id, files: [{station, path, name, size, scan_time}],
+        variable?, product?, grid?, merge?}`` -> progress, then a ``live_frame`` header (a mosaic
+        header plus ``stations`` and ``provenance``) followed by the PNG frames. Only the named
+        files are downloaded; a station already held is not fetched again. Failure: ``live_error``;
+        progress always closes at 100."""
+        from engine import live, mosaic
+
+        request_id = msg.get("request_id")
+        if self.session is not None:
+            await self._live_error(request_id, "The live map is a feature of the desktop app.")
+            return
+        for key in ("grid", "merge"):
+            if msg.get(key) is not None and not isinstance(msg[key], dict):
+                await self._live_error(request_id, f"live_update: '{key}' must be an object")
+                return
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        await self.send_progress(3, "Live map: starting update")
+        try:
+            mosaic._radarx()  # fail before any download when radarx is missing
+
+            def _build():
+                return live.update(
+                    msg.get("files"),
+                    variable=str(msg.get("variable") or "DBZH"),
+                    product=str(msg.get("product") or "composite"),
+                    grid=msg.get("grid"),
+                    merge=msg.get("merge"),
+                    progress=progress_sync,
+                )
+
+            t0 = time.perf_counter()
+            # Downloads and the merge share the mosaic lock: one heavy build at a time.
+            record, radars = await _run_holding(_locks.get("mosaic"), _build)
+            header = {
+                "type": "live_frame",
+                "request_id": request_id,
+                **live.frame_header(record, radars),
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+            }
+            await self._send_binary_chunks([record.png], header, length_key="png_bytes")
+        except (live.LiveError, mosaic.MosaicError, plugins.ModuleError) as exc:
+            logger.warning("Live update failed: %s", exc)
+            await self._live_error(request_id, str(exc))
+        except ImportError as exc:
+            await self._live_error(
+                request_id, f"The live composite needs the Python package radarx: {exc}"
+            )
+        except Exception as exc:
+            logger.error("Live update failed: %s\n%s", exc, traceback.format_exc())
+            await self._live_error(request_id, f"{type(exc).__name__}: {exc}")
+        finally:
+            await self.send_progress(100, "Live map: update finished")
+
+    async def _handle_live_stop(self, msg: dict[str, Any]) -> None:
+        """Release every volume the live map holds (the app stopped the live map or is closing)."""
+        from engine import live
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, live.LIVE.clear)
+        await self.send({"type": "live_stopped", "request_id": msg.get("request_id")})
 
     async def _handle_open_nexrad_realtime(self, msg: dict[str, Any]) -> None:
         station = msg.get("station", "")

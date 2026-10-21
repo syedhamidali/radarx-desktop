@@ -9,7 +9,7 @@
  */
 import { writable, derived, type Readable } from 'svelte/store';
 
-export type JobSource = 'pipeline' | 'modules' | 'mosaic' | 'wind' | 'movie';
+export type JobSource = 'pipeline' | 'modules' | 'mosaic' | 'wind' | 'movie' | 'live';
 
 const sources = writable<Partial<Record<JobSource, Readable<number>>>>({});
 
