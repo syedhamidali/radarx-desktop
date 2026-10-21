@@ -15,6 +15,7 @@ usage
 ACCOUNTS
 opening-data
 viewing
+LIVE
 settings
 ```
 
