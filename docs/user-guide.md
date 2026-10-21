@@ -58,4 +58,5 @@ export
 
 CLI
 BULK
+command-studio
 ```
