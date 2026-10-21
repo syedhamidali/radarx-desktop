@@ -54,6 +54,10 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
+from engine import _radarx_import
+
+_radarx_import.install()  # radarx must not configure the root logger (issue #91)
+
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2

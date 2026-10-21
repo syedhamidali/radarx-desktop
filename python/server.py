@@ -47,7 +47,18 @@ if getattr(sys, "frozen", False):
 import websockets
 from websockets.asyncio.server import ServerConnection
 
-from engine import derived, layer_provenance, mosaic, pipeline, plugins, quality, rhi, varmap, web
+from engine import (
+    _radarx_import,
+    derived,
+    layer_provenance,
+    mosaic,
+    pipeline,
+    plugins,
+    quality,
+    rhi,
+    varmap,
+    web,
+)
 from engine import multidoppler as mdop
 from engine.account import activity as account_activity
 from engine.account import config as account_config
@@ -89,6 +100,8 @@ from engine.temporal import (
     compute_time_series,
 )
 from engine.volume import extract_cross_section_3d, extract_volume
+
+_radarx_import.install()  # radarx must not configure the root logger (issue #91)
 
 logging.basicConfig(
     level=logging.INFO,
