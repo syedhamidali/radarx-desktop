@@ -11,7 +11,7 @@ This page is the policy that every feature, module and screenshot has to meet. I
 on purpose: if a rule here is hard to follow, the feature changes, not the rule.
 
 Where a rule is already implemented, the page says so. Where it is a goal that the program does not yet
-meet (the provenance in the hover read-out and a generated citation block), the page says that too: a policy that
+meet (a generated citation block), the page says that too: a policy that
 pretends to be finished is the kind of claim this page forbids.
 
 ## 1. Provenance classes
@@ -51,7 +51,10 @@ information* from *nothing to say*.
   *simulated* and *stylised* as two chips) and the Layers panel lists each layer with its source, valid
   time and the time offset to the active radar scan; exports carry `data_class`, `data_source`,
   `data_valid_time`, ... ({doc}`ENVIRONMENT`).
-- **Not yet done:** provenance in the hover read-out and a generated citation block.
+- **In the read-out:** the value under the pointer (2D probe, map and mosaic probe, cross-section and RHI
+  read-outs) carries the class of the layer it comes from as a short tag (OBS, RETR, MODEL, SIM, STYLE, and
+  ADJ for gauge-adjusted rainfall); a layer whose provenance is not known says "?", it is never guessed.
+- **Not yet done:** a generated citation block.
 
 ## 2. Rules
 
@@ -163,6 +166,6 @@ sources that are non-commercial or share-alike are flagged in their docs page an
 
 ## 3. What is not finished
 
-Provenance chips on every layer and the Layers panel are done. Two things remain: provenance in the hover read-out and a
-generated methods citation block. Features that bring new data into the app describe their provenance on their
-documentation page and carry it into the export metadata.
+Provenance chips on every layer, the Layers panel and the provenance class in the hover read-out are done. One
+thing remains: a generated methods citation block. Features that bring new data into the app describe their
+provenance on their documentation page and carry it into the export metadata.

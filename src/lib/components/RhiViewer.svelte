@@ -57,6 +57,8 @@
   import { rhiNoise, setNoise, resetNoise } from '../stores/rhiNoise';
   import { maskOf, valueMasks } from '../stores/valueMask';
   import { canvasToBlob, savePng } from '../utils/crossSectionExport';
+  import type { ProbeTag } from '../utils/probeProvenance';
+  import ProbeProvenanceTag from './ProbeProvenanceTag.svelte';
 
   interface Props {
     /** The sweep to draw; an RHI entry carries `kind === 'rhi'` and per-ray `elevation`. */
@@ -78,6 +80,8 @@
     onCmapChange?: (name: string) => void;
     onRangeChange?: (vmin: number, vmax: number) => void;
     onRetry?: () => void;
+    /** Provenance class of the shown variable, for the read-out (derived once per layer). */
+    provenance?: ProbeTag | null;
   }
 
   let {
@@ -95,6 +99,7 @@
     onCmapChange,
     onRangeChange,
     onRetry,
+    provenance = null,
   }: Props = $props();
 
   // ── Layout constants ─────────────────────────────────────────────────────
@@ -977,7 +982,7 @@
         <div class="rhi-readout-value">
           {#if readout.value !== null}
             <strong>{fmtValue(readout.value)}</strong> {units}
-            {#if variableLabel}<span class="rhi-readout-var">{variableLabel}</span>{/if}
+            {#if variableLabel}<span class="rhi-readout-var">{variableLabel}</span>{/if}{#if provenance}<ProbeProvenanceTag tag={provenance} />{/if}
           {:else if readout.hidden !== null}
             <span class="rhi-readout-none">hidden by the noise settings (measured {fmtValue(readout.hidden)} {units})</span>
           {:else if readout.inScan}

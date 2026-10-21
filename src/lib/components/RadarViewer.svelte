@@ -39,6 +39,9 @@
   import MaskPopover from './MaskPopover.svelte';
   import { mapHidden, setMapHidden } from '../stores/settings';
   import { getShortcutDisplay } from '../utils/shortcuts';
+  import { layerMap } from '../stores/layers';
+  import { probeTag, variableTarget } from '../utils/probeProvenance';
+  import ProbeProvenanceTag from './ProbeProvenanceTag.svelte';
 
   // ── State ──────────────────────────────────────────────────────────────────
   let isLoading = $state(false);
@@ -138,6 +141,13 @@
   const legendTitle = $derived(((fieldShown as DisplayedField | null)?.title) ?? variableLabel);
   const sweeps = $derived($radarData.sweeps);
   const variable = $derived($selectedVariable);
+  /** Provenance class of what the probe reads: once per layer, not per mouse move. */
+  const probeProv = $derived.by(() => {
+    const f = fieldShown as DisplayedField | null;
+    const fileId = $activeFileId;
+    if (f) return probeTag($layerMap, { type: 'module', fileId, module: f.module, name: f.name });
+    return probeTag($layerMap, variableTarget(fileId, $selectedVariable, derivedVars));
+  });
   /** Value mask of what is on screen: a module field has its own, else the variable's. */
   const maskKey = $derived(fieldShown ? `field:${(fieldShown as DisplayedField).name}` : ($selectedVariable ?? ''));
   const activeMask = $derived(maskOf($valueMasks, maskKey));
@@ -1022,7 +1032,7 @@
       {#if probeActive && probeValue !== null}
         <div class="probe-tooltip" style="left: {probeX + 12}px; top: {probeY - 28}px">
           {#if probeLabel}{probeLabel} ({probeValue})
-          {:else}{probeValue.toFixed(2)} {currentUnits}{/if}
+          {:else}{probeValue.toFixed(2)} {currentUnits}{/if}<ProbeProvenanceTag tag={probeProv} />
         </div>
       {:else if probeActive && probeValue === null}
         <div class="probe-tooltip muted" style="left: {probeX + 12}px; top: {probeY - 28}px">
@@ -1086,6 +1096,7 @@
         onCmapChange={handleCmapChange}
         onRangeChange={handleRangeChange}
         onRetry={retryLoad}
+        provenance={probeProv}
       />
     {/if}
   {:else}

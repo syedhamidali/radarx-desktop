@@ -4,8 +4,12 @@
 
 A GPU-rendered PPI on a map. Pick the variable and the sweep in the bar above the map; the colour scale, range
 rings, geographic overlay and the map opacity are one click away. Scroll to zoom, drag to pan. The probe reads the
-value under the pointer; sector scans and rays with gaps are drawn as measured, and the probe reports nothing
-where nothing is drawn.
+value under the pointer (right-click turns it on and off); sector scans and rays with gaps are drawn as measured,
+and the probe reports nothing where nothing is drawn. Next to the value, a short tag says what kind of number it
+is: OBS for a radar measurement, RETR for a field an algorithm made from it (a module output or derived variable),
+MODEL, SIM or STYLE for the other classes, and ADJ for rainfall adjusted to gauges. The map probe of a mosaic and
+the cross-section and RHI read-outs show the same tag. "?" means the layer came without provenance; treat it as
+unverified.
 
 ```{image} images/ui/2d-view.png
 :alt: 2D view of a squall line

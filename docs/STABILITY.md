@@ -71,6 +71,12 @@ written elsewhere), the rest from the synthetic volumes in `python/tests/conftes
 15. `_blank_to_none` in the export handlers; the animation handler checks `dpi` (72-600) and the frame
     time (50-60 000 ms) before starting.
 
+Requests in flight per connection are limited in both modes: 16 in web mode, 32 on the desktop
+(`XRADAR_DESKTOP_MAX_INFLIGHT` changes it). The app's scheduler keeps far fewer running, so normal
+use never reaches it; a request over the limit is answered with the same `busy` error as in web
+mode ("Too many requests in flight; wait for them to finish"). On the desktop `ping`, the account
+messages and every cancel message always get through and do not count.
+
 ## What was tried (all of it ran; the automated part is in `python/tests/test_stability_*.py`)
 
 | Area | How | Result |
@@ -79,7 +85,7 @@ written elsewhere), the rest from the synthetic volumes in `python/tests/conftes
 | Odd sweeps | 26 synthetic cases (NaN-only, all no-echo with NEXRAD encoding, one ray, two rays, sectors incl. wrap-around, duplicate and unsorted rays, NaN/inf angles, missing azimuth/range/elevation/DBZH, +-3e38 and inf, all-inf, float64, int16, 1 gate, 0 gates, 0 rays, negative and constant range, 0 sweeps, uneven sweeps, 1000x3000 gates) x every analysis handler x PNG/SVG/CSV/NetCDF export x every registered module | #11-#13 found. Everything else answers with a readable message; modules report "needs ZDR", "no valid reflectivity gates", "range must increase" ... instead of tracebacks. |
 | Hostile messages | ~3 000 mutations: every key of about 40 valid messages replaced by `None`, `""`, 5 000 characters, -1, 2^63, 1e308, NaN, +-inf, bool, `[]`, `{}`, nested, `../../etc/passwd`, NUL | One reply per request (cancel messages are by design silent). Only `inf` -> int conversions and a few out-of-range animation values said "Unexpected": now "Invalid input" / a range message. |
 | Resource bombs | bins 2e8, scatter subsample 1e9, 10000x10000 render, 600 dpi x 30 inch figure, 500^3 volume, 500-frame animation | #5. The rest finishes (6-56 s) or is user-chosen. |
-| Request flood | 3 000 `get_sweep_data` + 1 000 `render` in 0.2 s on one socket | All answered in 5 s, memory flat, ping answered. The engine does not drop stale work itself (the client scheduler keeps 3 in flight). |
+| Request flood | 3 000 `get_sweep_data` + 1 000 `render` in 0.2 s on one socket | All answered in 5 s, memory flat, ping answered. The engine does not drop stale work itself (the client scheduler keeps 3 in flight). Since then a connection holds at most 32 requests at once and the rest are answered `busy` (see above; test: `test_stability_server.py`). |
 | Event-loop lag | ping every 50 ms while opening a file, rendering, volume, PNG 300 dpi, NetCDF export, cells, modules | Worst round trip 112 ms, except a 300 dpi PNG (0.45 s) and a NetCDF export (1.9 s; the C libraries hold the GIL). No handler blocks the loop. |
 | Connection drop / reconnect | client aborts the socket with 30 sweep requests and an export in flight, 3 times; state after reconnect | Tasks cancelled, nothing leaked, files still open on reconnect (desktop). |
 | Oversized messages | 22 MB and 64 MB frames | Connection closed with 1009, engine unaffected. |
@@ -212,8 +218,6 @@ stays.
 * **A native crash still takes the engine down.** ~230 damaged files did not trigger one, but HDF5,
   netCDF4 and xradar are C/Python code reading untrusted bytes. The recovery path is #2/#10 (restart
   plus a message); the web service should keep running in a container as WEB.md says.
-* The desktop engine has no per-connection limit on requests in flight (web mode has 16); stale
-  requests are bounded by the UI's scheduler only.
 * Cloud opens (`open_nexrad_l2`, realtime) have no overall timeout besides the ARCO one; not testable
   offline here.
 * `purge_stale_dirs` deletes folders left by a *killed* web server only when they are over an hour

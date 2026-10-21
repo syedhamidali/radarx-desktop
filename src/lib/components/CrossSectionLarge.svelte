@@ -51,12 +51,19 @@
   import CrossSectionSmoothing from './CrossSectionSmoothing.svelte';
   import ValueMaskControl from './ValueMaskControl.svelte';
   import { maskDescription, maskOf, maskPredicate, valueMasks } from '../stores/valueMask';
+  import { activeFileId } from '../stores/fileManager';
+  import { activeDerived } from '../stores/derived';
+  import { layerMap } from '../stores/layers';
+  import { probeTag, variableTarget } from '../utils/probeProvenance';
+  import ProbeProvenanceTag from './ProbeProvenanceTag.svelte';
 
   let { mode = 'dock' }: { mode?: 'dock' | 'modal' } = $props();
 
   // ---- shared state -------------------------------------------------------------------------
   const cs = $derived($crossSectionStore);
   const data = $derived($crossSectionStore.crossSectionData);
+  /** Provenance class of the sectioned variable (once per variable, not per mouse move). */
+  const probeProv = $derived(probeTag($layerMap, variableTarget($activeFileId, data?.variable, $activeDerived)));
   const style = $derived($crossSectionStore.style);
   // Narrow deriveds: effects below must not re-run for unrelated store updates.
   const lineNow = $derived($crossSectionStore.line);
@@ -750,7 +757,7 @@
       <div class="csl-cross h" style="top:{hover.y}px; left:{layout.plot.x}px; width:{layout.plot.w}px"></div>
       <div class="csl-tip" class:left={hover.x > cssW * 0.6} style="left:{hover.x}px; top:{hover.y}px" data-testid="cs-tip">
         {#if readout.value != null}
-          <b class="val">{readout.value.toFixed(1)} {readout.units}</b>
+          <b class="val">{readout.value.toFixed(1)} {readout.units}</b><ProbeProvenanceTag tag={probeProv} />
         {:else}
           <span class="none">no echo</span>
         {/if}
@@ -781,7 +788,7 @@
   <div class="csl-status" aria-live="off" data-testid="cs-status">
     {#if readout}
       {#if readout.value != null}
-        <b class="val">{readout.value.toFixed(2)} {readout.units}</b>
+        <b class="val">{readout.value.toFixed(2)} {readout.units}</b><ProbeProvenanceTag tag={probeProv} />
       {:else}
         <span class="none">no echo</span>
       {/if}
