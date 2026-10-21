@@ -11,14 +11,14 @@ rxd COMMAND --help        # purpose, options, real examples
 ```
 
 ```{note}
-**The command was called `xrd` before.** It is now `rxd` (and `import rxd`, `python -m rxd`). `xrd` still works,
-as the same program, so existing scripts and notebooks keep running; in a terminal it prints a one-line note,
+**The command was called `xrd` before.** It is now `rxd`. `xrd` still works,
+as the same program, so existing scripts keep running; in a terminal it prints a one-line note,
 and it will be removed in a future release. Switch with a find-and-replace of `xrd` by `rxd`.
 ```
 
 ## You need an account
 
-radarx-desktop needs a free account, in the terminal as well as in the app (see {doc}`ACCOUNTS`). Sign in once:
+Radarx Desktop needs a free account, in the terminal as well as in the app (see {doc}`ACCOUNTS`). Sign in once:
 
 ```console
 $ rxd login
@@ -32,11 +32,10 @@ $ rxd logout
 ```
 
 The password is typed without echo, never goes on the command line and is never stored; the session is kept in a
-private file in your user configuration folder, shared with the app and with `import rxd`. Without a session every
+private file in your user configuration folder, shared with the app. Without a session every
 command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help` and `--version` prints how to sign in
 and exits with **code 5**. With no network a sign-in keeps working for 30 days after the server last checked it.
-The deprecated `xrd` command behaves identically. (`RADARX_AUTH_DISABLED=1` switches the check off in a source
-checkout for developers; installers ignore it.)
+The deprecated `xrd` command behaves identically.
 
 ## Quick start
 
@@ -65,10 +64,6 @@ pip install -U radarx             # optional: mosaics, winds and the radarx_* al
 rxd --version
 ```
 
-In a source checkout, `pip install -e python/` gives the same command on your working copy (an editable install
-is what makes your own algorithm folder, `export XRADAR_MODULES_DIR=~/my_modules`, and edits to the shipped
-ones take effect at once).
-
 Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`,
 `source <(rxd completion zsh)` or `rxd completion fish > ~/.config/fish/completions/rxd.fish`.
 
@@ -86,15 +81,12 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | `-v`, `-q`, `--json` | progress and details (`-vv`: engine log and tracebacks) / only errors / machine-readable output |
 | `--config FILE`, `--print-command` | keep an analysis in a file / print the equivalent full command |
 
-The Python API uses the same names: `files` (`-i`), `out` (`-o`), `plot` (`-p`), `variable` (`-V`),
-`sweep` (`-s`), keyword parameters (`-P`); see [API.md](API.md).
-
 ## The commands, in the order you work
 
 | Step | Command | Purpose |
 |---|---|---|
 | Look | `rxd info` | format, radar, time, sweeps, variables, Nyquist velocity |
-| | `rxd check` | data-quality report with evidence and a suggested QC recipe ([DATA_CHECK.md](DATA_CHECK.md)) |
+| | `rxd check` | data-quality report with evidence and a suggested QC recipe ({doc}`DATA_CHECK`) |
 | | `rxd plot` | a PPI picture of one variable |
 | Clean | `rxd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |
 | Analyse | `rxd run MODULE` | an algorithm on one sweep or all sweeps (same as `rxd modules run`) |
@@ -149,7 +141,7 @@ codes masked): `--theme dark`, `--dpi 300`, `--vmin/--vmax`, `-p figure.pdf` for
 range folding, clutter, ZDR offset, time gaps ...), with the evidence, where it is, and a suggested
 QC recipe. It changes nothing and exits 0 even when it finds problems (3 only when a file cannot be
 read). `--fix-plan -o recipe.json` writes the suggested recipe for `rxd pipeline`. Every check, its
-method and thresholds: [DATA_CHECK.md](DATA_CHECK.md).
+method and thresholds: {doc}`DATA_CHECK`.
 
 ```console
 $ rxd check -i KTLX20130520_201643_V06.gz --fix-plan -o recipe.json
@@ -253,7 +245,7 @@ precipitable water 22 mm (to 7.0 hPa)
 ```
 
 `-v` adds the definitions and references, `--json` everything, `-o result.json` / `-o profile.csv` write the full
-result or the levels (with a provenance header). Python: `rxd.sounding("file.csv", wind_units="kt")`.
+result or the levels (with a provenance header).
 
 ### Clean: `pipeline`
 
@@ -351,7 +343,7 @@ around it while it travels across the map, a UTC clock, the storm's track and la
 are real volumes and which are interpolated. The files are grouped by radar and time, every time step takes
 each radar's nearest volume within a tolerance, the rest is listed with the reason, the radars of one step are
 gridded at a time (bounded memory) and cached on disk, an interrupted job resumes, and the MP4 is written
-atomically at the end. [The full page](ANIMATE.md) has the camera file, the look, the report and the limits.
+atomically at the end. {doc}`The full page <ANIMATE>` has the camera file, the look, the report and the limits.
 
 ```console
 $ rxd animate -i mayfield --no-render                    # the plan: steps, offsets, storm track, frames (no browser)
@@ -362,8 +354,7 @@ $ rxd animate -i mayfield -p still.png --still-at 12      # one frame, to try a 
 ```
 
 ```text
-pip install -e 'python/[video]'      # Playwright (drives the system Chrome) and PyAV (writes the MP4); never a hard dependency
-npm ci && npm run build               # once, in a checkout: dist/, the app that draws (or --app-dist / XRADAR_APP_DIST)
+pip install "radarx-desktop-engine[video] @ <the wheel address>"   # Playwright (drives the system Chrome) and PyAV (writes the MP4)
 ```
 
 Without PyAV the frames are written as numbered PNG files and the `ffmpeg` line that encodes them is printed.
@@ -460,18 +451,18 @@ command: rxd run storm_detection --input KTLX20130520_201643_V06.gz --output cel
 ```
 
 `--print-command` also writes out what was chosen for you (for example `-s 1`), so the printed line
-reproduces the run exactly. TOML needs Python 3.11+; JSON always works, YAML needs PyYAML.
+reproduces the run exactly. TOML needs Python 3.11+ (JSON always works, YAML needs PyYAML).
 
 ## When something is wrong
 
-Errors say what went wrong **and** the fix; there is never a Python traceback unless you ask (`-vv`).
+Errors say what went wrong **and** the fix; there is never a traceback unless you ask (`-vv`).
 
 ```console
 $ rxd plot -i KTLX20130520_201643_V06.gz -V velocity -s 0
-error: No velocity field found on sweep 0. Variables on sweep 0: DBZH, ZDR, PHIDP, RHOHV. Sweeps that have it: 1, 3, 5, 6, 7, 8, 9, 10 (+6 more). Use sweep=1 in Python or -s 1 on the command line.
+error: No velocity field found on sweep 0. Variables on sweep 0: DBZH, ZDR, PHIDP, RHOHV. Sweeps that have it: 1, 3, 5, 6, 7, 8, 9, 10 (+6 more). Use -s 1 on the command line.
 
 $ rxd run radarx_hid -i KTLX20130520_201643_V06.gz -s 1
-error: Hydrometeor Classification (radarx) needs DBZH, ZDR, but sweep 1 has no ZDR (it has: DBZH, VRADH, WRADH). Sweeps that have all of them: 0, 2, 4, 6, 7, 8, 9, 10. Use sweep=0 in Python or -s 0 on the command line (without a sweep the right one is chosen for you).
+error: Hydrometeor Classification (radarx) needs DBZH, ZDR, but sweep 1 has no ZDR (it has: DBZH, VRADH, WRADH). Sweeps that have all of them: 0, 2, 4, 6, 7, 8, 9, 10. Use -s 0 on the command line (without a sweep the right one is chosen for you).
 
 $ rxd mosiac -i KTLX20130520_201643_V06.gz
 error: unknown value 'mosiac'. Did you mean 'mosaic'?
