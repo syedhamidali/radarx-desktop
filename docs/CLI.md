@@ -88,6 +88,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 |---|---|---|
 | Look | `rxd info` | format, radar, time, sweeps, variables, Nyquist velocity |
 | | `rxd check` | data-quality report with evidence and a suggested QC recipe ({doc}`DATA_CHECK`) |
+| | `rxd auto` | inspect any set of inputs, plan the analyses that fit, run the approved ones ({doc}`AUTOPILOT`) |
 | | `rxd plot` | a PPI picture of one variable |
 | | `rxd budget` | can this computer do it? memory, time and the plan for each operation |
 | Clean | `rxd pipeline` | QC recipes: `list`, `show`, `run` (default), `script` |

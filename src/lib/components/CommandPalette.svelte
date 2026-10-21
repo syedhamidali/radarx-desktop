@@ -175,6 +175,14 @@
       action: () => dispatch('action', { type: 'data-check' }),
     });
 
+    actions.push({
+      id: 'autopilot',
+      label: 'Autopilot: inspect, plan and run analyses for a set of files',
+      category: 'File',
+      icon: '◎',
+      action: () => dispatch('action', { type: 'autopilot' }),
+    });
+
     // Export action
     actions.push({
       id: 'export',

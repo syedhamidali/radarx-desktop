@@ -1300,6 +1300,10 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "cli_cancel": self._handle_cli_cancel,
             "cli_reveal": self._handle_cli_reveal,
             "get_web_info": self._handle_get_web_info,
+            "auto_inspect": self._handle_autopilot,
+            "auto_plan": self._handle_autopilot,
+            "auto_run": self._handle_autopilot,
+            "auto_cancel": self._handle_autopilot,
             **self._env_handlers(),  # env_* and sounding_open (engine/environment/messages.py)
             **self._animate_handlers(),  # animate_* : the Movie Studio (engine/animate_service.py)
         }
@@ -4180,6 +4184,80 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
         }
         await self._send_binary_chunks([record.png], header, length_key="png_bytes")
+
+    # ------------------------------------------------------------------
+    # Autopilot: inspect / plan / run any set of inputs (engine/autopilot/ws.py)
+    # ------------------------------------------------------------------
+
+    async def _handle_autopilot(self, msg: dict[str, Any]) -> None:
+        """The ``auto_*`` messages; the protocol is in ``engine/autopilot/ws.py``. A failure is an
+        ``auto_error``; ``auto_inspect`` / ``auto_run`` always close progress."""
+        from engine.autopilot import ws as auto_ws
+        from engine.autopilot.inspect import AutopilotError
+
+        kind = msg.get("type")
+        request_id = msg.get("request_id")
+        if kind == "auto_cancel":
+            await self.send(
+                {
+                    "type": "auto_cancelled",
+                    "request_id": request_id,
+                    "found": auto_ws.cancel(request_id),
+                }
+            )
+            return
+        cancel = auto_ws.cancel_event(request_id)
+        try:
+            if web.is_web_mode():
+                raise AutopilotError(
+                    "Autopilot reads local folders: use the desktop app or rxd auto"
+                )
+            loop = asyncio.get_running_loop()
+            progress_sync = self._progress_callback(loop)
+            fn = {
+                "auto_inspect": auto_ws.inspect,
+                "auto_plan": auto_ws.plan,
+                "auto_run": auto_ws.run,
+            }[str(kind)]
+            if kind != "auto_plan":
+                await self.send_progress(2, "Autopilot...")
+            out = await loop.run_in_executor(None, fn, msg, progress_sync, cancel.is_set)
+            await self.send({"type": f"{kind}_result", "request_id": request_id, **out})
+        except AutopilotError as exc:
+            if "cancel" in str(exc):
+                await self.send({"type": "auto_cancelled", "request_id": request_id})
+            else:
+                await self.send(
+                    {
+                        "type": "auto_error",
+                        "request_id": request_id,
+                        "kind": kind,
+                        "message": str(exc),
+                    }
+                )
+        except ImportError as exc:
+            await self.send(
+                {
+                    "type": "auto_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"This step needs a Python package: {exc}",
+                }
+            )
+        except Exception as exc:
+            logger.error("Autopilot failed: %s\n%s", exc, traceback.format_exc())
+            await self.send(
+                {
+                    "type": "auto_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            auto_ws.forget(request_id)
+            if kind != "auto_plan":
+                await self.send_progress(100, "Autopilot finished")
 
     # ------------------------------------------------------------------
     # Hydrology: rain rate / accumulation / gauges / basins (engine/hydro/ws.py)

@@ -805,6 +805,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     governor_cli.add_parser(command, _add_input)
 
+    # -- auto (Autopilot) ----------------------------------------------------------------
+    from engine.autopilot import cli as autopilot_cli
+
+    autopilot_cli.add_parser(command, _add_input, _add_output)
+
     # -- export --------------------------------------------------------------------------
     p = command(
         "export",
