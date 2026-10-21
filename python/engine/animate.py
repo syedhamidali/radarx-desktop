@@ -99,6 +99,8 @@ class AnimateOptions:
     glm_bin_s: float | None = (
         None  # strongest flash of every N s of data time (the time-lapse factor)
     )
+    draw_flashes: bool = False  # show the flashes the thunder follows in the picture
+    sound_thunder_db: float | None = None  # thunder level relative to the default mix (dB)
     # rendering and output
     tile_cache: str | None = None
     offline: bool = False
@@ -297,6 +299,8 @@ def check_sound_options(o: AnimateOptions) -> None:
         "--flashes-from-glm": bool(o.flashes_from_glm),
         "--glm-radius-km": o.glm_radius_km is not None,
         "--glm-bin-s": o.glm_bin_s is not None,
+        "--draw-flashes": bool(o.draw_flashes),
+        "--sound-thunder-db": o.sound_thunder_db is not None,
     }
     given = [k for k, v in extras.items() if v]
     if not o.sound:
@@ -309,6 +313,14 @@ def check_sound_options(o: AnimateOptions) -> None:
         raise AnimateConfigError(
             "--sound-compress must be between 0.1 and 10000 (1 = the real delay of sound; "
             "the default is the film's time-lapse factor)"
+        )
+    if o.sound_thunder_db is not None and not -30 <= o.sound_thunder_db <= 20:
+        raise AnimateConfigError(
+            "--sound-thunder-db must be between -30 and 20 (dB relative to the default mix, 0)"
+        )
+    if o.draw_flashes and not (o.flashes or o.flashes_from_glm or o.lightning_model):
+        raise AnimateConfigError(
+            "--draw-flashes shows the flashes the thunder follows: give --flashes, --flashes-from-glm or --lightning-model"
         )
     if o.sound_seed is not None and o.sound_seed < 0:
         raise AnimateConfigError("--sound-seed must be 0 or more")
@@ -1028,7 +1040,7 @@ def sound_report_line(snd: dict[str, Any]) -> str:
     )
     return (
         f"  sound       SYNTHESISED, not a recording: wind from the retrieved winds or a proxy, rain from the reflectivity, "
-        f"{what}; delay divided by {snd['compress']:g} ({snd['compress_source']}); virtual listener at {where}; seed {snd['seed']}"
+        f"{what}{' (flashes drawn)' if th.get('drawn') else ''}; delay divided by {snd['compress']:g} ({snd['compress_source']}); virtual listener at {where}; seed {snd['seed']}"
     )
 
 

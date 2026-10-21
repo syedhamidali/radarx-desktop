@@ -259,6 +259,17 @@ def add_parser(
         "--sound-seed", type=int, metavar="N", help="seed of the noise (7): same seed, same sound"
     )
     g.add_argument(
+        "--sound-thunder-db",
+        type=float,
+        metavar="DB",
+        help="thunder level relative to the default mix (0): the default puts the thunder clearly above the wind and rain bed",
+    )
+    g.add_argument(
+        "--draw-flashes",
+        action="store_true",
+        help="draw the flashes the thunder follows in the picture, at the time the thunder is timed to (labelled OBSERVED GLM / from the file / MODELLED)",
+    )
+    g.add_argument(
         "--flashes",
         metavar="FILE",
         help="thunder follows the flashes of a CSV (columns time_utc, lat, lon; optional type CG|IC, energy), used as given",
@@ -481,6 +492,8 @@ def options_from_args(args: argparse.Namespace, files: list[str]) -> Any:
         flashes_from_glm=list(args.flashes_from_glm),
         glm_radius_km=args.glm_radius_km,
         glm_bin_s=args.glm_bin_s,
+        draw_flashes=args.draw_flashes,
+        sound_thunder_db=args.sound_thunder_db,
         tile_cache=args.tile_cache,
         offline=args.offline,
         app_dist=args.app_dist,

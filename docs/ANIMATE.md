@@ -227,6 +227,7 @@ no audio stream and nothing else changes.
 
 ```bash
 rxd animate -i mayfield -o storm.mp4 --realistic --light night --winds --sound --flashes-from-glm glm/
+rxd animate -i mayfield -o storm.mp4 --winds --sound --flashes-from-glm glm/ --draw-flashes   # the flashes are seen too
 rxd animate -i mayfield -o storm.mp4 --winds --sound --lightning-model            # thunder follows MODELLED flashes
 rxd animate -i mayfield -o storm.mp4 --winds --sound --sound-listener 12,-4       # where the listener stands
 rxd animate -i mayfield --no-render --sound --flashes-from-glm glm/ --json         # the plan: which flashes, which delay
@@ -273,28 +274,43 @@ close strike has a crack, and it is panned from where it is. The thunder source 
   thunderclap per second of film. The chosen flashes are written next to the film as `name.flashes.csv`, in the format
   `--flashes` reads, and the report lists how many were read, how many were near and how many were kept.
 
-The observed flashes are **not drawn** in the picture (the thunder is heard, not seen). Only their time and place
-are data: the branching channel the thunder rolls along is synthetic, and the type CG or IC of a GLM flash is not
-known (it is chosen at random, with a fixed seed). `--sound-seed` (default 7) fixes the noise: the same options give
-the same samples, bit for bit, on the same computer; another seed gives other noise.
+By default the observed flashes are **not drawn** in the picture: the thunder is heard, not seen. `--draw-flashes`
+draws the flashes of the thunder source in the picture (observed GLM flashes, the flashes of a `--flashes` file, or the
+modelled ones of `--lightning-model`, which are always drawn), at the place of the flash and at the very flash time the
+thunder is timed to, so the viewer sees the flash and hears the thunder arrive after its delay. The screen says what they
+are: "OBSERVED GLM flash (position ~10 km, optical, not a stroke)", "flash from FILE (not checked here)" or "MODELLED
+from radar echo, NOT observed". Only their time and place are data: the branching channel the light is drawn along and
+the thunder rolls along is synthetic, and the type CG or IC of a GLM flash is not known (it is chosen at random, with
+a fixed seed). `--sound-seed` (default 7) fixes the noise: the same options give the same samples, bit for bit, on the
+same computer; another seed gives other noise.
+
+**The mix: thunder above the bed.** The thunder is mixed clearly above the wind and rain, which stay audible but
+secondary and never silent. Compared with the mix of the storm clips of the app, the thunder is raised by 10 dB and the
+wind and rain bed lowered by 4 dB (the thunder still gets quieter and duller the farther the flash is), and the loudest
+sample is kept below -1.9 dBFS so that the AAC track decodes below -1 dBFS. `--sound-thunder-db DB` moves the thunder
+relative to that default (0; from -30 to 20). On the Mayfield case, listener 10 km beside the track, wind 10 to 43 m/s
+at the listener, the thunder-only energy in the 1.5 s after each arrival (the film minus the same film without thunder)
+was 7.9 dB above the wind and rain bed in the median for the observed GLM flashes and 10.8 dB for the modelled ones; the
+loudest thunder samples are about 26 dB above the bed's RMS level. A listener far from the flashes still hears the
+thunder fainter, so check the median in the record (`sound` block, `mix`) rather than assuming it.
 
 **What the film and the files say.** On the film two lines in the lower part: "Sound is SYNTHESISED, not a
 recording: wind from the retrieved winds, rain from the reflectivity," and "thunder timed to OBSERVED GLM flashes
-(not drawn); the listener position is virtual" (with MODELLED, the file name or "no thunder", and "PROXY" for a wind
+(not drawn); the listener position is virtual" ("drawn" with `--draw-flashes`; with MODELLED, the file name or "no thunder", and "PROXY" for a wind
 that is not retrieved, where that applies). The tags of the MP4 repeat it. In `clip.animate.json` the `sound` block
 has the listener (where it stands, as a position and as latitude and longitude), the compression and how it was
 chosen, the seed, the range of the wind used, how much of it was a proxy, the selection of the GLM flashes, the
 table of the thunder (flash time in UTC and place, the film second of the flash and of the thunder, the delay in the
-film and in real time, the distance), the audio (codec, length, peak level, a hash of the samples) and the limits.
+film and in real time, the distance), the mix (thunder and bed level, the peak ceiling), whether the flashes are drawn,
+the audio (codec, length, peak level, a hash of the samples) and the limits.
 
 **Limits of the sound.** It is an illustration. The listener is a virtual point. The wind exists only where two radars
 cross well and has the artefacts of every retrieval (see {doc}`MULTIDOPPLER`), and the ground value is a factor, not a
 measurement; the roar is a noise bed, not what wind sounds like in a tornadic storm. GLM places a flash to about 10 km,
 misses some flashes, and the flashes are thinned. There is no tornado, hail, siren or debris sound: nothing in the data
-says anything about them, so do not use the sound to suggest that a tornado was seen or heard. Thunder is usually
-quieter than the wind: on the Mayfield case, with 10 to 43 m/s at the listener, the thunder was on average about 3 dB under the
-wind and rain bed (and a few of the thunderclaps could hardly be told from it), so part of the rumble is masked; a closer
-listener or a different wind changes that. The sound has been
+says anything about them, so do not use the sound to suggest that a tornado was seen or heard. The mix is a choice, not
+a measurement: the thunder is raised and the wind lowered so that the thunder is heard; a real storm can be the other way
+round. The sound has been
 checked by analysing the waveform (its length against the picture, the peak below -1 dBFS, the loudness through the
 film, the thunder energy at the arrival of each thunderclap, the same samples twice), not by listening: whether it
 sounds natural has not been judged.
@@ -373,7 +389,7 @@ the files that were not used and the method in words, so a clip can be checked a
 | storm and grids | `--cell-dbz 45`, `--track cells\|linear\|eye`, `--crop-km 60`, `--detail-m 500`, `--winds`, `--cache-dir`, `--fresh` |
 | camera | `--camera NAME\|FILE`, `--target-lag`, `--fov`, `--view-km`, `--vexag`, and for `window`: `--observer X,Y`, `--observer-dist`, `--observer-upwind`, `--observer-side`, `--eye-m`, `--pan`, `--pitch` |
 | look | `--look FILE`, `--look-preset NAME`, `--set KEY=VALUE`, `--realistic`, `--ground`, `--storm-style`, `--palette`, `--light`, `--sea`, `--map-theme`, `--basemap`, `--lightning-model` |
-| sound | `--sound`, `--sound-listener X,Y`, `--sound-compress N`, `--sound-seed N`, `--flashes FILE`, `--flashes-from-glm DIR`, `--glm-radius-km 30`, `--glm-bin-s S` |
+| sound | `--sound`, `--sound-listener X,Y`, `--sound-compress N`, `--sound-seed N`, `--sound-thunder-db DB`, `--flashes FILE`, `--flashes-from-glm DIR`, `--glm-radius-km 30`, `--glm-bin-s S`, `--draw-flashes` |
 | render | `--tile-cache DIR`, `--offline`, `--app-dist DIR`, `--browser CHANNEL`, `--software`, `--crf 18`, `--x264-preset medium`, `--frame-format png\|jpg`, `--keep-frames`, `--no-render` |
 
 A config file holds the same names with `_` or `-`; options on the command line win. An option that does
@@ -436,7 +452,7 @@ rxd animate -i laura -o laura.mp4 --track eye --camera flight --crop-km 140 --de
 - **Needs Chrome, ideally with a GPU**, and the renderer files. Without a working GPU path the command falls back to Chrome's software renderer (`--software` chooses it): it works anywhere, a still took 19 s instead of 7 s here, and a clip is much slower. Resolution is limited by the
   GPU's 3D-texture and canvas limits. Tested on macOS (Apple M1 Pro); Linux and Windows are not tested here.
 - **The sound is synthesised, not recorded.** It is off unless `--sound` is given, the listener is virtual, the thunder
-  follows only the flashes you name (thinned), and there is no tornado, hail or siren sound; see
+  follows only the flashes you name (thinned) and is mixed above the wind on purpose, and there is no tornado, hail or siren sound; see
   the Sound section above.
 - **The ground needs tiles.** The flat map's tiles are fetched by Chrome from the basemap server while the
   frames are drawn (`rxd` keeps no cache of them); the satellite imagery and terrain of `--realistic` go through

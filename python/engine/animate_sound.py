@@ -44,6 +44,14 @@ SURFACE_WIND_FACTOR = 0.65
 #: more thunderclaps per film second than this are a continuous roar: the user is told to thin
 DENSE_PER_FILM_S = 3.0
 
+#: the mix of ``rxd animate``: the thunder is raised and the wind and rain bed lowered relative to the
+#: clip tool's mix, so the thunder stands clearly above the bed (measured on the Mayfield films, see
+#: docs/ANIMATE.md); the loudest sample stays below this fraction of full scale (-1.9 dBFS) so that the
+#: AAC track decodes below -1 dBFS
+THUNDER_DB = 10.0
+BED_DB = -4.0
+CEILING = 0.8
+
 LIMITS = [
     "The sound is synthesised from data; it is not a recording and nobody recorded this storm at this place and time.",
     "The listener is a virtual point on the ground: distances to the flashes are a consequence of that choice, not a measurement.",
@@ -51,7 +59,7 @@ LIMITS = [
     "Rain follows the reflectivity near the ground over the listener (20 dBZ none, 55 dBZ full).",
     "Thunder: only the time and place of each flash are data (GLM: about 10 km, detection efficiency below 100 %); the flashes are thinned for the time-lapse; the light-to-sound delay is divided by the compression; the sound of the thunder is synthetic.",
     "There is no tornado, hail, siren or debris sound: nothing in the data says anything about them.",
-    "Thunder is usually quieter than the wind bed: a strong wind at the listener masks much of the rumble.",
+    "The mix puts the thunder clearly above the wind and rain bed (the bed stays audible, never silent); a distant listener hears fainter thunder because loudness falls with distance.",
 ]
 
 
@@ -252,6 +260,23 @@ class SoundPlan:
     source_files: list[str] = field(default_factory=list)
     table: list[Any] = field(default_factory=list)  # the ObservedFlash rows that were kept
     warnings: list[str] = field(default_factory=list)
+    draw_flashes: bool = False
+    thunder_db_offset: float = 0.0  # --sound-thunder-db: dB relative to the default mix
+    flash_file: str | None = None
+
+    @property
+    def flash_label(self) -> str | None:
+        """What the drawn flashes are, on the film (None: the picture's own lightning label)."""
+        if self.thunder == "observed_glm":
+            return "Lightning: OBSERVED GLM flash (position ~10 km, optical, not a stroke); channel shape synthetic, thinned for the time-lapse"
+        if self.thunder == "observed_file":
+            return f"Lightning: flash from {self.flash_file or 'the file you gave'} (not checked here); channel shape synthetic"
+        return None
+
+    @property
+    def drawn(self) -> bool:
+        """True when the flashes of the thunder source are shown in the picture."""
+        return self.thunder == "modelled" or (self.draw_flashes and self.page_thunder == "observed")
 
     @property
     def page_thunder(self) -> str:
@@ -267,7 +292,14 @@ class SoundPlan:
             "compress": self.compress,
             "seed": self.seed,
             "label": self.label,
+            "thunderDb": THUNDER_DB + self.thunder_db_offset,
+            "bedDb": BED_DB,
+            "ceiling": CEILING,
         }
+        if self.draw_flashes and self.page_thunder == "observed":
+            s["drawFlashes"] = True
+            s["flashKind"] = "glm" if self.thunder == "observed_glm" else "file"
+            s["flashLabel"] = self.flash_label
         if self.listener_request is not None:
             s["listener"] = [self.listener_request[0], self.listener_request[1]]
         if self.page_thunder == "observed":
@@ -296,11 +328,22 @@ class SoundPlan:
                 "files": self.source_files,
                 "selection": self.selection,
                 "flashes": len(self.flashes),
+                "drawn": self.drawn,
+            },
+            "mix": {
+                "thunder_db": THUNDER_DB + self.thunder_db_offset,
+                "thunder_db_default": THUNDER_DB,
+                "thunder_db_offset": self.thunder_db_offset,
+                "bed_db": BED_DB,
+                "ceiling": CEILING,
+                "rule": "relative to the clip tool's mix; the thunder is raised and the wind and rain bed lowered so that thunder stands above the bed",
             },
         }
 
 
-def label_rows(wind_retrieved: bool, thunder: str, flash_file: str | None = None) -> list[str]:
+def label_rows(
+    wind_retrieved: bool, thunder: str, flash_file: str | None = None, drawn: bool = False
+) -> list[str]:
     """The two lines drawn on the film (and written into its files): what the sound is."""
     winds = (
         "wind from the retrieved winds"
@@ -308,9 +351,9 @@ def label_rows(wind_retrieved: bool, thunder: str, flash_file: str | None = None
         else "wind a PROXY from the storm motion and the rain (no retrieved winds)"
     )
     if thunder == "observed_glm":
-        th = "thunder timed to OBSERVED GLM flashes (not drawn)"
+        th = f"thunder timed to OBSERVED GLM flashes ({'drawn' if drawn else 'not drawn'})"
     elif thunder == "observed_file":
-        th = f"thunder timed to the flashes of {flash_file or 'the file you gave'} (not drawn, not checked here)"
+        th = f"thunder timed to the flashes of {flash_file or 'the file you gave'} ({'drawn' if drawn else 'not drawn'}, not checked here)"
     elif thunder == "modelled":
         th = "thunder timed to MODELLED flashes (not observed)"
     else:
@@ -354,6 +397,9 @@ def plan_sound(
             f"automatic: the film's time-lapse x{timelapse:.1f}",
         )
     plan = SoundPlan(
+        draw_flashes=bool(o.draw_flashes),
+        thunder_db_offset=float(o.sound_thunder_db or 0.0),
+        flash_file=Path(o.flashes).name if o.flashes else None,
         thunder="none",
         listener_request=tuple(o.sound_listener) if o.sound_listener else None,  # type: ignore[arg-type]
         compress=compress,
@@ -491,6 +537,7 @@ def plan_sound(
         wind_retrieved,
         plan.thunder,
         Path(o.flashes).name if o.flashes else None,
+        plan.draw_flashes,
     )
     return plan
 
@@ -545,6 +592,9 @@ def record(plan: SoundPlan, audio: dict[str, Any], pcm_sha256: str, t0: datetime
     }
     out["compress"] = audio["compress"]
     out["seed"] = audio["seed"]
+    out["mix"]["thunder_db"] = round(float(audio["levelsDb"]["thunder"]), 2)
+    out["mix"]["bed_db"] = round(float(audio["levelsDb"]["bed"]), 2)
+    out["mix"]["ceiling"] = audio["ceiling"]
     out["wind"] = {
         "source": audio["windSource"],
         "min_ms": round(float(audio["windMs"]["min"]), 1),

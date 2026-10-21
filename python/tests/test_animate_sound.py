@@ -542,6 +542,64 @@ class TestPlan:
                 assert ("MODELLED" in text) == (th == "modelled")
                 assert ("OBSERVED" in text) == (th == "observed_glm")
                 assert ("PROXY" in text) == (not wind)
+        # the drawn flashes are said to be drawn
+        assert "(drawn)" in snd.label_rows(True, "observed_glm", drawn=True)[1]
+        assert "(not drawn)" in snd.label_rows(True, "observed_glm", drawn=False)[1]
+        assert (
+            "(drawn, not checked here)" in snd.label_rows(True, "observed_file", "x.csv", True)[1]
+        )
+
+    def test_drawn_flashes_are_labelled_for_what_they_are(self):
+        glm = snd.SoundPlan("observed_glm", None, 10.0, "x", 7, 10.0, [], draw_flashes=True)
+        assert "OBSERVED GLM flash (position ~10 km, optical, not a stroke)" in glm.flash_label
+        assert (
+            glm.drawn
+            and glm.page_settings()["drawFlashes"]
+            and glm.page_settings()["flashKind"] == "glm"
+        )
+        file = snd.SoundPlan(
+            "observed_file", None, 10.0, "x", 7, 10.0, [], draw_flashes=True, flash_file="my.csv"
+        )
+        assert (
+            "flash from my.csv" in file.flash_label and file.page_settings()["flashKind"] == "file"
+        )
+        assert "OBSERVED" not in file.flash_label
+        quiet = snd.SoundPlan("observed_glm", None, 10.0, "x", 7, 10.0, [])
+        assert not quiet.drawn and "drawFlashes" not in quiet.page_settings()
+        model = snd.SoundPlan("modelled", None, 10.0, "x", 7, 10.0, [])
+        assert model.drawn and model.flash_label is None  # the picture's own MODELLED label
+
+    def test_draw_flashes_needs_a_flash_source_and_sound(self, capsys, case, tmp_path):
+        code, _, err = run_cli(
+            capsys, "animate", "-i", str(case), "--no-render", "--sound", "--draw-flashes"
+        )
+        assert code == 2 and "--draw-flashes" in err and "--flashes" in err
+        code, _, err = run_cli(capsys, "animate", "-i", str(case), "--no-render", "--draw-flashes")
+        assert code == 2 and "add --sound" in err
+
+    def test_the_default_mix_puts_the_thunder_above_the_bed(self):
+        plan = snd.SoundPlan("observed_glm", None, 10.0, "x", 7, 10.0, [])
+        ps = plan.page_settings()
+        assert ps["thunderDb"] == snd.THUNDER_DB > 0 and ps["bedDb"] == snd.BED_DB < 0
+        assert ps["thunderDb"] - ps["bedDb"] >= 10  # thunder raised, bed lowered
+        assert (
+            ps["ceiling"] == snd.CEILING and 20 * math.log10(snd.CEILING) < -1
+        )  # room for the AAC encoder
+        louder = snd.SoundPlan("observed_glm", None, 10.0, "x", 7, 10.0, [], thunder_db_offset=3.0)
+        assert (
+            louder.page_settings()["thunderDb"] == snd.THUNDER_DB + 3.0
+            and louder.summary()["mix"]["thunder_db_offset"] == 3.0
+        )
+
+    def test_thunder_db_is_checked(self, capsys, case):
+        code, _, err = run_cli(
+            capsys, "animate", "-i", str(case), "--no-render", "--sound", "--sound-thunder-db", "40"
+        )
+        assert code == 2 and "--sound-thunder-db" in err
+        code, _, err = run_cli(
+            capsys, "animate", "-i", str(case), "--no-render", "--sound-thunder-db", "3"
+        )
+        assert code == 2 and "add --sound" in err
 
     def test_page_settings_carry_the_sound(self, capsys, case, tmp_path, synthetic):
         base = plan_json(capsys, case, tmp_path)
@@ -591,6 +649,8 @@ class TestRecord:
             "sampleRate": 48000,
             "frames": 48000 * 4,
             "peak": 0.5,
+            "levelsDb": {"thunder": 10.0, "bed": -4.0},
+            "ceiling": 0.8,
             "compress": plan.compress,
             "seed": plan.seed,
             "windSource": "retrieved",
@@ -663,6 +723,12 @@ class TestRecord:
             and w["max_ms"] == pytest.approx(41.25, abs=0.06)
         )
         assert w["share_of_time_using_proxy"] == 0.1 and w["ground_factor"] == 0.65
+        assert (
+            rec["mix"]["thunder_db"] == 10.0
+            and rec["mix"]["bed_db"] == -4.0
+            and rec["mix"]["ceiling"] == 0.8
+        )
+        assert rec["thunder"]["drawn"] is False
         ev = rec["thunder"]["events"]
         assert [e["flash_clip_s"] for e in ev] == [1.0, 2.0]  # in clip-time order
         assert (
@@ -866,7 +932,9 @@ def test_end_to_end_mp4_has_an_aac_track_as_long_as_the_video(tmp_path, chrome):
         assert "SYNTHESISED" in c.metadata.get("comment", "")
     with av.open(str(target)) as c:
         pcm = np.concatenate([f.to_ndarray() for f in c.decode(audio=0)], axis=1)
-    assert np.abs(pcm).max() < 0.95 and np.sqrt((pcm**2).mean()) > 1e-3  # not clipped, not silent
+    assert (
+        np.abs(pcm).max() < 10 ** (-1 / 20) and np.sqrt((pcm**2).mean()) > 1e-3
+    )  # below -1 dBFS, not silent
     rec = json.loads(target.with_suffix(".animate.json").read_text())["sound"]
     assert (
         rec["listener"]["requested_km_east_north_of_track_middle"] == [8.0, -3.0]
@@ -931,3 +999,59 @@ def test_end_to_end_a_film_without_sound_has_no_audio_stream(tmp_path, chrome):
     with av.open(str(target)) as c:
         assert not c.streams.audio
     assert "sound" not in json.loads(target.with_suffix(".animate.json").read_text())
+
+
+def test_end_to_end_drawn_flashes_follow_the_thunder_and_the_thunder_is_above_the_bed(
+    tmp_path, chrome
+):
+    """The flashes of the thunder source are drawn (one flash time for light and thunder), and the thunder
+    stands above the wind and rain bed: the same film without thunder is the bed."""
+    import av
+
+    base = animate.run(
+        _e2e_options(tmp_path, str(tmp_path / "b.mp4"), no_render=True),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
+    )
+    rows = base.storm_rows()
+    flashes = write_flash_csv(
+        tmp_path / "f.csv", [(r["time"], r["lat"], r["lon"], "CG", "3") for r in rows[:3]]
+    )
+    common = {"sound": True, "sound_listener": (6.0, 0.0), "sound_compress": 20.0, "sound_seed": 4}
+    loud = animate.run(
+        _e2e_options(
+            tmp_path, str(tmp_path / "t.mp4"), flashes=str(flashes), draw_flashes=True, **common
+        ),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
+    )
+    bed = animate.run(
+        _e2e_options(tmp_path, str(tmp_path / "bed.mp4"), **common),
+        gridder=SyntheticGridder(fine_shape=(16, 64, 64)),
+    )
+    # drawn: the page reports the observed flashes it draws, and the record says so
+    assert loud.output["page_report"]["lightning"]["source"] == "observed"
+    assert loud.output["page_report"]["lightning"]["flashes"] == 3
+    assert loud.sound["thunder"]["drawn"] is True and "drawn" in loud.sound["label"][1]
+    assert bed.output["page_report"]["lightning"]["source"] == "off"
+
+    def decode(path):
+        with av.open(str(path)) as c:
+            return np.concatenate([f.to_ndarray() for f in c.decode(audio=0)], axis=1).mean(axis=0)
+
+    x, xb = decode(tmp_path / "t.mp4"), decode(tmp_path / "bed.mp4")
+    sr, hop = 48000, 12000
+    n = min(len(x), len(xb)) // hop
+    e_full = (x[: n * hop].reshape(n, hop) ** 2).mean(axis=1)
+    e_bed = (xb[: n * hop].reshape(n, hop) ** 2).mean(axis=1)
+    e_thunder = np.maximum(e_full - e_bed, 0)
+    marks = []
+    for ev in loud.sound["thunder"]["events"]:
+        k0 = int(ev["thunder_arrives_clip_s"] * sr / hop)
+        k1 = min(n, k0 + 4)
+        if k1 - k0 >= 3:
+            marks.append(
+                10 * np.log10(e_thunder[k0:k1].mean() + 1e-12)
+                - 10 * np.log10(e_bed[k0:k1].mean() + 1e-12)
+            )
+    assert marks, "no thunder arrival with a window after it"
+    assert np.median(marks) >= 6.0, f"thunder minus bed (dB) at the arrivals: {marks}"
+    assert np.abs(decode(tmp_path / "t.mp4")).max() < 10 ** (-1 / 20)
