@@ -86,6 +86,18 @@ def _mask_no_echo(values: np.ndarray, variable: str) -> np.ndarray:
     return np.where(values <= _NO_ECHO_DBZ, np.float32(np.nan), values)
 
 
+#: name fragments of logarithmic (decibel) moments, used when a variable has no ``units``
+_DB_NAME_HINTS = ("dbz", "dbt", "dbm", "zdr", "snr", "refl", "power")
+
+
+def _is_decibel(da: xr.DataArray, variable: str) -> bool:
+    """True if the variable is in decibels (dBZ, dB, dBm): its units, else its name."""
+    units = str(da.attrs.get("units", "")).strip().lower()
+    if units:
+        return units.startswith("db") or units.startswith("decibel")
+    return any(h in variable.lower() for h in _DB_NAME_HINTS)
+
+
 def _polar_axes(da: xr.DataArray) -> tuple[np.ndarray, np.ndarray] | None:
     """``(azimuth, range)`` coordinates of a 2-D ``(azimuth, range)`` sweep, else ``None``."""
     if da.dims != ("azimuth", "range") or "azimuth" not in da.coords or "range" not in da.coords:
@@ -273,8 +285,13 @@ def compute_accumulation(
 ) -> dict[str, Any]:
     """Accumulate a variable across multiple files.
 
-    Useful for rainfall accumulation (sum), average reflectivity (mean),
-    or max composite (max).
+    Useful for adding up a linear quantity such as a rain rate or depth (sum), average
+    reflectivity (mean), or max composite (max).
+
+    Decibel variables (units dBZ / dB / dBm, or a reflectivity-like name when there are no units)
+    are averaged in linear units: ``10 log10(mean(10^(x/10)))``, so 20 and 40 dBZ average to
+    37.0 dBZ (Z = 100 and 10000 mm6 m-3), not 30. Summing them is refused (``ValueError``): a sum
+    of logarithms is not a physical quantity. Rainfall totals come from :mod:`engine.hydro`.
 
     Parameters
     ----------
@@ -287,7 +304,8 @@ def compute_accumulation(
     -------
     dict
         ``{values: list[list[float]], n_az, n_range, vmin, vmax, n_files,
-          method, variable, sweep}``
+          method, averaged_in, variable, sweep}``; ``averaged_in`` is ``"linear"`` when a
+          decibel variable was averaged as powers, else ``"native"``.
     """
     if method not in ("sum", "mean", "max"):
         raise ValueError(f"Unknown accumulation method: {method}")
@@ -299,6 +317,7 @@ def compute_accumulation(
     ref_axes: tuple[np.ndarray, np.ndarray] | None = None
     n_files = 0
     errors: list[str] = []
+    decibel = False
 
     for fid, reader in readers.items():
         try:
@@ -314,6 +333,13 @@ def compute_accumulation(
 
         axes = _polar_axes(da)
         if acc is None:
+            decibel = _is_decibel(da, variable)
+            if decibel and method == "sum":
+                raise ValueError(
+                    f"Summing {variable} is not meaningful: it is in decibels (a logarithm), and "
+                    "a sum of dBZ is neither a rainfall nor a reflectivity. Use 'mean' (averaged "
+                    "in linear units) or 'max'; for a rainfall total use the Rainfall (QPE) tool."
+                )
             acc = np.full(arr.shape, np.nan if method == "max" else 0.0, dtype=np.float64)
             cnt = np.zeros(arr.shape, dtype=np.int32)
             ref_axes = _grid_axes(arr, axes)
@@ -326,6 +352,8 @@ def compute_accumulation(
             min_rng = min(acc.shape[1], arr.shape[1])
             acc, cnt = acc[:min_az, :min_rng], cnt[:min_az, :min_rng]  # type: ignore[index]
         part = arr[: acc.shape[0], : acc.shape[1]]
+        if decibel and method == "mean":  # average powers (Z in mm6 m-3), not logarithms
+            part = np.power(10.0, np.asarray(part, dtype=np.float64) / 10.0)
         ok = np.isfinite(part)
         if method == "max":
             np.fmax(acc, np.where(ok, part, np.nan) if not ok.all() else part, out=acc)
@@ -341,6 +369,8 @@ def compute_accumulation(
     if method == "mean":
         with np.errstate(invalid="ignore", divide="ignore"):
             result = np.where(cnt > 0, acc / np.maximum(cnt, 1), np.nan)
+            if decibel:
+                result = 10.0 * np.log10(result)
     else:
         # "sum" keeps the historical nansum behaviour (0 where nothing echoed);
         # "max" is NaN there.
@@ -361,6 +391,8 @@ def compute_accumulation(
         "vmax": vmax,
         "n_files": n_files,
         "method": method,
+        # "linear": a decibel variable averaged as powers (Z in mm6 m-3) and converted back
+        "averaged_in": "linear" if decibel and method == "mean" else "native",
         "variable": variable,
         "sweep": sweep,
     }

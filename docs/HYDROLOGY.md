@@ -178,7 +178,10 @@ A volume is the rate at its scan time (mean ray time of the lowest sweep). The a
 
     A = Σ_k  ½ (R_{k-1} + R_k) (t_k − t_{k-1}) / 3600        (mm, R in mm/h, t in s)
 
-over **nodes** that include every scan time and a regular spacing (`--step-s`, 60 s). Between two scans of a
+over **nodes** that include every scan time and a regular spacing (`--step-s`, 60 s). What is added up is the
+rain rate in mm/h, a linear quantity; reflectivity in dBZ is never summed or averaged (it is a logarithm). Where
+reflectivity itself is averaged over scans, for example the mean of a series of files, the average is taken of the
+linear Z in mm6 m-3 and converted back: 20 and 40 dBZ average to 37.0 dBZ, not 30. A sum of dBZ is refused. Between two scans of a
 radar the rate at a node is the **advection-corrected interpolation** of radarx `interpolate_time`
 (Gal-Chen 1982 frame of reference, Staniforth & Côté 1991 departure points): the earlier field is advected
 forward, the later one backward, and they are blended with weights (1 − *f*) and *f*. The storm motion is the
