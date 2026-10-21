@@ -19,6 +19,13 @@ Messages (``request_id`` is echoed on every answer):
 * ``animate_video {path}`` -> ``animate_video {byte_length, chunks}`` + binary frames (the MP4
   that was just written, so the app can play it), only for a file this engine wrote.
 * ``animate_copy {src, dst}`` -> ``animate_copied {path, sidecar}``: "Export a copy".
+* ``movie_pack_status {lookup?, base_url?}`` -> ``movie_pack_status {status, available?}``: the
+  optional movie components (:mod:`engine.movie_pack`); with ``lookup`` the download host is asked
+  (one small request) which pack exists for this release.
+* ``movie_pack_install {url, size, sha256, name, base_url?}`` -> ``movie_pack_progress`` then
+  ``movie_pack_installed {status}`` / ``movie_pack_error`` / ``movie_pack_cancelled``; the consent
+  comes from the dialog, the engine only downloads what the index announced (size and SHA-256 checked).
+  ``movie_pack_cancel {request_id}`` stops it. ``movie_pack_remove {}`` -> ``movie_pack_removed {status}``.
 
 ``options`` holds the long option names of ``rxd animate`` (``camera``, ``crop_km``, ``realistic``,
 ``light``, ``sound`` ...); unknown names are refused with the nearest one.
@@ -166,18 +173,28 @@ def capabilities() -> dict[str, Any]:
                 "hint": "Install it with: pip install -U radarx   (Python 3.12 or newer)",
             }
         )
-    frozen = bool(getattr(sys, "frozen", False))
-    if not status["playwright"]:
+    from engine import movie_pack
+
+    pack = movie_pack.status()
+    pack_missing = pack["needed"] and not (status["playwright"] and status["av"])
+    if pack_missing:
+        # The installed app: the libraries come as an optional download (the dialog offers it).
+        problems.append(
+            {
+                "what": "The movie components (Playwright, which drives Chrome, and PyAV, which writes the MP4) are not installed.",
+                "hint": (
+                    pack["problem"]
+                    if pack.get("problem")
+                    else "They are an optional download of about 60 MB, kept in your data folder; the card below offers it."
+                ),
+                "movie_pack": True,
+            }
+        )
+    elif not status["playwright"]:
         problems.append(
             {
                 "what": "Playwright is missing (it drives Chrome, which draws the frames).",
-                "hint": (
-                    "The movie components are not part of this installer. They will come as an "
-                    "optional download in a later update; until then movies can be made with the "
-                    "Python package (see Installation in the documentation)."
-                    if frozen
-                    else f"Install the video extra: {render.INSTALL_VIDEO}"
-                ),
+                "hint": f"Install the video extra: {render.INSTALL_VIDEO}",
             }
         )
     chrome = find_chrome()
@@ -196,7 +213,7 @@ def capabilities() -> dict[str, Any]:
             }
         )
     av_note = None
-    if not status["av"]:
+    if not status["av"] and not pack_missing:
         av_note = (
             f"PyAV is missing, so no MP4 can be written: the frames would be saved as PNG files. "
             f"Install the video extra: {render.INSTALL_VIDEO}"
@@ -218,6 +235,7 @@ def capabilities() -> dict[str, Any]:
         "av": status["av"],
         "chrome": chrome,
         "renderer": renderer,
+        "movie_pack": pack,
         "sound": render.have_module("engine.animate_sound") and status["av"],
         "default_output_dir": out_dir,
         "cache_dir": str(data.default_cache_dir_for(None)),
@@ -482,6 +500,10 @@ class AnimateMessages:
             "animate_cancel": self._handle_animate_cancel,
             "animate_video": self._handle_animate_video,
             "animate_copy": self._handle_animate_copy,
+            "movie_pack_status": self._handle_movie_pack_status,
+            "movie_pack_install": self._handle_movie_pack_install,
+            "movie_pack_cancel": self._handle_movie_pack_cancel,
+            "movie_pack_remove": self._handle_movie_pack_remove,
         }
 
     # -- helpers ------------------------------------------------------------------------------
@@ -524,7 +546,7 @@ class AnimateMessages:
         )
 
     def _animate_progress(
-        self, loop: asyncio.AbstractEventLoop, request_id: Any
+        self, loop: asyncio.AbstractEventLoop, request_id: Any, kind: str = "animate_progress"
     ) -> Callable[[int, str], None]:
         def report(percent: int, text: str) -> None:
             if loop.is_closed():
@@ -532,7 +554,7 @@ class AnimateMessages:
             asyncio.run_coroutine_threadsafe(
                 self.send(  # type: ignore[attr-defined]
                     {
-                        "type": "animate_progress",
+                        "type": kind,
                         "request_id": request_id,
                         "percent": percent,
                         "message": text,
@@ -791,6 +813,116 @@ class AnimateMessages:
             await self._animate_error(request_id, exc)
             return
         await self.send({"type": "animate_copied", "request_id": request_id, **done})  # type: ignore[attr-defined]
+
+    # -- the optional movie components (engine/movie_pack.py) ---------------------------------
+
+    async def _movie_pack_error(self, request_id: Any, exc: BaseException) -> None:
+        from engine.movie_pack import MoviePackError
+
+        if not isinstance(exc, (MoviePackError, OSError, ValueError)):
+            logger.error("movie components: %s", exc, exc_info=exc)
+        await self.send(  # type: ignore[attr-defined]
+            {"type": "movie_pack_error", "request_id": request_id, "message": _friendly(exc)}
+        )
+
+    async def _handle_movie_pack_status(self, msg: dict[str, Any]) -> None:
+        if await self._animate_refuse_web(msg):
+            return
+        from engine import movie_pack
+
+        request_id = msg.get("request_id")
+        loop = asyncio.get_running_loop()
+        base = msg.get("base_url") if isinstance(msg.get("base_url"), str) else None
+
+        def work() -> dict[str, Any]:
+            out: dict[str, Any] = {"status": movie_pack.status()}
+            if msg.get("lookup"):
+                found = movie_pack.lookup(base)
+                if found.get("ok"):
+                    found["consent"] = movie_pack.describe_for_consent(found["component"])
+                out["available"] = found
+            return out
+
+        try:
+            done = await loop.run_in_executor(None, work)
+        except Exception as exc:
+            await self._movie_pack_error(request_id, exc)
+            return
+        await self.send({"type": "movie_pack_status", "request_id": request_id, **done})  # type: ignore[attr-defined]
+
+    async def _handle_movie_pack_install(self, msg: dict[str, Any]) -> None:
+        """Download and install the pack the index announced (the dialog asked the user first)."""
+        if await self._animate_refuse_web(msg):
+            return
+        from engine import movie_pack
+
+        request_id = msg.get("request_id")
+        url, size, sha = msg.get("url"), msg.get("size"), msg.get("sha256")
+        if not isinstance(url, str) or not url:
+            await self._movie_pack_error(
+                request_id, MovieRequestError("'url' must be the pack address")
+            )
+            return
+        if "://" in url and (
+            isinstance(size, bool) or not isinstance(size, int) or not isinstance(sha, str)
+        ):
+            await self._movie_pack_error(
+                request_id,
+                MovieRequestError("'size' and 'sha256' from the release index are needed"),
+            )
+            return
+        base = msg.get("base_url") if isinstance(msg.get("base_url"), str) else None
+        key = self._animate_id(msg)
+        cancel = _cancel_event(key)
+        loop = asyncio.get_running_loop()
+        progress = self._animate_progress(loop, request_id, "movie_pack_progress")
+
+        def work() -> dict[str, Any]:
+            return movie_pack.install(
+                url,
+                expected_size=int(size) if isinstance(size, int) else None,
+                expected_sha256=sha if isinstance(sha, str) else None,
+                base=base,
+                progress=progress,
+                cancel=cancel,
+            )
+
+        try:
+            st = await _run_locked(work)
+            await self.send(
+                {"type": "movie_pack_installed", "request_id": request_id, "status": st}
+            )  # type: ignore[attr-defined]
+        except movie_pack.MoviePackCancelledError as exc:
+            await self.send(  # type: ignore[attr-defined]
+                {
+                    "type": "movie_pack_cancelled",
+                    "request_id": request_id,
+                    "message": _friendly(exc),
+                }
+            )
+        except Exception as exc:
+            await self._movie_pack_error(request_id, exc)
+        finally:
+            if key is not None:
+                _RUNS.pop(key, None)
+
+    async def _handle_movie_pack_cancel(self, msg: dict[str, Any]) -> None:
+        key = self._animate_id(msg)
+        if key is not None:
+            _cancel_event(key).set()
+
+    async def _handle_movie_pack_remove(self, msg: dict[str, Any]) -> None:
+        if await self._animate_refuse_web(msg):
+            return
+        from engine import movie_pack
+
+        request_id = msg.get("request_id")
+        try:
+            st = await _run_locked(movie_pack.remove)
+        except Exception as exc:
+            await self._movie_pack_error(request_id, exc)
+            return
+        await self.send({"type": "movie_pack_removed", "request_id": request_id, "status": st})  # type: ignore[attr-defined]
 
 
 def options_as_dict(opts: Any) -> dict[str, Any]:

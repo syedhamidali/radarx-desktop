@@ -12,7 +12,8 @@ Two optional Python packages are used, and only here (never imported by the rest
 * ``av`` (PyAV) encodes H.264. Without it the frames are still written as numbered PNG files and
   the command says how to encode them (``ffmpeg``).
 
-Install both with the ``video`` extra: ``pip install 'radarx-desktop-engine[video]'``.
+Install both with the ``video`` extra: ``pip install 'radarx-desktop-engine[video]'``. The installed
+app (frozen engine) gets them from the optional movie components pack instead (``engine/movie_pack.py``).
 """
 
 # ruff: noqa: E501
@@ -55,7 +56,16 @@ def _dependency_error(message: str) -> Exception:
 
 
 def have_module(name: str) -> bool:
-    return importlib.util.find_spec(name) is not None
+    if name in ("playwright", "av"):
+        # The installed app gets these from the optional movie components pack (engine/movie_pack.py),
+        # which must be on sys.path before they are looked up.
+        from engine import movie_pack
+
+        movie_pack.activate()
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 def video_status() -> dict[str, bool]:

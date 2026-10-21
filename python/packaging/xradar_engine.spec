@@ -125,6 +125,13 @@ excludes = [
     # pyarrow (~55 MB): only engine/arrow_bridge.py uses it, and the app never imports that (the
     # WebSocket sends raw binary chunks). pandas treats it as optional.
     "pyarrow",
+    # The video extra (~180 MB: Playwright's Node driver, PyAV with FFmpeg) is never frozen, even when
+    # the building environment has it: the installed app gets it as the optional movie components
+    # pack (engine/movie_pack.py, scripts/release/build_movie_pack.py), built for the same Python.
+    "playwright",
+    "av",
+    "greenlet",
+    "pyee",
 ]
 
 a = Analysis(
