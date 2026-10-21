@@ -926,6 +926,12 @@ def build_mosaic(
     if not 0 <= mspec.reference_index < len(readers):
         raise MosaicError("merge.reference_index is out of range")
     warnings_out: list[str] = []
+    # Resource governor: changes the grid only when the estimate exceeds the machine budget;
+    # every change is stated (warnings, grid_info, NetCDF attributes). Refuses if nothing fits.
+    from engine import governor
+
+    reduced = governor.govern_grid("mosaic", readers, gspec)
+    warnings_out += [r.sentence() for r in reduced]
 
     # 1. volumes ---------------------------------------------------------------------------
     report(8, "Preparing radar volumes")
@@ -1214,6 +1220,7 @@ def build_mosaic(
             "north": north,
             "cells_aeqd": [nx, ny],
             "levels": int(levels.size if volume is not None else nz),
+            "reductions": [r.to_dict() for r in reduced],
         },
         warnings=warnings_out,
         z_ref_m=float(height_m if product == "cappi" else z[0]),
@@ -1959,6 +1966,9 @@ def to_dataset(rec: MosaicRecord) -> xr.Dataset:
         },
     )
     ds.attrs = _mosaic_attrs(rec)
+    from engine import governor
+
+    governor.stamp(ds.attrs, rec.grid_info.get("reductions") or [])
     # --- encodings
     ds[name].encoding = cfwrite.field_encoding((ny, nx))
     for v in ("lat", "lon"):

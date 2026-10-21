@@ -1247,6 +1247,12 @@ def run_multidoppler(
     md, rx_version = _radarx_mod()
     notes: list[str] = []
     timing: dict[str, float] = {}
+    # Resource governor: coarsens / crops the grid only when the estimate exceeds the budget,
+    # stating each change (notes, summary, NetCDF attributes); refuses when nothing fits.
+    from engine import governor
+
+    reduced = governor.govern_grid("winds", readers, spec, method=opts.method)
+    notes += [r.sentence() for r in reduced]
 
     # 1. volumes --------------------------------------------------------------------------
     report(5, "Preparing radar volumes")
@@ -1481,6 +1487,7 @@ def run_multidoppler(
         "timing": {k: round(v, 1) for k, v in timing.items()},
     }
     summary["timing"]["total_ms"] = round((time.perf_counter() - t_start) * 1000.0, 1)
+    summary["reductions"] = [r.to_dict() for r in reduced]
     radars = [
         {
             "file_id": v.file_id,
@@ -2200,6 +2207,9 @@ def to_dataset(rec: WindRecord) -> xr.Dataset:
         ds["time"].encoding = dict(time_enc)
         ds["time_bounds"].encoding = dict(time_enc)
     ds.attrs = _wind_attrs(rec)
+    from engine import governor
+
+    governor.stamp(ds.attrs, rec.summary.get("reductions") or [])
     # --- encodings
     for name in data:
         ds[name].encoding = cfwrite.field_encoding((nz, ny, nx))

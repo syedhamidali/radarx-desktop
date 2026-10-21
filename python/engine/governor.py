@@ -64,8 +64,12 @@ DISK_FRACTION = 0.9  # leave 10 % of the free disk untouched
 #   open + full read           3.4 s   +660 MB      -> read_peak 1.45 D
 #   "Reflectivity QC" all sweeps 6.6 s  +680 MB      -> qc time 0.009 s per decoded MB
 #   mosaic composite, 2 radars 7.2 s   +760 MB  (723 x 628 cells, 31 levels)
-#   mosaic composite, 4 radars 11.6 s  +1390 MB (723 x 796 cells)  -> ~0.6 D per radar
+#   mosaic composite, 4 radars 11.6 s  +1390 MB (723 x 796 cells)  -> ~0.68 D per radar
 #   winds analytic, 2 radars   6.0 s   +760 MB  (default 1 km / 500 m grid)
+# Measured on the same runs: a 2 km instead of a 1 km grid did NOT lower the peak (mosaic 1116
+# vs 1054 MB, winds 882 vs 874 MB): at default grids the read of the volumes dominates, and
+# the grid terms below only matter for large boxes or fine grids. The planner therefore only
+# coarsens when its estimate says that saves memory, and refuses otherwise.
 # and from the published engine performance numbers (same file, warm):
 #   export CfRadial1 2.6 s / 3.8 GB, CfRadial2 0.5 s / 32 MB, Zarr 2.9 s / 31 MB, PNG 0.55 s /
 #   144 MB, CSV 0.4 s / 28 MB; storm_detection 0.7 s / 287 MB per sweep.
@@ -82,13 +86,13 @@ CAL: dict[str, float] = {
     "qc_peak": 0.55,  # x D on top of the read
     "cells_s_per_volume": 0.7,
     "cells_peak": 0.62,  # x D (storm_detection 287 MB of 461)
-    "mosaic_peak_per_radar": 0.60,  # x D of each radar (one moment, coordinates, gridding)
+    "mosaic_peak_per_radar": 0.68,  # x D of each radar (one moment, coordinates, gridding)
     "mosaic_band": 450 * MB,  # mosaic.BAND_BUDGET_BYTES
     "mosaic_s_per_voxel": 25e-9,  # per radar and voxel (radarx gridding)
     "mosaic_prepare_s": 0.65,  # per radar, masking + geometry of one moment
-    "winds_peak_per_radar": 0.60,
+    "winds_peak_per_radar": 0.62,
     "winds_bytes_per_voxel_radar": 16.0,
-    "winds_bytes_per_voxel": 96.0,  # output stack + solver arrays
+    "winds_bytes_per_voxel": 48.0,  # output stack + solver arrays
     "winds_s_per_voxel": 0.4e-6,  # analytic
     "winds_variational_factor": 10.0,  # NOT calibrated: an assumption, said so in the estimate
     "animate_render_s_per_frame": 0.5,  # NOT calibrated
@@ -186,6 +190,7 @@ class Reduction:
     scientific_loss: str
     lossless: bool = False
     params: dict[str, Any] = field(default_factory=dict)
+    dropped_unit: str = "of the data not used"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -194,7 +199,7 @@ class Reduction:
         drop = (
             "no data dropped"
             if self.lossless or self.dropped_fraction <= 0
-            else f"{100 * self.dropped_fraction:.0f}% of the data not used"
+            else f"{100 * self.dropped_fraction:.0f}% {self.dropped_unit}"
         )
         return (
             f"Resource limit: {self.what} ({drop}). Why: {self.why}. Effect: {self.scientific_loss}"
@@ -600,7 +605,7 @@ def estimate_mosaic(vols: Sequence[InputVolume], grid: Mapping[str, Any] | None 
     nr = len(radars)
     # The moment is read whole whatever the range limit: a crop shrinks the grid, not the read.
     per_radar = sum(CAL["mosaic_peak_per_radar"] * v.decoded_bytes for v in radars)
-    band = min(CAL["mosaic_band"], g["voxels"] * nr * 8)
+    band = min(CAL["mosaic_band"], g["voxels"] * nr * 4)
     planes = nr * g["nx"] * g["ny"] * 4 * 3
     volume = g["voxels"] if g["voxels"] <= 64_000_000 else 0
     peak = CAL["base_rss"] + per_radar + band + planes + volume
@@ -840,6 +845,7 @@ def plan(
                     f"features smaller than about {2 * new / 1000:g} km are smoothed out; "
                     "maxima are lower and gradients weaker than on the finer grid",
                     params={key: new},
+                    dropped_unit="fewer grid cells",
                 )
             )
         zkey = "dz_m" if op == "winds" else "z_step_m"
@@ -862,6 +868,7 @@ def plan(
                     "column maxima, echo tops and vertical velocity are resolved only every "
                     f"{z0 * 2:g} m (echo-top heights uncertain by up to {z0 * 2:g} m)",
                     params={zkey: z0 * 2},
+                    dropped_unit="fewer levels",
                 )
             )
     # (e) temporal thinning ---------------------------------------------------------------
@@ -887,6 +894,7 @@ def plan(
                     f"time resolution {every} x coarser: short-lived cells and fast changes between "  # noqa: E501
                     "the kept volumes are missed; tracks are matched over longer gaps",
                     params={"every": every},
+                    dropped_unit="of the volumes not used",
                 )
             )
     # (f) spatial crop around the area of interest -----------------------------------------
@@ -912,6 +920,7 @@ def plan(
                     f"nothing is analysed beyond {r:g} km from a radar; storms there are absent "
                     "from the result (not zero: missing)",
                     params={"max_range_km": r},
+                    dropped_unit="of the area not analysed",
                 )
             )
     p.final = cur
