@@ -1769,6 +1769,49 @@ def test_end_to_end_the_browser_writes_the_mp4_without_pyav(tmp_path, chrome, mo
     assert record["output"]["encoder_support"]["avc"] is True
 
 
+@pytest.mark.parametrize("force", [None, "webm"])
+def test_the_page_encoder_from_frames_on_disk_mp4_and_the_webm_fallback(tmp_path, chrome, force):
+    """The encoder machinery alone (no gridding): frames served from disk through /frames/, the
+    H.264 MP4 path and, forced, the VP9 + Opus WebM path a Chromium without H.264 would take."""
+    from PIL import Image
+
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    for i in range(8):
+        Image.new("RGB", (64, 64), (i * 30, 90, 200 - i * 20)).save(frames / render.frame_name(i))
+    dist = render.find_frontend()
+    with render.Renderer(dist, 64, 64, channel="chrome", frames_dir=frames) as r:
+        support = r.encoder_support()
+        if not support.get("choice"):
+            pytest.skip(f"this Chrome cannot encode: {support.get('notes')}")
+        if force == "webm" and not support.get("vp9"):
+            pytest.skip("this Chrome has no VP9 encoder")
+        info = r.encoder_start(crf=18, fps=4, sound=False, force=force)
+        for i in range(8):
+            assert r.encode_image(i) == i + 1
+        fin = r.encoder_finish()
+        out = tmp_path / f"clip.{fin['ext']}"
+        assert r.write_encoded(out, int(fin["bytes"])) == fin["bytes"] == out.stat().st_size
+        r.encoder_dispose()
+    assert fin["frames"] == 8 and fin["keyFrames"] == 1 and info["bitrate"] == 250_000
+    data = out.read_bytes()
+    if force == "webm":
+        assert fin["container"] == "webm" and fin["videoCodec"].startswith("vp09")
+        assert data[:4] == b"\x1a\x45\xdf\xa3" and b"V_VP9" in data  # EBML, Matroska codec id
+    else:
+        assert fin["container"] == "mp4" and fin["videoCodec"].startswith("avc1")
+        assert data[4:8] == b"ftyp" and b"avcC" in data
+        assert data.index(b"moov") < data.index(b"mdat")  # fast start
+    try:
+        import av
+    except ImportError:
+        return
+    with av.open(str(out)) as c:
+        v = c.streams.video[0]
+        assert v.codec_context.name == ("vp9" if force == "webm" else "h264")
+        assert sum(1 for _ in c.decode(video=0)) == 8
+
+
 def test_end_to_end_mp4_and_still(tmp_path, chrome):
     pytest.importorskip("av")
     import av

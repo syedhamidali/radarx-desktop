@@ -70,11 +70,12 @@
         const s = await ClipEncoder.support();
         return { ...s, choice: pickCodecs(s) };
       },
-      encoderStart: async (o: { crf?: number; keyframeS?: number; sound?: boolean; sampleRate?: number; fps?: number }) => {
+      encoderStart: async (o: { crf?: number; keyframeS?: number; sound?: boolean; sampleRate?: number; fps?: number; force?: 'webm' }) => {
         encoder?.dispose();
         encoder = null;
         const support = await ClipEncoder.support();
-        const choice = pickCodecs(support);
+        // `force: 'webm'` takes the VP9 + Opus path on a browser that has H.264 (the engine's tests of that fallback)
+        const choice = pickCodecs(o.force === 'webm' ? { ...support, avc: false } : support);
         if (!choice) throw new Error('this browser cannot encode video (no WebCodecs H.264 or VP9 encoder): ' + support.notes.join('; '));
         encoder = new ClipEncoder({
           width: ov.width, height: ov.height, fps: o.fps ?? clip!.settings.fps, crf: o.crf ?? 18, keyframeS: o.keyframeS,

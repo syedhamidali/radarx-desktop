@@ -572,19 +572,21 @@ class Renderer:
         sound: bool,
         sample_rate: int = 48000,
         keyframe_s: float = 2.0,
+        force: str | None = None,
     ) -> dict[str, Any]:
         """Open the encoder for a film of the page's size: returns the codecs, container, file
-        extension (``mp4`` or ``webm``) and bit rate chosen."""
-        return self._call(
-            "(o) => window.__xrClip.encoderStart(o)",
-            {
-                "crf": crf,
-                "fps": fps,
-                "sound": sound,
-                "sampleRate": sample_rate,
-                "keyframeS": keyframe_s,
-            },
-        )
+        extension (``mp4`` or ``webm``) and bit rate chosen. ``force="webm"`` takes the VP9 + Opus
+        path even where H.264 exists (tests of the fallback)."""
+        opts: dict[str, Any] = {
+            "crf": crf,
+            "fps": fps,
+            "sound": sound,
+            "sampleRate": sample_rate,
+            "keyframeS": keyframe_s,
+        }
+        if force:
+            opts["force"] = force
+        return self._call("(o) => window.__xrClip.encoderStart(o)", opts)
 
     def encode_frame(self, i: int) -> int:
         """Draw frame ``i`` and encode it in the page (the drawing buffer stays for a screenshot)."""
