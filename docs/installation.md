@@ -123,7 +123,8 @@ With [pipx](https://pipx.pypa.io/) the command is on your `PATH` without activat
 `pip install -U radarx`. Storm-centred 3D movies (`rxd animate`, {doc}`ANIMATE`) also need Google Chrome (the
 system Chrome), the optional video components (the `video` extra: Playwright and PyAV, `pip install
 "radarx-desktop-engine[video] @ <the wheel address above>"`) and the app's 3D renderer files, which an installed
-Radarx app (0.3.0 or later) provides. To update, run the same `pip install` with the new version number; to check the file,
+Radarx app (0.3.0 or later) provides. (In the installed app itself the same two libraries are the optional
+*movie components* download that the Movie Studio offers, about 60 MB; see {doc}`ANIMATE`.) To update, run the same `pip install` with the new version number; to check the file,
 compare it with the line for the wheel in the release's `SHA256SUMS` (see above).
 
 Tab completion: `source <(rxd completion zsh)`, or

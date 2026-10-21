@@ -228,3 +228,40 @@ license = "Apache-2.0"
 where = "signature check of the sign-in token in the frozen engine"
 url = "https://www.openssl.org/source/license.html"
 note = "OpenSSL 3.x is Apache-2.0. The wheel also embeds Rust crates under MIT / Apache-2.0 / BSD terms; see the licence files inside the cryptography distribution."
+
+# ---------------------------------------------------------------- optional components (downloaded on request)
+# The movie components pack (scripts/release/build_movie_pack.py, engine/movie_pack.py): NOT in the installers.
+# The installed app offers it in the Movie Studio with a consent card (what, from where, how big, licences) and
+# keeps it in the user's data folder; the licence texts of every component travel inside the pack (licenses/).
+[[entry]]
+kind = "component"
+name = "Playwright for Python 1.64.0 (with its Node.js driver)"
+license = "Apache-2.0"
+where = "movie components pack; drives the system Google Chrome that draws the frames of a film. No browser is downloaded by the app."
+attribution = "Copyright (c) Microsoft Corporation. LICENSE, NOTICE and ThirdPartyNotices.txt of the driver ship in the pack (licenses/playwright)."
+url = "https://github.com/microsoft/playwright-python"
+
+[[entry]]
+kind = "component"
+name = "PyAV 19.0.2"
+license = "BSD-3-Clause"
+where = "movie components pack; writes the MP4 (H.264 video, AAC sound)"
+attribution = "Copyright (c) the PyAV authors; LICENSE.txt and AUTHORS ship in the pack (licenses/av)."
+url = "https://github.com/PyAV-Org/PyAV"
+
+[[entry]]
+kind = "component"
+name = "FFmpeg shared libraries inside the PyAV wheel (libavcodec, libavformat, libavutil, libavfilter, libavdevice, libswscale, libswresample) with libx264, libx265, libvpx, libopus, dav1d, SVT-AV1, libwebp, libvmaf"
+license = "LGPL-2.1-or-later (FFmpeg); GPL-2.0-or-later for the build as a whole because of libx264 and libx265"
+where = "movie components pack only (never in the installers); the engine imports PyAV, which loads these unmodified shared libraries, and asks for libx264 to write H.264"
+flag = "GPL"
+note = "The PyAV wheels are built from pyav-ffmpeg with --enable-gpl (x264, x265), so the bundled FFmpeg is GPL-2.0-or-later, not merely LGPL. The pack is a separate, optional download that the user installs on request, kept apart from the PolyForm-Noncommercial app; whether that separation is enough (or whether the pack must be rebuilt from an LGPL-only FFmpeg, e.g. without x264/x265, or H.264 written another way) is a question for the lawyer before a release ships the packs. Source: https://ffmpeg.org/ and https://github.com/PyAV-Org/pyav-ffmpeg; a notice with this text ships in the pack (licenses/av/FFMPEG-NOTICE.txt)."
+url = "https://ffmpeg.org/legal.html"
+
+[[entry]]
+kind = "component"
+name = "greenlet 3.5.6, pyee 14.0.0, typing_extensions 4.15.0"
+license = "MIT AND PSF-2.0 / MIT / PSF-2.0"
+where = "movie components pack; what Playwright needs (greenlet is a compiled extension built for the engine's Python)"
+attribution = "Licence files ship in the pack (licenses/greenlet, licenses/pyee, licenses/typing_extensions)."
+url = "https://github.com/python-greenlet/greenlet"

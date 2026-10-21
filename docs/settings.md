@@ -27,4 +27,6 @@ file is signed, and the app verifies the signature before installing, so a file 
 is installed. The browser version has no update feature.
 
 The **Data** tab also holds the **Radar sites** switch and the place to load your own list of sites (CSV or JSON); see
-{doc}`RADAR_SITES`.
+{doc}`RADAR_SITES`. Its **Movie components** line (desktop app only) shows whether the optional download the Movie
+Studio needs (Playwright and PyAV, about 180 MB on disk) is installed, for which version, how big it is and where it
+lives, with a **Remove** button; the download itself is offered in the Movie Studio, never here (see {doc}`ANIMATE`).

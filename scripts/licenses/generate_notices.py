@@ -581,6 +581,7 @@ def render(
         ("imagery", "Map, terrain and imagery services (fetched at run time on request)"),
         ("data", "Data the app can open or fetch (not redistributed with the installers)"),
         ("native", "Native libraries bundled by Python wheels and the Python runtime"),
+        ("component", "Optional components downloaded on request (not in the installers)"),
     ]
     for kind, title in kinds:
         items = [s for s in static if s["kind"] == kind]

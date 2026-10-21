@@ -34,6 +34,20 @@ resumes where it stopped, like the command line.
 
 ## Install and what it needs
 
+**In the installed app** the Movie Studio needs the *movie components*, an optional download: Playwright
+(it drives your Google Chrome, which draws the frames) and PyAV (it writes the MP4), about 60 MB to download
+and 180 MB on disk. They are not part of the installer, because they would nearly double it and most people
+never render a film. When you open the Movie Studio without them, its first box offers the download: it says
+what is fetched, from where (`downloads.labshope.com`), how big it is and under which licences, and nothing is
+downloaded until you choose *Allow once*. The file is checked against its published size and SHA-256, unpacked
+into your data folder (`Library/Application Support/radarx-desktop/movie-pack/<version>` on macOS,
+`%APPDATA%\radarx-desktop\movie-pack\<version>` on Windows, `~/.config/radarx-desktop/movie-pack/<version>` on
+Linux) and loaded by the app's own engine. Each app version has its own pack (the components must match the
+engine exactly); *Settings › Data › Movie components* shows what is installed, its size and a *Remove* button.
+Google Chrome stays the one installed on your computer: the app never downloads a browser.
+
+**With the Python package** the same two libraries come from the `video` extra:
+
 ```bash
 pip install -U radarx                       # gridding the radars (Python >= 3.12), needed for every run
 pip install "radarx-desktop-engine[video] @ <the wheel address>"   # the optional extra: Playwright and PyAV

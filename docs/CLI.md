@@ -367,6 +367,8 @@ pip install "radarx-desktop-engine[video] @ <the wheel address>"   # Playwright 
 Rendering needs Google Chrome (the system Chrome; no browser is downloaded) and the 3D renderer files of the app:
 an installed Radarx app (0.3.1 or later) ships them and `rxd animate` finds them by itself, or name a folder with
 `--app-dist`. Without PyAV the frames are written as numbered PNG files and the `ffmpeg` line that encodes them is printed.
+(The installed app's own Movie Studio gets Playwright and PyAV as the optional *movie components* download instead
+of this extra; see {doc}`ANIMATE`.)
 The terminal report (or `--json`) gives the track, displacement and speed, the time offsets of every radar,
 the share of interpolated frames and the frame count, so a result can be checked without watching the video.
 

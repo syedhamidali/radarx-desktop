@@ -28,6 +28,7 @@ git tag vX.Y.Z  ──▶  Release workflow (4 build jobs)  ──▶  draft Git
 | Key | Content | `Cache-Control` | Written by |
 |---|---|---|---|
 | `radarx/v<version>/<installers>` | `.dmg`, `-setup.exe`, `.deb`, `.rpm`, the updater payloads (`*.app.tar.gz`) and the `.sig` of each | `public, max-age=31536000, immutable` | the `downloads` job |
+| `radarx/v<version>/radarx-movie-pack-<version>-<os>-<arch>.zip` (+ `.manifest.json` sidecar) | the optional movie components the installed app downloads on demand ([BUNDLING.md](BUNDLING.md)); four per release | same, immutable | the `downloads` job |
 | `radarx/v<version>/latest.json` | the **candidate** update manifest of that version | same, immutable | the `downloads` job |
 | `radarx/v<version>/SHA256SUMS` | `sha256sum`-style list of every file in the folder (including `latest.json`) | same | the `downloads` job |
 | `radarx/v<version>/PROMOTION.json` | `{"status": "promoted" \| "withdrawn", "version": "…"}` | same | promote |
@@ -48,9 +49,11 @@ public address of the bucket is `https://downloads.labshope.com`.
    ```
 
    The tag message becomes the release notes in the update dialog and on the website.
-2. The **Release** workflow builds the four installers and creates the draft GitHub release, as before. When the four R2
-   secrets exist, its last job (**Upload candidate to the download host**) uploads the candidate and verifies it. Without
-   the secrets it prints a notice and succeeds (forks, or before the set-up below).
+2. The **Release** workflow builds the four installers and creates the draft GitHub release, as before; the `wheel` job
+   attaches the Python wheel and the four `movie-pack` jobs attach the movie components packs with their `.manifest.json`
+   sidecars (same runners and Python as the engine). When the four R2 secrets exist, its last job (**Upload candidate to
+   the download host**) uploads the candidate (everything on the draft release: installers, signatures, wheel, packs) and
+   verifies it. Without the secrets it prints a notice and succeeds (forks, or before the set-up below).
 3. **Check the candidate** (nothing is live yet):
 
    ```bash
@@ -62,7 +65,10 @@ public address of the bucket is `https://downloads.labshope.com`.
    ```
 
    Every `url` in the candidate manifest must start with `https://downloads.labshope.com/radarx/v0.3.1/`; open the
-   installers once on a clean machine.
+   installers once on a clean machine. `SHA256SUMS` must also list the four `radarx-movie-pack-0.3.1-*.zip` files and
+   their `.manifest.json` sidecars (a pack without its sidecar makes the promote refuse). To try the download in the
+   installed app before promoting, point the engine at the candidate folder's host with
+   `RADARX_MOVIE_PACK_BASE_URL` and a local copy of `releases.json` that lists it, or simply promote and test.
 4. **Promote**: Actions ▶ *Promote release* ▶ *Run workflow* ▶ tag `v0.3.1`. It re-checks the candidate (SHA-256 of
    every file, each `.sig` against the manifest, urls under the right folder), then writes the version's `PROMOTION.json`,
    `radarx/releases.json` and, last, `radarx/latest.json`. Finally it fetches `https://downloads.labshope.com/radarx/latest.json`
@@ -115,6 +121,19 @@ manifest) and has sorted keys. Schema version 1:
           "sha256": "5cded49153520ddae78fdb2c49ab87b05fa153ca18a7332f71a9395b9a673f38",
           "url": "https://downloads.labshope.com/radarx/v0.3.1/Radarx_0.3.1_aarch64.dmg"
         }
+      ],
+      "components": [
+        {
+          "kind": "movie-pack",
+          "name": "radarx-movie-pack-0.3.1-macos-aarch64.zip",
+          "os": "macos",
+          "arch": "aarch64",
+          "python": "cpython-312",
+          "size": 60090257,
+          "sha256": "…",
+          "url": "https://downloads.labshope.com/radarx/v0.3.1/radarx-movie-pack-0.3.1-macos-aarch64.zip",
+          "contents": [{"name": "playwright", "version": "1.64.0", "license": "Apache-2.0"}, {"name": "av", "version": "19.0.2", "license": "BSD-3-Clause"}]
+        }
       ]
     }
   ]
@@ -137,9 +156,11 @@ manifest) and has sorted keys. Schema version 1:
 | `assets[].size` | bytes |
 | `assets[].sha256` | lowercase hex, equals the line in that version's `SHA256SUMS` (checked at promote time) |
 | `assets[].url` | the download address; use it as it is |
+| `releases[].components` | the optional components of that release (additive; `[]` when there are none). The website ignores it; the installed app reads it to find its movie components pack: the entry whose `kind` is `movie-pack` and whose `os`, `arch` and `python` (the engine's CPython tag) match. `name`, `size`, `sha256`, `url` as for assets; `contents` lists what is inside with versions and licences (from the pack's sidecar manifest). |
 
 Assets are the installers a person downloads, sorted by `os` (macos, windows, linux), `arch`, `kind`, `name`. The updater
-payloads (`*.app.tar.gz`), `.sig` files, `latest.json` and `SHA256SUMS` are not listed. To show the main download buttons:
+payloads (`*.app.tar.gz`), `.sig` files, `latest.json`, `SHA256SUMS`, the wheel and the movie components packs are not
+listed as assets (the packs are under `components`, see above). To show the main download buttons:
 take `releases[0]`, then pick the asset with the matching `os`, `arch` and `kind` (`dmg` for macOS, `exe` for Windows,
 `deb` / `rpm` for Linux). A client must cope with a missing combination (offer the others) and with the request failing
 (show a plain link to the directory of installers or a retry; never block the page). The file is served with
