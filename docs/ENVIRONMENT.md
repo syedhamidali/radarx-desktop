@@ -24,7 +24,7 @@ parameters.
 3. **Cached data works offline.** Everything fetched once is kept in a size-limited cache (least
    recently used files go first). A repeat of the same request is served from the cache with no
    network and no question. **Offline mode** never touches the network at all.
-4. **Polite to servers.** An honest `User-Agent` (`radarx-desktop/<version> (+https://github.com/syedhamidali/radarx-desktop)`),
+4. **Polite to servers.** An honest `User-Agent` (`radarx-desktop/<version> (+https://radarx.labshope.com)`),
    at most 2 simultaneous connections, at least 0.1 s between requests to one host, retries with
    exponential backoff for timeouts and HTTP 408/429/5xx (honouring `Retry-After`), hard timeouts
    (30 s for any single network operation, 15 min for a whole transfer) and a byte cap per file.

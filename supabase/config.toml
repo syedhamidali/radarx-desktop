@@ -150,7 +150,7 @@ enabled = true
 # in emails. `supabase config push` writes this to the hosted project, so it must be a real https URL
 # and NOT localhost. radarx's e-mails carry a 6-digit code, not a link (supabase/templates/), so nothing
 # opens it; the project page is a harmless, valid value.
-site_url = "https://github.com/syedhamidali/radarx-desktop"
+site_url = "https://radarx.labshope.com"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
 # The desktop app finishes OAuth on a one-shot loopback port (src-tauri/src/oauth.rs); the web build
 # runs on :1490 in development.

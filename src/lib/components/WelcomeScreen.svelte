@@ -71,7 +71,7 @@
         <RadarSweep size={176} period={6} hub={false} />
         <span class="hero-icon"><LogoMark size={92} title="Radarx" /></span>
       </div>
-      <h1 class="welcome-logo"><span class="logo-x">X</span>RADAR</h1>
+      <h1 class="welcome-logo">RADAR<span class="logo-x">X</span></h1>
       <p class="welcome-subtitle">Weather radar research workstation{$webUi ? ' in your browser' : ''}</p>
       <div class="welcome-meta">
         <span class="chip">v{APP_VERSION}</span>

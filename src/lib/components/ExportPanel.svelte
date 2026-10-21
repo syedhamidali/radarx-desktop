@@ -23,10 +23,10 @@
 
   // --- Where the file goes -------------------------------------------------
   // The desktop app asks (native Save / Choose-folder dialog, starting in the folder used last).
-  // Outside Tauri there is no dialog, so the sidecar writes to ~/Downloads/xradar-exports — a normal
+  // Outside Tauri there is no dialog, so the sidecar writes to ~/Downloads/radarx-exports — a normal
   // folder, never a hidden temp directory.
   const LAST_DIR_KEY = 'xradar.export.lastDir.v1';
-  const DEFAULT_FOLDER_HINT = '~/Downloads/xradar-exports';
+  const DEFAULT_FOLDER_HINT = '~/Downloads/radarx-exports';
 
   function lastDir(): string | undefined {
     try {

@@ -2,7 +2,7 @@
 
 From radar volumes to **rain rate, rainfall accumulation and basin-average rainfall**, with the
 uncertainty and the beam quality shown next to every number, optional adjustment to rain gauges, and
-a CF NetCDF that says how it was made. Built on [radarx](https://github.com/syedhamidali/radarx)
+a CF NetCDF that says how it was made. Built on [radarx](https://radarx.readthedocs.io/en/latest/)
 (rain-rate relations, KDP, attenuation, hydrometeor classification, beam blockage, advection) and the
 mosaic grid of the app. Works from the app (the **Rainfall** panel), the command line (`rxd qpe`,
 `rxd basin`) and Python (`api.qpe`), with the same engine and the same numbers.

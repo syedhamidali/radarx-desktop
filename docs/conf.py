@@ -55,17 +55,13 @@ myst_substitutions = {
     "today": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d"),
 }
 
-extlinks = {
-    "issue": ("https://github.com/syedhamidali/radarx-desktop/issues/%s", "GH %s"),
-    "pull": ("https://github.com/syedhamidali/radarx-desktop/pull/%s", "PR %s"),
-}
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3/", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
     "xarray": ("https://docs.xarray.dev/en/stable/", None),
     "pandas": ("https://pandas.pydata.org/docs/", None),
     "radarx": ("https://radarx.readthedocs.io/en/latest/", None),
-    "xradar": ("https://docs.openradar.io/projects/xradar/en/stable/", None),
+    "xradar": ("https://docs.openradarscience.org/projects/xradar/en/stable/", None),
 }
 
 # -- API reference (written at build time, git-ignored) ------------------------------------------
@@ -147,16 +143,16 @@ nb_execution_raise_on_error = True
 html_theme = "pydata_sphinx_theme"
 html_static_path = ["_static"] if (HERE / "_static").exists() else []
 html_theme_options = {
-    "github_url": "https://github.com/syedhamidali/radarx-desktop",
+    # The source repository is private: no repository links or "edit this page" buttons. The way back to
+    # the product is its website (downloads, report an issue).
+    "icon_links": [
+        {"name": "Radarx", "url": "https://radarx.labshope.com", "icon": "fa-solid fa-house"},
+        {"name": "Report an issue", "url": "https://radarx.labshope.com/report", "icon": "fa-solid fa-bug"},
+    ],
     "show_toc_level": 2,
     "navigation_with_keys": False,
-    "secondary_sidebar_items": ["page-toc", "edit-this-page"],
-}
-html_context = {
-    "github_user": "syedhamidali",
-    "github_repo": "radarx-desktop",
-    "github_version": "main",
-    "doc_path": "docs",
+    "header_links_before_dropdown": 6,
+    "secondary_sidebar_items": ["page-toc"],
 }
 
 exclude_patterns = [

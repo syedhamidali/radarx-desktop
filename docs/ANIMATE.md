@@ -97,7 +97,7 @@ KHPX, KNQA, KPAH, KVWX  11 Dec 2021  |  4 radar(s)  |  5 time steps over 18.1 mi
        4  02:08:52  36.257  -89.732   7.8   6.4  21.6       65       616    15.0
   frames      136 observed (13%), 944 interpolated (87%); gaps between volumes 4.3 to 4.6 min; time-lapse x33; interpolation carried along the storm motion only (no wind retrieval)
   camera      orbit from the default orbit, follows 30% of the storm's move; 8 keys, azimuth swept 399 deg, elevation 6 to 86 deg, distance 100 to 215 km
-  grids       5 steps at 500 m: 5 computed, 0 from the cache (~/.cache/xradar-desktop/animate); peak memory 1468 MB
+  grids       5 steps at 500 m: 5 computed, 0 from the cache (~/.cache/radarx-desktop/animate); peak memory 1468 MB
 nothing was drawn (--no-render): this is the plan; remove --no-render to render it
 ```
 
@@ -212,7 +212,7 @@ $ rxd animate -i mayfield --realistic --set exposur=1.4 -o x.mp4
 error: unknown look key "exposur" (did you mean "exposure"?)
 ```
 
-The imagery and elevation tiles come from the cache of `~/.cache/xradar-desktop/tiles` (`--tile-cache`);
+The imagery and elevation tiles come from the cache of `~/.cache/radarx-desktop/tiles` (`--tile-cache`);
 without `--offline` missing tiles are fetched once, politely, as described on the realistic page (and the
 EOX imagery carries its attribution and ShareAlike terms, shown on the screen). Modelled lightning is **off**
 by default (`--lightning-model` draws flashes labelled "MODELLED from radar echo, NOT observed").
@@ -244,7 +244,7 @@ Nothing is invented: where the radar has no echo none is drawn, and the look con
   445 MB for 50 and 455 MB for 500 steps**, while the cache on disk grew from 11 MB to 1057 MB. The
   test suite checks the same with `tracemalloc` (20 times more steps, no more memory, one group live at a time).
   The renderer holds at most three grids in the browser.
-- **The cache** (`--cache-dir`, default `~/.cache/xradar-desktop/animate` or `$XRADAR_ANIMATE_CACHE`) holds the
+- **The cache** (`--cache-dir`, default `~/.cache/radarx-desktop/animate` or `$XRADAR_ANIMATE_CACHE`) holds the
   coarse results and the fine grids, keyed by the file names, sizes and times plus the grid settings
   (`--detail-m`, `--cell-dbz`, ...). A **different camera, look, length, size or frame rate does not
   grid again**: the Mayfield plan took 107 s the first time and 0.75 s the second. A changed file gets a new key;

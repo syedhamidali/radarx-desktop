@@ -30,7 +30,7 @@ draws OpenStreetMap or OpenTopoMap under the scan when it is on).</sub>
 
 ## Download
 
-Get the installer for your system from the [latest release](https://github.com/syedhamidali/radarx-desktop/releases/latest). You only need one file.
+Get the installer for your system from the [download page](https://radarx.labshope.com/#download). You only need one file.
 
 | System | File |
 |---|---|
@@ -224,7 +224,7 @@ sudo apt install libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
 </details>
 
 In development the app uses `python/.venv` automatically. Set `XRADAR_PYTHON=/path/to/python` to use another
-interpreter. Exports go to `~/Downloads/xradar-exports` unless you choose a folder.
+interpreter. Exports go to `~/Downloads/radarx-exports` unless you choose a folder.
 
 ## Development
 

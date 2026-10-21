@@ -55,7 +55,7 @@ Both are choices of the **Ground** and **Storm** controls of the scene bar and a
 Tiles are fetched once, nearest first, with at most 4 requests at once. In the app a tile is kept
 in the browser's Cache API (it survives restarts and works offline); where that is not available
 it is fetched as a plain image. The storm-clip renderer goes through a local proxy
-(`tools/storm_clip/tilecache.py`) that keeps tiles in `~/.cache/xradar-desktop/tiles`
+(`tools/storm_clip/tilecache.py`) that keeps tiles in `~/.cache/radarx-desktop/tiles`
 (`XRADAR_TILE_CACHE` or `--tile-cache` to change), asks one tile at a time with 0.12 s between
 requests and a `User-Agent` that names the tool, never forwards a source or zoom that is not
 listed, and reports the hosts that failed (`--offline` uses the cache only). This is for

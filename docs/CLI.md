@@ -56,14 +56,18 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 
 ## Install
 
+`rxd` is installed from the Python wheel that comes with every release (the steps, for macOS, Linux and Windows,
+are on the {doc}`installation` page):
+
 ```bash
-pip install -e python/            # the engine and the `rxd` command   (python -m engine works too)
+pip install "https://downloads.labshope.com/radarx/v0.3.0/radarx_desktop_engine-0.3.0-py3-none-any.whl"
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```
 
-`pip install -e` (an editable install) is what makes the shipped algorithms in `python/modules/`
-visible; add your own folder with `export XRADAR_MODULES_DIR=~/my_modules`.
+In a source checkout, `pip install -e python/` gives the same command on your working copy (an editable install
+is what makes your own algorithm folder, `export XRADAR_MODULES_DIR=~/my_modules`, and edits to the shipped
+ones take effect at once).
 
 Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`,
 `source <(rxd completion zsh)` or `rxd completion fish > ~/.config/fish/completions/rxd.fish`.

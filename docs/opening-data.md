@@ -37,7 +37,7 @@ analysis ({doc}`MULTIDOPPLER`) from the panels of the same name.
 
 *Real-time* opens the newest scan of the chosen station; *Archive* lists scans by date; *ARCO* opens analysis-ready
 cloud-optimised volumes; *Network* opens the scans of every radar of a region at once, ready for a mosaic. Files
-are read from the public `unidata-nexrad-level2` bucket, so no account is needed.
+are read from the public `unidata-nexrad-level2` bucket, so no AWS account or credentials are needed (your free Radarx account is still required to use the app).
 
 ## Looking inside a file
 

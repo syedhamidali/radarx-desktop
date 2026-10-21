@@ -163,7 +163,7 @@ def fake_arco(monkeypatch: pytest.MonkeyPatch) -> Any:
 @pytest.fixture(autouse=True)
 def _isolated_export_dir(tmp_path_factory, monkeypatch):
     """Exports without an explicit path must never write into the developer's real ~/Downloads."""
-    monkeypatch.setenv("XRADAR_EXPORT_DIR", str(tmp_path_factory.mktemp("xradar-exports")))
+    monkeypatch.setenv("XRADAR_EXPORT_DIR", str(tmp_path_factory.mktemp("radarx-exports")))
 
 
 @pytest.fixture(autouse=True)

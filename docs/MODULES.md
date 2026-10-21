@@ -103,7 +103,7 @@ refuses to run.
 
 ## radarx modules
 
-With [radarx](https://github.com/syedhamidali/radarx) installed (`pip install "radarx>=0.5.1"`,
+With [radarx](https://radarx.readthedocs.io/en/latest/) installed (`pip install "radarx>=0.5.1"`,
 Python 3.12+; or `pip install -e ".[radarx]"` from `python/`) the app gains `radarx_*` modules:
 
 | Module | Product |

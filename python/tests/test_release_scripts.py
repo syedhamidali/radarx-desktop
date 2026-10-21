@@ -200,6 +200,17 @@ def test_prepare_folder_writes_candidate_and_checksums(tmp_path: Path) -> None:
         assert hashlib.sha256((folder / name).read_bytes()).hexdigest() == digest
 
 
+def test_python_wheel_is_checksummed_but_is_not_an_installer(tmp_path: Path) -> None:
+    folder = make_download_dir(tmp_path / "dl")
+    wheel = "radarx_desktop_engine-0.3.0-py3-none-any.whl"
+    (folder / wheel).write_bytes(b"PK wheel")
+    sums = rewrite_latest.prepare_folder(folder, "v0.3.0")
+    assert wheel in sums
+    assert (
+        build_index.classify_asset(wheel) is None
+    )  # not offered as an app download on the website
+
+
 def test_prepare_folder_is_idempotent(tmp_path: Path) -> None:
     folder = make_download_dir(tmp_path / "dl")
     rewrite_latest.prepare_folder(folder, "v0.3.0")

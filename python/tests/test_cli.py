@@ -799,7 +799,7 @@ def test_console_script_is_declared() -> None:
     tomllib = pytest.importorskip("tomllib")
     data = tomllib.loads((PYTHON_DIR / "pyproject.toml").read_text())
     assert data["project"]["scripts"]["rxd"] == "engine.cli:main"
-    assert "rxd*" in data["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert '"rxd*"' in (PYTHON_DIR / "setup.py").read_text()  # the package list lives in setup.py
     assert callable(cli.main)
 
 
@@ -1182,3 +1182,11 @@ def test_xrd_alias_reports_the_same_version() -> None:
         timeout=120,
     )
     assert done.returncode == 0, done.stderr
+
+
+def test_command_listing_keeps_the_group_title_apart_from_the_command() -> None:
+    """A group title wider than its column ran into the command name ("Hydrologyqpe")."""
+    text = cli.overview()
+    for title, items in cli.GROUPS:
+        assert f"  {title:<10}{items[0][0]:<12}" in text
+        assert len(title) < 10
