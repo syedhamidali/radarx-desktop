@@ -357,7 +357,9 @@ $ rxd animate -i mayfield -p still.png --still-at 12      # one frame, to try a 
 pip install "radarx-desktop-engine[video] @ <the wheel address>"   # Playwright (drives the system Chrome) and PyAV (writes the MP4)
 ```
 
-Without PyAV the frames are written as numbered PNG files and the `ffmpeg` line that encodes them is printed.
+Rendering needs Google Chrome (the system Chrome; no browser is downloaded) and the 3D renderer files of the app:
+an installed Radarx app (0.3.0 or later) ships them and `rxd animate` finds them by itself, or name a folder with
+`--app-dist`. Without PyAV the frames are written as numbered PNG files and the `ffmpeg` line that encodes them is printed.
 The terminal report (or `--json`) gives the track, displacement and speed, the time offsets of every radar,
 the share of interpolated frames and the frame count, so a result can be checked without watching the video.
 

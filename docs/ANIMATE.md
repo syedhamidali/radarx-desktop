@@ -38,9 +38,12 @@ Neither Playwright nor PyAV is needed for the rest of `rxd`. `--no-render` needs
 `radarx`.
 
 **Where the renderer is found.** `--app-dist DIR` names the folder with the app's 3D renderer files. A folder is
-accepted only if it contains the clip renderer; an older one is refused. The installers embed the renderer in the
-program, so its files cannot be used for this today: rendering a clip with `rxd animate` needs a separate copy of
-them, while `--no-render` (the plan) works with every installation. Without PyAV:
+accepted only if it contains the clip renderer; an older one is refused. Without `--app-dist` the folder named by
+the `RADARX_APP_DIST` environment variable is used, then the renderer files of an installed Radarx app (0.3.0 or
+later ships them as plain files in its `frontend` resource folder: `Radarx.app/Contents/Resources/frontend` on
+macOS, the `frontend` folder of the installation on Windows and Linux), so with the app installed nothing else is
+needed. Rendering a clip still needs Google Chrome (the system Chrome) and the optional video components
+(Playwright, and PyAV for the MP4); `--no-render` (the plan) works with every installation. Without PyAV:
 
 ```console
 $ rxd animate -i mayfield -o mayfield.mp4

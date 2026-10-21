@@ -120,7 +120,10 @@ rxd --version
 With [pipx](https://pipx.pypa.io/) the command is on your `PATH` without activating anything:
 `pipx install "<the wheel address above>"`. To add the optional algorithms of the
 [radarx](https://radarx.readthedocs.io/en/latest/) library (mosaics, winds, `radarx_*` modules, Python 3.12 or newer):
-`pip install -U radarx`. To update, run the same `pip install` with the new version number; to check the file,
+`pip install -U radarx`. Storm-centred 3D movies (`rxd animate`, {doc}`ANIMATE`) also need Google Chrome (the
+system Chrome), the optional video components (the `video` extra: Playwright and PyAV, `pip install
+"radarx-desktop-engine[video] @ <the wheel address above>"`) and the app's 3D renderer files, which an installed
+Radarx app (0.3.0 or later) provides. To update, run the same `pip install` with the new version number; to check the file,
 compare it with the line for the wheel in the release's `SHA256SUMS` (see above).
 
 Tab completion: `source <(rxd completion zsh)`, or
