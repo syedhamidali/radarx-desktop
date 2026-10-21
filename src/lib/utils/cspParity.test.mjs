@@ -28,9 +28,16 @@ test('the web CSP lists the tile hosts of the desktop CSP in connect-src and img
   // the hosts of the desktop policy: the tile servers (map providers, satellite, elevation) and the account server
   const desktopTiles = hosts(directive(tauriCsp, 'connect-src'));
   assert.deepEqual(desktopTiles.filter((h) => !tileHosts.includes(h) && h !== accountHost), []);
-  const desktopImg = hosts(directive(tauriCsp, 'img-src')).filter((h) => /tile|eox|amazonaws/.test(h) && !/mapbox/.test(h));
+  const desktopImg = hosts(directive(tauriCsp, 'img-src'));
   assert.deepEqual(desktopImg.filter((h) => !tileHosts.includes(h)), []);
   // and both web directives use the shared list
   assert.match(vite, /connect-src 'self' \$\{engine\} \$\{supabaseUrl\} \$\{TILE_HOSTS\}/);
   assert.match(vite, /img-src [^`]*\$\{TILE_HOSTS\}/);
+});
+
+test('neither CSP allows Mapbox: the map is drawn by the own tile renderer, nothing loads from Mapbox', () => {
+  assert.doesNotMatch(tauriCsp, /mapbox/i);
+  const webCsp = vite.slice(vite.indexOf('const csp = ['), vite.indexOf('].join', vite.indexOf('const csp = [')));
+  assert.ok(webCsp.includes('img-src'), 'the web CSP was not found in vite.config.ts');
+  assert.doesNotMatch(webCsp, /mapbox/i);
 });
