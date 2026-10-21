@@ -17,6 +17,20 @@ Schema (also in docs/RELEASING.md):
 Assets are the installers a person downloads. The updater payloads (`*.app.tar.gz`), signatures,
 latest.json and SHA256SUMS are not listed.
 
+`components` (additive, schema stays 1) lists the optional movie components packs of the release
+(`radarx-movie-pack-<version>-<os>-<arch>.zip`, built by build_movie_pack.py), which the installed
+app downloads on demand; they are NOT app downloads and never appear under `assets`:
+
+    "components": [{"kind": "movie-pack", "name": "radarx-movie-pack-0.3.1-macos-aarch64.zip",
+                    "os": "macos", "arch": "aarch64", "python": "cpython-312", "size": 123,
+                    "sha256": "<64 hex>", "url": "https://downloads.../...zip",
+                    "contents": [{"name": "playwright", "version": "1.64.0",
+                                  "license": "Apache-2.0"}]}]
+
+The Python tag and the contents come from the pack's sidecar `<name without .zip>.manifest.json`,
+uploaded next to it; a pack without its sidecar refuses the index (the app could not tell whether
+the pack fits its engine).
+
 Usage:  python scripts/release/build_index.py --bucket-dir DIR [--out FILE]
         (without --bucket-dir the R2 bucket from R2_ACCOUNT_ID / R2_BUCKET is read)
 """
@@ -25,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -88,6 +103,24 @@ def _os_of_zip(name: str) -> str | None:
     return None
 
 
+_COMPONENT_RE = re.compile(
+    r"^radarx-movie-pack-(?P<version>[0-9A-Za-z.-]+)-(?P<os>macos|windows|linux)-"
+    r"(?P<arch>aarch64|x86_64)\.zip$"
+)
+
+
+def classify_component(name: str) -> dict[str, str] | None:
+    """{kind, version, os, arch} for a movie components pack, None for any other file."""
+    m = _COMPONENT_RE.match(name)
+    if not m:
+        return None
+    return {"kind": "movie-pack", **m.groupdict()}
+
+
+def component_sidecar_name(name: str) -> str:
+    return name[: -len(".zip")] + ".manifest.json"
+
+
 def classify_asset(name: str) -> dict[str, str] | None:
     """{os, arch, kind} for an installer file name, None for files that are not installers.
 
@@ -97,6 +130,8 @@ def classify_asset(name: str) -> dict[str, str] | None:
     low = name.lower()
     if low.endswith((".sig", ".json", ".app.tar.gz")) or name == SUMS_NAME:
         return None
+    if classify_component(name) is not None:
+        return None  # an optional component of the app, not an installer
     kind = next((k for suffix, k in _KIND_BY_SUFFIX if low.endswith(suffix)), None)
     if kind is None:
         return None
@@ -116,27 +151,69 @@ def release_entry(bucket: Any, version: str, prefix: str, base_url: str) -> dict
         raise ReleaseError(f"v{version}: {exc}") from exc
     sizes = bucket.list_objects(prefix)
     assets = []
+    components = []
     for name in sorted(sums):
         info = classify_asset(name)
-        if info is None:
+        comp = classify_component(name)
+        if info is None and comp is None:
             continue
         if prefix + name not in sizes:
             raise ReleaseError(f"v{version}: {name} is listed in {SUMS_NAME} but not in the bucket")
-        assets.append(
-            {
-                **info,
-                "name": name,
-                "size": sizes[prefix + name],
-                "sha256": sums[name],
-                "url": asset_url(base_url, version, name),
-            }
-        )
+        entry = {
+            "name": name,
+            "size": sizes[prefix + name],
+            "sha256": sums[name],
+            "url": asset_url(base_url, version, name),
+        }
+        if info is not None:
+            assets.append({**info, **entry})
+        else:
+            components.append(component_entry(bucket, version, prefix, comp, entry))
     assets.sort(key=lambda a: (OSES.index(a["os"]), a["arch"], a["kind"], a["name"]))
+    components.sort(key=lambda a: (OSES.index(a["os"]), a["arch"], a["python"], a["name"]))
     return {
         "version": version,
         "date": manifest["pub_date"],
         "notes": manifest["notes"],
         "assets": assets,
+        "components": components,
+    }
+
+
+def component_entry(
+    bucket: Any, version: str, prefix: str, comp: dict[str, str], entry: dict[str, Any]
+) -> dict[str, Any]:
+    """One movie components pack: the file plus what its sidecar manifest says it is built for."""
+    name = entry["name"]
+    if comp["version"] != version:
+        raise ReleaseError(f"v{version}: {name} carries another version")
+    side_name = component_sidecar_name(name)
+    try:
+        side = json.loads(bucket.get(prefix + side_name))
+    except BucketMissingError as exc:
+        raise ReleaseError(f"v{version}: {name} has no {side_name} next to it") from exc
+    except ValueError as exc:
+        raise ReleaseError(f"v{version}: {side_name} is not valid JSON") from exc
+    python = side.get("python") if isinstance(side, dict) else None
+    if not isinstance(python, str) or not python:
+        raise ReleaseError(f"v{version}: {side_name} does not say which Python the pack is for")
+    if side.get("os") != comp["os"] or side.get("arch") != comp["arch"]:
+        raise ReleaseError(f"v{version}: {side_name} does not match the file name of {name}")
+    zip_info = side.get("zip") or {}
+    if zip_info.get("sha256") and zip_info["sha256"] != entry["sha256"]:
+        raise ReleaseError(f"v{version}: {name} is not the file {side_name} describes")
+    contents = [
+        {k: c.get(k) for k in ("name", "version", "license")}
+        for c in (side.get("components") or [])
+        if isinstance(c, dict)
+    ]
+    return {
+        "kind": comp["kind"],
+        "os": comp["os"],
+        "arch": comp["arch"],
+        "python": python,
+        **entry,
+        "contents": contents,
     }
 
 

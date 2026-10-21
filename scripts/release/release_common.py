@@ -228,6 +228,8 @@ def content_type_of(name: str) -> str:
         return "application/vnd.debian.binary-package"
     if lower.endswith(".rpm"):
         return "application/x-rpm"
+    if lower.endswith(".zip"):
+        return "application/zip"
     return "application/octet-stream"
 
 
