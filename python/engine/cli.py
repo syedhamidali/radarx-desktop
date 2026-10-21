@@ -313,6 +313,12 @@ def _common_options() -> argparse.ArgumentParser:
         action="store_true",
         help="print the equivalent full command at the end (with everything chosen for you)",
     )
+    h.add_argument(
+        "--budget-gb",
+        type=float,
+        metavar="GB",
+        help="memory this run may use (default: chosen from the free memory; see rxd budget)",
+    )
     return p
 
 
@@ -375,6 +381,7 @@ def _add_format(p: argparse.ArgumentParser, desc: str) -> None:
 
 GROUPS = (
     ("Look", (("info", "what is in a file: format, radar, time, sweeps, variables"),
+              ("budget", "can this computer do it? memory, time and the plan per operation"),
               ("check", "is the data sound? problems with evidence and a suggested QC recipe"),
               ("plot", "draw a PPI picture of one variable"))),
     ("Clean", (("pipeline", "apply a QC recipe: clutter, dealiasing, speckle ... (list | show | run | script)"),)),
@@ -792,6 +799,11 @@ def build_parser() -> argparse.ArgumentParser:
     from engine import animate_cli
 
     animate_cli.add_parser(command, _add_input, _add_output, _add_plot)
+
+    # -- budget (engine/governor_cli.py) ---------------------------------------------------
+    from engine import governor_cli
+
+    governor_cli.add_parser(command, _add_input)
 
     # -- export --------------------------------------------------------------------------
     p = command(
@@ -2454,6 +2466,9 @@ def _execute(args: argparse.Namespace) -> int:
         return code
 
     try:
+        from engine.governor_cli import apply_budget_option
+
+        apply_budget_option(args)
         code = args.func(args, out)
     except UsageError as exc:
         print(f"{_err_label(sys.stderr)} {exc}", file=sys.stderr)
