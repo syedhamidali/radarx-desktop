@@ -14,35 +14,33 @@ rxd animate -i mayfield -p still.png --still-at 12               # one frame, to
 rxd animate -i mayfield --no-render                              # the plan only: steps, track, frames (no browser)
 ```
 
-It is the command-line form of the clip tool in `tools/storm_clip/` (see [the clip page](STORM_CLIP.md),
-which has the details of the renderer, the realistic look and the cyclone flight).
+It is the command-line form of the storm clips of the app ({doc}`STORM_CLIP` has the details of the renderer, the
+realistic look and the cyclone flight).
 
 ## Install and what it needs
 
 ```bash
-pip install -e python/                      # the engine and the `rxd` command
 pip install -U radarx                       # gridding the radars (Python >= 3.12), needed for every run
-pip install -e 'python/[video]'             # the optional extra: Playwright and PyAV   (pip install 'radarx-desktop-engine[video]')
-npm ci && npm run build                     # once, in a source checkout: the app that draws (dist/)
+pip install "radarx-desktop-engine[video] @ <the wheel address>"   # the optional extra: Playwright and PyAV
 ```
+
+(the wheel address is the one from {doc}`installation`; the `[video]` extra adds the two video packages)
 
 | Needs | Why | When it is missing |
 |---|---|---|
 | `radarx` | merges the radars onto a 3D grid (`rxd mosaic` uses it too) | exit code 4 with the install line |
-| `playwright` (extra `video`) | drives Chrome | exit code 4: `pip install 'radarx-desktop-engine[video]'` |
-| Google Chrome | the renderer runs in it (`channel="chrome"`: the system Chrome, nothing is downloaded) | exit code 4, says to install Chrome or use `--browser ''` after `python -m playwright install chromium` |
+| `playwright` (extra `video`) | drives Chrome | exit code 4 with the install line |
+| Google Chrome | the renderer runs in it (the system Chrome, nothing is downloaded) | exit code 4, says to install Chrome or use `--browser ''` after `python -m playwright install chromium` |
 | `av` / PyAV (extra `video`) | encodes H.264 | the frames are still written as numbered PNG files and the command prints the `ffmpeg` line that makes the MP4 |
-| the built app (`dist/`) | the renderer itself | exit code 4 with the build steps |
+| the 3D renderer files of the app | the renderer itself | exit code 4 |
 
-Neither Playwright nor PyAV is a dependency of the package: `import engine` never loads them, and the
-rest of `rxd` works without them. `--no-render` needs none of the four rows below `radarx`.
+Neither Playwright nor PyAV is needed for the rest of `rxd`. `--no-render` needs none of the four rows below
+`radarx`.
 
-**Where the app is found.** `--app-dist DIR`, then `$XRADAR_APP_DIST`, then `<checkout>/dist` (the
-folder `npm run build` writes; found automatically when the engine is installed with
-`pip install -e python/`), then `./dist`. A build is accepted only if it contains the clip renderer;
-an older build is refused with "rebuild it". The installers (`.dmg`, `.msi`, `.AppImage`) embed the
-frontend in the executable, so their resources cannot be used for this today: build `dist/` from a
-checkout. Without PyAV:
+**Where the renderer is found.** `--app-dist DIR` names the folder with the app's 3D renderer files. A folder is
+accepted only if it contains the clip renderer; an older one is refused. The installers embed the renderer in the
+program, so its files cannot be used for this today: rendering a clip with `rxd animate` needs a separate copy of
+them, while `--no-render` (the plan) works with every installation. Without PyAV:
 
 ```console
 $ rxd animate -i mayfield -o mayfield.mp4
@@ -61,7 +59,7 @@ to make the MP4 from those frames: ffmpeg -framerate 30 -i 'mayfield_frames/fram
    A step needs two radars (`--min-radars`; one for a single radar) and a step whose volumes are all
    repeats of the previous step is dropped. Everything that is not used is listed with the reason.
 3. **Grids, one time step at a time.** The radars of one step are gridded together
-   (`engine.mosaic`, the same code as `rxd mosaic`) at 2 km to find and track the storm, then at 500 m on a box
+   (the same gridding as `rxd mosaic`) at 2 km to find and track the storm, then at 500 m on a box
    around the whole track. Only one step's radar volumes are in memory at once; every result is cached on disk.
 4. **The storm.** The strongest convective cell (column maximum of at least `--cell-dbz` 45 dBZ, score =
    maximum dBZ + 2 x echo top + 4 x log10 area) of the first step is followed from step to step
@@ -161,7 +159,7 @@ its landmarks. `--fov DEG` sets the field of view of the whole clip, `--vexag` t
 ### Camera file (TOML or JSON)
 
 ```toml
-# animate_camera.toml  (docs/examples/animate_camera.toml is a complete one)
+# my_camera.toml
 target_lag = 0.35      # optional
 fov = 50               # optional: the field of view of every key that has none
 
@@ -180,8 +178,8 @@ elevation = 15
 distance = 90
 ```
 
-Between the keys every value follows a **monotone cubic Hermite curve** (the same as
-`src/lib/utils/clipCamera.ts`): continuous velocity, no overshoot between keys, zero speed at both ends,
+Between the keys every value follows a **monotone cubic Hermite curve** (the same as in the
+app's storm clips): continuous velocity, no overshoot between keys, zero speed at both ends,
 so there are no jerks and no cuts. An azimuth of 505 after 365 is a further 140 degrees of orbit (the
 angle is not wrapped). The clip length is `--duration`, else `duration = ` in the file, else the time of the last key; a camera
 that ends before the clip stays at its last pose, and keys after the end are reported.
@@ -201,7 +199,7 @@ to 120), and at least two keys.
 
 ## The look
 
-The look system of [the realistic 3D page](REALISTIC_3D.md) is used as it is: `--look-preset NAME`, then
+The look system of {doc}`the realistic 3D page <REALISTIC_3D>` is used as it is: `--look-preset NAME`, then
 `--look FILE` (TOML or JSON), then `--set key=value` (highest priority). The scientific dBZ colour scale on
 the map is the default; `--realistic` switches to terrain with satellite imagery and the stylised storm
 (`--ground`, `--storm-style`, `--palette`, `--light` choose the parts). The look keys are checked **first**, in the
@@ -241,10 +239,9 @@ Nothing is invented: where the radar has no echo none is drawn, and the look con
   pass) and the fine grid, which is written to disk at once. Measured on a synthetic series with a 300 MB
   "group" per step (a 4-radar NEXRAD step is about 1.5 GB decoded: the real peak on the Mayfield case was
   1.47 GB, Laura with six radars 2.1 to 2.7 GB), peak memory of the whole process was **446 MB for 5 steps,
-  445 MB for 50 and 455 MB for 500 steps**, while the cache on disk grew from 11 MB to 1057 MB. The
-  test suite checks the same with `tracemalloc` (20 times more steps, no more memory, one group live at a time).
+  445 MB for 50 and 455 MB for 500 steps**, while the cache on disk grew from 11 MB to 1057 MB.
   The renderer holds at most three grids in the browser.
-- **The cache** (`--cache-dir`, default `~/.cache/radarx-desktop/animate` or `$XRADAR_ANIMATE_CACHE`) holds the
+- **The cache** (`--cache-dir`, default `~/.cache/radarx-desktop/animate`) holds the
   coarse results and the fine grids, keyed by the file names, sizes and times plus the grid settings
   (`--detail-m`, `--cell-dbz`, ...). A **different camera, look, length, size or frame rate does not
   grid again**: the Mayfield plan took 107 s the first time and 0.75 s the second. A changed file gets a new key;
@@ -253,7 +250,7 @@ Nothing is invented: where the radar has no echo none is drawn, and the look con
 - **Resume.** Frames are written to `<cache>/jobs/<job>/frames/` as they are drawn, each atomically. Run the
   same command again after an interruption (Ctrl-C, a crash, a closed laptop) and only the missing frames are
   drawn (`resuming: 61 of 180 frames are already rendered`); the job is identified by the grids, the camera,
-  the look, the size, the frame rate and the build of the app, so a changed setting starts a new job and never
+  the look, the size, the frame rate and the build of the renderer, so a changed setting starts a new job and never
   mixes frames. Frames are deterministic, so a resumed clip is the same as an uninterrupted one.
 - **The MP4 is written at the end**, to `name.mp4.part` and renamed, so a crash never leaves a broken file
   under the final name. The working frames are then deleted (`--keep-frames` keeps them). They need disk space:
@@ -274,14 +271,14 @@ Next to the result `rxd animate` writes `clip.animate.json` (`folder/animate.jso
 `still.animate.json` for a still) and puts a short note in the MP4's tags (`title`, `comment`: the radars, the
 time span, that frames between volumes are interpolated, and the name of that file). The record has the
 command line, the date, the versions (engine, radarx, xradar, Python, Playwright, PyAV, Chrome, the build of
-the app), every input volume (radar, volume time, offset from the step, file name and size, where the time came
+the renderer), every input volume (radar, volume time, offset from the step, file name and size, where the time came
 from), every parameter, the page settings (the look), the steps, the storm track, the frame plan, the camera,
 the files that were not used and the method in words, so a clip can be checked and repeated later.
 
 ## All options
 
 `rxd animate --help` lists them; the common ones (`-i`, `-o`, `-p`, `-v`, `-q`, `--json`, `--config`,
-`--print-command`) are those of [every `rxd` command](CLI.md).
+`--print-command`) are those of {doc}`every rxd command <CLI>`.
 
 | Group | Options |
 |---|---|
@@ -299,9 +296,9 @@ not exist is refused with the nearest one:
 command = "animate"
 input = ["mayfield"]
 output = "mayfield.mp4"
-camera = "docs/examples/animate_camera.toml"
+camera = "my_camera.toml"
 realistic = true
-look = "docs/examples/animate_look.toml"
+look = "my_look.toml"
 
 [set]
 exposure = 1.3
@@ -315,21 +312,21 @@ error: unrecognized option(s): --tolerence-s. Did you mean --tolerance-s?
 
 Exit codes are those of the other commands: 0 success, 2 a wrong option or setting (a camera or look file,
 a size, a duration), 3 the input files (none found, none usable, fewer than two time steps), 4 a missing
-Python package, Chrome or the built app, 1 the processing failed (no storm found: lower `--cell-dbz`).
+Python package, Chrome or the renderer files, 1 the processing failed (no storm found: lower `--cell-dbz`).
 
 ## Examples on the real cases
 
-The two cases of the test collection, read only (nothing is written next to the radar files):
+Two real cases, read only (nothing is written next to the radar files):
 
 ```bash
 # Mayfield, Kentucky, 11 Dec 2021: four radars, five volumes each over 18 minutes
-rxd animate -i SEVERE_CASES_TEST/mayfield -o mayfield.mp4
-rxd animate -i SEVERE_CASES_TEST/mayfield -o mayfield_window.mp4 --camera window --realistic --timelapse 24
-rxd animate -i SEVERE_CASES_TEST/mayfield -o mayfield_custom.mp4 --camera docs/examples/animate_camera.toml \
-    --realistic --look docs/examples/animate_look.toml --title "Mayfield, KY: the storm in 3D"
+rxd animate -i mayfield -o mayfield.mp4
+rxd animate -i mayfield -o mayfield_window.mp4 --camera window --realistic --timelapse 24
+rxd animate -i mayfield -o mayfield_custom.mp4 --camera my_camera.toml \
+    --realistic --look my_look.toml --title "Mayfield, KY: the storm in 3D"
 
 # Hurricane Laura, 27 Aug 2020: four readable radars (the two TDWR files are named and left out), four volumes in 15 minutes
-rxd animate -i SEVERE_CASES_TEST/laura -o laura.mp4 --track eye --camera flight --crop-km 140 --detail-m 1000 \
+rxd animate -i laura -o laura.mp4 --track eye --camera flight --crop-km 140 --detail-m 1000 \
     --realistic --look-preset "Hurricane (stormy)"
 ```
 
@@ -347,23 +344,10 @@ rxd animate -i SEVERE_CASES_TEST/laura -o laura.mp4 --track eye --camera flight 
 - **The radars' volumes are not simultaneous**: the offsets are printed; a step is not an instant.
 - **Time steps follow one reference radar.** Every radar contributes one volume per step; a radar that scans
   more often than the reference has volumes that are not used (they are listed).
-- **Needs Chrome, ideally with a GPU**, and a built app. Without a working GPU path the command falls back to Chrome's software renderer (`--software` chooses it): it works anywhere, a still took 19 s instead of 7 s here, and a clip is much slower. Resolution is limited by the
-  GPU's 3D-texture and canvas limits. Tested on macOS (Apple M1 Pro); the Chrome switches for Linux and Windows
-  are not tested here (`XRADAR_CHROME_ARGS` adds switches).
-- **No sound track.** The clip tool of `tools/storm_clip/` can add a synthesised soundscape; `rxd animate` does not.
+- **Needs Chrome, ideally with a GPU**, and the renderer files. Without a working GPU path the command falls back to Chrome's software renderer (`--software` chooses it): it works anywhere, a still took 19 s instead of 7 s here, and a clip is much slower. Resolution is limited by the
+  GPU's 3D-texture and canvas limits. Tested on macOS (Apple M1 Pro); Linux and Windows are not tested here.
+- **No sound track.** The storm clips of the app ({doc}`STORM_CLIP`) can add a synthesised soundscape; `rxd animate` does not.
 - **The ground needs tiles.** The flat map's tiles are fetched by Chrome from the basemap server while the
-  frames are drawn (rxd keeps no cache of them); the satellite imagery and terrain of `--realistic` go through
+  frames are drawn (`rxd` keeps no cache of them); the satellite imagery and terrain of `--realistic` go through
   the tile cache, and `--offline` uses only that. Without tiles the ground is a grid and the command says so.
 - **Radar data are not downloaded.** Give files on disk.
-
-## Tests
-
-`python/tests/test_animate.py` (no browser needed except the marked end-to-end tests, which are skipped when
-Playwright, Chrome or the built app is missing): grouping and time matching, the tolerance, the nearest
-volume, skipped files with reasons, frame planning and the observed / interpolated split, interpolation
-weights and shifts, the data-time mapping, the Hermite curve, the follow target, the preset choreographies
-(all compared with values computed by the TypeScript of `clipCamera.ts`), camera file parsing and its errors,
-option and config errors with suggestions, the cache (hits, changed files, partial entries), resume after a
-crash, atomic writes, the memory bound on a synthetic series of 240 steps, the install messages, and, with
-Chrome, a rendered PNG sequence, the resume of a job, the MP4, the still and the early look check.
-`src/lib/utils/clipCamera.test.mjs` covers the field-of-view channel.

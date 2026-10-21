@@ -2,8 +2,8 @@
 
 ## Download
 
-Get the installer for your system from the [download page](https://radarx.labshope.com/#download) (one file,
-nothing else to install: the installers include the Python engine). Or fetch it from a terminal, as below. You
+Get the installer for your system from the [download page](https://radarx.labshope.com/#download) (one file;
+everything the app needs is included). Or fetch it from a terminal, as below. You
 need a free Radarx account to use the app: see {doc}`ACCOUNTS`.
 
 | System | File |
@@ -82,8 +82,8 @@ radarx-desktop                                          # or start it from the a
 
 The first launch can take up to a minute while the system scans the app; after that it starts in about a
 second. The window then asks you to create your free account or sign in (a code is sent to your e-mail; see
-{doc}`ACCOUNTS`). Installed apps check for updates themselves ({doc}`UPDATES`); to move to a new version by hand,
-download and install it the same way over the old one. See {doc}`BUNDLING` for how the installers are built.
+{doc}`ACCOUNTS`). Installed apps check for updates themselves (*Settings → Updates*, see {doc}`settings`); to move to a new version by
+hand, download and install it the same way over the old one.
 
 ## Open files from the file manager
 
@@ -93,8 +93,7 @@ no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`).
 
 ## The command line (`rxd`)
 
-The command line and the Python API (`import rxd`) come as a Python package, a wheel that is part of every
-release, next to the installers. It needs Python 3.10 or newer (3.12 or newer for the optional radarx
+The command line comes as a Python package, a wheel that is part of every release, next to the installers. It needs Python 3.10 or newer (3.12 or newer for the optional radarx
 algorithms) and works on macOS, Windows and Linux. Use a virtual environment so it stays apart from your other
 Python packages.
 
@@ -126,12 +125,4 @@ compare it with the line for the wheel in the release's `SHA256SUMS` (see above)
 
 Tab completion: `source <(rxd completion zsh)`, or
 `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`. Every command, with examples and the exit
-codes, is in {doc}`CLI`; the Python side is in {doc}`API`. Both need a signed-in account like the app
-({doc}`ACCOUNTS`).
-
-For contributors with the source, `pip install -e python/` in a checkout gives the same command, running your
-working copy ({doc}`contributing`; the desktop app itself additionally needs Node.js 20+ and Rust to build).
-
-## On the web
-
-The same app runs in a browser against an engine in web mode: see {doc}`WEB` and {doc}`RENDER`.
+codes, is in {doc}`CLI`. It needs a signed-in account like the app ({doc}`ACCOUNTS`).

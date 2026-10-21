@@ -7,9 +7,8 @@ the scientific colour scale, which stay the defaults:
 - **Storm: Realistic (stylised)**: reflectivity drawn like precipitation shafts, with sun light and
   soft shadows.
 
-Both are choices of the **Ground** and **Storm** controls of the scene bar and are remembered
-(`realGround`, `stormStyle`). The offline storm clip (`docs/STORM_CLIP.md`) uses the same renderer
-(`--realistic`). The polar single-file 3D view is unchanged.
+Both are choices of the **Ground** and **Storm** controls of the scene bar and are remembered.
+The storm clips ({doc}`STORM_CLIP`, `rxd animate --realistic`) use the same renderer. The polar single-file 3D view is unchanged.
 
 ![Storm clip, realistic look: low orbit, 02:03 UTC](images/storm3d-realistic-low.png)
 ![Top-down: satellite imagery, the storm and its shadow](images/storm3d-realistic-topdown.png)
@@ -19,7 +18,7 @@ Both are choices of the **Ground** and **Storm** controls of the scene bar and a
   `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`. A pixel stores
   `metres = R * 256 + G + B / 256 - 32768`. The tiles are resampled to a 1024 x 1024 height map
   (km above sea level, sea level is the floor) registered in the same azimuthal-equidistant frame
-  as the radar volume and the imagery (`src/lib/utils/terrain.ts`).
+  as the radar volume and the imagery.
 - **Imagery**: Sentinel-2 cloudless 2021 by EOX IT Services GmbH (10 m), WMTS tiles
   `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2021_3857/default/g/{z}/{y}/{x}.jpg`.
 - **How it is drawn**: the terrain is a height field ray-marched in the same shader pass as the
@@ -33,7 +32,7 @@ Both are choices of the **Ground** and **Storm** controls of the scene bar and a
   toward the light).
 - Where relief is small (the Mayfield, KY case is Mississippi lowland: about 60 to 150 m in the
   middle, hills up to 560 m at the west edge of the 230 km scene) it is hardly visible even at x4;
-  raise the **Vertical** control to see it. The other cases of the test collection (El Reno, Laura,
+  raise the **Vertical** control to see it. The other example cases (El Reno, Laura,
   Michael, Milton) are flat country or coast as well.
 
 ### Terms and attribution
@@ -54,17 +53,16 @@ Both are choices of the **Ground** and **Storm** controls of the scene bar and a
 ### Tile policy, cache, offline
 Tiles are fetched once, nearest first, with at most 4 requests at once. In the app a tile is kept
 in the browser's Cache API (it survives restarts and works offline); where that is not available
-it is fetched as a plain image. The storm-clip renderer goes through a local proxy
-(`tools/storm_clip/tilecache.py`) that keeps tiles in `~/.cache/radarx-desktop/tiles`
-(`XRADAR_TILE_CACHE` or `--tile-cache` to change), asks one tile at a time with 0.12 s between
+it is fetched as a plain image. The storm-clip renderer goes through a local tile cache
+that keeps tiles in `~/.cache/radarx-desktop/tiles`
+(`--tile-cache` to change), asks one tile at a time with 0.12 s between
 requests and a `User-Agent` that names the tool, never forwards a source or zoom that is not
 listed, and reports the hosts that failed (`--offline` uses the cache only). This is for
 interactive and research use; it is not a bulk downloader.
 
 If a source cannot be reached the viewer says which one ("Could not load: satellite imagery
 (tiles.maps.eox.at)") and falls back to what is available, ending at the flat map. Imagery is
-never invented. The desktop app's content security policy lists the three tile hosts
-(`src-tauri/tauri.conf.json`).
+never invented.
 
 ## Realistic (stylised) storm
 The scientific colour scale maps dBZ to colours. The realistic look maps it to what the eye sees in
@@ -77,9 +75,9 @@ a daylight storm photograph:
 | heavy cores (45 dBZ and above) | darker blue-grey, translucent grey rain curtains below the base |
 | strongest cores (about 60 dBZ and above) | a faint green-grey tint only (a hail hint) |
 
-There is no purple, violet or pink in the storm (a unit test checks every dBZ of every palette).
+There is no purple, violet or pink in the storm (every dBZ of every palette was checked).
 
-How it is lit (`realisticShader.ts`): a sun with a soft self-shadow (a short secondary march) and a
+How it is lit: a sun with a soft self-shadow (a short secondary march) and a
 multiple-scattering floor, so shadows stay blue-grey instead of black; Henyey-Greenstein forward
 (silver lining toward the sun) and back lobes; powder darkening in dense cores (thin edges stay
 bright); a blue fill from the sky above and a green-grey bounce from the ground below; the base is
@@ -88,7 +86,7 @@ haze and aerial perspective bluish with distance; a saturated blue sky with a li
 sun glow. Cloud shadows fall on the terrain.
 
 **Light.** The real sun is used when it is at least 6 degrees up. Otherwise there are two labelled
-options (`light` in the clip settings, `--light daylight|dusk`): **Daylight (assumed)**, the default
+options (`--light daylight|dusk`): **Daylight (assumed)**, the default
 for the realistic clip, a daytime sun at the azimuth the real sun has at 14:30 local solar time on
 that date and place, raised to 36 to 50 degrees of elevation, labelled on screen *Stylised daylight;
 the real sun was 39 degrees below the horizon at this time (not a photograph)*; and **Dusk**, a low
@@ -110,8 +108,7 @@ later version is GOES ABI cloud imagery or the cloud water of a model such as HR
 
 Three variants were rendered on the same frames of the Mayfield storm and of Hurricane Laura
 (`images/storm-palettes.png`): **white** (chosen: brightest, most cloud-like), **soft** (a little
-less white) and **stormy** (grey-white body, darker cores: heavier but flatter). `palette` in the
-clip settings selects one. An earlier grey palette was judged too grey and replaced.
+less white) and **stormy** (grey-white body, darker cores: heavier but flatter). `--palette` selects one. An earlier grey palette was judged too grey and replaced.
 
 ![Three variants on the same frames: Mayfield storm and Hurricane Laura](images/storm-palettes.png)
 
@@ -121,7 +118,7 @@ hard anvil, cauliflower tops and a defined base; the ground imagery is a summer-
 10 m resolution that blurs at ground level; the cloud is only where the echo is.
 
 ## Look controls
-The **Look…** button of the 3D tab (Storm: Realistic) opens a collapsible panel with every control below: a slider and a number box (type a value), a reset per control (↺), colour pickers (an empty colour is "auto": chosen by the light and palette), a preset menu, **Save** (kept in this browser), **Export** (JSON) / **TOML**, and **Import** (JSON or TOML). Changes are live. The same names are the keys of a look file for the clip tool (`--look file.json|toml`, `--look-preset NAME`, `--set key=value`).
+The **Look…** button of the 3D tab (Storm: Realistic) opens a collapsible panel with every control below: a slider and a number box (type a value), a reset per control (↺), colour pickers (an empty colour is "auto": chosen by the light and palette), a preset menu, **Save** (kept in this browser), **Export** (JSON) / **TOML**, and **Import** (JSON or TOML). Changes are live. The same names are the keys of a look file for `rxd animate` (`--look file.json|toml`, `--look-preset NAME`, `--set key=value`).
 
 ### Scene
 | key | what it does | range | default |
@@ -230,7 +227,7 @@ Your own looks: **Save** in the panel (stored in this browser, listed under "Sav
 
 ### Config file example (TOML; JSON has the same keys)
 ```toml
-# radarx-desktop look: every key is optional
+# Radarx Desktop look: every key is optional
 [scene]
 light = "overcast"
 palette = "cyclone"
@@ -243,13 +240,13 @@ whitecaps = 1.3
 oceanColor = "#16302c"
 ```
 ```
-python tools/storm_clip/render_clip.py --bundle B --out clip.mp4 --realistic --camera flight \
+rxd animate -i laura -o clip.mp4 --realistic --camera flight \
     --look mylook.toml --look-preset "Hurricane (stormy)" --set exposure=1.9
 ```
-Priority, lowest to highest: the defaults, `--look-preset`, `--look`, `--set` (and the flags `--palette` / `--light`). The look never changes the data: where echo exists and how strong it is come from the radar in every setting; the detail control only reshapes brightness and thins faint echo, and the density and cutoff controls scale the opacity law you can see in the transfer function. `tools/storm_clip/verify_look.py` renders a real frame and checks that exposure, brightness, gamma, sun intensity and ambient make it lighter step by step, that saturation 0 is grey and that warm white balance is warmer than cool.
+Priority, lowest to highest: the defaults, `--look-preset`, `--look`, `--set` (and the flags `--palette` / `--light`). The look never changes the data: where echo exists and how strong it is come from the radar in every setting; the detail control only reshapes brightness and thins faint echo, and the density and cutoff controls scale the opacity law you can see in the transfer function. The controls were checked on a real frame: exposure, brightness, gamma, sun intensity and ambient make it lighter step by step, saturation 0 is grey and a warm white balance is warmer than a cool one.
 
 ## Realistic cyclone
 A tropical cyclone is not a daylight cumulonimbus. The `cyclone` palette and the `overcast` or `night`
 light make a dark, desaturated, heavy look with a dense eyewall, layered (horizontal) detail, an
 ocean with whitecaps from the retrieved wind, and a flight camera that goes through the wall into the
-eye. See `docs/STORM_CLIP.md` ("Realistic cyclone") for the options and what is data and what is style.
+eye. See {doc}`STORM_CLIP` ("Realistic cyclone") for the options and what is data and what is style.

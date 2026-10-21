@@ -64,18 +64,17 @@ preview says where a field came from ("RHOHV taken from sweep 0").
 | `range_clip` | - | value interval and/or range window (-1000 / 1000 / 0 = off) |
 | `dealias` | VRADH (required) | radarx `region` or `unravel`; `builtin` numpy unfolding; Nyquist from the file, the parameter, or the largest valid velocity |
 | `smooth` | - | NaN-aware median or Gaussian on kept gates |
-| `gap_fill` | - | smooth interpolation into small removed patches (reuses `modules/_gapfill.py`) |
+| `gap_fill` | - | smooth interpolation into small removed patches |
 | `noise_correction` | SNR; target ZDR or RhoHV | radarx `correct_zdr_noise` / `correct_rhohv_noise`; only for moments that still contain the noise |
 
-Parameters are declared with the same `param(...)` helper as modules (`number`, `int`, `bool`,
-`select`, `string`; validated and clamped), and the panel builds the forms from them.
+Every step has a parameter form in the panel; values are validated and clamped.
 
 ## Results and provenance
 
-* **Preview** (`preview_pipeline`) runs one sweep and stores nothing. It shows per-step gates
+* **Preview** runs one sweep and stores nothing. It shows per-step gates
   removed and the % of valid gates left, and three grids on the PPI: **Before**, **After** and
   **Removed by** (which step removed each gate).
-* **Run** (`run_pipeline`) streams progress, can be cancelled (`cancel_pipeline`, stops after the
+* **Run** streams progress, can be cancelled (it stops after the
   current step) and stores exactly one derived variable named
   `pipeline:<recipe_slug>_<target>` (a derived name allows one colon). Running again replaces it.
   The option *apply the mask to all loaded fields* additionally stores a masked copy of every
@@ -85,52 +84,22 @@ Parameters are declared with the same `param(...)` helper as modules (`number`, 
 
 ## Using the result downstream
 
-`run_module` accepts `inputs`, a map from a role to a derived variable:
-
-```json
-{"type": "run_module", "module": "some_wind_module", "sweep": 1,
- "inputs": {"velocity": "pipeline:doppler_velocity_dealias_clutter_bio_filter_vradh"}}
-```
-
-Wherever the module asks for `VRADH` (through `ctx.field`, `ctx.find` or by reading
-`ctx.dataset`) it receives the pipeline output. Keys are canonical names or aliases
-(`velocity`, `reflectivity`, `ZDR`, ...). Works for single-sweep and `all_sweeps` runs; a sweep
-the derived variable does not cover is skipped with a reason, it is never silently replaced by
-raw data.
-
-Implementation (kept small on purpose): `ModuleContext(overrides=...)` in `engine/plugins.py`
-maps a canonical role to `fn(sweep) -> 2-D array`; the context applies it when it loads the sweep
-dataset (`_apply_overrides`). `engine.pipeline.module_overrides(store, inputs)` builds the map.
-
-**Variable mapping.** Roles are resolved in exactly one function,
-`engine.pipeline.find_variable(ds, role)`. When the user-editable mapping (`engine/varmap.py`)
-lands, make that function call it; the override map is keyed by canonical role, so it keeps
-working with the mapping unchanged (the override replaces whichever file variable the mapping
-picks for the role).
+A pipeline result can replace a measured variable as the input of a module: for example the cleaned velocity can be the
+velocity that a wind module uses. Wherever the module asks for the velocity (`VRADH`) it receives the pipeline output.
+The roles are the canonical names or their aliases (`velocity`, `reflectivity`, `ZDR`, ...). This works for single-sweep
+and all-sweeps runs; a sweep the derived variable does not cover is skipped with a reason, it is never silently
+replaced by raw data.
 
 ## Saving, loading, sharing
 
-* Recipes are JSON files in `~/.xradar-desktop/recipes/` (`$XRADAR_RECIPES_DIR` overrides it):
+* Recipes are JSON files in `~/.xradar-desktop/recipes/`:
   `{"version": 1, "name", "description", "target", "apply_to_all", "steps": [{"step_id",
   "params", "enabled"}]}`. Files that fail to parse are listed in the panel, never fatal.
 * Three recipes ship built in (read-only, marked `*`): **Doppler velocity: dealias + clutter + bio
   filter**, **Reflectivity QC**, **Dual-pol QC**. Save a modified copy under another name.
 * **Export script** writes a standalone Python file (numpy, scipy, xarray, xradar; radarx
-  optional) with `process_sweep(ds)` and the exact kernels the app uses, for reproducibility:
+  optional) with the exact kernels the app uses, for reproducibility:
   `python recipe.py input_file output.nc`.
-
-## Protocol summary
-
-| Request | Response |
-|---|---|
-| `list_pipeline_steps` | `pipeline_steps {steps}` |
-| `list_recipes` | `recipes_list {recipes, errors, dir}` |
-| `save_recipe {recipe}` / `delete_recipe {name}` | `recipe_saved` / `recipe_deleted`, then `recipes_list` |
-| `export_recipe_script {recipe}` | `recipe_script {filename, script}` |
-| `preview_pipeline {file_id, sweep, recipe}` | `pipeline_preview {steps, blocks, notes, ...}` + 3 `module_field` binary payloads (module `pipeline`) |
-| `run_pipeline {file_id, recipe, all_sweeps, sweep}` | progress, `pipeline_result {name, derived, steps, skipped, ...}`, `derived_variables` |
-| `cancel_pipeline {file_id}` | the run ends with `pipeline_error {cancelled: true}` |
-| any failure | `pipeline_error {action, message}` |
 
 ## Limits
 
@@ -138,5 +107,3 @@ picks for the role).
 * The built-in `dealias` is weaker than radarx's; prefer radarx for strongly sheared flow.
 * The clutter and biological defaults are conservative starting points tuned on S-band NEXRAD
   data; check the preview ("Removed by") before trusting them on other radars.
-* Code: `python/engine/pipeline.py` (engine, recipes, persistence, script export),
-  `python/engine/pipeline_steps.py` (catalog), `python/tests/test_pipeline*.py`.

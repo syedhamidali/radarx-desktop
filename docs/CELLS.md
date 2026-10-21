@@ -1,17 +1,16 @@
 # Storm cells: identification, tracking and statistics
 
-One backend (`python/engine/cells.py`) serves the **Storm Cell Detection** module, the **Rank Storm
-Cells** module and the `identify_cells` / `track_cells` WebSocket messages (the Storm panel). There is
-one algorithm, with two interchangeable implementations:
+One cell engine serves the **Storm Cell Detection** module, the **Rank Storm Cells** module and the Storm panel.
+There is one algorithm, with two interchangeable implementations:
 
 | Backend | When | Identification | Tracking |
 |---|---|---|---|
-| **radarx** | `radarx` installed (needs Python >= 3.12 and a version that has `retrieve.identify_cells`, `track_cells`, `cell_statistics`) | multi-threshold features + watershed (tobac style) | overlap of storm-motion-advected cells (PyFLEXTRKR style), **split / merge** detection, distance link for cells that do not overlap |
+| **radarx** | `radarx` installed (needs Python >= 3.12 and a version of radarx with cell identification, tracking and statistics) | multi-threshold features + watershed (tobac style) | overlap of storm-motion-advected cells (PyFLEXTRKR style), **split / merge** detection, distance link for cells that do not overlap |
 | **numpy** | always (the fallback) | 8-connected components on the polar grid, 0/360 seam merged | greedy nearest-neighbour on centroids, no split / merge |
 
 `backend: "auto"` (the default) uses radarx when it is available and falls back to numpy when it is
-not installed, is too old, or raises. The module result and every WebSocket response say which one
-ran (`Algorithm` in the module summary, `backend` / `backend_label` / `note` in the messages).
+not installed, is too old, or raises. The module result and the Storm panel say which one
+ran (`Algorithm` in the module summary).
 Requesting `radarx` when it is missing still works and the note says so.
 
 ## How the radarx backend is applied to polar data
@@ -23,40 +22,14 @@ reflectivity, centroid and outline are then computed on the original gates, exac
 backend. Cells touching the 0/360 seam need no special handling on the grid.
 
 Tracking rasterises each scan's cell masks (or, for plain `list[CellInfo]`, the cell outlines) onto one
-common grid and calls `radarx.retrieve.track_cells`. Without a given motion it runs twice: a first pass
+common grid and tracks them with radarx. Without a given motion it runs twice: a first pass
 to measure the median step velocity of the cells that kept their size and neither split nor merged, a
 second pass with the cells advected by that motion. Extra per-cell fields (VIL, echo top) are summarised
-with `radarx.retrieve.cell_statistics`.
+with radarx's cell statistics.
 
 The two backends do not give identical cells: the grid resampling changes connectivity of thin or
 nearly touching echoes. On the KTLX example volume (35 dBZ, 10 km2) both find the same strongest cell
 and total area within a few percent, but radarx returns somewhat fewer (merged) small cells.
-
-## Python API (`engine.cells`)
-
-```python
-from engine import cells
-
-scan = cells.identify(dbz_sweep, threshold_dbz=35, min_size_km2=10,
-                      thresholds=[35, 45, 55],      # radarx only: split touching cores
-                      backend="auto", lat=35.3, lon=-97.3, elevation_deg=0.5, time_s=t0,
-                      extra_fields={"vil": vil_polar})
-# scan: list[CellInfo] (+ .backend, .backend_label, .note, polar label image, geometry, time)
-
-result = cells.track([scan0, scan1, scan2], dt_seconds=300)   # or times_s=[...], motion=(u, v)
-# result: list[CellTrack] (+ .backend, .motion (u, v) used for advection, .note)
-
-rows = cells.cell_rows(scan); cols = cells.table_columns(rows)   # statistics table
-arrow = cells.arrow_coords(cell, minutes=15)                     # polar motion arrow
-```
-
-`CellInfo` (per cell): `id` (C001... ranked by peak dBZ), `centroid_az/range`, `area_km2`, `max_dbz`,
-`mean_dbz`, `boundary_points`; and, when known, `lat`, `lon`, `echo_top_proxy_km`, `speed_mps`,
-`direction_deg`, `track_id`, `lifetime`, `extra` (`vil_max`, `vil_mean`, `echo_top_max`, ...).
-
-`CellTrack` (per lineage): `track_id`, `cell_history`, `speed_mps`, `direction_deg` (meteorological
-*from* direction), `u_mps`, `v_mps`, `lifetime` (scans), `split_from`, `merged_into`,
-`status` (`new`, `continued`, `ended`). Velocity is (last centroid - first centroid) / elapsed time.
 
 ## Statistics
 
@@ -83,21 +56,6 @@ and draws a motion arrow on every cell; 0 = off), `backend`.
 Outputs: the summary (cell count, largest cell, peak, threshold, **Algorithm**), a sortable table, and
 an overlay with a contour and a `C001 · 55 dBZ` label per cell plus, with a motion, an arrow
 (`<id>:motion`) to where the cell will be after `arrow_minutes`.
-
-## WebSocket messages
-
-The messages and their response shapes are unchanged; everything below is additive.
-
-* `identify_cells` -> `cells_identified`: `cells[]` gain `lat`, `lon`, `echo_top_proxy_km` when known;
-  the response gains `backend`, `backend_label`, `note`. Optional `params`: `backend`, `thresholds`,
-  `grid_spacing_km`, `smooth`.
-* `track_cells` -> `cells_tracked`: `tracks[]` gain `u_mps`, `v_mps`, `lifetime`, `split`, `merge`,
-  `split_from`, `merged_into`, `status`; `cells[]` as above; the response gains `backend`,
-  `backend_label`, `note`, `dt_seconds`, `dt_source` and `motion` (`u_mps`, `v_mps`, `speed_mps`,
-  `direction_deg`, or `null`). Optional `params`: `min_overlap` (default 0.3), the identify options.
-  The time step is `params.dt_seconds` if given, otherwise the difference of the scan times in the two
-  files, otherwise 300 s (`dt_source` says which). Track ids keep the old pattern (`T001` matched,
-  `TN01` new).
 
 ## Limits
 

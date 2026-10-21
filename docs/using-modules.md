@@ -1,6 +1,6 @@
 # Using modules
 
-Algorithms are plug-in **modules**. Open the *Modules* panel: they are grouped by category (dual-pol, hazards,
+Algorithms are **modules**. Open the *Modules* panel: they are grouped by category (dual-pol, hazards,
 kinematics, storm, quality control, ...), and a module whose input is missing says so instead of failing.
 
 ```{image} images/ui/modules-panel.png
@@ -13,7 +13,6 @@ kinematics, storm, quality control, ...), and a module whose input is missing sa
   and text, and often a new field.
 - **All sweeps → 3D** runs it on every sweep that has the inputs and stores **one** derived variable.
 - Each module has parameters (click the arrow); defaults are sensible.
-- **Reload** re-reads the module folders, so a module you are writing shows up without restarting.
 
 ## Derived variables
 
@@ -40,4 +39,4 @@ classes.
 Hydrometeor classification, KDP, rain rate (QPE), hail (SHI/MESH), rotation couplets, azimuthal shear, ZDR arcs and
 columns, KDP columns, VVP winds, beam blockage, tornado probability, melting layer, quasi-vertical profiles,
 ZDR calibration, quality control (with radarx or with simple thresholds), storm cell detection and size sorting.
-Writing your own takes one Python file: {doc}`MODULES`.
+Each module, its inputs, parameters and the method behind it are described in {doc}`MODULES`.

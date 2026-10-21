@@ -39,7 +39,7 @@ The ground can show the map.
 ```
 
 To focus on one storm, go back to 2D, use the box-select tool to draw a box and switch to 3D: the view clips to
-that column. The 3D view lowers its quality on its own if it gets slow (see {doc}`RESPONSIVENESS`).
+that column. The 3D view lowers its quality on its own if it gets slow.
 
 ## Variable mapping
 

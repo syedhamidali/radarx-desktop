@@ -2,7 +2,7 @@
 
 When a file opens, the app looks at the data that is already in memory and tells you what is in
 it, what looks wrong, where, and what to do next. **It never changes anything by itself**: the
-suggested clean-up is a normal [pipeline recipe](PIPELINES.md) that runs only when you click
+suggested clean-up is a normal {doc}`pipeline recipe <PIPELINES>` that runs only when you click
 *Apply* (or run it from the command line).
 
 * **App:** a *Data check* chip appears in the status bar a moment after a file has opened
@@ -10,7 +10,6 @@ suggested clean-up is a normal [pipeline recipe](PIPELINES.md) that runs only wh
   closed, *Don't show again for this file* remembers that choice for the file path (also after a
   restart), and *Command palette > Data Check* brings it back.
 * **Command line:** `rxd check -i FILE [FILE ...] [--json] [--fix-plan]` (see below).
-* **Python:** `engine.quality.check_volume(vol)` returns the same report as a plain dict.
 
 The check is fast (about 1 s for a NEXRAD volume, measured; see *Cost*), uses only the sweeps that
 are already loaded (a lazily-loaded cloud scan is never fetched for it) and holds one sweep in
@@ -27,7 +26,7 @@ memory at a time (about 50 MB on top of a 330 MB volume).
 | method | The technique with its literature reference, and its caveats. |
 
 Severity is a rule of thumb, not a standard: the thresholds below are listed so that you can judge
-them. All of them are constants at the top of `python/engine/quality.py`.
+them. The values are fixed in the program, not settings.
 
 ## What is checked
 
@@ -47,7 +46,7 @@ them. All of them are constants at the top of `python/engine/quality.py`.
 
 | id | What | Rule | Severity |
 |---|---|---|---|
-| `no_reflectivity` | No reflectivity resolves through the [variable mapping](VARMAP.md) | role search on every sweep | warning |
+| `no_reflectivity` | No reflectivity resolves through the {doc}`variable mapping <VARMAP>` | role search on every sweep | warning |
 | `velocity_without_width`, `width_without_velocity` | Velocity without spectrum width (or the reverse) | role inventory | notice |
 | `zdr_without_rhohv` | ZDR but no correlation coefficient | role inventory | warning |
 | `phidp_without_rhohv` | PhiDP but no RhoHV | role inventory | notice |
@@ -119,16 +118,10 @@ $ rxd pipeline recipe_velocity.json -i FILE       # run it yourself
 $ rxd check -i A B C --json                       # a JSON list, one report per file
 ```
 
-Options follow the [shared options](CLI.md): `-i`, `--json`, `-v` (adds each finding's method and
+Options follow the {doc}`shared options <CLI>`: `-i`, `--json`, `-v` (adds each finding's method and
 the facts' evidence), `-q`, `--config`. `-o` is only meaningful with `--fix-plan`. Exit codes: **0
 even when problems are found**; 3 when a file cannot be read; 2 for wrong usage. With several files
 the others are still checked and the exit code is 3 if any failed.
-
-## Protocol
-
-`{"type": "data_check", "file_id": ...}` answers `{"type": "data_check", "file_id", "report"}`
-(read-only; one check runs at a time per connection). The report has `findings`, `counts`,
-`recommendation` (`recipes`, `first_view`, `advice`), `not_checked`, `errors` and `elapsed_ms`.
 
 ## Cost and limits
 
@@ -145,15 +138,11 @@ the others are still checked and the exit code is 3 if any failed.
 * **Thresholds are rules of thumb**, tuned on S-band NEXRAD data; on C/X band and other formats
   treat them as starting points. The report states what could not be assessed under *Not
   assessed* instead of guessing.
-* **Synthetic validation:** the tests inject velocity aliasing, range-folded gates, a missing
+* **Synthetic validation:** the check was tested by injecting velocity aliasing, range-folded gates, a missing
   field, a time gap, a partial sector, a clutter ring, a blocked wedge and a +0.5 dB ZDR offset
-  into otherwise clean volumes and require them to be found where they were put; clean data must
+  into otherwise clean volumes and requiring them to be found where they were put; clean data must
   raise nothing above *info*. A real KTLX volume is checked for the known facts (split cuts,
   velocity on odd sweeps, an estimated Nyquist velocity near 26 m/s).
-
-Code: `python/engine/quality.py`, `python/tests/test_quality.py`, `rxd check` in
-`python/engine/cli.py`, the status-bar chip `DataCheckChip.svelte` and the lazily loaded
-`DataCheckPanel.svelte`.
 
 ## References
 

@@ -53,12 +53,11 @@ Every step that goes to the internet shows a dialog first, with **what**, **from
 
 The choices are **Allow once**, **Allow for this session** and **Cancel**. "This session" lives in memory only and
 is forgotten when you quit or reload; Cancel never changes anything and nothing is sent. Escape cancels. The
-requests are anonymous and read-only (no account, no credentials). In the desktop app they go from your machine; in
-the web app (see {doc}`WEB`) they go from the server, like every other cloud action.
+requests are anonymous and read-only (no account, no credentials). In the desktop app they go from your machine.
 
 ## The site catalogue
 
-The built-in list is `src/lib/data/nexradSites.json`: **156 NEXRAD WSR-88D sites** (id, name, state,
+The built-in list has **156 NEXRAD WSR-88D sites** (id, name, state,
 latitude, longitude, ground elevation).
 
 * **Source:** NOAA National Centers for Environmental Information, *Historical Observing Metadata Repository*
@@ -72,9 +71,8 @@ latitude, longitude, ground elevation).
 * **What was changed:** only the 156 sites the engine can fetch are kept; coordinates are rounded to 5 decimals
   (about 1 m); elevation is converted from feet to metres; names are title-cased, and ten truncated names are
   spelled out (for example `NORFOLK RICH` is `Norfolk/Richmond`).
-* **Cross-check:** a test compares every site with the engine's own coordinate table
-  (`python/engine/cloud.py`, from the same NCEI list and checked against the Py-ART table); they must agree.
-* **Regenerate:** `python scripts/build_radar_sites.py nexrad-stations.txt --date YYYY-MM-DD`.
+* **Cross-check:** every site is compared with the engine's own coordinate table (from the same NCEI list and checked
+  against the Py-ART table); they must agree.
 
 ## Your own sites (other networks)
 
@@ -95,34 +93,19 @@ ESS,Essen,51.4056,6.9672,185,DWD
   whose id is also a built-in id replaces it.
 * *Include the built-in NEXRAD list* can be switched off to show only your sites.
 
-Other networks cannot be downloaded: the engine reads AWS NEXRAD Level II. Open their files from disk.
+Other networks cannot be downloaded: only AWS NEXRAD Level II can be fetched. Open their files from disk.
 
 ## Keyboard
 
 Tab enters the layer (one stop), the arrow keys move to the nearest marker in that direction, Enter or Space
 opens the card, Escape closes the card (or the consent dialog). Every marker has an accessible name that
-includes its state in words. Motion respects `prefers-reduced-motion`; colours are theme tokens.
+includes its state in words. Motion respects `prefers-reduced-motion`; colours follow the theme.
 
 ## 3D
 
 With the ground map on, sites inside the displayed range are drawn on the ground with the same projection as
 the echoes and the map under them (hollow / half / solid ring for the same three states, the id as a thinned
 label). The 3D markers are display only: click a site on the 2D map for its card.
-
-## Engine message
-
-`get_nexrad_latest_info {station}` answers `nexrad_latest_info` with `status` (`ok`, `not_found`, `offline`,
-`error`) and, for `ok`: `name`, `path` (the `s3://` URL that `open_nexrad_l2` takes), `size`, `scan_time`,
-`last_modified`, `now`, `age_s`. One S3 listing, cached for 20 s; failures are never cached. Code:
-`latest_scan_info` in `python/engine/cloud.py`.
-
-## Tests
-
-* `python/tests/test_radar_sites.py`: catalogue integrity (unique ids, ranges, 156 sites, agreement with the engine table, header).
-* `python/tests/test_cloud.py` (`TestLatestScanInfo`): the engine call with a mocked S3 (ok, yesterday fallback, not found, offline, other errors, caching).
-* `src/lib/utils/radarSites.test.mjs`: catalogue, CSV/JSON parsing, states, label declutter, consent flow and wording.
-* `scripts/perf/sites_smoke.py`: browser smoke on the production build with a real engine; the page's WebSocket is intercepted, so the
-  run needs no network: markers, hover, card, consent dialog, canned answer, stops at the download dialog.
 
 ## Limits
 

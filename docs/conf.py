@@ -1,25 +1,23 @@
-"""Sphinx configuration for the radarx-desktop documentation.
+"""Sphinx configuration for the Radarx Desktop documentation.
 
-Mirrors the setup of radarx: only sources live in the repository. The HTML, the API pages written by
-this file (``docs/_api/``) and executed notebook outputs are build products and are git-ignored.
+The published documentation is the user documentation only: how to install and use the app and the
+command line, the science and the trust information. Pages for maintainers (building, releasing,
+packaging, testing) stay in the source tree but are not published (``INTERNAL_PAGES`` below), and no
+source code or API reference is generated.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import importlib
 import os
-import sys
-import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
-sys.path.insert(0, str(ROOT / "python"))  # the engine package, importable without installing
 
 # -- project information -----------------------------------------------------------------------
-project = "radarx-desktop"
-author = "Hamid Ali Syed"
+project = "Radarx Desktop"
+author = "Radarx Desktop by LabShope Technologies"
 copyright = f"2025-{dt.datetime.now(dt.timezone.utc).year}, {author}"
 html_title = project
 master_doc = "index"
@@ -37,13 +35,8 @@ version = ".".join(release.lstrip("v").split(".")[:2])
 
 # -- extensions ---------------------------------------------------------------------------------
 extensions = [
-    "sphinx.ext.autodoc",
-    "sphinx.ext.autosummary",
-    "sphinx.ext.viewcode",
-    "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "sphinx.ext.mathjax",
-    "sphinx.ext.extlinks",
     "sphinx_copybutton",
     "myst_nb",
 ]
@@ -63,56 +56,6 @@ intersphinx_mapping = {
     "radarx": ("https://radarx.readthedocs.io/en/latest/", None),
     "xradar": ("https://docs.openradarscience.org/projects/xradar/en/stable/", None),
 }
-
-# -- API reference (written at build time, git-ignored) ------------------------------------------
-# Public modules of the engine, in reading order. Only those that import are documented, so the build
-# also works while a module is being added or when an optional dependency is missing.
-API_MODULES = [
-    ("engine.api", "Python API"),
-    ("engine.plugins", "Writing modules (plug-in SDK)"),
-    ("engine.reader", "Reading radar files"),
-    ("engine.varmap", "Variable mapping"),
-    ("engine.pipeline", "Processing pipelines"),
-    ("engine.derived", "Derived variables"),
-    ("engine.mosaic", "Mosaics"),
-    ("engine.multidoppler", "Multi-Doppler winds"),
-    ("engine.cells", "Storm cells and tracking"),
-    ("engine.exporter", "Figures and export"),
-    ("engine.cli", "Command line"),
-]
-autoclass_content = "both"
-autodoc_member_order = "bysource"
-autodoc_default_options = {"members": True, "show-inheritance": True}
-autodoc_mock_imports = ["radarx", "icechunk", "boto3"]
-napoleon_numpy_docstring = True
-napoleon_google_docstring = False
-# 'Attributes' sections become :ivar: fields, so a documented property of the same name (for example
-# PipelineResult.steps) is not described twice.
-napoleon_use_ivar = True
-
-
-def _write_api_pages() -> None:
-    out = HERE / "_api"
-    out.mkdir(exist_ok=True)
-    listed: list[str] = []
-    for mod, title in API_MODULES:
-        try:
-            importlib.import_module(mod)
-        except Exception as exc:  # noqa: BLE001 - optional modules / missing optional deps
-            print(f"[docs] skipping API page for {mod}: {type(exc).__name__}: {exc}")
-            continue
-        name = mod.split(".")[-1]
-        (out / f"{name}.rst").write_text(
-            f"{title}\n{'=' * len(title)}\n\n.. automodule:: {mod}\n"
-        )
-        listed.append(name)
-    index = "Library reference\n=================\n\n.. toctree::\n   :maxdepth: 2\n\n"
-    index += "".join(f"   {n}\n" for n in listed)
-    (out / "index.rst").write_text(index)
-
-
-_write_api_pages()
-
 
 def _write_unreleased_changes() -> None:
     """Collect the changelog fragments ``changes/<PR>.md`` into ``changes/unreleased.md``."""
@@ -155,14 +98,34 @@ html_theme_options = {
     "secondary_sidebar_items": ["page-toc"],
 }
 
+# Pages for maintainers and operators: building, packaging, releasing, updating, testing, performance
+# measurements, design notes, running it as a service. They stay in the source tree (scripts/check_links.py
+# reads this list) and are not part of the published documentation.
+INTERNAL_PAGES = [
+    "API",
+    "BUNDLING",
+    "DESIGN",
+    "PACKAGING_AUDIT",
+    "PERFORMANCE",
+    "PERFORMANCE_FRONTEND",
+    "RELEASING",
+    "RELIABILITY",
+    "RENDER",
+    "RESPONSIVENESS",
+    "STABILITY",
+    "UPDATES",
+    "WEB",
+    "contributing",
+]
+
 exclude_patterns = [
     "_build",
+    "_api",
     "Thumbs.db",
     ".DS_Store",
     "**.ipynb_checkpoints",
     "changes",
     "render",
     "images/README*",
+    *(f"{name}.md" for name in INTERNAL_PAGES),
 ]
-# pyproject (read for the package metadata page only)
-_pyproject = tomllib.loads((ROOT / "python" / "pyproject.toml").read_text())

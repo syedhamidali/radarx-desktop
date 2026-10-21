@@ -2,14 +2,14 @@
 myst:
   html_meta:
     "description lang=en": |
-      radarx-desktop: a desktop and web app for looking at weather radar data, cleaning it, running
+      Radarx Desktop: a desktop and web app for looking at weather radar data, cleaning it, running
       algorithms on it (hydrometeor classification, storm cells, multi-Doppler winds, mosaics,
       rainfall accumulation with uncertainty)
-      and exporting the results, with a Python API and command line for everything.
+      and exporting the results, with a command line for everything.
 html_theme.sidebar_secondary.remove: true
 ---
 
-# radarx-desktop
+# Radarx Desktop
 
 **Release:** {{release}}\
 **Date:** {{today}}
@@ -17,7 +17,7 @@ html_theme.sidebar_secondary.remove: true
 A desktop app (and web app) for weather radar data, built on [xradar](https://docs.openradarscience.org/projects/xradar/en/stable/),
 [xarray](https://xarray.dev/) and [radarx](https://radarx.readthedocs.io/en/latest/). Open a file, see it in 2D
 and 3D, clean it, run algorithms, combine several radars into mosaics and wind analyses, and export the
-result. Everything the app does is also available from Python and from the command line.
+result. Everything the app does is also available from the command line (`rxd`).
 
 It is a research tool, so it follows one rule: everything on screen or in a file is either observed data, a
 labelled method applied to it, or a labelled picture, and nothing is invented. The rule and what each kind of
@@ -33,26 +33,16 @@ layer must show are in {doc}`SCIENCE`; the licences of everything it ships are i
 :hidden:
 :maxdepth: 2
 
-getting-started
-using-the-app
-cli-and-python
+installation
 user-guide
 science-and-trust
-project
+history
 ```
 
 ## Where to go
 
-- {doc}`getting-started`: install it, create your free account, a first tour.
-- {doc}`using-the-app`: open data, the 2D and 3D views, cross-sections and RHI, modules, settings, export.
-- {doc}`cli-and-python`: the `rxd` command, many files at once and the Python API.
-- {doc}`user-guide`: pipelines, storm cells, mosaics, rainfall, multi-Doppler winds, animations and the other tools.
+- {doc}`installation`: download and install it, set up the command line, create your free account.
+- {doc}`user-guide`: opening and viewing data, modules and pipelines, mosaics, winds and rainfall, 3D and
+  animation, the `rxd` command line.
 - {doc}`science-and-trust`: the science policy, output standards, licences, privacy and reporting.
-- {doc}`project`: web service, installers and updates, design, performance and the changelog.
-
-Indices and tables
-==================
-
-- {ref}`genindex`
-- {ref}`modindex`
-- {ref}`search`
+- {doc}`history`: what changed in each version.

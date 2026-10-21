@@ -3,7 +3,7 @@
 Process a whole day of scans, a folder of cases or a nightly feed with the same commands you use
 for one file. There is no special "batch mode": `rxd` returns clear exit codes, writes files you
 name, and prints machine-readable results with `--json`, so ordinary shell tools do the looping.
-Read [the command line page](CLI.md) first for the options used here.
+Read {doc}`the command line page <CLI>` first for the options used here.
 
 ## Which commands take many files
 
@@ -12,11 +12,11 @@ Read [the command line page](CLI.md) first for the options used here.
 | `rxd info` | yes | one report per file |
 | `rxd cells` | yes | the files are one radar over time and the cells are **tracked** |
 | `rxd mosaic`, `rxd winds` | yes | the files are different radars at one time and are **combined** |
-| `rxd animate` | yes | the files are one or more radars over time: grouped by radar and time, the nearest volume of each radar per step, one 3D animation (see [ANIMATE.md](ANIMATE.md)) |
+| `rxd animate` | yes | the files are one or more radars over time: grouped by radar and time, the nearest volume of each radar per step, one 3D animation (see {doc}`ANIMATE`) |
 | `rxd run`, `rxd pipeline`, `rxd plot`, `rxd export` | one file per call | loop over the files |
 
 So a bulk job over many independent files is a loop around one of the last four commands. Every
-example below works the same in a shell script, a cron job or a CI step.
+example below works the same in a shell script, a cron job or a scheduled task.
 
 ## 1. The basic loop
 
@@ -53,7 +53,7 @@ The exit code says what went wrong, so a script can react to it.
 | 1 | the algorithm could not run on this data | log the file, continue |
 | 2 | the command was used wrongly | fix the script, stop |
 | 3 | the input file is missing or unreadable | log the file, continue |
-| 4 | a Python package is missing | install it, stop |
+| 4 | an optional Python package is missing | install it, stop |
 
 ```bash
 for f in data/*_V06; do
@@ -154,28 +154,9 @@ done
 The files of one mosaic do not have to start in the same minute; the table printed by `rxd mosaic`
 shows each radar's volume time, so a check of the spread is easy to add with `--json`.
 
-## 9. The same thing from Python
+## 9. Run it every night
 
-When the loop needs more than a shell gives you, use the Python API. It runs the same engine and has
-the same names as the command line (see [the Python API](API.md)).
-
-```python
-from pathlib import Path
-from engine import api
-
-rows = []
-for path in sorted(Path("data").glob("*_V06")):
-    try:
-        res = api.open(path).run("storm_detection", threshold_dbz=45)
-    except Exception as exc:                      # one bad file must not stop the job
-        print("skipped", path.name, "-", exc)
-        continue
-    rows.append((path.name, res.scalars["Cells"]))
-```
-
-## 10. Run it every night
-
-A cron job, a systemd timer or a CI schedule just runs your script. Three habits make it reliable:
+A cron job, a systemd timer or another scheduler just runs your script. Three habits make it reliable:
 
 - use absolute paths, because cron starts in another folder;
 - write one log per run (`>> logs/$(date +%F).log 2>&1`) and keep `-q` so only problems appear in it;
