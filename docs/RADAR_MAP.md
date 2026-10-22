@@ -37,8 +37,10 @@ Click a marker (or a search result) for its card:
 * for loadable sites, the **latest volume**: name, scan time (UTC, from the file name), age, size and number
   of files, listed only after you agreed to the listing;
 * the actions: **Open latest scan**, **Choose a time (archive)**, **Open the provider's page**, and
-  **Set as default radar**, which for now only hands the site to the default-radar setting that is being
-  built (a notice says so; nothing is saved yet).
+  **Set as default radar**, which adds the radar to the default radars of the live map ({doc}`LIVE`). It works
+  for NEXRAD and DWD radars, the two networks the live map can fetch; for every other radar the button is
+  disabled and its tooltip gives the reason (for example, the Finnish bucket is a fixed sample, not a live
+  feed, or no open volume feed is known for that network).
 
 *Choose a time* lists one UTC day of volumes with their time, size and number of sweeps; incomplete volumes
 (a sweep still being transmitted) are shown but cannot be opened. NEXRAD sites open the Cloud panel's Archive
@@ -106,6 +108,9 @@ WMO, and a position or status may be out of date. Check the operator's own infor
   one being transmitted is listed as incomplete. DWD keeps about two days; older volumes are not available
   from that server. The listing itself is two folder indexes of about 1 MB each.
 * The FMI bucket is a fixed two-day sample. For live Finnish data the app has no provider yet.
+* Live default radars: NEXRAD and DWD only. The South African radars (14 in the catalogue) have no open
+  volume feed that was found, and the European OPERA volumes need a registration that was not verified, so
+  they cannot be set as default radars ({doc}`LIVE`, *Which radars are live*).
 * The DWD provider loads reflectivity and radial velocity; the polarimetric moments DWD also publishes
   (ZDR, RhoHV, PhiDP) are not fetched yet.
 * Open-link and key-required sites show a link; the app does not fetch anything from them.

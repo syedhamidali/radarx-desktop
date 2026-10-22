@@ -6,28 +6,69 @@ new, merges the volumes into one composite and keeps the last few composites so 
 Nothing is listed or downloaded before you agree, and a line above the map always says what is on screen,
 when it was measured and which radar did not answer.
 
-The live map is a feature of the desktop app and works with **NEXRAD (WSR-88D) radars only**, read from the
-public `unidata-nexrad-level2` bucket; see {doc}`opening-data` for the other ways to fetch radar data.
+The live map is a feature of the desktop app and works with **two radar networks**: **NEXRAD** (the American
+WSR-88D radars, read from the public `unidata-nexrad-level2` bucket) and **DWD** (the 17 radars of the German
+Weather Service, read from its Open Data server). You can mix them, but a picture is only useful when the
+radars are near each other, so choose radars of one region. No other network is live yet; the section
+*Which radars are live* says which ones and why. See {doc}`opening-data` for the other ways to fetch radar data.
 
 ## Default radars
 
 Settings → Data → **Live map** lists your default radars in order; **Choose on the map…** opens the chooser.
 The first press of **Live** opens the same chooser when no radar has been chosen yet.
 
-* Click radars on the map (the radar-sites layer in picker mode: a chosen radar is a filled dot with its order
-  number), or type an id, a name or a state in the search box and click a match.
+* Click radars on the map (a chosen radar is a filled dot with its order number; the buttons above the map
+  switch between the NEXRAD map of the USA and the DWD map of Germany), or type an id, a name, a state or a
+  country in the search box and click a match. A radar of a network the live map cannot use is listed too, with
+  the reason it is not live, so you can see that it was found.
+* The **Set as default radar** button on a radar's card on the radar network map ({doc}`RADAR_MAP`) works for
+  NEXRAD and DWD radars; for every other radar it is disabled and its tooltip says why.
+* A radar is named **KTLX** (NEXRAD, the form older versions saved, so existing choices keep working) or
+  **dwd:ess** (DWD; the three letters are DWD's own site code).
 * Up to 8 radars. The order is the order of the status line; ↑ ↓ reorder, × removes.
 * **Use my location** appears only when the browser or system offers geolocation, does nothing until you press
   it, asks the system for permission, picks the nearest 3 radars within 300 km, and forgets the position.
-* **Update every**: 2 to 15 minutes, 5 by default (a NEXRAD volume takes 4 to 10 minutes, so a shorter
-  interval rarely finds anything new).
+* **Update every**: 2 to 15 minutes, 5 by default (a NEXRAD volume takes 4 to 10 minutes and DWD makes one every
+  5 minutes, so a shorter interval rarely finds anything new).
 
 The choice is saved with the other settings on this computer.
+
+## Which radars are live
+
+| Network | Live? | Where the volumes come from | Licence and credit |
+|---|---|---|---|
+| NEXRAD (USA) | yes | the public `unidata-nexrad-level2` bucket on AWS, anonymous | US government data; NOAA asks for credit |
+| DWD (Germany, 17 radars) | yes | `opendata.dwd.de`, anonymous, the last two days; a volume is ten sweeps of reflectivity and radial velocity in 20 small files, one every 5 minutes | CC BY 4.0, source acknowledged (Deutscher Wetterdienst) |
+| EUMETNET OPERA (European volumes) | no | EUMETNET's Open Radar Data offers volumes for the last 24 hours; it is reported to need a registration and to have its own terms of use, which were **not verified here**, so the app does not use it | not checked |
+| FMI (Finland), KNMI (Netherlands), DMI (Denmark), SMHI (Sweden), Météo-France | no | **not verified**. The Finnish open bucket is a fixed two-day sample from 2023 (you can open it from the radar network map), not a live feed | not checked |
+| South Africa (14 weather-service radars in the catalogue) | no | **no open volume feed was found.** An older open-data survey says the South African Weather Service's data interface is for paying customers, and its aviation portal needs registration. The radars stay on the radar network map with the access class *unknown* | not available |
+
+"Not live" means the app has no verified open source for those volumes. It does not mean no data exist: if you
+know of an open, anonymous source with a licence that allows it, tell us the address and the licence
+({doc}`RADAR_MAP`, *Asking for more*). Nothing on this page is claimed that was not tested.
 
 ## What you see
 
 ```{image} images/ui/live-map.png
 :alt: The live map in the dark theme: a composite of three radars, the radar list on the left, the status line, the buttons and the display floor above the map
+:width: 90%
+:align: center
+```
+
+```{image} images/ui/live-consent-dwd.png
+:alt: The first dialog of the live map for two German radars: what is listed, the server opendata.dwd.de and the size per update
+:width: 70%
+:align: center
+```
+
+```{image} images/ui/live-map-dwd.png
+:alt: The live map with two DWD radars: rain near Essen, the credit and licence under the label, the radars listed on the left
+:width: 90%
+:align: center
+```
+
+```{image} images/ui/live-chooser-search.png
+:alt: The radar chooser with the DWD map and a search for South Africa, whose radars are listed with the reason they are not live
 :width: 90%
 :align: center
 ```
@@ -85,7 +126,7 @@ live map holds them. A row of buttons under the radar chips uses them; **none of
 (the download you allowed already fetched the files; the buttons say how many volumes and how many MB).
 
 * **Open these volumes** (and **Open this volume** on each radar chip and in the left pane) opens the volumes
-  as normal files: the 2D and 3D viewers, the 3D volume, Mosaic, Multi-Doppler, cells, modules, the cleaning
+  as normal files (a DWD volume is kept in memory and shared, so it uses no extra disk): the 2D and 3D viewers, the 3D volume, Mosaic, Multi-Doppler, cells, modules, the cleaning
   tools and export all work on them. Opened volumes **stay when the live map updates** or stops: the app
   keeps its own copy of the file for each, says how much disk they use ("until you close them"), and gives
   the disk back when you close the file. At most 8 live volumes can be open as files at once. A volume that
@@ -128,10 +169,13 @@ live map holds them. A row of buttons under the radar chips uses them; **none of
 The live map follows the same rule as everything else that reaches the internet ({doc}`SCIENCE`,
 {doc}`RADAR_SITES`): a dialog first, with *what*, *from where* and *how big*.
 
-1. **Start the live map**: a listing of today's folder (and yesterday's if today has none) for each radar,
-   file names, sizes and times, about 0.1 MB per radar per update. No radar data.
-2. **Download N Level II volumes**: the exact file of each radar with its exact size from the listing, and
-   the sum. Only these files are downloaded.
+1. **Start the live map**: a listing for each radar, with the server it goes to. NEXRAD: today's folder (and
+   yesterday's if today has none), file names, sizes and times, about 0.1 MB per radar per update. DWD: two
+   folder indexes, about 2.1 MB per radar per update. The dialog adds the sizes up and names every server
+   (`s3.amazonaws.com` for NEXRAD, `opendata.dwd.de` for DWD). No radar data.
+2. **Download N volumes**: the exact volume of each radar with its exact size from the listing, and the sum.
+   For DWD the dialog also shows the source and the licence (CC BY 4.0, source acknowledged). Only these
+   files are downloaded.
 
 The choices are **Allow once**, **Allow for this session** and **Cancel**. *Allow once* makes one update and
 then leaves the timer off (**Resume** or **Update now** ask again). *Allow for this session* lets the timer
@@ -144,8 +188,17 @@ map before any request.
 
 ## Limits, bandwidth and memory
 
-* NEXRAD only, from one public bucket; no account, no credentials. A radar of another network cannot be
-  chosen.
+* NEXRAD and DWD only, from public servers; no account, no credentials. A radar of another network cannot be
+  chosen (see *Which radars are live*).
+* **DWD costs more per update than NEXRAD**: its server has no "newest file" call, so each update reads two
+  folder indexes per DWD radar (about 2.1 MB per radar) before any volume is downloaded. A volume itself is
+  small (about 1.5 to 2.5 MB). The dialogs say both numbers.
+* **Each radar's ring is its own range**, taken from its volume: about 180 km for the two DWD radars we tested, up to 230 km for NEXRAD.
+* **Credit and licence** travel with the picture: the label on the map, the Layers panel and the saved
+  NetCDF and PNG name the source of every network in the composite and its licence (for DWD: CC BY 4.0 with
+  the source acknowledged). Volumes you open as files carry the same credit.
+* A composite of radars thousands of kilometres apart is allowed but gets a coarse grid (the label says how
+  coarse) and is rarely what you want.
 * **Latency**: a volume appears in the bucket some minutes after the scan started (the age counts from the
   volume start in the file name; the time it reached the bucket is later). The live map is therefore always
   a few minutes behind the radar, and at best as fresh as the bucket.
