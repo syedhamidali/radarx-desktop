@@ -1,7 +1,7 @@
 # Radar network map: which radars exist and which data you can load
 
 The **Map** tab of the Cloud data panel (and *Radar network map* in the command palette) opens a world map of
-every weather radar in the bundled catalogue: 1005 sites on six continents. Each marker says what the app can do
+every weather radar in the bundled catalogue: 1072 sites on six continents. Each marker says what the app can do
 with that radar's data, and each site's card says where its position comes from, under which licence, and
 offers the actions that exist for it.
 
@@ -75,23 +75,39 @@ Checked from the development machine; the card of each site links to the portal.
 | Environment and Climate Change Canada (29 sites) | MSC Datamart and GeoMet: CAPPI, DPQPE, 24 h accumulation and composites as GIF, GeoTIFF and WMS; Open Government Licence - Canada | products, not volume scans |
 | Met Office (United Kingdom, 16 sites) | UK radar observations on AWS Open Data, CC BY-SA 4.0 | composite products, not single-site volumes |
 | MET Norway (12 sites) | Nordic reflectivity composites on THREDDS | composites, not single-site volumes |
-| Australia (66 sites) | the operational radar archive on NCI THREDDS: level 1b ODIM HDF5 in daily archives, CC BY-NC-SA 4.0, months behind real time | daily archive files of hundreds of MB; non-commercial share-alike terms would attach to everything made from them |
+| Terminal Doppler Weather Radars, TDWR (United States, 47 sites) | NOAA NCEI archives the Level II volumes and gives them away free of charge; the real-time Unidata bucket the Cloud panel uses also holds them (one Denver volume was opened by the app's reader) | the app has no TDWR provider yet: the sites are on the map, the card links to the NCEI page, and a file you download opens with *Open* ({doc}`opening-data`) |
+| Australia (Bureau of Meteorology, 82 sites) | NCI's operational radar archive: ODIM HDF5 volumes, one zip of about 1.5 GB (radar 2) per UTC day, the newest being the previous day when checked; open HTTP without an account (checked for radar 2) | daily zips of that size need a provider that reads single volumes from inside the zip by byte range; not built. Volume data: access not verified for the other sites |
 | IDEAM (Colombia) | level II IRIS/Sigmet files in a public AWS bucket, CC BY 4.0, updated as data arrive | no radar positions from a source the catalogue uses, so the sites are not on the map yet |
 | KNMI (Netherlands, 3 sites) | radar volumes (ODIM HDF5) on the KNMI Data Platform | a free API key is required; the app does not handle keys yet |
 
 Not verified, hence *unknown* on the map: Météo-France, MeteoSwiss, DMI (Denmark), the Japanese, Korean,
-Indian and Chinese networks, and the rest of the OSCAR list. OPERA data for all of Europe are available to
-external users through MeteoGate under CC BY 4.0, but that service was not exercised.
+Indian and Chinese networks, the South African Weather Service (14 radars; the card links to its home page,
+because the address of its radar page could not be checked), and the rest of the OSCAR list. OPERA data for
+all of Europe are available to external users through MeteoGate under CC BY 4.0, but that service was not
+exercised.
 
 ## The catalogue: sources and licences
 
 | Source | Sites taken | Licence and terms | Attribution |
 | --- | --- | --- | --- |
-| NOAA NCEI Historical Observing Metadata Repository, NEXRAD station list (downloaded 2026-10-19) | 156 | public domain (US government work); NOAA asks for credit | NOAA National Centers for Environmental Information |
+| NOAA NCEI Historical Observing Metadata Repository, NEXRAD station list (downloaded 2026-10-19 for NEXRAD, 2026-10-22 for TDWR) | 156 NEXRAD and 47 TDWR (the same file lists both; station type TDWR) | public domain (US government work); NOAA asks for credit | NOAA National Centers for Environmental Information |
+| Bureau of Meteorology / NCI Australian operational radar archive, site list (`radar_site_list.csv`, downloaded 2026-10-22) | 82 sites (from 87 radar ids: radars at the same place are one site; 11 are closed, 1 is marked not operational; positions, band, Doppler and dual-polarisation flags, in-service dates) | CC BY 4.0: the licence file `rq0_level1_license-cc4.pdf` sits in the archive's top folder beside the list; the NCI collection record says licences vary by dataset, so confirm before redistributing | Bureau of Meteorology and NCI Australia (Soderholm, Protat and Jakob, 2019, doi:10.25914/5cb686a8d9450) |
 | EUMETNET OPERA radar database (`OPERA_RADARS_DB.json`, downloaded 2026-10-22) | 217 (28 European countries; positions, WMO and WIGOS ids, ODIM codes, band, polarisation, status) | the OPERA page calls the database "public information, location and details of the radars"; the metadata table carries no separate licence text (OPERA radar *data* are CC BY 4.0 via MeteoGate) | EUMETNET OPERA |
-| WMO OSCAR/Surface, station class *weather radar* (downloaded 2026-10-22) | 632 of 943 (311 were the same radars as above, within 2 km, and kept their HOMR or OPERA entry) | public WIGOS metadata repository of the WMO; its terms-of-use page could not be reached when the catalogue was built, so the terms are recorded as not verified | World Meteorological Organization, OSCAR/Surface |
+| WMO OSCAR/Surface, station class *weather radar* (downloaded 2026-10-22) | 570 of 943 (311 were the same radars as above, within 2 km, and kept their HOMR or OPERA entry; 62 of the 66 Australian rows were the same radars as the Bureau's list and were merged into it, giving the WIGOS id; the other 4 are kept as OSCAR-only, unconfirmed) | public WIGOS metadata repository of the WMO; its terms-of-use page could not be reached when the catalogue was built, so the terms are recorded as not verified | World Meteorological Organization, OSCAR/Surface |
 
-Every entry names its source and retrieval date; the licence shown on the card is that source's. The DWD
+Every entry names its source and retrieval date; the licence shown on the card is that source's. Which TDWR
+sites were active comes from one list of folder names of the Unidata real-time bucket for 21 October 2026: 43
+of the 47 had data that day (Fort Lauderdale, West Palm Beach and the two Puerto Rico airport radars did not;
+their status is *unknown*); the bucket also has two folders (TDJT, TOK2) that HOMR does not list as TDWR and
+that are not on the map. The Denver TDWR's position agrees with the position in a real Level II volume of it
+within about 120 m.
+
+The Australian rows keep the Bureau's own radar numbers (the archive folder numbers, which are also the numbers
+on the Bureau's radar pages), so each card links to that radar's page there. The Bureau's web pages have no
+open licence (personal or in-organisation use only), so nothing but those link addresses was taken from them.
+WIGOS ids in the archive's list disagree with OSCAR for 14 radars; the card shows OSCAR's. Closed radars are on
+the map with their status. The catalogue used to say that this
+archive was CC BY-NC-SA 4.0; the licence file in the archive is CC BY 4.0, which is what the cards now say. The DWD
 positions from OPERA were cross-checked against the `where` attributes of each radar's own ODIM file: all 17
 agree within 20 m. Nothing was taken from Wikidata or OpenStreetMap.
 
