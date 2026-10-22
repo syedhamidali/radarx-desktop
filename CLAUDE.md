@@ -25,7 +25,8 @@ See `ARCHITECTURE.md` for the system diagram, data flow and design decisions.
 - **Tauri 2** (`src-tauri/`): native window, starts and supervises the Python engine, file associations,
   signed auto-update (`updates.rs`); a few MB of Rust instead of a bundled browser
 - **Svelte 5 + TypeScript** (`src/`): UI. **Own WebGL2 renderers** (`ppiRenderer.ts` for the 2D PPI,
-  `cartesianRenderer.ts` / `Viewer3D` for the ray-marched 3D volume, `flowRenderer.ts` for wind flow), a
+  `cartesianRenderer.ts` / `Viewer3D` for the ray-marched 3D volume, `flowRenderer.ts` for wind flow, `globeRenderer.ts` for the
+  globe of the radar network map), a
   tile-based map background (OpenStreetMap / OpenTopoMap, or none). No deck.gl, no Mapbox
 - **Python engine** (`python/`): subprocess, WebSocket server `server.py`
   - **xradar** reads NEXRAD, ODIM, CfRadial, IRIS, Rainbow, Furuno, IMD, UF; **xarray** (+ dask) data model

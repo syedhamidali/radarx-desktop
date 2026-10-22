@@ -9,13 +9,21 @@
    * basemap setting (choose "None" to send nothing), and every listing or download of radar data
    * goes through the consent dialog first.
    *
-   * Keyboard: arrows pan, + / - zoom, Escape closes the card, then the dialog.
+   * Two views of the same catalogue, filters, markers and card: the globe (RadarGlobe.svelte, WebGL2, the
+   * default where it exists) and this flat Web Mercator map. Selecting a site in one selects it in the other.
+   *
+   * Keyboard (flat): arrows pan, + / - zoom; the globe takes the same keys (see RadarGlobe.svelte).
+   * Escape closes the card, then the dialog.
    */
   import { onMount, onDestroy } from 'svelte';
   import { portal } from '../utils/portal';
   import { focusTrap } from '../utils/focusTrap';
-  import { settings } from '../stores/settings';
-  import { resolveBasemap, basemapTileUrl } from '../utils/basemaps';
+  import { settings, setNetworkView } from '../stores/settings';
+  import { resolveBasemap } from '../utils/basemaps';
+  import { SlippyTiles, type TileWant } from '../utils/slippyTiles';
+  import { drawMarker } from '../utils/radarMarkers';
+  import { webgl2Available } from '../utils/globeRenderer';
+  import { angularDistanceDeg, globeToFlatZoom, flatZoomToGlobeRadius, fitRadius, clampScale } from '../utils/globeMath';
   import {
     loadCatalogue,
     clusterSites,
@@ -35,6 +43,7 @@
   import { connectionStatus } from '../stores/radarData';
   import { cssVar, text, textDim, accent, surface } from '../utils/themeColors';
   import RadarNetworkCard from './RadarNetworkCard.svelte';
+  import RadarGlobe, { type GlobeFocus, type GlobePerf } from './RadarGlobe.svelte';
   import RadarSiteConsent from './RadarSiteConsent.svelte';
 
   let { onclose, initialSiteId = null }: { onclose: () => void; initialSiteId?: string | null } = $props();
@@ -77,6 +86,68 @@
 
   const basemap = $derived(resolveBasemap($settings.mapStyle, $settings.theme.mode));
 
+  // ── Globe or flat ───────────────────────────────────────────────────────────────────────────
+  const glOk = webgl2Available();
+  let globeFailed = $state<string | null>(null);
+  /** The saved choice: 'auto' (and 'globe') mean the globe wherever it can run. */
+  const wantGlobe = $derived($settings.display.networkView !== 'flat');
+  const viewMode = $derived<'globe' | 'flat'>(wantGlobe && glOk && !globeFailed ? 'globe' : 'flat');
+  const globeNote = $derived(
+    !glOk
+      ? 'The globe needs WebGL2, which this browser or graphics driver does not provide, so the flat map is shown.'
+      : globeFailed
+        ? 'The globe could not start on this graphics setup, so the flat map is shown.'
+        : '',
+  );
+  let globeRef: ReturnType<typeof RadarGlobe> | undefined = $state();
+  let globeFocus = $state<GlobeFocus | null>(null);
+  let focusSeq = 0;
+  /** Where the globe starts when it is (re)opened: kept up to date while it runs. */
+  let globeStart = $state({ lon: 10, lat: 25, scale: 1, roll: 0 });
+  let centre = $state<{ lon: number; lat: number } | null>(null);
+  let globePerf = $state<GlobePerf | null>(null);
+
+  /** Radars nearest the centre of the globe: a plain list for the keyboard and for screen readers. */
+  const nearList = $derived.by(() => {
+    if (viewMode !== 'globe' || !centre || !filtered.length) return [] as CatalogueSite[];
+    const c = centre;
+    return filtered
+      .map((s) => ({ s, d: angularDistanceDeg(c.lat, c.lon, s.lat, s.lon) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 8)
+      .map((x) => x.s);
+  });
+
+  function chooseView(mode: 'globe' | 'flat') {
+    if (mode === viewMode) return;
+    if (mode === 'flat') {
+      const g = globeRef?.getView();
+      if (g) {
+        lon = g.lon;
+        lat = g.lat;
+        zoom = Math.max(1.6, globeToFlatZoom(g.radius, MIN_Z, MAX_Z));
+        globeStart = { lon: g.lon, lat: g.lat, scale: g.scale, roll: g.roll };
+        clampView();
+      }
+    } else {
+      globeStart = {
+        lon, lat, roll: 0,
+        scale: Math.max(1, clampScale(flatZoomToGlobeRadius(zoom) / fitRadius(width, height))),
+      };
+      globeFailed = null;
+    }
+    setNetworkView(mode);
+  }
+  /** The globe's "Open in flat map here". */
+  function toFlat(glon: number, glat: number, gzoom: number) {
+    lon = glon;
+    lat = glat;
+    zoom = gzoom;
+    clampView();
+    globeStart = { ...globeStart, lon: glon, lat: glat };
+    setNetworkView('flat');
+  }
+
   function project(plat: number, plon: number): [number, number] {
     const [wx, wy] = lonLatToWorld(plon, plat, zoom);
     const [cx, cy] = lonLatToWorld(lon, lat, zoom);
@@ -87,62 +158,8 @@
     return worldToLonLat(cx + x - width / 2, cy + y - height / 2, zoom);
   }
 
-  // ── Tiles: small bounded loader (cache, concurrency cap, backoff, offline pause) ─────────────
-  const tileCache = new Map<string, HTMLImageElement>();
-  const inflight = new Map<string, HTMLImageElement>();
-  const failures = new Map<string, { n: number; until: number }>();
-  let wanted: { key: string; z: number; x: number; y: number }[] = [];
-  let consecutiveFails = 0;
-  let pausedUntil = 0;
-  let gen = 0;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastProvider = '';
-
-  function pump() {
-    const t = Date.now();
-    if (t < pausedUntil) { armRetry(pausedUntil - t); return; }
-    let nextRetry = Infinity;
-    for (const w of wanted) {
-      if (inflight.size >= 6) break;
-      if (tileCache.has(w.key) || inflight.has(w.key)) continue;
-      const f = failures.get(w.key);
-      if (f) {
-        if (f.n >= 4) continue;
-        if (f.until > t) { nextRetry = Math.min(nextRetry, f.until - t); continue; }
-      }
-      const myGen = gen;
-      const img = new Image();
-      img.decoding = 'async';
-      inflight.set(w.key, img);
-      img.onload = () => {
-        if (myGen !== gen) return;
-        inflight.delete(w.key);
-        failures.delete(w.key);
-        consecutiveFails = 0;
-        while (tileCache.size >= 256) {
-          const first = tileCache.keys().next().value;
-          if (first === undefined) break;
-          tileCache.delete(first);
-        }
-        tileCache.set(w.key, img);
-        schedule();
-      };
-      img.onerror = () => {
-        if (myGen !== gen) return;
-        inflight.delete(w.key);
-        const n = (failures.get(w.key)?.n ?? 0) + 1;
-        failures.set(w.key, { n, until: Date.now() + 2000 * 2 ** (n - 1) });
-        if (++consecutiveFails >= 6) { pausedUntil = Date.now() + 30000; consecutiveFails = 0; }
-        schedule();
-      };
-      img.src = basemapTileUrl(basemap.provider, w.z, w.x, w.y);
-    }
-    if (nextRetry < Infinity) armRetry(nextRetry);
-  }
-  function armRetry(ms: number) {
-    if (retryTimer) clearTimeout(retryTimer);
-    retryTimer = setTimeout(() => { retryTimer = null; schedule(); }, Math.max(50, ms));
-  }
+  // ── Tiles: the shared bounded loader (cache, concurrency cap, backoff, offline pause) ─────────
+  const tiles = new SlippyTiles({ onChange: () => { schedule(); globeRef?.tilesChanged(); } });
 
   // ── Rendering ───────────────────────────────────────────────────────────────────────────────
   let raf = 0;
@@ -152,7 +169,7 @@
   }
 
   function render() {
-    if (!tileCanvas || !markCanvas) return;
+    if (viewMode !== 'flat' || !tileCanvas || !markCanvas) return;
     const t0 = performance.now();
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     for (const c of [tileCanvas, markCanvas]) {
@@ -171,12 +188,6 @@
 
     // Tiles at the integer level nearest the zoom, scaled to the fractional one.
     if (basemap.provider.url) {
-      if (basemap.provider.id !== lastProvider) {
-        lastProvider = basemap.provider.id;
-        gen++;
-        for (const img of inflight.values()) img.src = '';
-        inflight.clear(); tileCache.clear(); failures.clear();
-      }
       const zi = Math.max(basemap.provider.minZoom, Math.min(basemap.provider.maxZoom, Math.round(zoom)));
       const s = 2 ** (zoom - zi);
       const n = 2 ** zi;
@@ -187,25 +198,22 @@
       const ty0 = Math.max(0, Math.floor(y0 / TILE));
       const tx1 = Math.floor((x0 + width / s) / TILE);
       const ty1 = Math.min(n - 1, Math.floor((y0 + height / s) / TILE));
-      wanted = [];
+      const wanted: Array<TileWant & { d: number }> = [];
+      const mx = width / 2, my = height / 2;
       for (let ty = ty0; ty <= ty1; ty++) {
         for (let tx = tx0; tx <= tx1; tx++) {
           const wx = ((tx % n) + n) % n; // wrap around the antimeridian
-          const key = `${basemap.provider.id}/${zi}/${wx}/${ty}`;
           const px = (tx * TILE - x0) * s;
           const py = (ty * TILE - y0) * s;
-          const img = tileCache.get(key);
-          if (img) {
-            tileCache.delete(key); tileCache.set(key, img);
-            tctx.drawImage(img, px, py, TILE * s + 0.5, TILE * s + 0.5);
-          } else {
-            wanted.push({ key, z: zi, x: wx, y: ty });
-          }
+          const img = tiles.get(basemap.provider, zi, wx, ty);
+          if (img) tctx.drawImage(img, px, py, TILE * s + 0.5, TILE * s + 0.5);
+          else wanted.push({ z: zi, x: wx, y: ty, d: Math.hypot(px - mx, py - my) });
         }
       }
-      const mx = width / 2, my = height / 2;
-      wanted.sort((a, b) => Math.hypot((a.x * TILE - x0) * s - mx, (a.y * TILE - y0) * s - my) - Math.hypot((b.x * TILE - x0) * s - mx, (b.y * TILE - y0) * s - my));
-      pump();
+      wanted.sort((a, b) => a.d - b.d);
+      tiles.want(basemap.provider, wanted);
+    } else {
+      tiles.want(basemap.provider, []);
     }
 
     // Markers.
@@ -225,7 +233,7 @@
       const many = c.sites.length > 1;
       const sel = !many && c.sites[0].id === selectedId;
       const r = many ? Math.min(14, 6 + Math.sqrt(c.sites.length) * 1.6) : 5.5;
-      drawMarker(mctx, c.access, c.x, c.y, r, ink, dim, accentCol, bg, sel);
+      drawMarker(mctx, c.access, c.x, c.y, r, { ink, dim, accent: accentCol, bg }, sel);
       if (many) {
         mctx.fillStyle = ink;
         mctx.fillText(String(c.sites.length), c.x, c.y + 0.5);
@@ -240,25 +248,6 @@
       mctx.stroke();
     }
     frameMs = performance.now() - t0;
-  }
-
-  /** Shape per access class: circle (loadable, filled), square (link), triangle (key), cross (restricted), ring (unknown). */
-  function drawMarker(ctx: CanvasRenderingContext2D, a: DataAccess, x: number, y: number, r: number, ink: string, dim: string, accent: string, bg: string, sel: boolean) {
-    ctx.beginPath();
-    ctx.strokeStyle = sel ? accent : a === 'open-loadable' ? accent : a === 'unknown' ? dim : ink;
-    ctx.fillStyle = a === 'open-loadable' ? accent : bg;
-    switch (a) {
-      case 'open-loadable':
-        ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = bg; ctx.stroke(); break;
-      case 'open-link':
-        ctx.rect(x - r, y - r, 2 * r, 2 * r); ctx.fill(); ctx.stroke(); break;
-      case 'key-required':
-        ctx.moveTo(x, y - r * 1.15); ctx.lineTo(x + r * 1.1, y + r * 0.85); ctx.lineTo(x - r * 1.1, y + r * 0.85); ctx.closePath(); ctx.fill(); ctx.stroke(); break;
-      case 'restricted':
-        ctx.moveTo(x - r, y - r); ctx.lineTo(x + r, y + r); ctx.moveTo(x + r, y - r); ctx.lineTo(x - r, y + r); ctx.stroke(); break;
-      default:
-        ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-    }
   }
 
   // ── Interaction ────────────────────────────────────────────────────────────────────────────
@@ -331,6 +320,10 @@
     }
     const target = e.target as HTMLElement | null;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA')) return;
+    if (viewMode === 'globe') {
+      globeRef?.handleKey(e);
+      return;
+    }
     const step = 80 / 2 ** zoom; // degrees-ish: slower when zoomed in
     if (e.key === 'ArrowLeft') lon -= step;
     else if (e.key === 'ArrowRight') lon += step;
@@ -346,6 +339,7 @@
 
   function select(s: CatalogueSite) {
     selectedId = s.id;
+    globeFocus = { seq: ++focusSeq, lon: s.lon, lat: s.lat, minScale: 2.2 };
     if (zoom < 5) zoom = 5;
     // Centre on the site unless it is already comfortably in view at the new zoom.
     const [x, y] = project(s.lat, s.lon);
@@ -360,7 +354,7 @@
 
   // Re-render on every change of the inputs (reading them here registers the dependencies).
   $effect(() => {
-    const deps = [filtered, selectedId, width, height, lon, lat, zoom, basemap];
+    const deps = [filtered, selectedId, width, height, lon, lat, zoom, basemap, viewMode];
     if (deps.length) schedule();
   });
 
@@ -383,10 +377,7 @@
     ro?.disconnect();
     if (timer) clearInterval(timer);
     if (raf) cancelAnimationFrame(raf);
-    if (retryTimer) clearTimeout(retryTimer);
-    gen++;
-    for (const img of inflight.values()) img.src = '';
-    inflight.clear(); tileCache.clear();
+    tiles.dispose();
     $nexradPrompt?.answer('cancel');
     $networkPrompt?.answer('cancel');
   });
@@ -401,6 +392,11 @@
       <div>
         <h3 id="rnm-title">Radar network map</h3>
         <p class="sub">Which radars exist and which data you can load. {cat ? `${cat.sites.length} sites, catalogue of ${cat.retrieved}.` : 'Loading the catalogue...'} Nothing is fetched without asking you first.</p>
+        {#if globeNote}<p class="sub note" data-testid="rnm-globe-note">{globeNote}</p>{/if}
+      </div>
+      <div class="viewsw seg" role="group" aria-label="Map view">
+        <button type="button" aria-pressed={viewMode === 'globe'} disabled={!glOk} title={glOk ? 'A globe you can turn' : 'The globe needs WebGL2, which is not available here'} onclick={() => chooseView('globe')} data-testid="rnm-view-globe">Globe</button>
+        <button type="button" aria-pressed={viewMode === 'flat'} title="A flat Web Mercator map" onclick={() => chooseView('flat')} data-testid="rnm-view-flat">Flat</button>
       </div>
       <button type="button" class="x" aria-label="Close" onclick={onclose}>&times;</button>
     </header>
@@ -438,7 +434,7 @@
           <ul class="results" aria-label="Search results">
             {#each results as s (s.id)}
               <li>
-                <button type="button" class="res" class:sel={s.id === selectedId} onclick={() => select(s)}>
+                <button type="button" class="res" class:picked={s.id === selectedId} onclick={() => select(s)}>
                   <span class="glyph" aria-hidden="true">{ACCESS_INFO[s.data_access].glyph}</span>
                   <span class="mono id">{s.id}</span>
                   <span class="nm">{s.name}, {s.country}</span>
@@ -449,6 +445,21 @@
           {#if filtered.length > results.length}<p class="fine">{filtered.length - results.length} more match; narrow the search.</p>{/if}
         {:else if query.trim() && cat}
           <p class="fine">No radar matches.</p>
+        {:else if nearList.length > 0}
+          <section class="near" aria-label="Radars nearest the centre of the globe">
+            <span class="hud-label">Nearest the centre of the globe</span>
+            <ul class="results">
+              {#each nearList as s (s.id)}
+                <li>
+                  <button type="button" class="res" class:picked={s.id === selectedId} onclick={() => select(s)}>
+                    <span class="glyph" aria-hidden="true">{ACCESS_INFO[s.data_access].glyph}</span>
+                    <span class="mono id">{s.id}</span>
+                    <span class="nm">{s.name}, {s.country}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </section>
         {/if}
 
         <section class="legend" aria-label="Legend">
@@ -458,21 +469,44 @@
           {/each}
           <div class="lg">A number in a marker is a group of radars; click to zoom in.</div>
         </section>
-        <p class="fine perf" data-testid="rnm-perf">{markerCount} markers drawn in {frameMs.toFixed(1)} ms, zoom {zoom.toFixed(1)}.</p>
+        {#if viewMode === 'globe'}
+          <p class="fine perf" data-testid="rnm-perf">{globePerf ? `${globePerf.markers} markers (${globePerf.inView} radars in view) drawn in ${globePerf.frameMs.toFixed(1)} ms${globePerf.fps ? `, ${globePerf.fps.toFixed(0)} frames per second while turning` : ''}.` : 'Globe: drawing.'}</p>
+        {:else}
+          <p class="fine perf" data-testid="rnm-perf">{markerCount} markers drawn in {frameMs.toFixed(1)} ms, zoom {zoom.toFixed(1)}.</p>
+        {/if}
       </aside>
 
-      <div class="map" bind:this={mapEl} onpointerdown={onPointerDown} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={() => (drag = null)} onwheel={onWheel} ondblclick={onDblClick} role="application" aria-label="World map of radar sites; drag to pan, wheel to zoom, click a marker for its card; arrow keys pan and + or - zoom">
-        <canvas class="tiles" bind:this={tileCanvas} style:filter={basemap.provider.url ? basemap.filter : 'none'} style:width="{width}px" style:height="{height}px"></canvas>
-        <canvas class="marks" bind:this={markCanvas} style:width="{width}px" style:height="{height}px"></canvas>
-        {#if hover}
-          <div class="tip" style:left="{Math.min(Math.max(hover.x, 80), width - 80)}px" style:top="{hover.y - 14}px" role="tooltip">{hover.text}</div>
+      <div class="stage">
+        {#if viewMode === 'globe'}
+          <RadarGlobe
+            bind:this={globeRef}
+            sites={filtered}
+            {selected}
+            {basemap}
+            {tiles}
+            initial={globeStart}
+            focus={globeFocus}
+            onselect={select}
+            onclear={() => { selectedId = null; schedule(); }}
+            onflat={toFlat}
+            onsettle={(v) => { globeStart = { lon: v.lon, lat: v.lat, scale: v.scale, roll: v.roll }; centre = { lon: v.lon, lat: v.lat }; }}
+            onperf={(p) => (globePerf = p)}
+            onfail={(m) => { globeFailed = m; }}
+          />
         {/if}
-        {#if basemap.provider.attribution}
-          <a class="attr" href={basemap.provider.attributionUrl} target="_blank" rel="noopener">{basemap.provider.attribution}</a>
-        {/if}
-        <div class="zoomctl">
-          <button type="button" aria-label="Zoom in" onclick={() => { zoom += 1; clampView(); schedule(); }}>+</button>
-          <button type="button" aria-label="Zoom out" onclick={() => { zoom -= 1; clampView(); schedule(); }}>&minus;</button>
+        <div class="map" class:off={viewMode === 'globe'} bind:this={mapEl} onpointerdown={onPointerDown} onpointermove={onPointerMove} onpointerup={onPointerUp} onpointercancel={() => (drag = null)} onwheel={onWheel} ondblclick={onDblClick} role="application" aria-label="World map of radar sites; drag to pan, wheel to zoom, click a marker for its card; arrow keys pan and + or - zoom">
+          <canvas class="tiles" bind:this={tileCanvas} style:filter={basemap.provider.url ? basemap.filter : 'none'} style:width="{width}px" style:height="{height}px"></canvas>
+          <canvas class="marks" bind:this={markCanvas} style:width="{width}px" style:height="{height}px"></canvas>
+          {#if hover}
+            <div class="tip" style:left="{Math.min(Math.max(hover.x, 80), width - 80)}px" style:top="{hover.y - 14}px" role="tooltip">{hover.text}</div>
+          {/if}
+          {#if basemap.provider.attribution}
+            <a class="attr" href={basemap.provider.attributionUrl} target="_blank" rel="noopener">{basemap.provider.attribution}</a>
+          {/if}
+          <div class="zoomctl">
+            <button type="button" aria-label="Zoom in" onclick={() => { zoom += 1; clampView(); schedule(); }}>+</button>
+            <button type="button" aria-label="Zoom out" onclick={() => { zoom -= 1; clampView(); schedule(); }}>&minus;</button>
+          </div>
         </div>
         {#if selected && cat}
           <RadarNetworkCard site={selected} catalogue={cat} {now} onclose={() => { selectedId = null; schedule(); }} />
@@ -521,15 +555,21 @@
   .glyph { display: inline-block; width: 14px; text-align: center; color: var(--c-text-dim); }
   .chk[data-access='open-loadable'] .glyph, .res .glyph { color: var(--c-accent); }
   .results { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
-  .res { display: flex; gap: var(--space-2); align-items: center; width: 100%; height: auto; padding: 3px 6px; text-align: left; background: transparent; border: 0; border-radius: 0; }
-  .res:hover, .res.sel { background: rgba(var(--c-accent-rgb), 0.12); }
-  .res .id { min-width: 44px; }
-  .res .nm { color: var(--c-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res { display: flex; gap: var(--space-2); align-items: center; justify-content: flex-start; width: 100%; height: auto; padding: 3px 6px; text-align: left; background: transparent; border: 0; border-radius: 0; }
+  .res:hover, .res.picked { background: rgba(var(--c-accent-rgb), 0.12); }
+  .res .id { min-width: 44px; max-width: 120px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res .nm { flex: 1; min-width: 0; color: var(--c-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .near { display: flex; flex-direction: column; gap: 3px; }
   .legend { display: flex; flex-direction: column; gap: 2px; margin-top: auto; padding-top: var(--space-2); border-top: 1px solid var(--c-border); color: var(--c-text-dim); font-size: var(--fs-2xs); }
   .lg b { color: var(--c-text); }
   .fine { margin: 0; color: var(--c-muted); font-size: var(--fs-2xs); }
-  .map { position: relative; flex: 1; min-width: 0; overflow: hidden; cursor: grab; touch-action: none; }
+  .stage { position: relative; flex: 1; min-width: 0; overflow: hidden; }
+  .map { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; }
+  .map.off { display: none; }
   .map:active { cursor: grabbing; }
+  .viewsw { align-self: center; margin-left: auto; margin-right: var(--space-2); }
+  .viewsw button:disabled { opacity: 0.45; cursor: not-allowed; }
+  .sub.note { color: var(--c-caution); }
   canvas { position: absolute; inset: 0; display: block; }
   .marks { pointer-events: none; }
   .tip { position: absolute; transform: translate(-50%, -100%); padding: 3px 7px; border-radius: var(--radius-sm); background: var(--c-overlay); border: 1px solid var(--c-border-strong); font-size: var(--fs-xs); white-space: nowrap; pointer-events: none; box-shadow: var(--shadow-2); }
