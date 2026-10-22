@@ -183,6 +183,14 @@ def test_the_token_file_is_never_written_through_a_symbolic_link(tmp_path):
     assert target.read_text() == "keep"
 
 
+def test_command_studio_cannot_start_a_second_server():
+    from engine import cli_schema
+
+    result = cli_schema.run_command(["serve"])
+    assert result["code"] == cli.EXIT_USAGE and "already serving" in result["message"]
+    assert result["stdout"] == ""  # nothing was started, so there is no banner and no token
+
+
 # -- the connection: token first, nothing else before it ------------------------------------------
 
 

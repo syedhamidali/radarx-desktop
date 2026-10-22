@@ -6,6 +6,7 @@
   import { focusTrap } from '../utils/focusTrap';
   import { isWebMode } from '../utils/env';
   import UpdatesSettings from './UpdatesSettings.svelte';
+  import EngineSettings from './EngineSettings.svelte';
   import MoviePackSettings from './MoviePackSettings.svelte';
   import { lazy } from '../utils/lazy.svelte';
   import {
@@ -25,7 +26,7 @@
   // The radar-sites section brings the site catalogue with it: fetch it when the Data tab is first shown.
   const radarSitesSettings = lazy(() => import('./RadarSitesSettings.svelte'));
   const liveSettings = lazy(() => import('./LiveSettings.svelte'));
-  type TabId = 'general' | 'display' | 'data' | 'export' | 'updates' | 'shortcuts';
+  type TabId = 'general' | 'display' | 'data' | 'export' | 'engine' | 'updates' | 'shortcuts';
   let activeTab: TabId = $state('general');
   $effect(() => { if (activeTab === 'data') { void radarSitesSettings.load(); void liveSettings.load(); } });
 
@@ -36,15 +37,17 @@
   let recordingShortcutId: string | null = $state(null);
   let conflictWarning = $state('');
 
-  const tabs: { id: TabId; label: string }[] = [
+  const tabs: { id: TabId; label: string }[] = $derived([
     { id: 'general', label: 'General' },
     { id: 'display', label: 'Display' },
     { id: 'data', label: 'Data' },
     { id: 'export', label: 'Export' },
+    // Which engine the app uses (its own, or one on a cluster). Not in the hosted web app, whose engine is fixed.
+    ...($webUi ? [] : [{ id: 'engine' as TabId, label: 'Engine' }]),
     // Self-update exists only in the desktop app, never in a browser.
     ...(isWebMode() ? [] : [{ id: 'updates' as TabId, label: 'Updates' }]),
     { id: 'shortcuts', label: 'Shortcuts' },
-  ];
+  ]);
 
   function close() {
     open = false;
@@ -539,6 +542,12 @@
               <button class="reset-btn" on:click={() => settings.resetSection('export_')}>
                 Reset Export
               </button>
+            </div>
+
+          <!-- ═══ Engine (built in, or a remote one on a cluster) ═══ -->
+          {:else if activeTab === 'engine' && !$webUi}
+            <div class="settings-section">
+              <EngineSettings />
             </div>
 
           <!-- ═══ Updates (desktop only) ═══ -->
