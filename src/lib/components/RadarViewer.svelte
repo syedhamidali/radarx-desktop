@@ -29,6 +29,7 @@
   import BoxSelectTool from './BoxSelectTool.svelte';
   import { boxSelectActive, selectedBox } from '../stores/volumeSelect';
   import { mosaicLayer, mosaicDisplay, registerViewBoundsProvider, type GeoBounds } from '../stores/mosaic';
+  import NowcastOverlay from './NowcastOverlay.svelte';
   import { windLayer } from '../stores/wind';
   import { effectiveCmap, chooseCmap } from '../stores/cmapChoice';
   import { dataSpaceToLatLon, latLonToDataSpace, pixelToLatLon } from '../utils/geoProjection';
@@ -880,6 +881,8 @@
           opacity={mapOpacity}
         />
       {/if}
+
+      <NowcastOverlay />
 
       <canvas bind:this={webglCanvas} class="webgl-canvas" class:has-map={showMap} class:mosaic-hidden={mosaicViewOn || windHidesPpi}></canvas>
 

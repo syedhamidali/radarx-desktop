@@ -59,7 +59,7 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 are on the {doc}`installation` page):
 
 ```bash
-pip install "https://downloads.labshope.com/radarx/v0.3.2/radarx_desktop_engine-0.3.2-py3-none-any.whl"
+pip install "https://downloads.labshope.com/radarx/v0.4.0/radarx_desktop_engine-0.4.0-py3-none-any.whl"
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```
@@ -101,7 +101,9 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes, with an optional synthesised sound track (`--sound`) |
 | Hydrology | `rxd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
 | | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
+| Forecast | `rxd nowcast` | advection nowcast of the next 0 to 2 hours with ensemble, probabilities and a verification against persistence ({doc}`NOWCAST`) |
 | Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
+| Remote | `rxd serve` | run the engine here for the app on your own computer, through an SSH port forward ({doc}`cluster`) |
 | Help | `rxd examples`, `rxd completion` | a tour of commands; shell completion |
 
 ### Look: `info` and `plot`
@@ -143,7 +145,7 @@ codes masked): `--theme dark`, `--dpi 300`, `--vmin/--vmax`, `-p figure.pdf` for
 `rxd check` is the same data check the app shows after opening a file: what looks wrong (aliasing,
 range folding, clutter, ZDR offset, time gaps ...), with the evidence, where it is, and a suggested
 QC recipe. It changes nothing and exits 0 even when it finds problems (3 only when a file cannot be
-read). `--fix-plan -o recipe.json` writes the suggested recipe for `rxd pipeline`. Every check, its
+read). `--fix-plan -o recipe.json` writes the suggested recipes for `rxd pipeline`, one per variable, named after the `-o` file: `recipe_velocity.json`, `recipe_reflectivity.json` and `recipe_zdr.json` for the example below (only those the data need). Every check, its
 method and thresholds: {doc}`DATA_CHECK`.
 
 `--json` always prints a list with one report per file, also for a single file. (Before 0.3.1 one
@@ -423,6 +425,29 @@ rxd export -i KTLX20130520_201643_V06.gz -o qc.nc --pipeline "Reflectivity QC" -
 Derived variables only exist inside one run, so `export` can compute them first (`--pipeline RECIPE`,
 `--run MODULE`, repeatable, all sweeps) and write them into the file with `--include-derived`.
 
+### Remote: `serve`
+
+```bash
+rxd serve                                   # a free port, a new token, stops after 120 minutes without use
+rxd serve --port 40123 --idle-minutes 60
+rxd serve --token-file ~/.radarx-token      # for a batch job: the token goes to a private file, not the log
+```
+
+Starts the engine of the app on **this computer** so that the app on another computer can use this computer's data through an SSH port
+forward (`ssh -L PORT:localhost:PORT user@cluster`). It prints the address, a token (shown once, new for every run) and the SSH line,
+and runs until Ctrl+C or the idle limit. Step by step, with the security notes: {doc}`cluster`.
+
+| Option | Meaning |
+|---|---|
+| `--port N` | the port to listen on, 1024 to 65535 (default: a free one is chosen and printed) |
+| `--host ADDR` | `127.0.0.1` or `localhost`; **nothing else is accepted**, the engine never listens on a network address |
+| `--idle-minutes MIN` | stop after this long without a request from the app (default 120; `0` = never) |
+| `--token-file FILE` | write the token to this file (readable only by you) instead of printing it; removed when the engine stops |
+
+* It needs a signed-in account on this computer, like every command (exit code 5 otherwise), and the app presents its own sign-in on the connection.
+* One app can be connected at a time; a connection without the right token is closed at once. `-v` shows who connected and left (never the token).
+* Use it on a login node only for light work; run it inside a batch job for anything heavy.
+
 ### Plan: `budget` (any amount of data)
 
 Before a big job, ask what this computer allows and what each operation would cost on your files.
@@ -547,7 +572,7 @@ error: File not found: missing.nc (looked for /.../missing.nc). Check the path a
 | 0 | success |
 | 1 | the processing failed (the algorithm could not run on this data) |
 | 2 | the command was used wrongly: unknown option, module, recipe, variable, bad `-P`, sweep out of range |
-| 3 | an input file is missing, is not a file, or cannot be read |
+| 3 | an input file is missing, is not a file, or cannot be read (an empty, 0-byte file currently gives 1; a script should treat 1 and 3 alike) |
 | 4 | an optional Python package is missing; the message says how to install it (`pip install -U radarx`) |
 | 5 | no signed-in account: run `rxd login` (every command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help`, `--version`) |
 | 70 | an unexpected internal error (re-run with `-vv` for the traceback and report it) |

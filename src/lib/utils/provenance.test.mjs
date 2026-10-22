@@ -26,8 +26,8 @@ import {
 
 const obs = (extra = {}) => ({ kind: 'observed', source: 'KTLX', valid_time: '2013-05-20T20:16:43Z', ...extra });
 
-test('five classes, each with a short label, a name and a definition', () => {
-  assert.deepEqual([...KINDS], ['observed', 'model', 'retrieved', 'simulated', 'stylised']);
+test('six classes, each with a short label, a name and a definition', () => {
+  assert.deepEqual([...KINDS], ['observed', 'model', 'retrieved', 'simulated', 'stylised', 'forecast']);
   for (const k of KINDS) {
     const i = KIND_INFO[k];
     assert.ok(i.short.length >= 3 && i.label && i.definition.length > 40, k);

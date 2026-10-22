@@ -133,6 +133,62 @@ note = "NOAA data are made available to the public; NOAA asks for credit and giv
 
 [[entry]]
 kind = "data"
+name = "DWD Open Data radar volume sweeps (Deutscher Wetterdienst)"
+license = "CC-BY-4.0"
+where = "Radar network map and Cloud data panel: opendata.dwd.de (python/engine/radar_networks.py); fetched only when the user opens a volume after the consent dialog"
+attribution = "Source: Deutscher Wetterdienst (DWD). DWD open spatial data may be re-used under CC BY 4.0 providing the source is acknowledged (DWD legal notice)."
+url = "https://opendata.dwd.de/weather/radar/sites/"
+note = "Ten ODIM HDF5 sweep files per moment and five-minute volume, assembled into one volume by the app. Verified from the legal notice at https://www.dwd.de/EN/service/legal_notice/legal_notice_node.html on 2026-10-22."
+
+[[entry]]
+kind = "data"
+name = "FMI open radar data on AWS Open Data (Finnish Meteorological Institute)"
+license = "CC-BY-4.0"
+where = "Radar network map and Cloud data panel: public bucket fmi-opendata-radar-volume-hdf5 (python/engine/radar_networks.py); fetched only when the user opens a volume after the consent dialog"
+attribution = "Data: Finnish Meteorological Institute open data, via the AWS Open Data registry (CC BY 4.0)"
+url = "https://registry.opendata.aws/fmi-radar/"
+note = "A two-day sample (7 and 8 February 2023) of full ODIM HDF5 polar volumes; not a live feed. Licence read from the registry entry on 2026-10-22."
+
+[[entry]]
+kind = "data"
+name = "Radar site catalogue: NOAA NCEI HOMR NEXRAD station list"
+license = "US government work (public domain)"
+where = "src/lib/data/nexradSites.json and src/lib/data/radarCatalogue.json (156 NEXRAD and 47 TDWR sites; shipped in the app; a transcription, not official NWS or FAA material)"
+attribution = "NOAA National Centers for Environmental Information, Historical Observing Metadata Repository; NOAA asks for credit"
+url = "https://www.ncei.noaa.gov/access/homr/file/nexrad-stations.txt"
+note = "The same station file lists the FAA Terminal Doppler Weather Radars (station type TDWR). To say which of them were active, one list of folder names of the Unidata real-time Level II bucket (unidata-nexrad-level2, AWS Open Data) for one UTC day was read; no radar data were taken from it. Retrieved 2026-10-22."
+
+[[entry]]
+kind = "data"
+name = "Radar site catalogue: Bureau of Meteorology / NCI Australian operational radar archive site list"
+license = "CC BY 4.0 (licence file shipped with the archive; the NCI collection record says licences vary by dataset)"
+where = "src/lib/data/radarCatalogue.json (positions, band, Doppler and dual-polarisation flags, in-service dates of 82 Australian radar sites; shipped in the app)"
+attribution = "Bureau of Meteorology and NCI Australia: Soderholm J., A. Protat, C. Jakob, 2019, Australian Operational Weather Radar Dataset, doi:10.25914/5cb686a8d9450"
+url = "https://thredds.nci.org.au/thredds/fileServer/rq0/radar_site_list.csv"
+note = "radar_site_list.csv sits in the top folder of the archive beside rq0_level1_license-cc4.pdf (Creative Commons Attribution 4.0 International). Retrieved 2026-10-22. The Bureau's website pages were not copied: their terms allow personal or in-organisation use only; only link addresses to them are in the catalogue."
+
+[[entry]]
+kind = "data"
+name = "Radar site catalogue: EUMETNET OPERA radar database"
+license = "public information (no separate licence text on the metadata table)"
+where = "src/lib/data/radarCatalogue.json (positions, ids, band, polarisation and status of 217 European radars; shipped in the app)"
+attribution = "EUMETNET OPERA radar database (Operational Programme for the Exchange of Weather Radar Information)"
+url = "https://www.eumetnet.eu/activities/observations-programme/current-activities/opera/"
+flag = "licence of the metadata table to confirm"
+note = "The OPERA page describes the database as 'public information, location and details of the radars' and the OPERA radar data as CC BY 4.0 via MeteoGate; the JSON table itself carries no licence statement. Retrieved 2026-10-22. Ask EUMETNET to confirm the terms before a release that ships it commercially."
+
+[[entry]]
+kind = "data"
+name = "Radar site catalogue: WMO OSCAR/Surface weather radar stations"
+license = "terms not verified (WMO public metadata repository)"
+where = "src/lib/data/radarCatalogue.json (positions, WIGOS ids, territory and declared status of 570 radars; shipped in the app)"
+attribution = "World Meteorological Organization, OSCAR/Surface (WIGOS station metadata)"
+url = "https://oscar.wmo.int/surface/"
+flag = "terms to confirm"
+note = "Fetched from the public search API (station class 'weather radar') on 2026-10-22; the WMO terms-of-use page could not be reached from the build machine. Attribution is given; confirm the terms before a release that ships it commercially."
+
+[[entry]]
+kind = "data"
 name = "open-radar-data test files"
 license = "per file (see the package)"
 where = "continuous integration and local tests only (python/tests/radar_data.py); never shipped, never downloaded by the app"

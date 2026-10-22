@@ -873,10 +873,20 @@ def _export_inputs(
 class ConnectionHandler(EnvironmentMessages, AnimateMessages):
     """Manages message routing for a single WebSocket connection, using shared state."""
 
-    def __init__(self, ws: ServerConnection, session: web.SessionContext | None = None) -> None:
+    def __init__(
+        self,
+        ws: ServerConnection,
+        session: web.SessionContext | None = None,
+        *,
+        remote_engine: bool = False,
+    ) -> None:
         self.ws = ws
         #: Web mode: this connection's private session (None = desktop mode).
         self.session = session
+        #: ``rxd serve`` (engine/serve.py): the desktop engine of a cluster account, used by an app
+        #: on another computer through an SSH tunnel. The shared session file there is the cluster
+        #: user's own ``rxd login``: the app's token is checked but never written over it.
+        self.remote_engine = remote_engine
         # Header + binary chunks of one response must reach the client contiguously
         # (it has a single "pending binary header" slot), so all sends share a lock.
         self._send_lock = asyncio.Lock()
@@ -910,11 +920,11 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         if account.bypassed:
             return True
         if (
-            self.session is not None
-            and account_core.now() > account.expires_at + account_config.LEEWAY_S
-        ):
+            self.session is not None or self.remote_engine
+        ) and account_core.now() > account.expires_at + account_config.LEEWAY_S:
             # the web service is always online: an access token past its expiry is not enough; the
-            # browser renews it (Supabase) and presents the new one with auth_session
+            # browser renews it (Supabase) and presents the new one with auth_session. A remote
+            # engine works the same way: the app that talks to it has its network
             self._why_refused = "expired"
             return False
         # The offline rule (docs/ACCOUNTS.md): 30 days from when the server last vouched.
@@ -954,7 +964,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if self.account is not None and not self.account.bypassed:
                 self._record("sign_out")
                 await loop.run_in_executor(_activity_pool(), account_activity.flush, 2.0)
-            if self.session is None and self._gate_active():
+            if self.session is None and not self.remote_engine and self._gate_active():
                 # the app signed out: the shared file goes whether or not this connection was ever
                 # authorised (a sign-out must not depend on the engine having accepted the account)
                 await loop.run_in_executor(None, account_core.end_presented_session)
@@ -972,7 +982,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         try:
             if not isinstance(token, str):
                 raise AccountRequired("invalid")
-            persist = self.session is None  # the desktop engine has one user; the web service many
+            # the desktop engine has one user; the web service many; a remote engine's file is the
+            # cluster account's own `rxd login`, which the app must not overwrite
+            persist = self.session is None and not self.remote_engine
             account = await loop.run_in_executor(
                 None,
                 functools.partial(account_core.verify_presented_token, token, persist=persist),
@@ -987,7 +999,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         self._access_token = token
         self._why_refused = "no_session"
         device = msg.get("device_id")
-        if self.session is None and isinstance(device, str):
+        if self.session is None and not self.remote_engine and isinstance(device, str):
             from engine.account import store as account_store
 
             await loop.run_in_executor(None, account_store.set_device_id, device)
@@ -1059,6 +1071,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             self._record("winds_run", type=request.get("method"))
         elif kind == "qpe_result" and request.get("type") == "qpe_run":
             self._record("qpe_run")
+        elif kind == "nowcast_result":
+            self._record("nowcast_run")
 
     async def _send_text(self, msg: dict[str, Any]) -> None:
         """Send one JSON message. Caller must hold ``_send_lock``."""
@@ -1273,8 +1287,15 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "open_nexrad_l2": self._handle_open_nexrad_l2,
             "open_nexrad_realtime": self._handle_open_nexrad_realtime,
             "get_nexrad_latest_info": self._handle_nexrad_latest_info,
+            "live_check": self._handle_live_check,
+            "live_update": self._handle_live_update,
+            "live_stop": self._handle_live_stop,
             "list_arco_scans": self._handle_list_arco_scans,
             "open_arco_scan": self._handle_open_arco_scan,
+            "list_network_providers": self._handle_list_network_providers,
+            "get_network_latest_info": self._handle_network_latest_info,
+            "list_network_scans": self._handle_list_network_scans,
+            "open_network_scan": self._handle_open_network_scan,
             "get_scatter_data": self._handle_get_scatter_data,
             "get_histogram": self._handle_get_histogram,
             "get_region_stats": self._handle_get_region_stats,
@@ -1304,6 +1325,10 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "qpe_adjust": self._handle_qpe,
             "qpe_series": self._handle_qpe,
             "qpe_export": self._handle_qpe,
+            "nowcast_run": self._handle_nowcast,
+            "nowcast_cancel": self._handle_nowcast,
+            "nowcast_layers": self._handle_nowcast,
+            "nowcast_export": self._handle_nowcast,
             "get_wind_volume": self._handle_get_wind_volume,
             "run_multidoppler": self._handle_run_multidoppler,
             "multidoppler_cancel": self._handle_multidoppler_cancel,
@@ -1877,6 +1902,95 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         info = await loop.run_in_executor(None, latest_scan_info, station)
         await self.send({"type": "nexrad_latest_info", **info})
 
+    # ── Live map (engine/live.py): newest volume per default radar, one composite ──────────
+
+    async def _live_error(self, request_id: Any, message: str) -> None:
+        await self.send({"type": "live_error", "request_id": request_id, "message": message})
+
+    async def _handle_live_check(self, msg: dict[str, Any]) -> None:
+        """``{type: "live_check", request_id, stations: [...]}`` -> ``live_check_result`` with one
+        :func:`engine.cloud.latest_scan_info` entry per station (listing only, no download) and
+        whether the live cache already holds that volume. A bad request is a ``live_error``."""
+        from engine import live
+
+        request_id = msg.get("request_id")
+        if self.session is not None:
+            await self._live_error(request_id, "The live map is a feature of the desktop app.")
+            return
+        try:
+            stations = live.normalize_stations(msg.get("stations"))
+        except (live.LiveError, ValueError) as exc:
+            await self._live_error(request_id, f"live_check: {exc}")
+            return
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(None, live.check, stations)
+        await self.send(
+            {"type": "live_check_result", "request_id": request_id, "stations": results}
+        )
+
+    async def _handle_live_update(self, msg: dict[str, Any]) -> None:
+        """``{type: "live_update", request_id, files: [{station, path, name, size, scan_time}],
+        variable?, product?, grid?, merge?}`` -> progress, then a ``live_frame`` header (a mosaic
+        header plus ``stations`` and ``provenance``) followed by the PNG frames. Only the named
+        files are downloaded; a station already held is not fetched again. Failure: ``live_error``;
+        progress always closes at 100."""
+        from engine import live, mosaic
+
+        request_id = msg.get("request_id")
+        if self.session is not None:
+            await self._live_error(request_id, "The live map is a feature of the desktop app.")
+            return
+        for key in ("grid", "merge"):
+            if msg.get(key) is not None and not isinstance(msg[key], dict):
+                await self._live_error(request_id, f"live_update: '{key}' must be an object")
+                return
+        loop = asyncio.get_running_loop()
+        progress_sync = self._progress_callback(loop)
+        await self.send_progress(3, "Live map: starting update")
+        try:
+            mosaic._radarx()  # fail before any download when radarx is missing
+
+            def _build():
+                return live.update(
+                    msg.get("files"),
+                    variable=str(msg.get("variable") or "DBZH"),
+                    product=str(msg.get("product") or "composite"),
+                    grid=msg.get("grid"),
+                    merge=msg.get("merge"),
+                    progress=progress_sync,
+                )
+
+            t0 = time.perf_counter()
+            # Downloads and the merge share the mosaic lock: one heavy build at a time.
+            record, radars = await _run_holding(_locks.get("mosaic"), _build)
+            header = {
+                "type": "live_frame",
+                "request_id": request_id,
+                **live.frame_header(record, radars),
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 1),
+            }
+            await self._send_binary_chunks([record.png], header, length_key="png_bytes")
+        except (live.LiveError, mosaic.MosaicError, plugins.ModuleError) as exc:
+            logger.warning("Live update failed: %s", exc)
+            await self._live_error(request_id, str(exc))
+        except ImportError as exc:
+            await self._live_error(
+                request_id, f"The live composite needs the Python package radarx: {exc}"
+            )
+        except Exception as exc:
+            logger.error("Live update failed: %s\n%s", exc, traceback.format_exc())
+            await self._live_error(request_id, f"{type(exc).__name__}: {exc}")
+        finally:
+            await self.send_progress(100, "Live map: update finished")
+
+    async def _handle_live_stop(self, msg: dict[str, Any]) -> None:
+        """Release every volume the live map holds (the app stopped the live map or is closing)."""
+        from engine import live
+
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, live.LIVE.clear)
+        await self.send({"type": "live_stopped", "request_id": msg.get("request_id")})
+
     async def _handle_open_nexrad_realtime(self, msg: dict[str, Any]) -> None:
         station = msg.get("station", "")
         if not station or not isinstance(station, str):
@@ -1927,6 +2041,92 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             )
         except Exception as exc:
             await self.send_error(f"open_arco_scan failed: {exc}")
+
+    # ── Open radar networks beyond NEXRAD (engine.radar_networks) ────────────
+
+    async def _handle_list_network_providers(self, msg: dict[str, Any]) -> None:
+        """The providers of other open radar networks: ids, sites, credit, licence, what a
+        listing costs (so the UI can ask for consent with the real numbers)."""
+        from engine import radar_networks
+
+        await self.send(
+            {"type": "network_providers", "providers": radar_networks.describe_providers()}
+        )
+
+    async def _handle_network_latest_info(self, msg: dict[str, Any]) -> None:
+        """Newest volume of a site of a network provider: one listing, nothing downloaded.
+        Always answers ``network_latest_info`` with a ``status``."""
+        from engine import radar_networks
+
+        provider, site = msg.get("provider", ""), msg.get("site", "")
+        if not isinstance(provider, str) or not isinstance(site, str) or not provider or not site:
+            await self.send_error("get_network_latest_info: 'provider' and 'site' required")
+            return
+        try:
+            p = radar_networks.get_provider(provider)
+        except ValueError as exc:
+            await self.send(
+                {
+                    "type": "network_latest_info",
+                    "status": "error",
+                    "provider": provider,
+                    "site": site,
+                    "message": str(exc),
+                }
+            )
+            return
+        loop = asyncio.get_running_loop()
+        info = await loop.run_in_executor(None, p.latest_scan_info, site)
+        await self.send({"type": "network_latest_info", **info})
+
+    async def _handle_list_network_scans(self, msg: dict[str, Any]) -> None:
+        from engine import radar_networks
+
+        provider, site, date = msg.get("provider", ""), msg.get("site", ""), msg.get("date", "")
+        if not all(isinstance(v, str) and v for v in (provider, site, date)):
+            await self.send_error("list_network_scans: 'provider', 'site' and 'date' required")
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            p = radar_networks.get_provider(provider)
+            scans = await loop.run_in_executor(None, p.list_scans, site, date)
+            await self.send(
+                {
+                    "type": "network_scans",
+                    "provider": p.id,
+                    "site": site,
+                    "date": date,
+                    "scans": scans,
+                }
+            )
+        except Exception as exc:
+            await self.send_error(f"list_network_scans failed: {exc}")
+
+    async def _handle_open_network_scan(self, msg: dict[str, Any]) -> None:
+        """Download one listed volume of a network provider and open it (the UI has shown the
+        consent dialog with the provider's host and the volume's size before sending this)."""
+        from engine import radar_networks
+
+        provider, site, key = msg.get("provider", ""), msg.get("site", ""), msg.get("key", "")
+        if not all(isinstance(v, str) and v for v in (provider, site, key)):
+            await self.send_error("open_network_scan: 'provider', 'site' and 'key' required")
+            return
+        if len(key) > 200 or ".." in key:
+            await self.send_error("open_network_scan failed: invalid key")
+            return
+        try:
+            p = radar_networks.get_provider(provider)
+        except ValueError as exc:
+            await self.send_error(f"open_network_scan failed: {exc}")
+            return
+        await self.send_progress(5, f"Listing {p.network} {site}...")
+        try:
+            await self.send_progress(15, f"Downloading {p.network} {site} {key}...")
+            await self._open_with_new_reader(lambda r: p.open(r, site, key), timeout=300.0)
+        except asyncio.TimeoutError:
+            await self.send_error("open_network_scan failed: timed out after 300 s")
+        except Exception as exc:
+            await self.send_error(f"open_network_scan failed: {exc}")
 
     async def _handle_open_file(self, msg: dict[str, Any]) -> None:
         path = msg.get("path")
@@ -4354,6 +4554,128 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if kind == "qpe_run":
                 await self.send_progress(100, "Rainfall estimate finished")
 
+    # ------------------------------------------------------------------
+    # Nowcast: advection extrapolation with ensemble (engine/nowcast/ws.py)
+    # ------------------------------------------------------------------
+
+    async def _handle_nowcast(self, msg: dict[str, Any]) -> None:
+        """The ``nowcast_*`` messages (run, cancel, export); the protocol is in
+        ``engine/nowcast/ws.py``. A failure is a ``nowcast_error``; ``nowcast_run`` always closes
+        progress. One heavy run at a time (the mosaic lock: the gridding uses radarx)."""
+        from engine.nowcast import ws as nowcast_ws
+        from engine.nowcast.run import NowcastCancelled, NowcastError
+
+        kind = msg.get("type")
+        request_id = msg.get("request_id")
+        key = request_id if isinstance(request_id, str) and request_id else None
+        if kind == "nowcast_cancel":
+            if key is not None:
+                _nowcast_cancel_event(key).set()
+            return
+        cancel = _nowcast_cancel_event(key)
+        try:
+            loop = asyncio.get_running_loop()
+            if kind == "nowcast_run":
+                readers: list[tuple[str, Any]] = []
+                records: list[Any] = []
+                file_ids = msg.get("file_ids")
+                mosaic_ids = msg.get("mosaic_ids")
+                frames_path = msg.get("frames_path")
+                if sum(x is not None for x in (file_ids, mosaic_ids, frames_path)) != 1:
+                    raise NowcastError(
+                        "nowcast_run: give exactly one of 'file_ids', 'mosaic_ids' or 'frames_path'"
+                    )
+                if file_ids is not None:
+                    if (
+                        not isinstance(file_ids, list)
+                        or not file_ids
+                        or not all(isinstance(f, str) and f for f in file_ids)
+                    ):
+                        raise NowcastError(
+                            "nowcast_run: 'file_ids' must be a non-empty list of open files"
+                        )
+                    if len(set(file_ids)) != len(file_ids):
+                        raise NowcastError("nowcast_run: 'file_ids' contains duplicates")
+                    for fid in file_ids:
+                        _, reader = _resolve_reader(fid)
+                        if reader.datatree is None:
+                            raise NowcastError(f"File {fid} is not open")
+                        readers.append((str(getattr(reader, "_path", None) or fid), reader))
+                elif mosaic_ids is not None:
+                    if (
+                        not isinstance(mosaic_ids, list)
+                        or not mosaic_ids
+                        or not all(isinstance(f, str) and f for f in mosaic_ids)
+                        or len(set(mosaic_ids)) != len(mosaic_ids)
+                    ):
+                        raise NowcastError(
+                            "nowcast_run: 'mosaic_ids' must be a non-empty list of distinct ids"
+                        )
+                    records = [mosaic.MOSAICS.get(mid) for mid in mosaic_ids]
+                elif web.is_web_mode():
+                    raise NowcastError("A gridded frames file is read in the desktop app")
+                progress_sync = self._progress_callback(loop)
+                await self.send_progress(3, "Nowcast...")
+
+                def _run() -> dict[str, Any]:
+                    if cancel.is_set():
+                        raise NowcastCancelled("cancelled")
+                    return nowcast_ws.run(msg, readers, progress_sync, cancel.is_set, records)
+
+                try:
+                    out = await _run_holding(_locks.get("mosaic"), _run)
+                except BaseException:
+                    cancel.set()
+                    raise
+                await self.send({"type": "nowcast_result", "request_id": request_id, **out})
+            elif kind == "nowcast_layers":
+                out = await loop.run_in_executor(None, nowcast_ws.layers, msg)
+                await self.send({"type": "nowcast_layers_result", "request_id": request_id, **out})
+            elif kind == "nowcast_export":
+                if web.is_web_mode():
+                    raise NowcastError("Saving a nowcast to a file is part of the desktop app")
+                path = await loop.run_in_executor(None, nowcast_ws.export, msg)
+                await self.send({"type": "file_saved", "path": str(path)})
+            else:  # pragma: no cover - the dispatch table only routes the types above
+                raise NowcastError(f"unknown nowcast message {kind!r}")
+        except NowcastCancelled:
+            await self.send({"type": "nowcast_cancelled", "request_id": request_id})
+        except (NowcastError, mosaic.MosaicError, UnknownFileError) as exc:
+            logger.warning("Nowcast error: %s", exc)
+            await self.send(
+                {
+                    "type": "nowcast_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": str(exc),
+                }
+            )
+        except ImportError as exc:
+            await self.send(
+                {
+                    "type": "nowcast_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"The nowcast grids the volumes with radarx: {exc} "
+                    "(pip install radarx)",
+                }
+            )
+        except Exception as exc:
+            logger.error("Nowcast failed: %s\n%s", exc, traceback.format_exc())
+            await self.send(
+                {
+                    "type": "nowcast_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            if key is not None:
+                _nowcast_runs().pop(key, None)
+            if kind == "nowcast_run":
+                await self.send_progress(100, "Nowcast finished")
+
     async def _handle_mosaic_probe(self, msg: dict[str, Any]) -> None:
         """``{type: "mosaic_probe", mosaic_id, lon, lat}`` -> ``mosaic_probe_result``."""
         mosaic_id = msg.get("mosaic_id")
@@ -4828,6 +5150,26 @@ def _multidoppler_cancel_event(request_id: str | None) -> threading.Event:
     return event
 
 
+# request_id -> cancel flag of a nowcast run (the same on-demand pattern as multi-Doppler)
+_nowcast_runs_table: dict[str, threading.Event] = {}
+
+
+def _nowcast_runs() -> dict[str, threading.Event]:
+    return _nowcast_runs_table
+
+
+def _nowcast_cancel_event(request_id: str | None) -> threading.Event:
+    if request_id is None:
+        return threading.Event()
+    runs = _nowcast_runs()
+    event = runs.get(request_id)
+    if event is None:
+        while len(runs) >= _MULTIDOPPLER_MAX_PENDING:
+            runs.pop(next(iter(runs)))
+        event = runs[request_id] = threading.Event()
+    return event
+
+
 def _atomic_write(target: Path, write: Callable[[Path], Any]) -> None:
     """Write ``target`` atomically: ``write(tmp)`` fills a sibling temp file that replaces it."""
     tmp = target.with_name(f".{target.name}.{uuid.uuid4().hex[:8]}.tmp")
@@ -5214,7 +5556,14 @@ async def _handle_web_connection(ws: ServerConnection) -> None:
         logger.info("Web session %s from %s closed and cleaned up", ctx.id, remote)
 
 
-async def _handle_connection(ws: ServerConnection) -> None:
+async def _handle_connection(
+    ws: ServerConnection, *, tracker: Any = None, remote_engine: bool = False
+) -> None:
+    """Serve one desktop-style client until it disconnects.
+
+    ``rxd serve`` (engine/serve.py) passes ``remote_engine=True`` after its own token handshake, and
+    a ``tracker`` (``touch(message_type, tasks)``) that it uses for the idle timeout.
+    """
     if web.is_web_mode():
         await _handle_web_connection(ws)
         return
@@ -5228,7 +5577,7 @@ async def _handle_connection(ws: ServerConnection) -> None:
         return
 
     logger.info("Client connected from %s", remote)
-    handler = ConnectionHandler(ws)
+    handler = ConnectionHandler(ws, remote_engine=True) if remote_engine else ConnectionHandler(ws)
     # Each message runs as its own task so one slow request (export, QC, cloud open)
     # never blocks pings or other requests. Binary responses stay contiguous thanks
     # to the handler's send lock.
@@ -5239,7 +5588,10 @@ async def _handle_connection(ws: ServerConnection) -> None:
 
     try:
         async for raw_message in ws:
-            admitted = _always_admitted(_web_message_type(raw_message))
+            message_type = _web_message_type(raw_message)
+            if tracker is not None:
+                tracker.touch(message_type, tasks)
+            admitted = _always_admitted(message_type)
             if not admitted and len(counted) >= DESKTOP_MAX_INFLIGHT:
                 await handler.send(dict(BUSY_REPLY))
                 continue
@@ -5274,7 +5626,21 @@ def _preload_heavy_imports() -> None:
         logger.debug("scipy preload failed: %s", exc)
 
 
-async def _run_server(port: int, host: str | None = None) -> None:
+async def _run_server(
+    port: int,
+    host: str | None = None,
+    *,
+    handler: Callable[[ServerConnection], Any] | None = None,
+    on_ready: Callable[[int], None] | None = None,
+    stop_event: asyncio.Event | None = None,
+    serve_options: dict[str, Any] | None = None,
+) -> None:
+    """Run the WebSocket server until SIGINT / SIGTERM (or ``stop_event``).
+
+    ``rxd serve`` supplies its own ``handler`` (the token handshake), ``on_ready`` (it prints the
+    address instead of ``READY:``), ``stop_event`` (the idle timeout) and ``serve_options``; port 0
+    picks a free port and ``on_ready`` receives the real one.
+    """
     web_mode = web.is_web_mode()
     if web_mode:
         web.apply_web_defaults(
@@ -5288,7 +5654,7 @@ async def _run_server(port: int, host: str | None = None) -> None:
         plugins.discover_modules()
     except Exception:
         logger.exception("Module discovery failed (continuing without plugins)")
-    stop_event = asyncio.Event()
+    stop_event = stop_event or asyncio.Event()
     loop = asyncio.get_running_loop()
 
     def _signal_handler() -> None:
@@ -5313,10 +5679,17 @@ async def _run_server(port: int, host: str | None = None) -> None:
             server_header=None,
             max_queue=8,
         )
+    serve_kwargs.update(serve_options or {})
     bind_host = host or ("127.0.0.1" if web_mode else "localhost")
-    async with websockets.serve(_handle_connection, bind_host, port, **serve_kwargs):
-        logger.info("radarx-desktop engine listening on ws://%s:%d", bind_host, port)
-        print(f"READY:{port}", flush=True)
+    async with websockets.serve(
+        handler or _handle_connection, bind_host, port, **serve_kwargs
+    ) as listener:
+        bound = listener.sockets[0].getsockname()[1] if port == 0 else port
+        logger.info("radarx-desktop engine listening on ws://%s:%d", bind_host, bound)
+        if on_ready is not None:
+            on_ready(bound)
+        else:
+            print(f"READY:{bound}", flush=True)
         # Import xradar while the user picks a file, so the first open does not pay for it.
         threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
         await stop_event.wait()

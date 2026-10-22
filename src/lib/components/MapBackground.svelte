@@ -41,6 +41,11 @@
   export let opacity: number = 0.6;
   /** Draw the basemap tiles (false when only the mosaic is wanted). */
   export let showTiles: boolean = true;
+  /**
+   * A georeferenced layer to draw instead of the mosaic store's (the live map's composite, or
+   * null for tiles only). `undefined` (the default) draws the mosaic store's layer with its probe.
+   */
+  export let overlay: MosaicLayer | null | undefined = undefined;
 
   let canvasEl: HTMLCanvasElement; // basemap tiles (CSS-filtered for the dark theme)
   let mosaicCanvasEl: HTMLCanvasElement; // mosaic, sites, range rings: never filtered
@@ -50,11 +55,15 @@
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let rootEl: HTMLDivElement;
   let layer: MosaicLayer | null = null;
-  $: layer = $mosaicLayer;
+  $: layer = overlay === undefined ? $mosaicLayer : overlay;
   let wlayer: WindLayer | null = null;
-  $: wlayer = $windLayer;
+  $: wlayer = overlay === undefined ? $windLayer : null;
   $: mosaicShown = !!layer && layer.visible;
-  $: probing = mosaicShown && !!layer?.view;
+  // The hover probe asks the engine for the mosaic store's grid: only for that layer.
+  // A nowcast frame (a FORECAST) has no engine grid behind it: no probe, but its legend is drawn.
+  $: isForecast = !!$mosaicResult?.forecast;
+  $: probing = overlay === undefined && mosaicShown && !!layer?.view && !isForecast;
+  $: showLegend = !!layer && (probing || overlay !== undefined || (isForecast && mosaicShown));
   // Provenance class of the probed map layer: recomputed when the layer changes, not per move.
   $: mapProv = probeTag($layerMap, {
     type: 'map',
@@ -602,14 +611,14 @@
   {#if hasTiles && provider.attribution}
     <div class="map-attribution" title={provider.attributionUrl ?? ''}>{provider.attribution}</div>
   {/if}
-  {#if probing && layer}
+  {#if showLegend && layer}
     <div class="mosaic-legend" aria-label="Mosaic legend">
       <span class="legend-title">{layer.variable}</span>
       <span class="legend-end">{layer.vmin}</span>
       <span class="legend-bar" style="background: {legendGradient(layer)}"></span>
       <span class="legend-end">{layer.vmax} {layer.units}</span>
     </div>
-    {#if $mosaicProbe?.result}
+    {#if probing && $mosaicProbe?.result}
       {@const pr = $mosaicProbe.result}
       <div
         class="mosaic-tooltip"

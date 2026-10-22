@@ -17,14 +17,14 @@ from tests.conftest import make_synthetic_datatree
 from tests.test_server import _binary, _make_handler, _reader_with_tree  # noqa: F401
 
 
-def test_the_five_classes_each_have_a_definition_and_a_short_label() -> None:
-    assert lp.CLASSES == ("observed", "model", "retrieved", "simulated", "stylised")
+def test_the_six_classes_each_have_a_definition_and_a_short_label() -> None:
+    assert lp.CLASSES == ("observed", "model", "retrieved", "simulated", "stylised", "forecast")
     assert set(lp.DEFINITIONS) == set(lp.SHORT) == set(lp.CLASSES)
     assert all(len(t) > 40 for t in lp.DEFINITIONS.values())
 
 
 def test_the_frontend_vocabulary_matches_the_engine() -> None:
-    """src/lib/utils/provenance.ts keeps its own copy of the five definitions: it must not drift."""
+    """src/lib/utils/provenance.ts keeps its own copy of the six definitions: it must not drift."""
     import re
     from pathlib import Path
 

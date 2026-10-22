@@ -264,13 +264,20 @@ class MosaicRecord:
     # value mask the product was built with (None = none) and its wording ("hide below 0 dBZ")
     value_mask: dict[str, Any] | None = None
     value_mask_text: str | None = None
+    # The merged product on the AEQD working grid (ny, nx; y south -> north; NaN = no radar
+    # measured an echo) and which of its cells lie inside some radar's coverage: a nowcast needs
+    # to tell a dry cell from one that was not observed (engine/nowcast).
+    merged_aeqd: np.ndarray | None = None
+    covered_aeqd: np.ndarray | None = None
 
     @property
     def nbytes(self) -> int:
         vol = 0 if self.volume is None else int(self.volume.nbytes)
+        extra = sum(int(a.nbytes) for a in (self.merged_aeqd, self.covered_aeqd) if a is not None)
         return (
             int(self.image.nbytes + self.radar_values.nbytes + self.level_m.nbytes)
             + vol
+            + extra
             + len(self.png)
         )
 
@@ -822,6 +829,7 @@ class _Bands:
     valid: int = 0
     cover_count: np.ndarray = field(init=False)
     share_count: np.ndarray = field(init=False)
+    covered: np.ndarray = field(init=False)  # (ny, nx) bool: some radar covers the cell
 
     def __post_init__(self) -> None:
         self.merged = np.full((self.ny, self.nx), np.nan, dtype=np.float32)
@@ -829,6 +837,7 @@ class _Bands:
         self.level = np.full((self.ny, self.nx), np.nan, dtype=np.float32)
         self.cover_count = np.zeros(self.nr, dtype=np.int64)
         self.share_count = np.zeros(self.nr, dtype=np.int64)
+        self.covered = np.zeros((self.ny, self.nx), dtype=bool)
 
 
 @dataclass
@@ -1230,6 +1239,8 @@ def build_mosaic(
         volume_note=volume_note,
         value_mask=vmask,
         value_mask_text=vmask_text,
+        merged_aeqd=acc.merged,
+        covered_aeqd=acc.covered,
     )
     if cache is not None:
         cache.put(record)
@@ -1335,6 +1346,7 @@ def _reduce_band(
     cov_in = cov2 & inside[None]
     acc.cover_count += cov_in.sum(axis=(1, 2))
     n_cov = cov_in.sum(axis=0)
+    acc.covered[r0:r1] = n_cov >= 1
     acc.covered_any += int((n_cov >= 1).sum())
     acc.overlap += int((n_cov >= 2).sum())
     valid = np.isfinite(m2) & (m2 >= cut)

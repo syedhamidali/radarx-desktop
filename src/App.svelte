@@ -26,6 +26,8 @@
   import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
+  import { usingRemoteEngine } from './lib/stores/remoteEngine';
+  import RemoteEngineBadge from './lib/components/RemoteEngineBadge.svelte';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
   import { get } from 'svelte/store';
@@ -65,6 +67,8 @@
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
   const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
   const reportDialog = lazy(() => import('./lib/components/ReportIssueDialog.svelte'));
+  // Opening a file by its path on a remote engine (Settings > Engine).
+  const remoteOpenDialog = lazy(() => import('./lib/components/RemoteOpenDialog.svelte'));
   // Command Studio: every rxd command as a form (stores/commandStudio.ts).
   const commandStudio = lazy(() => import('./lib/components/CommandStudio.svelte'));
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
@@ -73,6 +77,11 @@
   const updateDialog = lazy(() => import('./lib/components/UpdateDialog.svelte'));
   // "Share" offer after an image or movie is saved.
   const shareHost = lazy(() => import('./lib/components/ShareHost.svelte'));
+  // World map of every radar in the catalogue (Cloud panel "Map" tab, command palette).
+  const radarMap = lazy(() => import('./lib/components/RadarNetworkMap.svelte'));
+  // The live map (its store, the tile map and the radar chooser) loads the first time it is asked for.
+  const liveView = lazy(() => import('./lib/components/LiveMapView.svelte'));
+  const liveChooser = lazy(() => import('./lib/components/LiveRadarChooser.svelte'));
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -126,12 +135,18 @@
     isWebMode() && $connectionStatus !== 'connected' ? engineStatusMessage($engineState) : null,
   );
   let demoBannerDismissed = $state(false);
+  let remoteOpenVisible = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
 
   // --- Local reactive state ---
   let leftSidebarOpen = $state(true);
   let rightSidebarOpen = $state(true);
-  let viewMode = $state<'2d' | '3d' | 'dualpol'>('2d');
+  let viewMode = $state<'2d' | '3d' | 'dualpol' | 'live'>('2d');
+  let liveChooserOpen = $state(false);
+  /** After the chooser saves: start the live map (set when the chooser was opened by the Live button). */
+  let liveStartAfterChoose = false;
+  $effect(() => { if (viewMode === 'live') void liveView.load(); });
+  $effect(() => { if (liveChooserOpen) void liveChooser.load(); });
   /** The cross-section pane under the PPI (only beside the 2D view). */
   const crossSectionDocked = $derived($crossSectionStore.layout === 'dock' && viewMode === '2d' && $diffMode !== 'diff');
   let commandPaletteVisible = $state(false);
@@ -140,10 +155,17 @@
   let notificationCenterOpen = $state(false);
   let onboardingVisible = $state(false);
   let settingsOpen = $state(false);
+  let radarMapOpen = $state(false);
+  let radarMapSite = $state<string | null>(null);
   /** Any modal layer open: global plain-key shortcuts must not act behind it. */
   const modalOpen = $derived(
-    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible || $reportIssueOpen,
+    commandPaletteVisible || shortcutsSheetVisible || aboutDialogVisible || settingsOpen || onboardingVisible || $reportIssueOpen || radarMapOpen || liveChooserOpen,
   );
+  function openRadarMap(e?: Event) {
+    radarMapSite = (e as CustomEvent<{ site?: string }> | undefined)?.detail?.site ?? null;
+    void radarMap.load();
+    radarMapOpen = true;
+  }
   // Fetch the chunks the current state needs (idempotent; see the `lazy(...)` declarations above).
   $effect(() => { if (filePath) { radarViewer.load(); timeline.load(); } });
   $effect(() => { if (filePath && $diffMode === 'diff') diffViewer.load(); });
@@ -210,7 +232,8 @@
   /** Panels (e.g. a module's "View in 3D") ask for a view through a window event. */
   function handleSetViewMode(e: Event) {
     const mode = (e as CustomEvent<{ mode?: string }>).detail?.mode;
-    if (mode === '2d' || mode === '3d' || mode === 'dualpol') {
+    // 'live' comes from a nowcast made from the live map's frames, which it draws on that map
+    if (mode === '2d' || mode === '3d' || mode === 'dualpol' || mode === 'live') {
       viewMode = mode;
       syncWorkspace();
     }
@@ -258,6 +281,8 @@
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('xradar:set-view-mode', handleSetViewMode);
     window.addEventListener('xradar:cloud-site', onCloudSite);
+    window.addEventListener('xradar:radar-map', openRadarMap);
+    window.addEventListener('xradar:live-chooser', onLiveChooser);
     // Check for first-launch onboarding
     if (!localStorage.getItem('xradar-onboarding-done')) {
       onboardingVisible = true;
@@ -326,6 +351,8 @@
     window.removeEventListener('keydown', handleKeyDown);
     window.removeEventListener('xradar:set-view-mode', handleSetViewMode);
     window.removeEventListener('xradar:cloud-site', onCloudSite);
+    window.removeEventListener('xradar:radar-map', openRadarMap);
+    window.removeEventListener('xradar:live-chooser', onLiveChooser);
     window.removeEventListener('dragenter', onDomDragEnter);
     window.removeEventListener('dragover', onDomDragOver);
     window.removeEventListener('dragleave', onDomDragLeave);
@@ -449,6 +476,12 @@
   }
 
   async function openFile() {
+    if (usingRemoteEngine()) {
+      // The system file picker shows this computer's disk; the remote engine needs a path on its own.
+      remoteOpenVisible = true;
+      void remoteOpenDialog.load();
+      return;
+    }
     if (isWebMode() && get(webUi)) {
       // Browser: pick files with a normal <input type=file>; they are uploaded to the engine.
       fileInput?.click();
@@ -555,6 +588,45 @@
     window.dispatchEvent(new CustomEvent('xradar:cloud-site-apply'));
   }
 
+  /** Live button / palette / welcome card: show the live map; without default radars, choose them first. */
+  async function openLive() {
+    if (get(settings).live.radars.length === 0) {
+      liveStartAfterChoose = true;
+      liveChooserOpen = true;
+      return;
+    }
+    viewMode = 'live';
+    syncWorkspace();
+    await liveView.load();
+    const live = await import('./lib/stores/live');
+    live.startLive();
+  }
+
+  /** Command palette: open the Nowcast panel with the frames to start from (open files, or the live loop). */
+  async function openNowcast(source: string) {
+    const nowcast = await import('./lib/stores/nowcast');
+    nowcast.requestNowcastSource(source === 'live' ? 'live' : 'files');
+    await showPanel('nowcast');
+  }
+
+  /** Settings > Data > "Choose on the map…" and the live view's "Radars…" button. */
+  function onLiveChooser() {
+    liveStartAfterChoose = false;
+    liveChooserOpen = true;
+  }
+
+  async function onLiveRadarsSaved(ids: string[]) {
+    if (ids.length === 0) return;
+    const live = await import('./lib/stores/live');
+    const wasRunning = get(live.liveState).running;
+    if (liveStartAfterChoose || wasRunning || viewMode === 'live') {
+      // A new choice restarts the session with the new radars (the consent given this session holds).
+      if (wasRunning) live.stopLive();
+      liveStartAfterChoose = false;
+      await openLive();
+    }
+  }
+
   /** Open files handed over by the OS, waiting (up to a minute) for the engine to be connected. */
   function openWhenConnected(paths: string[]) {
     const list = paths.filter(Boolean);
@@ -579,9 +651,14 @@
   }
 
   /** Open one or more files; the first immediately, the rest one after the other. */
-  function openPaths(paths: string[]) {
+  function openPaths(paths: string[], onRemoteComputer = false) {
     const list = paths.filter(Boolean);
     if (list.length === 0) return;
+    if (usingRemoteEngine() && !onRemoteComputer) {
+      // A path on this computer means nothing to the engine on the cluster.
+      addToast('info', 'You are using a remote engine: open files by their path on that computer (Open file, or Ctrl/Cmd+O).', 8000);
+      return;
+    }
     stopAnimation();
     openQueue = list.slice(1);
     if (!sendOpenFile(list[0])) nextQueued();
@@ -723,7 +800,7 @@
       // new file registers, and that tab would come back blank.
       openRestore = null;
     }
-    pendingRecent = path.includes('://') || get(webUi) ? null : path;
+    pendingRecent = path.includes('://') || get(webUi) || usingRemoteEngine() ? null : path; // a path on the cluster is not a recent file of this computer
     wsManager.openFile(path);
     addToast('info', `Opening ${name}...`);
     return true;
@@ -963,6 +1040,9 @@
       </div>
 
       <button class="toolbar-btn" on:pointerenter={() => movieStudio.load()} on:focus={() => movieStudio.load()} on:click={() => { void movieStudio.load(); openMovieStudio(); }} title="Movie Studio: make a storm movie (MP4)" aria-label="Movie Studio">Movie</button>
+      {#if !$webUi}
+        <button class="toolbar-btn" class:active={viewMode === 'live'} on:pointerenter={() => liveView.load()} on:focus={() => liveView.load()} on:click={openLive} title="Live map: the latest scans of your default radars (asks before downloading)" aria-label="Live map" data-testid="toolbar-live">Live</button>
+      {/if}
       <button class="toolbar-btn icon-btn" class:active={$diffMode === 'diff'} on:click={toggleDiffMode} title="Toggle Diff View">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="9" cy="12" r="6" /><circle cx="15" cy="12" r="6" />
@@ -1056,7 +1136,9 @@
     <div class="viewer-and-timeline">
       <FileTabs on:openfile={openFile} />
       <section class="viewer-area" class:with-dock={crossSectionDocked}>
-        {#if filePath}
+        {#if viewMode === 'live'}
+          {#if liveView.component}<liveView.component onchoose={onLiveChooser} />{/if}
+        {:else if filePath}
           {#if $diffMode === 'diff'}
             {#if diffViewer.component}<diffViewer.component />{/if}
           {:else if viewMode === '2d'}
@@ -1077,6 +1159,7 @@
           <WelcomeScreen
             on:open-file={openFile}
             on:open-cloud={openLatestFromCloud}
+            on:open-live={openLive}
             on:open-recent={(e) => openPaths([e.detail.path])}
             on:load-workspace={(e) => {
               const config = workspaceStore.loadWorkspace(e.detail.name);
@@ -1085,7 +1168,7 @@
           />
         {/if}
       </section>
-      {#if filePath && timeline.component}
+      {#if filePath && timeline.component && viewMode !== 'live'}
         <timeline.component />
       {/if}
     </div>
@@ -1124,6 +1207,7 @@
       <span class="led {ledClass}" title={statusText}></span>
       <span class="hud-label sb-key">ENGINE</span>
       <span class="sb-val mono" class:ok={$connectionStatus === 'connected'}>{engineWord}</span>
+      <RemoteEngineBadge />
       {#if progress && progress.percent > 0 && progress.percent < 100}
         <span class="statusbar-divider">/</span>
         <span class="progress-text">{progress.message} ({Math.round(progress.percent)}%)</span>
@@ -1182,7 +1266,15 @@
     else if (type === 'data-check') openDataCheck();
     else if (type === 'movie-studio') { void movieStudio.load(); openMovieStudio(); }
     else if (type === 'autopilot') openAutopilot(get(openFiles).map((f) => f.path));
+    else if (type === 'radar-map') openRadarMap();
+    else if (type === 'live-map') void openLive();
+    else if (type === 'live-radars') onLiveChooser();
+    else if (type === 'nowcast') void openNowcast(value);
   }} />
+  {/if}
+  {#if radarMapOpen && radarMap.component}<radarMap.component initialSiteId={radarMapSite} onclose={() => (radarMapOpen = false)} />{/if}
+  {#if liveChooserOpen && liveChooser.component}
+    <liveChooser.component onclose={() => (liveChooserOpen = false)} onsaved={onLiveRadarsSaved} />
   {/if}
   {#if $movieStudioOpen && movieStudio.component}<movieStudio.component />{/if}
   {#if tour.component}<tour.component bind:visible={onboardingVisible} />{/if}
@@ -1191,6 +1283,7 @@
   {#if crossDialog.component}<crossDialog.component />{/if}
   {#if envDialog.component}<envDialog.component />{/if}
   {#if shareHost.component}<shareHost.component />{/if}
+  {#if remoteOpenVisible && remoteOpenDialog.component}<remoteOpenDialog.component onopen={(p: string) => openPaths([p], true)} onclose={() => (remoteOpenVisible = false)} />{/if}
   {#if $reportIssueOpen && reportDialog.component}<reportDialog.component onclose={closeReportIssue} />{/if}
   {#if $commandStudioOpen && commandStudio.component}<commandStudio.component onopen={openPaths} />{/if}
   {#if settingsOpen && settingsDialog.component}

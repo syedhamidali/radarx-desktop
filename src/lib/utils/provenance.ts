@@ -2,12 +2,12 @@
  * Provenance of a layer: *what kind of numbers are these, and where do they come from?*
  *
  * The engine (python/engine/layer_provenance.py) sends a small `provenance` object with every field
- * and layer. This module is the pure part of the front end: the vocabulary (five classes), a
+ * and layer. This module is the pure part of the front end: the vocabulary (six classes), a
  * defensive parser (a malformed object never breaks the UI), time formatting and the mapping from
  * an engine message to the layer it describes. No Svelte, no DOM: it is unit tested with node.
  */
 
-export const KINDS = ['observed', 'model', 'retrieved', 'simulated', 'stylised'] as const;
+export const KINDS = ['observed', 'model', 'retrieved', 'simulated', 'stylised', 'forecast'] as const;
 export type Kind = (typeof KINDS)[number];
 
 /** Short chip text, a name, and the one-sentence definition (kept in step with the engine). */
@@ -39,6 +39,12 @@ export const KIND_INFO: Record<Kind, { short: string; label: string; definition:
     short: 'STYLE',
     label: 'Stylised',
     definition: 'Drawn for appearance (shading, clouds, exaggeration); not a data value.',
+  },
+  forecast: {
+    short: 'FCST',
+    label: 'Forecast',
+    definition:
+      'A statement about a future time, extrapolated from past observations; experimental guidance with a stated lead time and measured skill, not an official forecast and never an observation.',
   },
 };
 
@@ -155,7 +161,7 @@ export function formatValue(v: unknown): string {
 
 // ── Layers: which engine message describes which layer ───────────────────────────────────────────
 
-export type LayerGroup = 'Radar' | 'Derived' | 'Mosaic' | 'Winds' | 'Cells' | 'Sections' | 'Environment' | 'Appearance';
+export type LayerGroup = 'Radar' | 'Derived' | 'Mosaic' | 'Winds' | 'Cells' | 'Sections' | 'Environment' | 'Forecast' | 'Appearance';
 
 export interface LayerKey {
   id: string;
@@ -165,7 +171,7 @@ export interface LayerKey {
   fileId?: string;
 }
 
-const GROUP_ORDER: LayerGroup[] = ['Radar', 'Derived', 'Mosaic', 'Winds', 'Cells', 'Sections', 'Environment', 'Appearance'];
+const GROUP_ORDER: LayerGroup[] = ['Radar', 'Derived', 'Mosaic', 'Winds', 'Cells', 'Sections', 'Environment', 'Forecast', 'Appearance'];
 export const groupRank = (g: LayerGroup): number => GROUP_ORDER.indexOf(g);
 
 /** Where the provenance object sits in a message (most messages: top level). */
@@ -212,6 +218,8 @@ export function layerKeyFromMessage(type: string, msg: any, prov: Provenance | n
       return typeof msg?.request_id === 'string'
         ? { id: `env:${msg.request_id}`, group: 'Environment', title: title ?? prov?.source ?? 'Environment data' }
         : null;
+    case 'nowcast_result':
+      return typeof msg?.nowcast_id === 'string' ? { id: `nowcast:${msg.nowcast_id}`, group: 'Forecast', title: title ?? 'Nowcast' } : null;
     default:
       return null;
   }

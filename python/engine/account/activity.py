@@ -114,7 +114,7 @@ def format_family(label: Any) -> str:
 KNOWN_COMMANDS = frozenset(
     {
         "login", "logout", "whoami", "info", "check", "plot", "pipeline", "run", "modules", "cells",
-        "sounding", "mosaic", "winds", "animate", "qpe", "basin", "export", "examples",
+        "sounding", "mosaic", "winds", "animate", "qpe", "basin", "export", "serve", "examples",
         "completion",
     }
 )  # fmt: skip
