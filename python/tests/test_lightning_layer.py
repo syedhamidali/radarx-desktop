@@ -603,3 +603,11 @@ def test_lightning_open_is_refused_in_web_mode(glm_file: Path):
         assert err["type"] == "lightning_error" and "desktop" in err["message"]
 
     asyncio.run(run())
+
+
+def test_a_flood_of_groups_is_cut_by_whole_flashes_and_said(glm_file: Path, monkeypatch):
+    monkeypatch.setattr(ll, "MAX_POINTS", 4)
+    ls = ll.read_glm([glm_file], good_only=False)
+    # the three flashes have 3, 2 and 1 groups: only the first fits under a cap of 4, whole
+    assert ls.n_flashes == 1 and ls.n_points == 3 and ls.meta["truncated"] is True
+    assert any("first 1 flashes" in n for n in ls.notes)

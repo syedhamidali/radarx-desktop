@@ -615,6 +615,17 @@ def read_glm(
     )
     gt = np.nonzero(good)[0]
     gt = gt[np.argsort(g_cat["t"][gt], kind="stable")]
+    if gt.size > MAX_POINTS:
+        # keep the earliest flashes whose groups fit under the cap, whole (never half a flash)
+        cumulative = np.cumsum(np.bincount(g_flash[gt], minlength=f_arr["t0"].size))
+        keep_n = int(np.searchsorted(cumulative, MAX_POINTS, side="right"))
+        gt = gt[g_flash[gt] < keep_n]
+        f_arr = {k: v[:keep_n] for k, v in f_arr.items()}
+        meta["truncated"] = True
+        notes.append(
+            f"Only the first {keep_n} flashes in time are kept ({MAX_POINTS} groups at most). "
+            "Narrow the box or give fewer files."
+        )
     p_lat, p_lon = g_cat["lat"][gt], g_cat["lon"][gt]
     f_lat, f_lon = f_arr["lat"].copy(), f_arr["lon"].copy()
 
