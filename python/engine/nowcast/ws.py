@@ -42,6 +42,8 @@ from engine.nowcast import run as nr
 
 MAX_RESULTS = 2
 MAX_LAYERS = 125  # 120 leads of one product
+#: probabilities below this are left transparent on the map (the legend says so in the docs)
+PROB_DRAW_MIN = 0.02
 
 
 class NowcastStore:
@@ -396,6 +398,9 @@ def layers_for(
         if len(out) >= MAX_LAYERS:
             break
         img = me._resample_to_image(stack[k], layout)
+        if kind == "probability":
+            # a probability under 2 percent is not drawn (transparent, like a cell without echo)
+            img = np.where(img >= PROB_DRAW_MIN, img, np.nan).astype(np.float32)
         png = me.render_png(img, lut, vmin, vmax)
         item: dict[str, Any] = {
             "lead_min": float(ld),
