@@ -144,7 +144,7 @@ codes masked): `--theme dark`, `--dpi 300`, `--vmin/--vmax`, `-p figure.pdf` for
 `rxd check` is the same data check the app shows after opening a file: what looks wrong (aliasing,
 range folding, clutter, ZDR offset, time gaps ...), with the evidence, where it is, and a suggested
 QC recipe. It changes nothing and exits 0 even when it finds problems (3 only when a file cannot be
-read). `--fix-plan -o recipe.json` writes the suggested recipe for `rxd pipeline`. Every check, its
+read). `--fix-plan -o recipe.json` writes the suggested recipes for `rxd pipeline`, one per variable, named after the `-o` file: `recipe_velocity.json`, `recipe_reflectivity.json` and `recipe_zdr.json` for the example below (only those the data need). Every check, its
 method and thresholds: {doc}`DATA_CHECK`.
 
 `--json` always prints a list with one report per file, also for a single file. (Before 0.3.1 one
@@ -548,7 +548,7 @@ error: File not found: missing.nc (looked for /.../missing.nc). Check the path a
 | 0 | success |
 | 1 | the processing failed (the algorithm could not run on this data) |
 | 2 | the command was used wrongly: unknown option, module, recipe, variable, bad `-P`, sweep out of range |
-| 3 | an input file is missing, is not a file, or cannot be read |
+| 3 | an input file is missing, is not a file, or cannot be read (an empty, 0-byte file currently gives 1; a script should treat 1 and 3 alike) |
 | 4 | an optional Python package is missing; the message says how to install it (`pip install -U radarx`) |
 | 5 | no signed-in account: run `rxd login` (every command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help`, `--version`) |
 | 70 | an unexpected internal error (re-run with `-vv` for the traceback and report it) |
