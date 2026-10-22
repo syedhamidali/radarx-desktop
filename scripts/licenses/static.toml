@@ -162,9 +162,19 @@ note = "Natural Earth places no restrictions on use, commercial or not, and asks
 kind = "data"
 name = "Radar site catalogue: NOAA NCEI HOMR NEXRAD station list"
 license = "US government work (public domain)"
-where = "src/lib/data/nexradSites.json and src/lib/data/radarCatalogue.json (shipped in the app; a transcription, not official NWS material)"
+where = "src/lib/data/nexradSites.json and src/lib/data/radarCatalogue.json (156 NEXRAD and 47 TDWR sites; shipped in the app; a transcription, not official NWS or FAA material)"
 attribution = "NOAA National Centers for Environmental Information, Historical Observing Metadata Repository; NOAA asks for credit"
 url = "https://www.ncei.noaa.gov/access/homr/file/nexrad-stations.txt"
+note = "The same station file lists the FAA Terminal Doppler Weather Radars (station type TDWR). To say which of them were active, one list of folder names of the Unidata real-time Level II bucket (unidata-nexrad-level2, AWS Open Data) for one UTC day was read; no radar data were taken from it. Retrieved 2026-10-22."
+
+[[entry]]
+kind = "data"
+name = "Radar site catalogue: Bureau of Meteorology / NCI Australian operational radar archive site list"
+license = "CC BY 4.0 (licence file shipped with the archive; the NCI collection record says licences vary by dataset)"
+where = "src/lib/data/radarCatalogue.json (positions, band, Doppler and dual-polarisation flags, in-service dates of 82 Australian radar sites; shipped in the app)"
+attribution = "Bureau of Meteorology and NCI Australia: Soderholm J., A. Protat, C. Jakob, 2019, Australian Operational Weather Radar Dataset, doi:10.25914/5cb686a8d9450"
+url = "https://thredds.nci.org.au/thredds/fileServer/rq0/radar_site_list.csv"
+note = "radar_site_list.csv sits in the top folder of the archive beside rq0_level1_license-cc4.pdf (Creative Commons Attribution 4.0 International). Retrieved 2026-10-22. The Bureau's website pages were not copied: their terms allow personal or in-organisation use only; only link addresses to them are in the catalogue."
 
 [[entry]]
 kind = "data"
@@ -180,7 +190,7 @@ note = "The OPERA page describes the database as 'public information, location a
 kind = "data"
 name = "Radar site catalogue: WMO OSCAR/Surface weather radar stations"
 license = "terms not verified (WMO public metadata repository)"
-where = "src/lib/data/radarCatalogue.json (positions, WIGOS ids, territory and declared status of 632 radars; shipped in the app)"
+where = "src/lib/data/radarCatalogue.json (positions, WIGOS ids, territory and declared status of 570 radars; shipped in the app)"
 attribution = "World Meteorological Organization, OSCAR/Surface (WIGOS station metadata)"
 url = "https://oscar.wmo.int/surface/"
 flag = "terms to confirm"

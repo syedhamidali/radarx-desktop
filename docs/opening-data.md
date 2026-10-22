@@ -25,6 +25,12 @@ The format is detected from the file contents (NEXRAD Level II, ODIM H5, CfRadia
 Furuno, IMD, UF, ...), so the name does not matter: `KTLX20130520_201643_V06`, `volume.nc.3` and
 `KTLX20130520_201643_V06.gz` all open the same way.
 
+**Airport radars (TDWR).** The FAA Terminal Doppler Weather Radars write the same Level II format. One
+Denver file (`TDEN20261021_000039_V08`, 0.9 MB, 16 sweeps of reflectivity, velocity and spectrum width) was
+opened by the app's reader on 22 October 2026, so *Open* works on TDWR files you have downloaded (from NOAA
+NCEI, or from the Unidata bucket the Cloud panel uses). The app cannot fetch TDWR files for you yet; the
+radar network map lists the 47 sites and links to the NCEI page ({doc}`RADAR_MAP`).
+
 ## Several files and several radars
 
 Every open file gets a tab. The files of several radars can be combined into a mosaic ({doc}`MOSAIC`) or a wind
