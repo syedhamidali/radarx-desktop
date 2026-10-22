@@ -350,17 +350,6 @@ export interface ColourAffine {
   t: number[];
 }
 
-const IDENTITY: ColourAffine = { m: [1, 0, 0, 0, 1, 0, 0, 0, 1], t: [0, 0, 0] };
-
-function mul(a: ColourAffine, b: ColourAffine): ColourAffine {
-  // result = a(b(x)) = a.m (b.m x + b.t) + a.t
-  const m = new Array<number>(9).fill(0);
-  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) m[i * 3 + j] += a.m[i * 3 + k] * b.m[k * 3 + j];
-  const t = [0, 0, 0];
-  for (let i = 0; i < 3; i++) t[i] = a.m[i * 3] * b.t[0] + a.m[i * 3 + 1] * b.t[1] + a.m[i * 3 + 2] * b.t[2] + a.t[i];
-  return { m, t };
-}
-
 function saturateMatrix(s: number): ColourAffine {
   return {
     m: [
@@ -385,15 +374,18 @@ function hueMatrix(deg: number): ColourAffine {
   };
 }
 
+/** Most stages the shader takes (the dark map filter has five). */
+export const MAX_FILTER_STAGES = 6;
+
 /**
- * Parse a CSS `filter` made of invert(), hue-rotate(), brightness(), contrast() and saturate() into one
- * affine colour map (the same operations the flat map's canvas filter applies, per the CSS Filter Effects
- * definitions, without the intermediate clamping). "none" or anything unknown gives the identity.
+ * Parse a CSS `filter` made of invert(), hue-rotate(), brightness(), contrast() and saturate() into its
+ * stages, one affine colour map each, in order. The stages are kept apart because browsers clamp to
+ * 0..1 between two filter functions (hue-rotate of a dark inverted map overshoots and is clamped), and
+ * the globe has to look like the flat map. "none" or anything unknown gives no stages.
  */
-export function parseColourFilter(filter: string): ColourAffine {
-  let out = IDENTITY;
+export function parseColourFilter(filter: string): ColourAffine[] {
+  const stages: ColourAffine[] = [];
   const re = /([a-z-]+)\(\s*([-0-9.]+)\s*(deg|%)?\s*\)/g;
-  let any = false;
   for (const m of filter.matchAll(re)) {
     let x = parseFloat(m[2]);
     if (m[3] === '%') x /= 100;
@@ -405,17 +397,21 @@ export function parseColourFilter(filter: string): ColourAffine {
       case 'saturate': op = saturateMatrix(x); break;
       case 'hue-rotate': op = hueMatrix(x); break;
     }
-    if (!op) return IDENTITY;
-    out = mul(op, out);
-    any = true;
+    if (!op) return [];
+    stages.push(op);
   }
-  return any ? out : IDENTITY;
+  return stages.slice(0, MAX_FILTER_STAGES);
 }
 
-export function applyColourAffine(a: ColourAffine, rgb: [number, number, number]): [number, number, number] {
-  const o: [number, number, number] = [0, 0, 0];
-  for (let i = 0; i < 3; i++) o[i] = clamp(a.m[i * 3] * rgb[0] + a.m[i * 3 + 1] * rgb[1] + a.m[i * 3 + 2] * rgb[2] + a.t[i], 0, 1);
-  return o;
+/** Apply the stages in order, clamping to 0..1 after each (what the browser's filter does). */
+export function applyColourFilter(stages: readonly ColourAffine[], rgb: [number, number, number]): [number, number, number] {
+  let c = rgb;
+  for (const a of stages) {
+    const o: [number, number, number] = [0, 0, 0];
+    for (let i = 0; i < 3; i++) o[i] = clamp(a.m[i * 3] * c[0] + a.m[i * 3 + 1] * c[1] + a.m[i * 3 + 2] * c[2] + a.t[i], 0, 1);
+    c = o;
+  }
+  return c;
 }
 
 // ── Drawing helpers: polylines on the sphere ──────────────────────────────────────────────────

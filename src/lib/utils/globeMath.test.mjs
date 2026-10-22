@@ -32,7 +32,8 @@ import {
   poleBlend,
   tilesByDistance,
   parseColourFilter,
-  applyColourAffine,
+  applyColourFilter,
+  MAX_FILTER_STAGES,
   polylineVectors,
   traceVisible,
   graticuleLines,
@@ -361,24 +362,36 @@ test('tile order: all 64 tiles of level 3 exactly once, nearest first, antimerid
 // ── Colour filter as a matrix ────────────────────────────────────────────────────────────────
 
 test('colour filter: none is the identity, invert flips, brightness scales', () => {
-  const id = parseColourFilter('none');
-  assert.deepEqual(applyColourAffine(id, [0.2, 0.5, 0.9]), [0.2, 0.5, 0.9]);
-  assert.deepEqual(applyColourAffine(parseColourFilter('invert(1)'), [1, 1, 1]), [0, 0, 0]);
-  const half = applyColourAffine(parseColourFilter('brightness(0.5)'), [1, 0.5, 0]);
+  assert.deepEqual(parseColourFilter('none'), []);
+  assert.deepEqual(applyColourFilter(parseColourFilter('none'), [0.2, 0.5, 0.9]), [0.2, 0.5, 0.9]);
+  assert.deepEqual(applyColourFilter(parseColourFilter('invert(1)'), [1, 1, 1]), [0, 0, 0]);
+  const half = applyColourFilter(parseColourFilter('brightness(0.5)'), [1, 0.5, 0]);
   near(half[0], 0.5); near(half[1], 0.25); near(half[2], 0);
-  near(applyColourAffine(parseColourFilter('contrast(0.5)'), [1, 1, 1])[0], 0.75);
-  const grey = applyColourAffine(parseColourFilter('saturate(0)'), [1, 0, 0]);
+  near(applyColourFilter(parseColourFilter('contrast(0.5)'), [1, 1, 1])[0], 0.75);
+  const grey = applyColourFilter(parseColourFilter('saturate(0)'), [1, 0, 0]);
   near(grey[0], grey[1], 1e-9); near(grey[1], grey[2], 1e-9);
-  assert.deepEqual(applyColourAffine(parseColourFilter('bogus(3)'), [0.1, 0.2, 0.3]), [0.1, 0.2, 0.3]);
-  assert.deepEqual(applyColourAffine(parseColourFilter('hue-rotate(0deg)'), [0.1, 0.2, 0.3]).map((x) => +x.toFixed(9)), [0.1, 0.2, 0.3]);
+  assert.deepEqual(parseColourFilter('bogus(3)'), [], 'an unknown function means no filter');
+  const id = applyColourFilter(parseColourFilter('hue-rotate(0deg)'), [0.1, 0.2, 0.3]).map((x) => +x.toFixed(9));
+  assert.deepEqual(id, [0.1, 0.2, 0.3]);
+  assert.equal(parseColourFilter('invert(1) hue-rotate(196deg) brightness(0.74) contrast(0.95) saturate(0.62)').length, 5);
+  assert.ok(MAX_FILTER_STAGES >= 5);
+});
+
+test('the filter clamps between stages like a browser (hue-rotate overshoot is cut before the next step)', () => {
+  // a dark colour: invert gives a light one; hue-rotate(196) pushes a channel above 1 or below 0
+  const stages = parseColourFilter('invert(1) hue-rotate(196deg) brightness(0.74)');
+  const stepwise = applyColourFilter(stages, [0.05, 0.08, 0.2]);
+  const one = applyColourFilter([stages[0], stages[1]], [0.05, 0.08, 0.2]);
+  for (const c of one) assert.ok(c >= 0 && c <= 1);
+  near(stepwise[0], one[0] * 0.74, 1e-9);
 });
 
 test('the dark map filter turns the light OSM paper dark and keeps the order of lightness', () => {
   const dark = parseColourFilter('invert(1) hue-rotate(196deg) brightness(0.74) contrast(0.95) saturate(0.62)');
-  const paper = applyColourAffine(dark, [0.914, 0.91, 0.933]);
+  const paper = applyColourFilter(dark, [0.914, 0.91, 0.933]);
   assert.ok(paper[0] < 0.3 && paper[1] < 0.3 && paper[2] < 0.35, `paper became ${paper}`);
-  const white = applyColourAffine(dark, [1, 1, 1]);
-  const black = applyColourAffine(dark, [0, 0, 0]);
+  const white = applyColourFilter(dark, [1, 1, 1]);
+  const black = applyColourFilter(dark, [0, 0, 0]);
   assert.ok(white[0] < black[0] && white[1] < black[1], 'invert: white becomes darker than black');
 });
 
