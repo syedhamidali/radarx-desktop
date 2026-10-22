@@ -313,6 +313,18 @@ where = "src/lib/vendor/webm-muxer; writes the WebM container (VP9 + Opus) of a 
 attribution = "Copyright (c) 2022 Vanilagy. LICENSE next to the file."
 url = "https://github.com/Vanilagy/webm-muxer"
 
+# ---------------------------------------------------------------- optional packages (the user installs them)
+# Not in the installers and not in the default install: `pip install "radarx-desktop-engine[grib]"` adds them. They
+# decode the GRIB2 messages of the model and radar-product providers (docs/environment-sources.md); without them those
+# messages are still downloaded and cached, and the error says what to install.
+[[entry]]
+kind = "component"
+name = "eccodes (Python interface) 2.50.0, with the ecCodes library (eccodeslib 2.50.0) and eckit (eckitlib 2.5.0)"
+license = "Apache-2.0"
+where = "optional extra `grib`; reads the GRIB2 messages of HRRR and MRMS (engine/environment/gribio.py). Not bundled in the installers."
+attribution = "Copyright ECMWF. LICENSE and NOTICE ship in the wheels. The Python wheels bundle the C libraries ecCodes, eckit and their own dependencies."
+url = "https://github.com/ecmwf/eccodes-python"
+
 # ---------------------------------------------------------------- optional components (downloaded on request)
 # The movie components pack (scripts/release/build_movie_pack.py, engine/movie_pack.py): NOT in the installers.
 # The installed app offers it in the Movie Studio with a consent card (what, from where, how big, licences) and
