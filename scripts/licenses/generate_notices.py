@@ -316,7 +316,9 @@ def collect_python(policy: Policy) -> list[Entry]:
     pyproject = tomllib.loads((ROOT / "python" / "pyproject.toml").read_text())
     project = pyproject["project"]
     roots = [Requirement(r) for r in project["dependencies"]]
-    roots += [Requirement(r) for r in project.get("optional-dependencies", {}).get("radarx", [])]
+    extras = project.get("optional-dependencies", {})
+    for extra in ("radarx", "keyring"):  # the extras the installers carry
+        roots += [Requirement(r) for r in extras.get(extra, [])]
     # packages the PyInstaller spec collects when they are installed
     extra_roots = ["fsspec", "s3fs", "h5netcdf", "netCDF4", "numcodecs", "cmweather", "colorcet"]
     dists = {_canon(d.metadata["Name"]): d for d in metadata.distributions() if d.metadata["Name"]}
