@@ -1,0 +1,13 @@
+{
+  "note": "Reference run for scripts/perf/bench_check.py; refresh with --update when Python or a library is upgraded.",
+  "python": "3.14.2",
+  "calibration_ms": 89.43,
+  "metrics": {
+    "ready_ms": 582.2,
+    "libraries_at_ready": 118,
+    "sweep_switching_cpu_ms": 63.6,
+    "png_switch_cpu_ms": 168.28,
+    "volume_res100_cpu_ms": 302.86,
+    "cross_section_cpu_ms": 53.52
+  }
+}
