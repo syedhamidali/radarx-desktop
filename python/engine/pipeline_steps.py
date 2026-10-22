@@ -23,7 +23,7 @@ from typing import Any
 import numpy as np
 
 from engine._lazy import LazyModule
-from engine.dealias_reference import REFERENCES, fold_reference_shift
+from engine.dealias_reference import REFERENCES, fold_check, fold_reference_shift
 from engine.pipeline import StepOutcome, StepSkippedError, WorkingState, step
 from engine.plugins import param
 
@@ -769,7 +769,7 @@ def range_clip(
             ),
         ),
     ],
-    kernels=[unfold_velocity, G.covers_full_circle, fold_reference_shift],
+    kernels=[unfold_velocity, G.covers_full_circle, fold_reference_shift, fold_check],
     script="""
         nyq = {nyquist_velocity} or nyquist_of(ds, fields["VRADH"])
         vel = np.where(keep, fields["VRADH"], np.nan)
@@ -786,6 +786,9 @@ def range_clip(
                 out = out + np.float32(k * 2.0 * nyq)
             except ValueError as exc:
                 warnings.warn(f"dealias reference not applied: {exc}", stacklevel=1)
+        check = fold_check(np.where(keep, out, np.nan), azimuth, nyq, range_m)
+        if check["status"] in ("whole_field_offset", "inconsistent"):
+            warnings.warn(check["message"], RuntimeWarning, stacklevel=1)
         fields["VRADH"] = np.where(np.isfinite(out), out, fields["VRADH"])
     """,
 )
@@ -837,10 +840,17 @@ def dealias(
     unfolded = good & (np.abs(out - masked) > nyq)
     state.fields["VRADH"] = np.where(np.isfinite(out), out, raw).astype(np.float32)
     notes[0] += f"; {int(unfolded.sum())} gates unfolded"
+    # Always on, whatever the reference: is the unfolded sweep in the right interval? (issue #152)
+    check = fold_check(
+        np.where(np.isfinite(masked), out, np.nan), state.azimuth, nyq, state.range_m
+    )
+    notes.append(check["message"])
+    if check["status"] in ("whole_field_offset", "inconsistent"):
+        warnings.warn(check["message"], RuntimeWarning, stacklevel=2)
     return StepOutcome(
         modified=int(unfolded.sum()),
         notes=notes,
-        metrics={"nyquist": nyq},
+        metrics={"nyquist": nyq, "fold_check": {k: v for k, v in check.items() if k != "message"}},
     )
 
 

@@ -7,6 +7,7 @@ that chains multiple steps in user-defined order.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -368,7 +369,7 @@ def velocity_dealiasing(
         ``"vad"`` uses the constant term of a uniform-wind VAD fit (refused when the echo leaves
         an azimuth gap wider than 180 degrees). See :mod:`engine.dealias_reference`.
     """
-    from engine.dealias_reference import REFERENCES, fold_reference_shift
+    from engine.dealias_reference import REFERENCES, fold_check, fold_reference_shift
 
     if not np.isfinite(nyquist_vel) or nyquist_vel <= 0:
         raise ValueError(f"nyquist_vel must be a positive number, got {nyquist_vel}")
@@ -411,6 +412,18 @@ def velocity_dealiasing(
 
     out = data.copy(data=values)
     out.attrs = {**data.attrs, "qc_dealiased": note}
+    if values.ndim == 2 and "azimuth" in data.coords and not mask.all():
+        # Always on: say loudly when the unfolded sweep sits in a wrong interval (issue #152).
+        az_axis = _azimuth_axis(data)
+        check = fold_check(
+            np.moveaxis(values, az_axis, 0),
+            data.coords["azimuth"].values,
+            nyquist_vel,
+            data.coords["range"].values if "range" in data.coords else None,
+        )
+        out.attrs["qc_fold_check"] = f"{check['status']}: {check['message']}"
+        if check["status"] in ("whole_field_offset", "inconsistent"):
+            warnings.warn(check["message"], RuntimeWarning, stacklevel=2)
     return out
 
 
