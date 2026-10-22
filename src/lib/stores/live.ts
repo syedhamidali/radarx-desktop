@@ -79,6 +79,28 @@ import {
   type OpenedVolume,
 } from '../utils/liveDisplay';
 import type { MosaicRadarInfo } from './mosaic';
+import { loadProviders } from './radarNetworks';
+import { liveNetworkOf, liveSiteCode, type LiveProviderInfo } from '../utils/liveLogic';
+
+/** The name the composite gives a radar: "KTLX" for NEXRAD, "DWD ESS" for dwd:ess (the engine's instrument name). */
+function radarName(id: string): string {
+  return liveNetworkOf(id) === 'dwd' ? `DWD ${liveSiteCode(id).toUpperCase()}` : id;
+}
+
+/**
+ * What the engine says about the servers behind the chosen radars (host, listing size, credit,
+ * licence), for the consent dialogs. A local engine call; when it fails the dialogs use the
+ * engine's own wording for DWD that is built in.
+ */
+async function providerInfo(ids: readonly string[]): Promise<{ dwd?: LiveProviderInfo }> {
+  if (!ids.some((id) => liveNetworkOf(id) === 'dwd')) return {};
+  try {
+    const all = await loadProviders();
+    return all.dwd ? { dwd: all.dwd } : {};
+  } catch {
+    return {};
+  }
+}
 
 // ── Types ───────────────────────────────────────────────────────────────────────────────────
 
@@ -122,7 +144,9 @@ export interface LiveFrame extends FrameMeta {
   /** True when the picture is smoothed (drawn pixels finer than the grid). */
   smoothed: boolean;
   /** Credit of the volumes (source, attribution, licence) as the engine states it. */
-  credit: { source?: string; attribution?: string; licence?: string } | null;
+  credits: { source?: string; attribution?: string; licence?: string }[];
+  /** How far each radar sees (km), by the name the composite uses for it ("KTLX", "DWD ESS"), for its ring. */
+  rangeByName: Record<string, number>;
 }
 
 /** A volume the live engine holds right now (from the last frame's cache report). */
@@ -132,6 +156,9 @@ export interface HeldInfo {
   size: number;
   scan_time: string | null;
   on_disk: boolean;
+  /** True when the volume can be opened as a file now (its file is on disk, or it is held in memory). */
+  openable: boolean;
+  provider?: string;
 }
 
 /** What the last action (open, save, ...) did, shown under the status line. */
@@ -326,7 +353,10 @@ function makeFrame(header: any, png: Uint8Array): Promise<LiveFrame> {
         warnings: Array.isArray(header.warnings) ? header.warnings : [],
         floor: typeof header.display?.floor_dbz === 'number' ? header.display.floor_dbz : null,
         smoothed: Number(header.display?.smoothing ?? 1) > 1,
-        credit: header.credit && typeof header.credit === 'object' ? header.credit : null,
+        credits: Array.isArray(header.credits) ? header.credits : header.credit ? [header.credit] : [],
+        rangeByName: Object.fromEntries(
+          stations.filter((s) => typeof s?.range_km === 'number').map((s) => [radarName(String(s.station)), s.range_km as number]),
+        ),
       });
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('the composite image could not be decoded')); };
@@ -367,7 +397,7 @@ async function runUpdate(): Promise<void> {
     // 1. consent for the listing (first time, or every time after "Allow once")
     if (needsPrompt(get(liveListConsent), 'list')) {
       patch({ phase: 'waiting', message: '' });
-      const choice = await ask('list', describeLiveListing(stations, new Date()));
+      const choice = await ask('list', describeLiveListing(stations, new Date(), await providerInfo(stations)));
       if (choice === 'cancel' || !alive()) { cancelOp(op.id); if (alive()) stop(); return; }
       if (choice === 'once') patch({ onceOnly: true });
     }
@@ -402,7 +432,7 @@ async function runUpdate(): Promise<void> {
     // 4. consent for the downloads, with the exact sizes
     if (plan.toDownload.length > 0 && needsPrompt(get(liveDownloadConsent), 'download')) {
       patch({ phase: 'waiting' });
-      const choice = await ask('download', describeLiveDownload(plan, get(settings).live.intervalMin));
+      const choice = await ask('download', describeLiveDownload(plan, get(settings).live.intervalMin, await providerInfo(plan.toDownload.map((f) => f.station))));
       if (choice === 'cancel' || !alive()) { cancelOp(op.id); if (alive()) stop(); return; }
       // The timer runs only when both steps were allowed for the session.
       patch({ onceOnly: choice === 'once' || !get(liveListConsent).session });
@@ -671,7 +701,7 @@ function watchWindOutcome(): void {
 /** The newest volumes the live map holds, as the stations of the shown frame in order. */
 export function openableNow(): string[] {
   const frame = get(liveShownFrame);
-  const held = get(liveHeld).filter((h) => h.on_disk).map((h) => h.station);
+  const held = get(liveHeld).filter((h) => h.openable).map((h) => h.station);
   return openableStations(frame?.radars.map((r) => ({ station: r.station })) ?? [], held);
 }
 

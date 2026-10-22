@@ -172,7 +172,8 @@ export interface MosaicProbeResult {
 export interface MosaicLayer {
   image: HTMLImageElement;
   corners: [number, number][];
-  radars: (MosaicRadarInfo & { color: string })[];
+  /** `ringKm` overrides the layer's ring for one radar (the live map: each radar's own range). */
+  radars: (MosaicRadarInfo & { color: string; ringKm?: number })[];
   ringKm: number;
   opacity: number;
   visible: boolean;

@@ -1,17 +1,19 @@
 <script lang="ts">
   /**
-   * LiveRadarChooser - choose the default radars of the live map: click sites on a map (the
-   * radar-sites layer in picker mode), search by id, name or state, order the list, and, only
+   * LiveRadarChooser - choose the default radars of the live map: click sites on a map (NEXRAD
+   * in the USA, DWD in Germany: the two networks the live map can fetch), search by id, name,
+   * state or country (radars of other networks are listed with the reason they are not live), order the list, and, only
    * when you press the button and the browser offers it, use your location to pick the nearest
    * radars. Nothing is fetched here except map tiles; the choice is saved in the settings.
    */
   import { get } from 'svelte/store';
+  import { onMount } from 'svelte';
   import { portal } from '../utils/portal';
   import { focusTrap } from '../utils/focusTrap';
   import { settings, setLiveRadars } from '../stores/settings';
-  import { BUILTIN_SITES } from '../stores/radarSites';
-  import { normalizeRadarIds, toggleRadarId, moveRadarId, MAX_LIVE_RADARS } from '../utils/liveLogic';
-  import { nearestSite, type RadarSite } from '../utils/radarSites';
+  import { liveSites, ensureLiveSites, siteLabel, type LiveSite } from '../stores/liveSites';
+  import { normalizeRadarIds, toggleRadarId, moveRadarId, liveIdOf, liveUnavailableReason, MAX_LIVE_RADARS } from '../utils/liveLogic';
+  import { loadCatalogue, haversineKm, type CatalogueSite, type RadarCatalogue } from '../utils/radarCatalogue';
   import { latLonToPixel } from '../utils/geoProjection';
   import PanZoomMap from './PanZoomMap.svelte';
   import RadarSitesLayer from './RadarSitesLayer.svelte';
@@ -26,23 +28,44 @@
   let fit = $state<GeoBounds | null>(null);
 
   const CONUS: GeoBounds = { west: -125, south: 24, east: -66, north: 50 };
+  const GERMANY: GeoBounds = { west: 5.2, south: 47.0, east: 15.6, north: 55.2 };
   const picked = $derived(new Set(ids));
-  const byId = new Map(BUILTIN_SITES.map((s) => [s.id.toUpperCase(), s]));
+  const byId = $derived($liveSites);
   const hasGeolocation = typeof navigator !== 'undefined' && !!navigator.geolocation;
 
-  const matches = $derived.by(() => {
+  // Which network's map is shown: the first chosen radar's, else NEXRAD.
+  let network = $state<'nexrad' | 'dwd'>(ids[0]?.startsWith('dwd:') ? 'dwd' : 'nexrad');
+  const dwdSites = $derived([...byId.values()].filter((s) => s.network === 'dwd'));
+
+  // The radar catalogue (a local file) is read the first time something is searched, so radars of
+  // other networks can be found and the reason they are not live can be shown.
+  let catalogue = $state<RadarCatalogue | null>(null);
+  onMount(() => { void ensureLiveSites(); });
+  $effect(() => { if (query.trim() && !catalogue) void loadCatalogue().then((c) => (catalogue = c)); });
+
+  type Match = { kind: 'live'; site: LiveSite } | { kind: 'other'; site: CatalogueSite; reason: string };
+  const matches = $derived.by((): Match[] => {
     const q = query.trim().toLowerCase();
-    if (!q) return [] as RadarSite[];
-    return BUILTIN_SITES.filter((s) => s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || (s.state ?? '').toLowerCase() === q).slice(0, 25);
+    if (!q) return [];
+    const live: Match[] = [...byId.values()]
+      .filter((s) => s.id.toLowerCase().includes(q) || s.name.toLowerCase().includes(q) || s.region.toLowerCase() === q || s.region.toLowerCase().startsWith(q))
+      .slice(0, 25)
+      .map((site) => ({ kind: 'live', site }));
+    // radars the live map cannot use: listed with the reason (the catalogue's live ones are above)
+    const other: Match[] = (catalogue?.search(query, 40) ?? [])
+      .filter((c) => !liveIdOf(c))
+      .slice(0, 12)
+      .map((site) => ({ kind: 'other', site, reason: liveUnavailableReason(site) }));
+    return [...live, ...other];
   });
 
-  function toggle(site: RadarSite) {
-    if (!byId.has(site.id.toUpperCase())) return; // only NEXRAD sites can be fetched
+  function toggle(site: { id: string }) {
+    if (!byId.has(site.id)) return; // only radars the live map can fetch
     ids = toggleRadarId(ids, site.id);
   }
 
   function boundsOf(list: string[]): GeoBounds | null {
-    const sites = list.map((id) => byId.get(id)).filter((s): s is RadarSite => !!s);
+    const sites = list.map((id) => byId.get(id)).filter((s): s is LiveSite => !!s);
     if (sites.length === 0) return null;
     const lats = sites.map((s) => s.lat);
     const lons = sites.map((s) => s.lon);
@@ -58,16 +81,17 @@
       (pos) => {
         geoBusy = false;
         const { latitude, longitude } = pos.coords;
-        const near = [...BUILTIN_SITES]
-          .map((s) => ({ s, km: nearestSite([s], latitude, longitude, 1e9)?.km ?? Infinity }))
+        const near = [...byId.values()]
+          .map((s) => ({ s, km: haversineKm(latitude, longitude, s.lat, s.lon) }))
           .filter((x) => x.km <= 300)
           .sort((a, b) => a.km - b.km)
           .slice(0, 3);
         if (near.length === 0) {
-          geoMessage = `No NEXRAD radar within 300 km of ${latitude.toFixed(2)}, ${longitude.toFixed(2)}.`;
+          geoMessage = `No NEXRAD or DWD radar within 300 km of ${latitude.toFixed(2)}, ${longitude.toFixed(2)}.`;
           return;
         }
         ids = normalizeRadarIds([...ids, ...near.map((x) => x.s.id)]);
+        network = near[0].s.network;
         fit = boundsOf(ids);
         geoMessage = `Nearest: ${near.map((x) => `${x.s.id} (${Math.round(x.km)} km)`).join(', ')}. Your position is not stored.`;
       },
@@ -91,8 +115,13 @@
 
   const nameOf = (id: string) => byId.get(id)?.name ?? '';
 
+  function showNetwork(n: 'nexrad' | 'dwd') {
+    network = n;
+    fit = n === 'dwd' ? GERMANY : CONUS;
+  }
+
   // The chosen radars start in view; an empty choice shows the whole mainland US.
-  $effect(() => { if (fit === null) fit = boundsOf(ids) ?? CONUS; });
+  $effect(() => { if (fit === null) fit = boundsOf(ids) ?? (network === 'dwd' ? GERMANY : CONUS); });
 </script>
 
 <svelte:window onkeydowncapture={onKey} />
@@ -102,38 +131,60 @@
   <div class="lrc brackets-4" role="dialog" aria-modal="true" aria-labelledby="lrc-title" use:focusTrap={{ initial: '#lrc-search' }}>
     <header class="lrc-head">
       <h3 id="lrc-title">Default radars for the live map</h3>
-      <p class="lrc-sub">Click radars on the map or search below. Up to {MAX_LIVE_RADARS}; the order is the order on the status line. Only NEXRAD sites can be fetched.</p>
+      <p class="lrc-sub">Click radars on the map or search below. Up to {MAX_LIVE_RADARS}; the order is the order on the status line. The live map can fetch two networks: NEXRAD (USA) and DWD (Germany). Radars of other networks are on the radar network map but have no open live feed the app can use.</p>
+      <div class="lrc-nets" role="group" aria-label="Network of the map">
+        <button type="button" class="lrc-net" class:on={network === 'nexrad'} aria-pressed={network === 'nexrad'} onclick={() => showNetwork('nexrad')} data-testid="lrc-net-nexrad">NEXRAD (USA)</button>
+        <button type="button" class="lrc-net" class:on={network === 'dwd'} aria-pressed={network === 'dwd'} onclick={() => showNetwork('dwd')} data-testid="lrc-net-dwd">DWD (Germany)</button>
+      </div>
     </header>
     <div class="lrc-body">
       <div class="lrc-map">
-        <PanZoomMap centerLat={39} centerLon={-97} maxRange={1_900_000} {fit} label="Map of radar sites. Scroll to zoom, drag to pan, click a radar to choose it.">
-          {#snippet children(v)}
-            <RadarSitesLayer {...v} pick={toggle} {picked} />
-            {#each ids as id, i (id)}
-              {@const s = byId.get(id)}
-              {#if s}
-                {@const [x, y] = latLonToPixel(s.lat, s.lon, v.radarLat, v.radarLon, v.maxRange, v.scale, v.translateX, v.translateY, v.containerWidth, v.containerHeight)}
-                <span class="lrc-num" style:left="{x}px" style:top="{y}px" aria-hidden="true">{i + 1}</span>
+        {#key network}
+          <PanZoomMap centerLat={network === 'dwd' ? 51 : 39} centerLon={network === 'dwd' ? 10 : -97} maxRange={network === 'dwd' ? 700_000 : 1_900_000} {fit} label="Map of radar sites. Scroll to zoom, drag to pan, click a radar to choose it.">
+            {#snippet children(v)}
+              {#if network === 'nexrad'}
+                <RadarSitesLayer {...v} pick={(s) => toggle({ id: s.id.toUpperCase() })} picked={new Set([...picked].map((x) => x.toUpperCase()))} />
+              {:else}
+                {#each dwdSites as s (s.id)}
+                  {@const [x, y] = latLonToPixel(s.lat, s.lon, v.radarLat, v.radarLon, v.maxRange, v.scale, v.translateX, v.translateY, v.containerWidth, v.containerHeight)}
+                  <button type="button" class="lrc-dwd" class:on={picked.has(s.id)} style:left="{x}px" style:top="{y}px" aria-pressed={picked.has(s.id)} title="{s.id}: {siteLabel(s, s.id)}" onclick={() => toggle(s)}>
+                    <span class="lrc-dwd-dot" aria-hidden="true"></span><span class="mono">{s.id.slice(4).toUpperCase()}</span>
+                  </button>
+                {/each}
               {/if}
-            {/each}
-          {/snippet}
-        </PanZoomMap>
+              {#each ids as id, i (id)}
+                {@const s = byId.get(id)}
+                {#if s && s.network === network}
+                  {@const [x, y] = latLonToPixel(s.lat, s.lon, v.radarLat, v.radarLon, v.maxRange, v.scale, v.translateX, v.translateY, v.containerWidth, v.containerHeight)}
+                  <span class="lrc-num" style:left="{x}px" style:top="{y}px" aria-hidden="true">{i + 1}</span>
+                {/if}
+              {/each}
+            {/snippet}
+          </PanZoomMap>
+        {/key}
       </div>
       <div class="lrc-side">
         <label class="lrc-label" for="lrc-search">Search id, name or state</label>
-        <input id="lrc-search" type="search" bind:value={query} placeholder="KTLX, Oklahoma City, OK" autocomplete="off" />
+        <input id="lrc-search" type="search" bind:value={query} placeholder="KTLX, Essen, Oklahoma, South Africa" autocomplete="off" />
         {#if matches.length}
           <ul class="lrc-list" aria-label="Matching radars">
-            {#each matches as s (s.id)}
+            {#each matches as m (m.kind === 'live' ? m.site.id : `x:${m.site.id}`)}
               <li>
-                <button type="button" class="lrc-row" class:on={picked.has(s.id.toUpperCase())} onclick={() => toggle(s)} aria-pressed={picked.has(s.id.toUpperCase())}>
-                  <b class="mono">{s.id}</b> <span>{s.name}{s.state ? `, ${s.state}` : ''}</span>
-                </button>
+                {#if m.kind === 'live'}
+                  <button type="button" class="lrc-row" class:on={picked.has(m.site.id)} onclick={() => { toggle(m.site); network = m.site.network; }} aria-pressed={picked.has(m.site.id)}>
+                    <b class="mono">{m.site.network === 'dwd' ? m.site.id : m.site.id}</b> <span>{siteLabel(m.site, m.site.id)}</span>
+                  </button>
+                {:else}
+                  <div class="lrc-row lrc-off" title={m.reason}>
+                    <b class="mono">{m.site.network.split('/')[0]}</b> <span>{m.site.name}, {m.site.country}</span>
+                    <span class="lrc-why">not live: {m.reason}</span>
+                  </div>
+                {/if}
               </li>
             {/each}
           </ul>
         {:else if query.trim()}
-          <p class="lrc-empty">No NEXRAD site matches.</p>
+          <p class="lrc-empty">No radar matches.</p>
         {/if}
 
         <div class="lrc-chosen">
@@ -164,7 +215,7 @@
       </div>
     </div>
     <footer class="lrc-foot">
-      <button type="button" class="lrc-btn" onclick={() => (fit = boundsOf(ids) ?? CONUS)} disabled={ids.length === 0}>Show chosen on map</button>
+      <button type="button" class="lrc-btn" onclick={() => (fit = boundsOf(ids) ?? (network === 'dwd' ? GERMANY : CONUS))} disabled={ids.length === 0}>Show chosen on map</button>
       <span class="lrc-spacer"></span>
       <button type="button" class="lrc-btn" onclick={onclose}>Cancel</button>
       <button type="button" class="lrc-btn primary" onclick={save}>Save{ids.length ? ' and use' : ''}</button>
@@ -184,6 +235,14 @@
   .lrc-sub { margin: var(--space-1) 0 0; color: var(--c-text-dim); font-size: var(--fs-sm); }
   .lrc-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 1fr 300px; gap: var(--space-3); padding: 0 var(--space-5); }
   .lrc-map { position: relative; min-height: 240px; border: 1px solid var(--c-border); border-radius: var(--radius-md); overflow: hidden; }
+  .lrc-nets { display: flex; gap: var(--space-1); margin-top: var(--space-2); }
+  .lrc-net { height: 24px; padding: 0 var(--space-3); font-size: var(--fs-xs); }
+  .lrc-net.on { background: rgba(var(--c-accent-rgb), 0.18); border-color: rgba(var(--c-accent-rgb), 0.5); color: var(--c-accent); }
+  .lrc-dwd { position: absolute; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 4px; height: auto; padding: 0; background: none; border: 0; color: var(--c-text); font-size: var(--fs-2xs); text-shadow: 0 0 3px rgba(var(--c-surface-0-rgb), 0.95); cursor: pointer; z-index: 25; }
+  .lrc-dwd-dot { width: 11px; height: 11px; border-radius: 50%; border: 2px solid var(--c-text-dim); background: rgba(var(--c-surface-1-rgb), 0.85); box-sizing: border-box; }
+  .lrc-dwd.on .lrc-dwd-dot { background: var(--c-accent); border-color: var(--c-accent); }
+  .lrc-off { cursor: default; flex-wrap: wrap; opacity: 0.85; }
+  .lrc-why { flex-basis: 100%; font-size: var(--fs-2xs); color: var(--c-muted); line-height: 1.35; }
   .lrc-num {
     position: absolute; transform: translate(6px, -18px); font: 700 10px/1 var(--font-mono);
     color: var(--c-surface-0); background: var(--c-accent); border-radius: 8px; padding: 2px 4px; pointer-events: none;

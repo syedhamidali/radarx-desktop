@@ -17,7 +17,7 @@
     liveRadars, liveIntervalMin, setLiveIntervalMin, mapHidden,
     liveFloorDbz, setLiveFloorDbz, liveRings, setLiveRings,
   } from '../stores/settings';
-  import { BUILTIN_SITES } from '../stores/radarSites';
+  import { liveSites, ensureLiveSites } from '../stores/liveSites';
   import { RADAR_COLORS, mosaicLayer, mosaicResult, type MosaicLayer, type GeoBounds } from '../stores/mosaic';
   import { countdownText, hhmmss, radarStatusText, stepFrame, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN } from '../utils/liveLogic';
   import {
@@ -38,6 +38,7 @@
 
   onMount(() => {
     tick = setInterval(() => (now = Date.now()), 1000);
+    void ensureLiveSites(); // the DWD radars' positions (a local file)
     // The view opened with radars set but nothing running: start (the consent dialog follows).
     // (not when a nowcast is what was asked for: it only needs the map)
     if (!$liveState.running && $liveRadars.length > 0 && !$mosaicResult?.forecast) startLive();
@@ -53,7 +54,7 @@
   const shownIndex = $derived($liveShownIndex);
   const isLatest = $derived(shownIndex === null || shownIndex === frames.length - 1);
   const radarIds = $derived(s.running ? s.stations : $liveRadars);
-  const byId = new Map(BUILTIN_SITES.map((st) => [st.id.toUpperCase(), st]));
+  const byId = $derived($liveSites);
   const radarSites = $derived(radarIds.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x));
 
   // Map centre: the frame's grid centre, else the centroid of the default radars, else the US.
@@ -78,7 +79,7 @@
     return {
       image: frame.image,
       corners: frame.corners,
-      radars: frame.radarInfo.map((r, i) => ({ ...r, color: RADAR_COLORS[i % RADAR_COLORS.length] })),
+      radars: frame.radarInfo.map((r, i) => ({ ...r, color: RADAR_COLORS[i % RADAR_COLORS.length], ringKm: frame.rangeByName[r.name] })),
       ringKm: LIVE_RING_KM,
       ringStyle: $liveRings ? 'subtle' : 'off',
       opacity: 0.92,
@@ -249,7 +250,7 @@
     {#each radarRows as r (r.id)}
       <span class="live-radar" data-status={r.entry.status} class:out={s.running && !r.inFrame && r.entry.status === 'ok'}>
         <b class="mono">{r.id}</b> <span class="live-fact">{s.running || r.entry.status !== 'pending' ? radarStatusText(r.entry, now) : 'not checked'}</span>
-        {#if held.some((h) => h.station === r.id && h.on_disk)}
+        {#if held.some((h) => h.station === r.id && h.openable)}
           <button type="button" class="chip-open" disabled={acting || !isLatest} title="Open this volume as a normal file (already downloaded: {heldSummary(held, [r.id])})" onclick={() => openLiveVolumes([r.id], 'open')}>Open this volume</button>
         {/if}
       </span>
@@ -317,6 +318,9 @@
         <ProvenanceChip provenance={frame.provenance} />
         <span>{compositeLabel({ variable: frame.variable, radars: frame.radars.length, resolutionM: frame.grid.resolution_m, floor: frame.floor, smoothed: frame.smoothed, isLatest })}{frame.floor !== floorNow ? ` (this frame keeps the setting it was drawn with: ${floorText(frame.floor).toLowerCase()})` : ''}</span>
         <button type="button" class="live-btn small" onclick={fitNow}>Fit</button>
+        {#if frame.credits.length}
+          <span class="live-credit" data-testid="live-credit">Data: {frame.credits.map((c) => `${c.attribution} (${c.licence})`).join('; ')}</span>
+        {/if}
       </div>
     {/if}
   </div>
@@ -390,9 +394,10 @@
   /* Top-left of the map: the legend sits bottom-centre and the attribution bottom-right. */
   .live-prov {
     position: absolute; left: var(--space-2); top: var(--space-2); display: flex; gap: var(--space-2); align-items: center;
-    max-width: min(60ch, calc(100% - 2 * var(--space-2))); padding: 3px 8px; font-size: var(--fs-2xs); color: var(--c-text-dim);
+    max-width: min(72ch, calc(100% - 2 * var(--space-2))); flex-wrap: wrap; padding: 3px 8px; font-size: var(--fs-2xs); color: var(--c-text-dim);
     background: rgba(var(--c-surface-1-rgb), 0.9); border: 1px solid var(--c-border); border-radius: var(--radius-sm);
   }
+  .live-credit { flex-basis: 100%; font-size: var(--fs-2xs); color: var(--c-muted); line-height: 1.35; }
   .live-marker { position: absolute; transform: translate(-50%, -50%); display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-2xs); color: var(--c-text); pointer-events: none; text-shadow: 0 0 3px rgba(var(--c-surface-0-rgb), 0.95); }
   .live-marker-dot { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--c-text-dim); background: rgba(var(--c-surface-1-rgb), 0.85); box-sizing: border-box; }
   .live-marker[data-status='error'] .live-marker-dot, .live-marker[data-status='offline'] .live-marker-dot { border-color: var(--c-alarm); }

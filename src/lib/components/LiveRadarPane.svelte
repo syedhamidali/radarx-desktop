@@ -11,7 +11,7 @@
     openLiveVolumes, heldSummary,
   } from '../stores/live';
   import { liveRadars } from '../stores/settings';
-  import { BUILTIN_SITES } from '../stores/radarSites';
+  import { liveSites, ensureLiveSites, siteLabel } from '../stores/liveSites';
   import { radarStatusText } from '../utils/liveLogic';
   import { formatBytes } from '../utils/radarSites';
 
@@ -19,7 +19,7 @@
 
   let now = $state(Date.now());
   let tick: ReturnType<typeof setInterval> | null = null;
-  onMount(() => { tick = setInterval(() => (now = Date.now()), 5000); });
+  onMount(() => { tick = setInterval(() => (now = Date.now()), 5000); void ensureLiveSites(); });
   onDestroy(() => { if (tick) clearInterval(tick); });
 
   const s = $derived($liveState);
@@ -28,13 +28,13 @@
   const opened = $derived($liveOpenedNow);
   const busy = $derived($liveAction !== '');
   const ids = $derived(s.running ? s.stations : $liveRadars);
-  const byId = new Map(BUILTIN_SITES.map((st) => [st.id.toUpperCase(), st]));
+  const byId = $derived($liveSites);
   const newest = $derived(frames[frames.length - 1] ?? null);
 
   const rows = $derived(
     ids.map((id) => {
       const entry = s.radars[id] ?? { station: id, status: 'pending' as const };
-      const h = held.find((x) => x.station === id && x.on_disk);
+      const h = held.find((x) => x.station === id && x.openable);
       const open = opened.find((o) => o.station === id);
       return {
         id,
@@ -46,8 +46,8 @@
       };
     }),
   );
-  const heldTotal = $derived(held.filter((h) => h.on_disk).reduce((n, h) => n + h.size, 0));
-  const openedTotal = $derived(opened.reduce((n, o) => n + o.size, 0));
+  const heldTotal = $derived(held.filter((h) => h.openable).reduce((n, h) => n + h.size, 0));
+  const openedTotal = $derived(opened.filter((o) => o.kind !== 'memory').reduce((n, o) => n + o.size, 0));
 </script>
 
 <div class="lrp" data-testid="live-pane">
@@ -64,7 +64,7 @@
         <li class="lrp-row" data-status={r.entry.status}>
           <div class="lrp-line">
             <b class="mono lrp-id">{r.id}</b>
-            <span class="lrp-name">{r.site?.name ?? ''}{r.site?.state ? `, ${r.site.state}` : ''}</span>
+            <span class="lrp-name">{r.site ? siteLabel(r.site, r.id) : ''}</span>
           </div>
           <div class="lrp-fact">
             {s.running || r.entry.status !== 'pending' ? radarStatusText(r.entry, now) : 'not checked'}
@@ -98,11 +98,11 @@
 
   <div class="lrp-foot">
     <div><span class="hud-label">Held by the live map</span></div>
-    <div class="lrp-fact">{held.filter((h) => h.on_disk).length} volume{held.filter((h) => h.on_disk).length === 1 ? '' : 's'}, {formatBytes(heldTotal)}. The next update replaces them.</div>
+    <div class="lrp-fact">{held.filter((h) => h.openable).length} volume{held.filter((h) => h.openable).length === 1 ? '' : 's'}, {formatBytes(heldTotal)}. The next update replaces them.</div>
     <div class="lrp-gap"><span class="hud-label">Open as files</span></div>
     <div class="lrp-fact">
       {#if opened.length === 0}none. <i>Open these volumes</i> keeps them, with no new download.
-      {:else}{opened.length} volume{opened.length === 1 ? '' : 's'} ({opened.map((o) => o.station).join(', ')}), {formatBytes(openedTotal)} on disk until you close them.{/if}
+      {:else}{opened.length} volume{opened.length === 1 ? '' : 's'} ({opened.map((o) => o.station).join(', ')}), {formatBytes(openedTotal)} on disk{opened.some((o) => o.kind === 'memory') ? ' (DWD volumes are kept in memory, no disk)' : ''} until you close them.{/if}
     </div>
   </div>
 </div>
