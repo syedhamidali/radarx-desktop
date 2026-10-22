@@ -128,5 +128,30 @@ replaced by raw data.
   On the command line: `-P dealias.reference=zero` (or `vad`). The same option is in the QC panel's velocity
   dealiasing. The default stays `none` until it can be checked against independent winds (a sounding, a
   model analysis or a second radar).
+* **Fold check (always on).** Every dealiasing (the pipeline step, the QC panel's velocity dealiasing and the
+  *Velocity Dealiasing* module) tests its own result and says so in its notes and in the run record; it never
+  changes the data. Each 10 km range ring with echo around most of the circle gets a uniform-wind VAD fit
+  (Browning and Wexler 1968) to the median of each 10-degree sector. In a correctly unfolded sweep the
+  constant term of that fit is only the small divergence-like part of the wind, a few m/s; a ring whose
+  constant is more than one Nyquist velocity from zero was unfolded to a wrong interval. The verdict is one of:
+  * *passed*: under 10 % of the gates of the testable rings are affected.
+  * *whole sweep off by k x 2 x Nyquist*: at least 90 % of the gates of the testable rings sit in rings with the
+    same multiple, and those rings hold at least half of the sweep's gates. The message gives the shift that
+    undoes it, which is what `Fold reference: vad` or `zero` applies. A warning is raised.
+  * *inconsistent*: 10 % or more of the testable gates are affected but not as one whole-sweep multiple (or the
+    testable rings hold under half of the gates), so parts of the sweep sit in different intervals, or the
+    whole sweep is off but cannot be shown to be. No shift is suggested. A warning is raised; do not use that
+    sweep for winds, shear or rotation without looking at it, and try UNRAVEL or the other method.
+  * *not possible*: too little echo around the radar (sector scans, echo on one side).
+  What it cannot see: a minority of wrongly unfolded gates (the median ignores up to about half of each
+  sector), gates in rings that are not complete, and an offset that the wind itself really has.
+  Measured on 133 Doppler cuts (0.5 to 8 degrees) of 12 NEXRAD volumes, the lowest cuts of the 2021-12-11
+  tornado outbreak from four radars and three other days: the QC panel's region method gave no whole-sweep offset
+  and one inconsistent cut; radarx's region method (the default of the step when radarx is installed) gave
+  no whole-sweep offset and three inconsistent cuts, some of its results holding velocities of hundreds of
+  thousands of m/s; the built-in unfolding gave three whole-sweep offsets and twelve inconsistent cuts. Five
+  cuts could not be tested. Because no volume showed a whole-sweep offset that a single shift repairs
+  (the offset of the issue needs a wind well above the Nyquist velocity, which these low-elevation cuts
+  rarely have), the default of *Fold reference* stays `none`; the check is what protects you.
 * The clutter and biological defaults are conservative starting points tuned on S-band NEXRAD
   data; check the preview ("Removed by") before trusting them on other radars.
