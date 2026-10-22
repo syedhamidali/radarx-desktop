@@ -543,7 +543,7 @@ command: rxd run storm_detection --input KTLX20130520_201643_V06.gz --output cel
 ```
 
 `--print-command` also writes out what was chosen for you (for example `-s 1`), so the printed line
-reproduces the run exactly. TOML needs Python 3.11+ (JSON always works, YAML needs PyYAML).
+reproduces the run exactly. TOML and JSON always work; YAML needs PyYAML.
 
 ## When something is wrong
 

@@ -446,7 +446,7 @@ class TestCfRadial1:
     def test_round_trip_values_masks_flags_times(self, cf1_path, volume_with_derived):
         import xradar as xd
 
-        back = xd.io.open_cfradial1_datatree(str(cf1_path))
+        back = xd.open_datatree(str(cf1_path), engine="cfradial1")
         names = sorted_sweep_names(back)
         assert len(names) == 3
         src = volume_with_derived
@@ -512,6 +512,15 @@ class TestCfRadial1:
             assert d.source_files == "KSYN20240501_200000_V06.gz"
             assert "xradar writer" in d.history and d.time_coverage_start == "2024-05-01T20:00:00Z"
 
+    def test_the_generic_source_xradar_gives_odim_files_is_not_kept(self, tmp_path, volume):
+        # xradar >= 0.13 sets source="radar" on ODIM volumes: the file names say more
+        tree = volume.copy(deep=False)
+        tree.attrs = {**volume.attrs, "source": "radar"}
+        path = tmp_path / "odim_like.nc"
+        RadarExporter().export(tree, "netcdf", output_path=str(path))
+        with netCDF4.Dataset(path) as d:
+            assert d.source.startswith("radar observations read from KSYN")
+
     def test_ray_dimension_comes_from_the_time_variable(self, volume):
         # the ray dimension of the first sweep decides how the volume is stacked
         assert cfwrite._ray_dim(volume["sweep_0"].to_dataset()) == "azimuth"
@@ -575,11 +584,7 @@ class TestCfRadial2:
     def test_xradar_reads_the_file_back(self, cf2_path):
         import xradar as xd
 
-        back = (
-            xd.io.open_cfradial2_datatree(str(cf2_path))
-            if hasattr(xd.io, "open_cfradial2_datatree")
-            else xr.open_datatree(cf2_path)
-        )
+        back = xd.open_datatree(str(cf2_path), engine="cfradial2")
         assert "sweep_0" in back.children
 
 

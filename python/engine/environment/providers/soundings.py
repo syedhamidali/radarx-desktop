@@ -12,7 +12,7 @@ The JSON layout is the one read by ``radarx.io.sounding`` (``profiles[].profile[
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 
 from engine import layer_provenance
@@ -73,9 +73,7 @@ class IemRaobProvider(Provider):
             raise InvalidRequest(
                 "Give the nominal launch time (time_start, UTC, e.g. 00 or 12 UTC)."
             )
-        return datetime.strptime(request.time_start, "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(request.time_start, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
     def plan(self, request: Request, env: Any) -> list[FileSpec]:
         station = str(request.params.get("station", ""))

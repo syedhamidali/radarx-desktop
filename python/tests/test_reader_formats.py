@@ -1,4 +1,4 @@
-"""Format selection in RadarReader.open_file: fast path, xradar 0.13 API, 0.12 fallback."""
+"""Format selection in RadarReader.open_file: fast path, xradar 0.13 engines, discovery."""
 
 from __future__ import annotations
 
@@ -22,8 +22,6 @@ from engine.reader import (
 )
 from tests import radar_data
 from tests.conftest import make_synthetic_datatree
-
-HAS_OPEN_DATATREE = hasattr(xd, "open_datatree")
 
 NEXRAD_FILE = os.environ.get("XRADAR_TEST_NEXRAD") or str(radar_data.katx() or "")
 CFRAD_FILE = os.environ.get("XRADAR_TEST_CFRADIAL1") or str(
@@ -90,25 +88,19 @@ class TestCfRadial2FirstDimension:
             vol.close()
         assert res is not None
 
-    def test_xradar_without_the_keyword_still_opens(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: list[dict[str, Any]] = []
+    def test_only_the_cfradial2_opener_asks_for_first_dim_auto(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
 
-        def old_opener(path: str, **kwargs: Any) -> xr.DataTree:
-            calls.append(kwargs)
-            if kwargs:
-                raise TypeError("open_datatree() got an unexpected keyword argument 'first_dim'")
-            return _synthetic()
+        def fake_open_datatree(path: str, *, engine: str | None = None, **kw: Any) -> str:
+            calls.append((str(engine), kw))
+            return "tree"
 
-        wrapped = reader_mod._azimuth_first(old_opener)
-        assert wrapped("x.nc") is not None
-        assert calls == [{"first_dim": "auto"}, {}]
-
-    def test_other_type_errors_are_not_swallowed(self) -> None:
-        def broken(path: str, **kwargs: Any) -> xr.DataTree:
-            raise TypeError("something else")
-
-        with pytest.raises(TypeError, match="something else"):
-            reader_mod._azimuth_first(broken)("x.nc")
+        monkeypatch.setattr(xd, "open_datatree", fake_open_datatree)
+        assert _get_opener("cfradial2")("/x") == "tree"
+        assert _get_opener("cfradial1")("/y") == "tree"
+        assert calls == [("cfradial2", {"first_dim": "auto"}), ("cfradial1", {})]
 
 
 class TestNetcdfFamilyOrder:
@@ -137,11 +129,11 @@ class TestNetcdfFamilyOrder:
 
 class TestFormatTable:
     def test_new_formats_present(self) -> None:
-        labels = {label for label, _, _ in _FORMAT_TABLE}
+        labels = {label for label, _ in _FORMAT_TABLE}
         assert {"uf", "cfradial2", "imd"} <= labels
 
     def test_labels_unique(self) -> None:
-        labels = [label for label, _, _ in _FORMAT_TABLE]
+        labels = [label for label, _ in _FORMAT_TABLE]
         assert len(labels) == len(set(labels))
 
     def test_hint_flag(self, tmp_path: Path) -> None:
@@ -153,18 +145,14 @@ class TestFormatTable:
         assert len(order) == len(_FORMAT_TABLE)
         assert _guess_formats(str(tmp_path / "scan.uf"))[0][0] == "uf"
 
-    def test_installed_xradar_openers_resolve(self) -> None:
-        # Every table entry that this xradar provides must resolve to a callable.
-        resolved = []
-        for label, func, _ in _FORMAT_TABLE:
-            try:
-                opener = _get_opener(label)
-            except ImportError:
-                assert not hasattr(xd.io, func)
-                continue
-            assert callable(opener)
-            resolved.append(label)
-        assert {"nexrad_level2", "cfradial1", "odim"} <= set(resolved)
+    def test_every_table_entry_resolves_to_an_xradar_engine(self) -> None:
+        # xradar >= 0.13 has a reader for each format of the table.
+        for label, _ in _FORMAT_TABLE:
+            assert callable(_get_opener(label)), label
+
+    def test_an_unknown_format_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="Unknown format"):
+            _get_opener("no_such_format")
 
 
 class TestOpenerSelection:
@@ -185,40 +173,27 @@ class TestOpenerSelection:
         assert _get_opener("cfradial1")("/y") == "tree"
         assert calls == [("/x", "nexradlevel2"), ("/y", "cfradial1")]
 
-    def test_falls_back_to_dedicated_opener_without_open_datatree(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Simulates xradar 0.12: no xd.open_datatree, no discover_engine."""
-        monkeypatch.delattr(xd, "open_datatree", raising=False)
-        monkeypatch.delattr(xd.io, "discover_engine", raising=False)
-        monkeypatch.delattr(xd.io, "list_xradar_engines", raising=False)
-        monkeypatch.setattr(xd.io, "open_cfradial1_datatree", _synthetic)
-        assert _get_opener("cfradial1") is _synthetic
-        assert _discover_format("/nonexistent") is None
-
-    def test_open_file_works_end_to_end_without_open_datatree(
+    def test_a_format_xradar_does_not_list_is_skipped_not_reported(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        monkeypatch.delattr(xd, "open_datatree", raising=False)
-        monkeypatch.delattr(xd.io, "discover_engine", raising=False)
-        monkeypatch.setattr(xd.io, "open_cfradial1_datatree", _synthetic)
-        reader = RadarReader()
-        schema = reader.open_file(_cdf_file(tmp_path))
-        assert schema["format"] == "cfradial1"
-        assert reader._format == "cfradial1"
-        assert reader.get_schema()["format"] == "cfradial1"
-        assert len(schema["sweeps"]) == 3
-
-    def test_unavailable_format_is_skipped_not_reported(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        monkeypatch.delattr(xd, "open_datatree", raising=False)
-        monkeypatch.delattr(xd.io, "open_cfradial1_datatree", raising=False)
-        monkeypatch.delattr(xd.io, "open_imd_datatree", raising=False)
+        monkeypatch.setattr(xd.io, "list_xradar_engines", lambda: ["cfradial2"])
         with pytest.raises(ValueError, match="Could not open") as exc:
             RadarReader().open_file(_cdf_file(tmp_path))
         assert "cfradial1" not in str(exc.value)  # ImportError entries are not failures
         assert "imd" not in str(exc.value)
+
+    def test_imd_reader_must_be_claimed_by_its_signature(self, tmp_path: Path) -> None:
+        # xradar's IMD reader opens any NetCDF as a one-sweep volume: a file without the IMD
+        # variables (here a map grid) must not be taken for one.
+        import numpy as np
+
+        grid = tmp_path / "grid.nc"
+        xr.Dataset(
+            {"DBZH_composite": (("y", "x"), np.zeros((4, 5)))},
+            coords={"y": np.arange(4.0), "x": np.arange(5.0)},
+        ).to_netcdf(grid)
+        with pytest.raises(ValueError, match="Could not open"):
+            RadarReader().open_file(str(grid))
 
 
 class TestSmartFallback:
@@ -336,7 +311,6 @@ def test_open_real_cfradial1_is_fast() -> None:
 
 
 @real_cfrad
-@pytest.mark.skipif(not HAS_OPEN_DATATREE, reason="xradar without open_datatree")
 def test_discovery_agrees_with_fast_path_on_real_files() -> None:
     assert _discover_format(CFRAD_FILE) == "cfradial1"
     if Path(NEXRAD_FILE).exists():

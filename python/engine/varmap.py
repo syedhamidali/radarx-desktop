@@ -122,6 +122,7 @@ ROLES: dict[str, Role] = {
                 "Z",
                 "corrected_reflectivity_horizontal",
                 "TH",
+                "DBTH",  # ODIM total power in dBZ: xradar >= 0.13 reads ODIM TH as DBTH
             ),
             corrected_aliases=("DBZHCC", "DBZHC"),
             patterns=(

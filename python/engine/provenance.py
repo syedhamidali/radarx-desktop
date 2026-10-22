@@ -26,7 +26,7 @@ import os
 import platform
 import re
 from collections.abc import Iterable, Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -139,12 +139,12 @@ def radarx_version() -> str | None:
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc).replace(microsecond=0)
+    return datetime.now(UTC).replace(microsecond=0)
 
 
 def utc_stamp(when: datetime | None = None) -> str:
     """ISO-8601 UTC timestamp with a ``Z`` suffix: ``2026-10-19T11:21:00Z``."""
-    when = (when or utc_now()).astimezone(timezone.utc)
+    when = (when or utc_now()).astimezone(UTC)
     return when.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -160,7 +160,7 @@ def iso_utc(value: Any) -> str:
                 return ""
             return str(np.datetime_as_string(value, unit="s")) + "Z"
         if isinstance(value, datetime):
-            return utc_stamp(value if value.tzinfo else value.replace(tzinfo=timezone.utc))
+            return utc_stamp(value if value.tzinfo else value.replace(tzinfo=UTC))
         text = str(value).strip()
         if not text or text.lower() in _PLACEHOLDERS:
             return ""
@@ -174,7 +174,7 @@ def iso_utc(value: Any) -> str:
             sign = -1 if offset["sign"] == "-" else 1
             delta = timedelta(hours=int(offset["oh"]), minutes=int(offset["om"]))
             local = datetime.strptime(offset["stamp"], "%Y-%m-%dT%H:%M:%S")
-            return utc_stamp((local - sign * delta).replace(tzinfo=timezone.utc))
+            return utc_stamp((local - sign * delta).replace(tzinfo=UTC))
         return text
     except Exception:
         return ""

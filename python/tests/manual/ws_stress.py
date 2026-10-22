@@ -61,7 +61,7 @@ async def recv_until(ws: Any, pred: Any, timeout: float = 60) -> dict[str, Any] 
     while time.time() < end:
         try:
             raw = await asyncio.wait_for(ws.recv(), max(0.05, end - time.time()))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         if isinstance(raw, bytes):
             continue

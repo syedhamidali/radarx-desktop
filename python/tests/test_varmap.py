@@ -79,6 +79,7 @@ def test_registry_has_every_role_with_cf_and_aliases():
     ("variable", "role"),
     [
         ("DBZ", "reflectivity"),
+        ("DBTH", "reflectivity"),
         ("corrected_reflectivity_horizontal", "reflectivity"),
         ("differential_reflectivity", "zdr"),
         ("UPHIDP", "phidp"),

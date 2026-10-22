@@ -26,6 +26,7 @@ import weakref
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC
 from typing import Any
 
 import numpy as np
@@ -574,7 +575,7 @@ def export_name(name: str) -> str:
 
 def _provenance_comment(info: dict[str, Any]) -> str:
     """How a derived variable was made: software, module, parameters, versions, time."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from engine import provenance
 
@@ -597,9 +598,7 @@ def _provenance_comment(info: dict[str, Any]) -> str:
         parts.append(f"radarx {provenance.radarx_version()}.")
     stamp = info.get("computed_at")
     if isinstance(stamp, (int, float)):
-        parts.append(
-            f"Computed {provenance.utc_stamp(datetime.fromtimestamp(stamp, timezone.utc))}."
-        )
+        parts.append(f"Computed {provenance.utc_stamp(datetime.fromtimestamp(stamp, UTC))}.")
     parts.append("Gates without a result are _FillValue (NaN).")
     return " ".join(parts)
 

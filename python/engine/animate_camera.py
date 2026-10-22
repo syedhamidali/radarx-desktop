@@ -469,12 +469,8 @@ def read_table(path: Path) -> dict[str, Any]:
         if path.suffix.lower() == ".json":
             data = json.loads(text)
         elif path.suffix.lower() == ".toml":
-            try:
-                import tomllib
-            except ImportError as exc:  # Python 3.10
-                raise AnimateConfigError(
-                    f"{path.name}: reading .toml needs Python 3.11 or newer; use a .json file"
-                ) from exc
+            import tomllib
+
             data = tomllib.loads(text)
         else:
             raise AnimateConfigError(f"{path.name}: use a .toml or .json file")

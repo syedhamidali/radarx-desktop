@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +22,7 @@ from engine import animate_sound as snd
 from engine.animate_plan import AnimateConfigError
 from tests.test_animate import SyntheticGridder, _chrome_ready, _e2e_options, run_cli, series
 
-UTC = timezone.utc
+UTC = UTC
 
 
 @pytest.fixture

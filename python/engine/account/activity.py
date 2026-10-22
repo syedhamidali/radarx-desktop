@@ -28,7 +28,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Iterator, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -245,7 +245,7 @@ def _queue_path() -> Path:
 
 def _now_iso(wall: float | None = None) -> str:
     return (
-        datetime.fromtimestamp(time.time() if wall is None else wall, tz=timezone.utc).strftime(
+        datetime.fromtimestamp(time.time() if wall is None else wall, tz=UTC).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3]
         + "Z"

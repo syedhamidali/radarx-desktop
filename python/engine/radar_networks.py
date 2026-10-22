@@ -46,7 +46,7 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -65,7 +65,7 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _cached(key: str, make: Any, *, ttl: float = _LISTING_TTL_S, use_cache: bool = True) -> Any:
@@ -201,7 +201,7 @@ class NetworkProvider:
 
 
 def _with_age(info: dict[str, Any]) -> dict[str, Any]:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     info["now"] = _iso(now)
     t = info.get("scan_time")
     if t:
@@ -230,7 +230,7 @@ def dwd_parse_listing(html: str) -> list[dict[str, Any]]:
     rows = []
     for name, moment, sweep, stamp, site, _mod, size in _DWD_LINE.findall(html):
         try:
-            t = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+            t = datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
         except ValueError:
             continue
         rows.append(
@@ -382,7 +382,7 @@ class DwdProvider(NetworkProvider):
                     if p is None:
                         continue
                     with hdf5_guard.native_section():
-                        tree = xd.io.open_odim_datatree(str(p))
+                        tree = xd.open_datatree(str(p), engine="odim")
                     ds = tree["sweep_0"].to_dataset().load()
                     if root is None:
                         root = tree.to_dataset().load()
@@ -548,7 +548,7 @@ class FmiProvider(NetworkProvider):
             return None
         stamp, site = m.group(4), m.group(5)
         try:
-            t = datetime.strptime(stamp, "%Y%m%d%H%M").replace(tzinfo=timezone.utc)
+            t = datetime.strptime(stamp, "%Y%m%d%H%M").replace(tzinfo=UTC)
         except ValueError:
             return None
         return {
@@ -648,7 +648,7 @@ def nearest_scan(
 ):
     """The listed scan whose time is closest to *target*; None beyond *max_gap*."""
     if target.tzinfo is None:
-        target = target.replace(tzinfo=timezone.utc)
+        target = target.replace(tzinfo=UTC)
     best = None
     for sc in scans:
         t = datetime.fromisoformat(sc["scan_time"].replace("Z", "+00:00"))

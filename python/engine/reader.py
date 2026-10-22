@@ -10,9 +10,8 @@ import os
 import shutil
 import tempfile
 import threading
-import warnings
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -42,24 +41,25 @@ hdf5_guard.install()
 
 _SWEEP_PREFIX = "sweep_"
 
-# Map of xradar opener functions keyed by format name.
-# Each entry: (format_label, opener_function_name, supported_extensions)
-_FORMAT_TABLE: list[tuple[str, str, set[str]]] = [
-    ("nexrad_level2", "open_nexradlevel2_datatree", {".gz", ".bz2", ""}),
-    ("cfradial1", "open_cfradial1_datatree", {".nc", ".ncf", ".cdf"}),
-    ("odim", "open_odim_datatree", {".h5", ".hdf5", ".hdf"}),
-    ("gamic", "open_gamic_datatree", {".h5", ".hdf5", ".hdf"}),
-    ("iris", "open_iris_datatree", {".RAW", ".raw"}),
-    ("furuno", "open_furuno_datatree", {".scn", ".scnx"}),
-    ("rainbow", "open_rainbow_datatree", {".vol", ".azi"}),
-    ("cfradial2", "open_cfradial2_datatree", set()),
-    ("uf", "open_uf_datatree", {".uf"}),
-    ("imd", "open_imd_datatree", set()),
-    ("datamet", "open_datamet_datatree", set()),
-    ("hpl", "open_hpl_datatree", set()),
-    ("metek", "open_metek_datatree", set()),
+# Formats the reader knows, in the order they are tried when nothing hints at one:
+# (format_label, supported_extensions).  The label is also the name of the xradar engine
+# (``xd.open_datatree(path, engine=label)``) unless _ENGINE_BY_FORMAT says otherwise.
+_FORMAT_TABLE: list[tuple[str, set[str]]] = [
+    ("nexrad_level2", {".gz", ".bz2", ""}),
+    ("cfradial1", {".nc", ".ncf", ".cdf"}),
+    ("odim", {".h5", ".hdf5", ".hdf"}),
+    ("gamic", {".h5", ".hdf5", ".hdf"}),
+    ("iris", {".RAW", ".raw"}),
+    ("furuno", {".scn", ".scnx"}),
+    ("rainbow", {".vol", ".azi"}),
+    ("cfradial2", set()),
+    ("uf", {".uf"}),
+    ("imd", set()),
+    ("datamet", set()),
+    ("hpl", set()),
+    ("metek", set()),
 ]
-_OPENER_NAMES: dict[str, str] = {label: fname for label, fname, _ in _FORMAT_TABLE}
+_FORMAT_LABELS: frozenset[str] = frozenset(label for label, _ in _FORMAT_TABLE)
 # Format labels whose xradar *engine* name differs from the label.  Everything else
 # uses the label itself as the engine name (cfradial1, odim, gamic, iris, ...).
 _ENGINE_BY_FORMAT: dict[str, str] = {"nexrad_level2": "nexradlevel2"}
@@ -345,25 +345,11 @@ def sorted_sweep_names(dtree: xr.DataTree) -> list[str]:
 # ----------------------------------------------------------------------
 
 
-def _xradar_engines() -> set[str] | None:
-    """Engine names ``xd.open_datatree`` accepts (empty if it cannot enumerate them),
-    or ``None`` if the API is absent.
-
-    xradar >= 0.13 provides ``xd.open_datatree(path, engine=...)``; older releases
-    only have the per-format ``xd.io.open_*_datatree`` functions.
-    """
+def _xradar_engines() -> set[str]:
+    """Engine names ``xd.open_datatree`` accepts (xradar >= 0.13)."""
     import xradar as xd
 
-    if not hasattr(xd, "open_datatree"):
-        return None
-    lister = getattr(xd.io, "list_xradar_engines", None)
-    if lister is None:
-        return set()
-    try:
-        return {str(e) for e in lister()}
-    except Exception as exc:
-        logger.debug("list_xradar_engines failed: %s", exc)
-        return set()
+    return {str(e) for e in xd.io.list_xradar_engines()}
 
 
 def preload_backends() -> None:
@@ -383,59 +369,31 @@ def preload_backends() -> None:
 def _get_opener(format_name: str):
     """Return ``opener(path) -> DataTree`` for *format_name* (raises if unavailable).
 
-    Prefers ``xd.open_datatree(path, engine=...)`` when the installed xradar has it
-    (the per-format ``open_*_datatree`` functions are deprecated there); otherwise
-    falls back to the dedicated ``xd.io.open_*_datatree`` function.  Both routes go
-    straight to the one backend, so the fast path costs the same.
+    Every reader goes through ``xd.open_datatree(path, engine=...)`` straight to the one
+    backend (xradar's per-format ``open_*_datatree`` functions are deprecated), so the fast
+    path costs the same as calling the backend directly.
     """
     import xradar as xd
 
-    func_name = _OPENER_NAMES.get(format_name)
-    if func_name is None:
-        # An engine xradar knows about that is not in our table (future formats).
-        engines = _xradar_engines()
-        if engines and format_name in engines:
-            return _engine_opener(xd, format_name)
-        raise ValueError(f"Unknown format: {format_name}")
-
     engine = _ENGINE_BY_FORMAT.get(format_name, format_name)
-    engines = _xradar_engines()
-    if engines and engine in engines:
+    if engine in _xradar_engines():
         return _engine_opener(xd, engine)
-    # xradar.io exposes the dedicated openers as xradar.io.<name>
-    opener = getattr(xd.io, func_name, None)
-    if opener is None:
-        raise ImportError(f"xradar.io.{func_name} not available in installed xradar version")
-    return _azimuth_first(opener) if format_name == "cfradial2" else opener
+    if format_name in _FORMAT_LABELS:
+        raise ImportError(f"xradar has no '{engine}' reader")
+    raise ValueError(f"Unknown format: {format_name}")
 
 
 def _engine_opener(xd: Any, engine: str):
+    # CfRadial2 keeps the file's first dimension, ``time``, unless asked for ``first_dim="auto"``
+    # (every other reader defaults to that). A time-first volume has no ``azimuth`` dimension, so
+    # the algorithms, QC and the pipeline failed on it with ``KeyError: 'azimuth'``.
+    extra: dict[str, Any] = {"first_dim": "auto"} if engine == "cfradial2" else {}
+
     def opener(path: str, **kwargs: Any) -> xr.DataTree:
-        return xd.open_datatree(path, engine=engine, **kwargs)
+        return xd.open_datatree(path, engine=engine, **{**extra, **kwargs})
 
     opener.__name__ = f"open_{engine}"
-    return _azimuth_first(opener) if engine == "cfradial2" else opener
-
-
-def _azimuth_first(opener: Callable[..., xr.DataTree]) -> Callable[[str], xr.DataTree]:
-    """A CfRadial2 opener that gives the xradar model (sweeps along ``azimuth``).
-
-    xradar's CfRadial2 reader keeps the file's first dimension, ``time``, unless asked for
-    ``first_dim="auto"`` (every other reader defaults to that). A time-first volume has no
-    ``azimuth`` dimension, so the algorithms, QC and the pipeline failed on it with
-    ``KeyError: 'azimuth'``. An xradar without the keyword keeps its own behaviour.
-    """
-
-    def wrapped(path: str) -> xr.DataTree:
-        try:
-            return opener(path, first_dim="auto")
-        except TypeError as exc:
-            if "first_dim" not in str(exc):
-                raise
-            return opener(path)
-
-    wrapped.__name__ = getattr(opener, "__name__", "open_cfradial2")
-    return wrapped
+    return opener
 
 
 #: files that mark a folder as a Zarr store (v2 group / attributes / consolidated, or v3)
@@ -456,19 +414,27 @@ def _open_zarr_cfradial2(path: str) -> xr.DataTree:
     """
     import xradar as xd
 
-    opener = getattr(xd.io, "open_cfradial2_datatree", None)
-    if opener is None:  # pragma: no cover - every supported xradar has it
-        raise ImportError("xradar.io.open_cfradial2_datatree is not available")
     consolidated = (Path(path) / ".zmetadata").is_file()
-    kwargs: dict[str, Any] = {"engine": "zarr", "consolidated": consolidated}
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        try:
-            return opener(path, first_dim="auto", **kwargs)
-        except TypeError as exc:
-            if "first_dim" not in str(exc):
-                raise
-            return opener(path, **kwargs)
+    return xd.open_datatree(
+        path, engine="cfradial2", netcdf_engine="zarr", consolidated=consolidated, first_dim="auto"
+    )
+
+
+#: Formats whose xradar reader does not check the file's signature itself: it "opens" any
+#: NetCDF as a one-sweep volume (xradar 0.13's IMD reader), so the file must be claimed by the
+#: backend's own ``guess_can_open`` before it is tried.
+_SIGNATURE_GATED = frozenset({"imd"})
+
+
+def _backend_claims(fmt: str, path: str) -> bool:
+    """True if xradar's backend for *fmt* recognises *path* by its signature (variables, magic)."""
+    engine = _ENGINE_BY_FORMAT.get(fmt, fmt)
+    try:
+        backend = xr.backends.list_engines().get(engine)
+        return bool(backend is not None and backend.guess_can_open(path))
+    except Exception as exc:
+        logger.debug("guess_can_open failed for %s: %s", engine, exc)
+        return False
 
 
 def _discover_format(path: str) -> str | None:
@@ -725,7 +691,7 @@ def _guess_formats(path: str) -> tuple[list[str], bool]:
     hinted = bool(ordered)
 
     # 3. Remaining formats as fallbacks (deduped)
-    for fmt, _, _ in _FORMAT_TABLE:
+    for fmt, _ in _FORMAT_TABLE:
         add(fmt)
 
     return ordered, hinted
@@ -971,6 +937,8 @@ class RadarReader:
             tried.add(fmt)
             try:
                 opener = _get_opener(fmt)
+                if fmt in _SIGNATURE_GATED and not _backend_claims(fmt, open_path):
+                    raise ValueError(f"not a {fmt} file")
                 logger.info("Trying format '%s' for %s", fmt, open_path)
                 with hdf5_guard.native_section():
                     dtree = opener(open_path)

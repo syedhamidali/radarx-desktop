@@ -7,7 +7,7 @@ GLM flashes written to the flash table as SYNTHETIC (GLM does not give it)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -16,7 +16,7 @@ from engine import animate_sound as snd
 from tests import test_animate_sound as _tas
 from tests.test_animate_sound import case, synthetic  # noqa: F401  (fixtures)
 
-UTC = timezone.utc
+UTC = UTC
 
 
 def plan():

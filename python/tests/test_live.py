@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,11 +19,11 @@ needs_radarx = pytest.mark.skipif(not mosaic.radarx_available(), reason="radarx 
 
 
 def _today() -> str:
-    return datetime.now(timezone.utc).strftime("%Y/%m/%d")
+    return datetime.now(UTC).strftime("%Y/%m/%d")
 
 
 def _name(st: str, minutes_ago: int) -> str:
-    t = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    t = datetime.now(UTC) - timedelta(minutes=minutes_ago)
     return f"{st}{t:%Y%m%d_%H%M%S}_V06"
 
 

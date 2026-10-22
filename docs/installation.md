@@ -93,8 +93,7 @@ no extension, like NEXRAD Level II (`KTLX20130520_201643_V06`).
 
 ## The command line (`rxd`)
 
-The command line comes as a Python package, a wheel that is part of every release, next to the installers. It needs Python 3.10 or newer (3.12 or newer for the optional radarx
-algorithms) and works on macOS, Windows and Linux. Use a virtual environment so it stays apart from your other
+The command line comes as a Python package, a wheel that is part of every release, next to the installers. It needs Python 3.12 or newer and works on macOS, Windows and Linux. Use a virtual environment so it stays apart from your other
 Python packages.
 
 **macOS and Linux**

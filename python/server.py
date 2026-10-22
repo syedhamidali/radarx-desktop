@@ -2173,7 +2173,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             await self._open_with_new_reader(
                 lambda r: r.open_arco_scan(station, scan_key), timeout=120.0
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self.send_error(
                 "open_arco_scan timed out after 120s — the ARCO store may be slow or unavailable"
             )
@@ -2261,7 +2261,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         try:
             await self.send_progress(15, f"Downloading {p.network} {site} {key}...")
             await self._open_with_new_reader(lambda r: p.open(r, site, key), timeout=300.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self.send_error("open_network_scan failed: timed out after 300 s")
         except Exception as exc:
             await self.send_error(f"open_network_scan failed: {exc}")

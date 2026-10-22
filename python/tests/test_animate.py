@@ -15,7 +15,7 @@ import math
 import os
 import sys
 import tracemalloc
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import ClassVar
@@ -31,7 +31,7 @@ from engine import animate_render as render
 from engine.animate_plan import AnimateConfigError, AnimatePlanError
 from engine.animate_storm import Cell
 
-UTC = timezone.utc
+UTC = UTC
 T0 = datetime(2021, 12, 11, 2, 0, 0, tzinfo=UTC)
 
 

@@ -25,13 +25,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-UTC = timezone.utc
+UTC = UTC
 
 
 @dataclass

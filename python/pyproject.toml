@@ -2,13 +2,14 @@
 name = "radarx-desktop-engine"
 version = "0.4.1"
 description = "Python sidecar engine for radarx-desktop"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 authors = [{ name = "Radarx Desktop by LabShope Technologies" }]
 dependencies = [
-    # 0.13 changes CfRadial1 output (units strings) and error text that the exporters and tests depend on:
-    # stay on 0.12 until the engine is checked against 0.13.
-    "xradar>=0.12,<0.13",
+    # 0.13 reads every format through xd.open_datatree(path, engine=...), writes CfRadial1 with
+    # renamed private helpers (engine/cfwrite.py uses them) and needs Python >= 3.12, which is
+    # why this package needs it too.
+    "xradar>=0.13.0",
     "xarray>=2026.4,<2027.0",
     # Plain dask only (xradar requires it anyway): [complete] would add distributed, bokeh, jinja2,
     # tornado, msgpack ... which the engine never imports.
@@ -46,8 +47,8 @@ bundle = ["pyinstaller>=6.16"]
 # encode): its PyPI wheels bundle an FFmpeg built with GPL parts, so the project never ships it
 # (not in the installers, not in the movie components pack); installing this extra is your choice.
 video = ["playwright>=1.40,<2.0", "av>=12.0,<20.0"]
-# Optional algorithm modules (modules/radarx_*.py). radarx itself needs Python >= 3.12.
-radarx = ["radarx>=0.5.1; python_version >= '3.12'"]
+# Optional algorithm modules (modules/radarx_*.py). radarx needs Python >= 3.12, as this package does.
+radarx = ["radarx>=0.5.1"]
 
 # Command line: `rxd info FILE`, `rxd run radarx_hid FILE --all-sweeps` ... (docs/CLI.md).
 # Also `python -m engine`. engine.cli imports the heavy engine lazily and is never imported by

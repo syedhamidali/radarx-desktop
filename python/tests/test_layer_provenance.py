@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pytest
@@ -49,7 +49,7 @@ def test_serialisation_is_json_safe_and_drops_empty_fields() -> None:
     p = lp.LayerProvenance(
         kind="model",
         source="HRRR",
-        run_time=datetime(2022, 3, 30, 0, tzinfo=timezone.utc),
+        run_time=datetime(2022, 3, 30, 0, tzinfo=UTC),
         valid_time="2022-03-30 01:00:00",
         parameters={"level": 850, "nan": float("nan"), "path": "/Users/me/x.nc", "none": None},
         references=["Dowell et al. 2022", ""],
