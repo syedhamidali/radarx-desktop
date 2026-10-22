@@ -3,6 +3,37 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.4.1
+
+- **The radar network map is a globe:** it opens as a globe you can turn with the mouse, a finger or the keyboard
+  (drag, wheel or pinch to zoom, double-click to centre, a compass button and **N** to point north up again, **Home**
+  to start over), with a *Globe | Flat* switch that remembers your choice and falls back to the flat map where the
+  graphics driver has no WebGL2. Same radars, filters, search, legend and card in both views; zoomed in far enough it
+  offers *Open in flat map here*. With the basemap *None* it sends nothing at all ({doc}`RADAR_MAP`).
+- **The live map's data are yours to use:** *Open these volumes* (and *Open this volume* on each radar) opens the
+  volumes behind the picture as normal files, so the 2D and 3D viewers, Mosaic, Multi-Doppler, cells, modules and
+  export work on them, with no new download; *View in 3D* and *Multi-Doppler winds from these radars* do the common
+  cases in one click, and *Save the composite* writes NetCDF or a georeferenced PNG with the credit and the analysis
+  time. At most 8 volumes are kept, and closing a file gives the disk back ({doc}`LIVE`).
+- **The live map looks better and says what it draws:** echo below 5 dBZ is no longer painted (a visible setting,
+  *Hide echo below N dBZ*; data and exports are not changed), a 1 km grid for up to four radars, a smoothed picture,
+  place names and boundaries above the echo, thin optional range rings, a view that opens on the radars' footprint and
+  a left pane that lists the radars and the volumes held.
+- **European and airport radars on the live map:** the live map works with NEXRAD, the 17 German DWD radars (German
+  Weather Service Open Data, CC BY 4.0, mixed with NEXRAD if you like) and the 47 US airport radars (TDWR). The
+  dialogs name the right server and the exact sizes, and the credit and licence travel into the label and the saved
+  files. A live map of far-away radars is now centred on the radars it shows, so Germany, Alaska and Hawaii are no
+  longer turned sideways. Other networks (EUMETNET OPERA, FMI, KNMI, DMI, SMHI, Météo-France, South Africa) are not
+  live yet; {doc}`LIVE` says why.
+- **More radars on the radar network map:** the 47 US Terminal Doppler Weather Radars and 82 Australian radars of the
+  Bureau of Meteorology (with band, Doppler and dual-polarisation flags, dates and status); the Australian archive's
+  licence is now shown correctly as CC BY 4.0. The app still cannot download Australian volumes itself.
+- **The app's screen on data that stays on a cluster:** the new command `rxd serve` starts the engine on a cluster,
+  listening on that computer only, with a new random token for every run; you forward its port with `ssh -L` and
+  connect the app in *Settings > Engine*. The status bar says **REMOTE ENGINE** while it is in use. The token is
+  never saved or logged, only one app can connect at a time, and the engine stops after 120 minutes without use
+  ({doc}`cluster`).
+
 ## 0.4.0
 
 - **Nowcast (experimental):** a new **Nowcast** panel and `rxd nowcast` extrapolate radar frames 5 to 120 minutes
