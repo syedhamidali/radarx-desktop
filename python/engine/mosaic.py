@@ -269,6 +269,13 @@ class MosaicRecord:
     # to tell a dry cell from one that was not observed (engine/nowcast).
     merged_aeqd: np.ndarray | None = None
     covered_aeqd: np.ndarray | None = None
+    # Credit and notes that travel with exports (NetCDF global attributes, PNG text): where the
+    # volumes came from, their licence, how the picture was drawn. Set by the caller (the live
+    # map); empty for an ordinary mosaic.
+    extra_attrs: dict[str, str] = field(default_factory=dict)
+    # How the picture (``png``) was drawn when it is not the plain colour-mapped grid (the live
+    # map: display floor, smoothing); empty for an ordinary mosaic.
+    display: dict[str, Any] = field(default_factory=dict)
 
     @property
     def nbytes(self) -> int:
@@ -1734,6 +1741,7 @@ def _mosaic_attrs(rec: MosaicRecord) -> dict[str, Any]:
     )
     if rec.value_mask_text:
         attrs["value_mask"] = rec.value_mask_text
+    attrs.update({k: str(v) for k, v in rec.extra_attrs.items()})
     if rec.height_m is not None:
         attrs["height_m"] = float(rec.height_m)
     if rec.threshold_dbz is not None:
@@ -2056,6 +2064,7 @@ def png_bytes(rec: MosaicRecord) -> bytes:
             + (f" at {rec.height_m:g} m" if rec.height_m is not None else "")
             + f" ({rec.units}); colour range {rec.vmin:g}..{rec.vmax:g}; "
             f"analysis time {rec.analysis_time or 'unknown'}"
+            + "".join(f"; {k}: {v}" for k, v in rec.extra_attrs.items())
         ),
         params={
             "radars": [r.name for r in rec.radars],

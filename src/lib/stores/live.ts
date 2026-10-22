@@ -8,6 +8,11 @@
  *                                                          `live_frame_ready` {header, png}), or
  *                                                          {type:'live_error', request_id, message}
  *   -> {type:'live_stop'}                               <- {type:'live_stopped'}
+ *   -> {type:'live_restyle', request_id, mosaic_id, floor_dbz}  <- the same composite redrawn
+ *                                                          (a `live_frame` with restyled:true)
+ *   -> {type:'live_open_volumes', request_id, stations}  <- `file_opened` per volume, then
+ *                                                          {type:'live_volumes_opened', files, pinned}
+ *                                                          (no download: the held files are opened)
  *
  * Network rule (docs/SCIENCE.md 2.7): the first start asks twice, once for the listings and once
  * for the downloads with their exact sizes; "Allow once" makes one update and pauses, "Allow while
@@ -43,6 +48,9 @@ import { beginOp, cancelOp, type OpHandle } from '../utils/requestScheduler';
 import { registerJobSource } from './jobSources';
 import { addToast } from './toasts';
 import { settings } from './settings';
+import { openFiles, setActiveFile } from './fileManager';
+import { windDeselected, runWind, windRun } from './wind';
+import { exportMosaicById } from './mosaic';
 import { envStatus } from './environment';
 import { layerMap, removeLayer } from './layers';
 import { withLayer } from '../utils/layerRegistry';
@@ -63,6 +71,13 @@ import {
   type RadarStatusEntry,
   type FrameMeta,
 } from '../utils/liveLogic';
+import {
+  engineFloor,
+  openableStations,
+  openedText,
+  multiDopplerBlocked,
+  type OpenedVolume,
+} from '../utils/liveDisplay';
 import type { MosaicRadarInfo } from './mosaic';
 
 // ── Types ───────────────────────────────────────────────────────────────────────────────────
@@ -102,6 +117,27 @@ export interface LiveFrame extends FrameMeta {
   image: HTMLImageElement;
   provenance: Provenance | null;
   warnings: string[];
+  /** The display floor (dBZ) this picture was drawn with; null = every echo. Set by the engine. */
+  floor: number | null;
+  /** True when the picture is smoothed (drawn pixels finer than the grid). */
+  smoothed: boolean;
+  /** Credit of the volumes (source, attribution, licence) as the engine states it. */
+  credit: { source?: string; attribution?: string; licence?: string } | null;
+}
+
+/** A volume the live engine holds right now (from the last frame's cache report). */
+export interface HeldInfo {
+  station: string;
+  name: string;
+  size: number;
+  scan_time: string | null;
+  on_disk: boolean;
+}
+
+/** What the last action (open, save, ...) did, shown under the status line. */
+export interface LiveNotice {
+  kind: 'info' | 'error';
+  text: string;
 }
 
 export const MAX_FRAMES = DEFAULT_MAX_FRAMES;
@@ -128,6 +164,14 @@ const _frames = writable<LiveFrame[]>([]);
 export const liveFrames = { subscribe: _frames.subscribe };
 export const liveShownIndex = writable<number | null>(null);
 export const liveLoopPlaying = writable<boolean>(false);
+/** The volumes the engine holds (newest per radar), from the last update's cache report. */
+export const liveHeld = writable<HeldInfo[]>([]);
+/** Volumes opened as normal files from this map (still open ones are counted by `liveOpenedNow`). */
+const _opened = writable<OpenedVolume[]>([]);
+export const liveOpenedNow = derived([_opened, openFiles], ([$o, $files]) => $o.filter((o) => $files.some((f) => f.id === o.file_id)));
+/** The action in progress ('' = none) and the outcome of the last one. */
+export const liveAction = writable<string>('');
+export const liveNotice = writable<LiveNotice | null>(null);
 /** The frame on the map: the chosen one of the loop, else the newest. */
 export const liveShownFrame = derived([_frames, liveShownIndex], ([$f, $i]) => {
   if ($f.length === 0) return null;
@@ -280,6 +324,9 @@ function makeFrame(header: any, png: Uint8Array): Promise<LiveFrame> {
         image: img,
         provenance: parseProvenance(header.provenance),
         warnings: Array.isArray(header.warnings) ? header.warnings : [],
+        floor: typeof header.display?.floor_dbz === 'number' ? header.display.floor_dbz : null,
+        smoothed: Number(header.display?.smoothing ?? 1) > 1,
+        credit: header.credit && typeof header.credit === 'object' ? header.credit : null,
       });
     };
     img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('the composite image could not be decoded')); };
@@ -366,12 +413,13 @@ async function runUpdate(): Promise<void> {
     const updateId = newRequestId();
     const files: LiveFileRequest[] = plan.files;
     const payload = await rpc<{ header: any; png: Uint8Array }>(
-      () => void wsManager.send({ type: 'live_update', request_id: updateId, files, variable: 'DBZH', product: 'composite' }),
+      () => void wsManager.send({ type: 'live_update', request_id: updateId, files, variable: 'DBZH', product: 'composite', floor_dbz: engineFloor(get(settings).live.floorDbz) }),
       'live_frame_ready', updateId, UPDATE_TIMEOUT_MS, op.signal,
     );
     if (!alive()) return;
     const frame = await makeFrame(payload.header, payload.png);
     if (!alive()) { URL.revokeObjectURL(frame.url); return; }
+    liveHeld.set(Array.isArray(payload.header.cache?.stations) ? payload.header.cache.stations : []);
     for (const r of (payload.header.stations ?? []) as any[]) {
       if (r?.status === 'error') setRadar(String(r.station), { status: 'error', message: String(r.message ?? 'download failed') });
     }
@@ -420,6 +468,9 @@ export function startLive(): boolean {
     return true;
   }
   if (s.running) stop(false);
+  // Frames of other radars are not a recent loop of these ones.
+  const lastFrame = get(_frames)[get(_frames).length - 1];
+  if (lastFrame && !lastFrame.radars.every((r) => stations.includes(r.station))) clearLiveFrames();
   session += 1;
   liveState.set({ ...IDLE, running: true, phase: 'listing', stations, radars: Object.fromEntries(stations.map((st) => [st, { station: st, status: 'pending' as const }])) });
   void runUpdate();
@@ -432,6 +483,7 @@ function stop(tellEngine = true): void {
   if (currentOp) { const op = currentOp; currentOp = null; cancelOp(op.id); }
   cycleRunning = false;
   get(liveConsentPrompt)?.answer('cancel');
+  liveHeld.set([]);
   liveState.set({ ...IDLE });
   liveLoopPlaying.set(false);
   if (tellEngine && get(connectionStatus) === 'connected') void wsManager.send({ type: 'live_stop' });
@@ -469,9 +521,174 @@ export function refreshLive(): void {
 export function clearLiveFrames(): void {
   dropFrames(get(_frames));
   _frames.set([]);
+  restyleGone.clear();
   liveShownIndex.set(null);
   liveLoopPlaying.set(false);
   removeLayer(LIVE_LAYER_ID);
+}
+
+// ── Redraw with another display floor ───────────────────────────────────────────────────────
+
+const restyleBusy = new Set<string>();
+/** Frames the engine could no longer redraw (their composite left its cache): they keep their floor. */
+const restyleGone = new Set<string>();
+
+/**
+ * Make the shown picture follow the "Hide echo below N dBZ" setting: ask the engine to draw the
+ * same composite again with that floor (no download, no new merge). A frame whose composite has
+ * left the engine's small cache keeps the floor it was drawn with, and its label says so.
+ */
+export async function ensureFrameFloor(frame: LiveFrame | null): Promise<void> {
+  if (!frame || get(connectionStatus) !== 'connected') return;
+  const want = engineFloor(get(settings).live.floorDbz);
+  if (frame.floor === want || restyleBusy.has(frame.id) || restyleGone.has(`${frame.id}:${want}`)) return;
+  restyleBusy.add(frame.id);
+  const ctl = new AbortController();
+  try {
+    const id = newRequestId();
+    const payload = await rpc<{ header: any; png: Uint8Array }>(
+      () => void wsManager.send({ type: 'live_restyle', request_id: id, mosaic_id: frame.mosaicId, floor_dbz: want }),
+      'live_frame_ready', id, 30_000, ctl.signal,
+    );
+    const fresh = await makeFrame(payload.header, payload.png);
+    // keep everything the frame knew (radars, time, id); take the new picture and its floor
+    const updated: LiveFrame = { ...frame, url: fresh.url, image: fresh.image, floor: fresh.floor, smoothed: fresh.smoothed };
+    const cur = get(_frames);
+    if (!cur.some((f) => f.id === frame.id)) { URL.revokeObjectURL(fresh.url); return; }
+    _frames.set(cur.map((f) => (f.id === frame.id ? updated : f)));
+    dropFrames([frame]);
+  } catch (err) {
+    restyleGone.add(`${frame.id}:${want}`);
+    if (!(err instanceof Error) || err.message !== 'cancelled') console.info('[live] could not redraw the frame:', err);
+  } finally {
+    restyleBusy.delete(frame.id);
+  }
+}
+
+// ── Open the held volumes: viewers, 3D, Multi-Doppler ───────────────────────────────────────
+
+function setNotice(kind: LiveNotice['kind'], text: string): void {
+  liveNotice.set({ kind, text });
+}
+
+export function clearLiveNotice(): void {
+  liveNotice.set(null);
+}
+
+/** What an opening step is going to do, in words (the buttons' tooltips): the held volumes and their sizes. */
+export function heldSummary(held: readonly HeldInfo[], stations?: readonly string[]): string {
+  const rows = held.filter((h) => !stations || stations.includes(h.station));
+  const total = rows.reduce((n, h) => n + (h.size || 0), 0);
+  return `${rows.length} volume${rows.length === 1 ? '' : 's'}, ${(total / 1024 ** 2).toFixed(1)} MB, already downloaded (no new download)`;
+}
+
+type AfterOpen = 'open' | '3d' | 'wind';
+
+/**
+ * Open the volumes the engine holds for `stations` as normal files (2D / 3D viewers, Mosaic,
+ * Multi-Doppler, cells, modules and export then work on them). Nothing is downloaded: the engine
+ * hands the files it already holds to the normal open, and pins them so the next live update does
+ * not replace them; closing the file releases the disk again. `then` also switches the view to 3D,
+ * or opens the Multi-Doppler panel with these radars ticked and runs it (the engine's own
+ * explanation is shown when the radars do not overlap).
+ */
+export async function openLiveVolumes(stations: readonly string[], then: AfterOpen = 'open'): Promise<boolean> {
+  if (get(liveAction)) return false;
+  const want = [...stations];
+  if (want.length === 0) {
+    setNotice('error', 'No radar has a volume to open yet. Update the live map first.');
+    return false;
+  }
+  if (get(connectionStatus) !== 'connected') {
+    setNotice('error', 'The engine is not connected.');
+    return false;
+  }
+  const label = then === 'wind' ? 'Opening the volumes for multi-Doppler winds' : then === '3d' ? 'Opening the volumes for 3D' : 'Opening live volumes';
+  liveAction.set(label);
+  setNotice('info', `${label}: ${heldSummary(get(liveHeld), want)}.`);
+  const op = beginOp({ kind: 'open', label, slowMs: 8_000, timeoutMs: 0 });
+  try {
+    const id = newRequestId();
+    const reply = await rpc<{ files: OpenedVolume[]; failed: string[]; pinned: { bytes: number } }>(
+      () => void wsManager.send({ type: 'live_open_volumes', request_id: id, stations: want, known_file_ids: get(openFiles).map((f) => f.id) }),
+      'live_volumes_opened', id, 5 * 60_000, op.signal,
+    );
+    op.done();
+    _opened.update((o) => [...o.filter((x) => !reply.files.some((f) => f.file_id === x.file_id)), ...reply.files]);
+    const ids = reply.files.map((f) => f.file_id);
+    // The first radar of the list is the one in front (the engine opened them in this order).
+    if (ids.length > 1 && get(openFiles).some((f) => f.id === ids[0])) setActiveFile(ids[0], { force: true });
+    let text = openedText(reply.files, reply.pinned?.bytes ?? 0, reply.failed ?? []);
+    if (then === '3d') {
+      window.dispatchEvent(new CustomEvent('xradar:set-view-mode', { detail: { mode: '3d' } }));
+    } else if (then === 'wind') {
+      const why = multiDopplerBlocked(reply.files.map((f) => f.station));
+      // Tick exactly these radars, show the panel and run: an engine problem (no overlap, ...) is
+      // shown by the panel and repeated here in plain words.
+      windDeselected.set(get(openFiles).filter((f) => !ids.includes(f.id)).map((f) => f.id));
+      window.dispatchEvent(new CustomEvent('xradar:set-view-mode', { detail: { mode: '2d' } }));
+      window.dispatchEvent(new CustomEvent('xradar:show-panel', { detail: { id: 'wind' } }));
+      if (why) text += ` ${why}`;
+      runWind();
+      watchWindOutcome();
+    } else {
+      window.dispatchEvent(new CustomEvent('xradar:set-view-mode', { detail: { mode: '2d' } }));
+    }
+    setNotice('info', text);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!op.signal.aborted) op.fail(msg);
+    setNotice('error', msg.replace(/^live_open_volumes: /, ''));
+    return false;
+  } finally {
+    liveAction.set('');
+  }
+}
+
+/** After a Multi-Doppler run started from the live map: say plainly how it ended (the engine's words). */
+function watchWindOutcome(): void {
+  let seenRunning = get(windRun).running;
+  let done = false;
+  let off: (() => void) | null = null;
+  const finish = () => {
+    done = true;
+    off?.();
+  };
+  // a store calls its subscriber at once, before `off` exists: `done` covers that case
+  off = windRun.subscribe((r) => {
+    if (done) return;
+    if (r.running) seenRunning = true;
+    if (!r.running && (seenRunning || r.error)) {
+      if (r.error) setNotice('error', `Multi-Doppler: ${r.error}`);
+      finish();
+    }
+  });
+  if (done) off();
+  setTimeout(finish, 20 * 60_000);
+}
+
+/** The newest volumes the live map holds, as the stations of the shown frame in order. */
+export function openableNow(): string[] {
+  const frame = get(liveShownFrame);
+  const held = get(liveHeld).filter((h) => h.on_disk).map((h) => h.station);
+  return openableStations(frame?.radars.map((r) => ({ station: r.station })) ?? [], held);
+}
+
+// ── Save the composite ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Save the shown composite as NetCDF (the merged grid and its provenance) or a georeferenced PNG
+ * (with world file and projection for GIS). The files carry the data credit of the volumes, the
+ * analysis time and the note that this is not an official product. The NetCDF holds the grid
+ * values themselves, not the display floor.
+ */
+export async function saveLiveComposite(format: 'netcdf' | 'png'): Promise<boolean> {
+  const frame = get(liveShownFrame);
+  if (!frame) { setNotice('error', 'There is no composite to save yet.'); return false; }
+  const stamp = (frame.time ?? '').replace(/[-:]/g, '').replace(/\.\d+/, '').slice(0, 13);
+  const base = `live_composite_${frame.radars.map((r) => r.station).join('-')}_${stamp || 'time_unknown'}`;
+  return exportMosaicById(frame.mosaicId, format, base);
 }
 
 /** The interval changed: re-arm the timer from now. */

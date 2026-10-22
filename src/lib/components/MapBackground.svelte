@@ -46,11 +46,21 @@
    * null for tiles only). `undefined` (the default) draws the mosaic store's layer with its probe.
    */
   export let overlay: MosaicLayer | null | undefined = undefined;
+  /**
+   * Draw the basemap twice: calmly under the radar picture, and again above it as lines only
+   * (place names, roads, boundaries; the land colour is blended away), so the echo never hides
+   * where it is. The base layer is also toned down so the echo stands out.
+   */
+  export let linesAbove: boolean = false;
 
   let canvasEl: HTMLCanvasElement; // basemap tiles (CSS-filtered for the dark theme)
-  let mosaicCanvasEl: HTMLCanvasElement; // mosaic, sites, range rings: never filtered
+  let mosaicCanvasEl: HTMLCanvasElement; // the radar picture / wind field: never filtered
+  let linesCanvasEl: HTMLCanvasElement | undefined; // the basemap again, blended above the picture
+  let siteCanvasEl: HTMLCanvasElement; // radar sites and range rings, above everything
   let ctx: CanvasRenderingContext2D | null = null;
   let mctx: CanvasRenderingContext2D | null = null;
+  let lctx: CanvasRenderingContext2D | null = null;
+  let octx: CanvasRenderingContext2D | null = null;
   let rafId: number = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let rootEl: HTMLDivElement;
@@ -73,7 +83,19 @@
 
   $: basemap = resolveBasemap($settings.mapStyle, $settings.theme.mode);
   $: provider = basemap.provider;
+  $: baseFilter = linesAbove ? MUTED_FILTER[basemap.theme] : basemap.filter;
+  $: linesFilter = LINES_FILTER[basemap.theme];
   $: hasTiles = showTiles && !!provider.url;
+  // Calmer base under a radar picture, and the lines-only copy above it (see `linesAbove`): the
+  // land goes to white (light: multiply) or black (dark: screen) and only dark text and lines remain.
+  const MUTED_FILTER = {
+    dark: 'invert(1) hue-rotate(196deg) brightness(0.6) contrast(0.9) saturate(0.4)',
+    light: 'grayscale(0.55) brightness(1.04) contrast(0.95)',
+  };
+  const LINES_FILTER = {
+    dark: 'invert(1) grayscale(1) contrast(2.4) brightness(1.6)',
+    light: 'grayscale(1) brightness(1.12) contrast(2.4)',
+  };
   const BASE_FILL = '#e9e8ee'; // shown under/instead of tiles; goes through the theme filter
 
   // ── Tile cache, loader and failure handling ────────────────────────────────
@@ -108,14 +130,15 @@
   }
 
   // Re-render whenever view params change
-  $: if (ctx && mctx && radarLat != null && radarLon != null) {
-    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer, wlayer, basemap.theme);
+  $: if (ctx && mctx && octx && radarLat != null && radarLon != null) {
+    void (scale, translateX, translateY, containerWidth, containerHeight, maxRange, opacity, provider, hasTiles, layer, wlayer, basemap.theme, linesAbove);
     scheduleRender();
   }
 
   onMount(() => {
     ctx = canvasEl.getContext('2d');
     mctx = mosaicCanvasEl.getContext('2d');
+    octx = siteCanvasEl.getContext('2d');
     scheduleRender();
   });
 
@@ -216,7 +239,8 @@
 
   function renderTiles() {
     rafId = 0;
-    if (!ctx || !mctx || !canvasEl || radarLat == null || radarLon == null) return;
+    if (!ctx || !mctx || !octx || !canvasEl || radarLat == null || radarLon == null) return;
+    lctx = linesAbove && linesCanvasEl ? linesCanvasEl.getContext('2d') : null;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const cw = containerWidth;
@@ -232,20 +256,36 @@
       mosaicCanvasEl.width = pw;
       mosaicCanvasEl.height = phh;
     }
+    if (siteCanvasEl.width !== pw || siteCanvasEl.height !== phh) {
+      siteCanvasEl.width = pw;
+      siteCanvasEl.height = phh;
+    }
+    if (linesCanvasEl && lctx && (linesCanvasEl.width !== pw || linesCanvasEl.height !== phh)) {
+      linesCanvasEl.width = pw;
+      linesCanvasEl.height = phh;
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
     mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     mctx.clearRect(0, 0, cw, ch);
+    octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    octx.clearRect(0, 0, cw, ch);
 
     const project = (lat: number, lon: number): [number, number] =>
       latLonToPixel(lat, lon, radarLat, radarLon, maxRange, scale, translateX, translateY, cw, ch);
 
     if (hasTiles) drawBasemap(ctx, cw, ch, dpr, project);
+    if (lctx && linesCanvasEl) {
+      // the second copy of the tiles, above the picture: a plain pixel copy of the first canvas
+      lctx.setTransform(1, 0, 0, 1, 0, 0);
+      lctx.clearRect(0, 0, linesCanvasEl.width, linesCanvasEl.height);
+      if (hasTiles && !!layer && layer.visible) lctx.drawImage(canvasEl, 0, 0);
+    }
 
     const lyr = layer;
     if (lyr && lyr.visible) {
       drawMosaic(mctx, lyr, dpr, project);
-      drawSites(mctx, lyr, project);
+      drawSites(octx, lyr, project);
     }
     // Multi-Doppler wind analysis (speed raster, arrows, radar sites)
     if (wlayer && wlayer.visible) drawWindLayer(mctx, wlayer, project, dpr, cw, ch, basemap.theme);
@@ -478,7 +518,8 @@
     c.lineJoin = 'round';
     for (const r of lyr.radars) {
       // Range ring (great-circle distance from the site)
-      if (lyr.ringKm > 0) {
+      if (lyr.ringKm > 0 && lyr.ringStyle !== 'off') {
+        const subtle = lyr.ringStyle === 'subtle';
         c.beginPath();
         for (let i = 0; i <= 120; i++) {
           const [la, lo] = radarToLatLon(lyr.ringKm * 1000, (i * 360) / 120, r.latitude, r.longitude);
@@ -486,10 +527,10 @@
           if (i === 0) c.moveTo(x, y);
           else c.lineTo(x, y);
         }
-        c.setLineDash([6, 5]);
-        c.lineWidth = 1.25;
+        c.setLineDash(subtle ? [2, 5] : [6, 5]);
+        c.lineWidth = subtle ? 1.2 : 1.25;
         c.strokeStyle = r.color;
-        c.globalAlpha = 0.75;
+        c.globalAlpha = subtle ? 0.65 : 0.75;
         c.stroke();
         c.setLineDash([]);
       }
@@ -602,10 +643,20 @@
 <canvas
   bind:this={canvasEl}
   class="map-background-canvas"
-  style="filter: {basemap.filter}; opacity: {opacity}"
+  style="filter: {baseFilter}; opacity: {opacity}"
   aria-hidden="true"
 ></canvas>
 <canvas bind:this={mosaicCanvasEl} class="map-background-canvas mosaic-canvas" aria-hidden="true"></canvas>
+{#if linesAbove}
+  <canvas
+    bind:this={linesCanvasEl}
+    class="map-background-canvas lines-canvas"
+    class:lines-dark={basemap.theme === 'dark'}
+    style="filter: {linesFilter}"
+    aria-hidden="true"
+  ></canvas>
+{/if}
+<canvas bind:this={siteCanvasEl} class="map-background-canvas site-canvas" aria-hidden="true"></canvas>
 
 <div class="mosaic-root" bind:this={rootEl}>
   {#if hasTiles && provider.attribution}
@@ -617,6 +668,7 @@
       <span class="legend-end">{layer.vmin}</span>
       <span class="legend-bar" style="background: {legendGradient(layer)}"></span>
       <span class="legend-end">{layer.vmax} {layer.units}</span>
+      {#if layer.legendNote}<span class="legend-note">{layer.legendNote}</span>{/if}
     </div>
     {#if probing && $mosaicProbe?.result}
       {@const pr = $mosaicProbe.result}
@@ -647,6 +699,21 @@
     height: 100%;
     z-index: 0;
     pointer-events: none;
+  }
+
+  /* The tiles again above the picture, as lines only (see linesAbove): multiply keeps the dark
+     text and lines of a light map, screen keeps the light ones of a dark map; the land drops out. */
+  .lines-canvas {
+    mix-blend-mode: multiply;
+  }
+  .lines-canvas.lines-dark {
+    mix-blend-mode: screen;
+  }
+
+  .legend-note {
+    color: var(--text-muted);
+    padding-left: 4px;
+    border-left: 1px solid var(--border-light);
   }
 
   .map-attribution {

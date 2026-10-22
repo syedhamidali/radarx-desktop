@@ -33,6 +33,8 @@ engine on your own computer. See {doc}`cluster`.
 
 The **Data** tab also holds the **Radar sites** switch and the place to load your own list of sites (CSV or JSON); see
 {doc}`RADAR_SITES`. Its **Live map** section lists the default radars of the live map in order (choose them on a map
-with **Choose on the map…**) and how often the live map updates (2 to 15 minutes); see {doc}`LIVE`. Its **Movie components** line (desktop app only) shows whether the optional download the Movie
+with **Choose on the map…**) and how often the live map updates (2 to 15 minutes). It also has **Hide echo below** (reflectivity below this is
+not drawn on the live map; 5 dBZ by default, the National Weather Service convention; a display choice only) and
+**Range rings**; see {doc}`LIVE`. Its **Movie components** line (desktop app only) shows whether the optional download the Movie
 Studio needs (Playwright, about 133 MB on disk; the film itself is encoded by your Chrome) is installed, for which version, how big it is and where it
 lives, with a **Remove** button; the download itself is offered in the Movie Studio, never here (see {doc}`ANIMATE`).

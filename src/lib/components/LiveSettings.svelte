@@ -3,9 +3,10 @@
    * Settings > Data > Live map: the default radars (ordered) and the update interval. The map
    * picker itself is the LiveRadarChooser dialog, opened from here through the app shell.
    */
-  import { liveRadars, liveIntervalMin, setLiveRadars, setLiveIntervalMin } from '../stores/settings';
+  import { liveRadars, liveIntervalMin, setLiveRadars, setLiveIntervalMin, liveFloorDbz, setLiveFloorDbz, liveRings, setLiveRings } from '../stores/settings';
   import { BUILTIN_SITES } from '../stores/radarSites';
   import { moveRadarId, MAX_LIVE_RADARS, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN } from '../utils/liveLogic';
+  import { FLOOR_CHOICES, DEFAULT_FLOOR_DBZ } from '../utils/liveDisplay';
 
   const byId = new Map(BUILTIN_SITES.map((s) => [s.id.toUpperCase(), s]));
   const ids = $derived($liveRadars);
@@ -46,6 +47,19 @@
   <label class="form-label" for="st-live-interval">Update every</label>
   <input id="st-live-interval" type="number" min={MIN_INTERVAL_MIN} max={MAX_INTERVAL_MIN} step="1" value={$liveIntervalMin} onchange={onInterval} style="width: 70px" />
   <span class="text-muted">minutes ({MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN}; a NEXRAD volume takes 4–10 min)</span>
+</div>
+
+<div class="form-row">
+  <label class="form-label" for="st-live-floor">Hide echo below</label>
+  <select id="st-live-floor" value={$liveFloorDbz} onchange={(e) => setLiveFloorDbz(Number(e.currentTarget.value))} data-testid="live-settings-floor">
+    {#each FLOOR_CHOICES as c}<option value={c}>{c <= -20 ? 'nothing (all echo)' : `${c} dBZ`}</option>{/each}
+  </select>
+  <span class="text-muted">dBZ; the NWS convention is {DEFAULT_FLOOR_DBZ}. Display only: the data and the exports are not changed.</span>
+</div>
+<div class="form-row">
+  <label class="form-label" for="st-live-rings">Range rings</label>
+  <input id="st-live-rings" type="checkbox" checked={$liveRings} onchange={(e) => setLiveRings(e.currentTarget.checked)} />
+  <span class="text-muted">draw each radar's 230 km range, subtly</span>
 </div>
 
 <style>
