@@ -100,8 +100,8 @@ Downloading and caching need nothing extra. **Reading** the fields needs the ope
 * The wind rotation is compared with the local axes of the same projection computed by the PROJ library at four places;
   they agree to better than a millionth of a metre per second, and the speed is unchanged. In the file for 3 UTC on
   11 December 2021 the winds are grid-relative, and the rotation changes the direction at Mayfield, Kentucky by 5.5 degrees.
-* Temperature, humidity and dew point conversions have known answers (20 degrees C and 50 % give a dew point of 9.3 degrees C;
-  a specific humidity of 10 g/kg at 1000 hPa gives 14.0 degrees C).
+* Humidity and dew point conversions come from the radarx library and are checked against hand-worked answers (20 degrees C
+  and 50 % give a dew point of 9.3 degrees C; a specific humidity of 10 g/kg at 1000 hPa gives 14.0 degrees C).
 * A column of the analytic Weisman and Klemp (1982) sounding is written as HRRR-like files and read back as a profile: its
   surface-based CAPE agrees with the source sounding to within 15 % at 50 hPa spacing.
 * A real run for Mayfield, Kentucky, 11 December 2021 03 UTC: the column recomputed from only six pressure levels gives a
