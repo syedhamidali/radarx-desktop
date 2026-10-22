@@ -12,7 +12,6 @@ Components under a licence that is not simply permissive, and the non-commercial
 
 | Kind | Component | Licence | Class | How it is used / why accepted |
 | --- | --- | --- | --- | --- |
-| python | certifi 2026.4.22 | MPL-2.0 | weak copyleft | MPL-2.0. Data package (the CA certificate bundle) imported as a library by requests/boto3 in the engine; unmodified. MPL-2.0 is a file-level copyleft: it would apply to changes made to certifi's own files, which this project does not make. |
 | rust | cssparser 0.29.6 | MPL-2.0 | weak copyleft | MPL-2.0, unmodified Rust library statically linked through Tauri's HTML/CSS handling (kuchikiki, servo selectors). File-level copyleft: only modifications of these crates' files would have to be published, and the project makes none. Source is on crates.io. |
 | rust | cssparser 0.36.0 | MPL-2.0 | weak copyleft | MPL-2.0, unmodified Rust library statically linked through Tauri's HTML/CSS handling (kuchikiki, servo selectors). File-level copyleft: only modifications of these crates' files would have to be published, and the project makes none. Source is on crates.io. |
 | rust | cssparser-macros 0.6.1 | MPL-2.0 | weak copyleft | MPL-2.0, as cssparser (procedural macro of that crate). |
@@ -65,6 +64,7 @@ Components under a licence that is not simply permissive, and the non-commercial
 | NEXRAD Level II (NOAA), Unidata mirror on AWS S3 | US government data | Cloud data panel: bucket unidata-nexrad-level2 (python/engine/cloud.py); fetched only when the user opens a scan | Data: NOAA National Weather Service NEXRAD Level II, distributed by the Unidata AWS bucket. Credit the source in figures. | https://registry.opendata.aws/noaa-nexrad/ |
 | DWD Open Data radar volume sweeps (Deutscher Wetterdienst) | CC-BY-4.0 | Radar network map and Cloud data panel: opendata.dwd.de (python/engine/radar_networks.py); fetched only when the user opens a volume after the consent dialog | Source: Deutscher Wetterdienst (DWD). DWD open spatial data may be re-used under CC BY 4.0 providing the source is acknowledged (DWD legal notice). | https://opendata.dwd.de/weather/radar/sites/ |
 | FMI open radar data on AWS Open Data (Finnish Meteorological Institute) | CC-BY-4.0 | Radar network map and Cloud data panel: public bucket fmi-opendata-radar-volume-hdf5 (python/engine/radar_networks.py); fetched only when the user opens a volume after the consent dialog | Data: Finnish Meteorological Institute open data, via the AWS Open Data registry (CC BY 4.0) | https://registry.opendata.aws/fmi-radar/ |
+| Natural Earth 110m land and country borders (outlines of the radar globe) | Public domain (Natural Earth terms of use) | src/lib/data/globeGeo.json (50 KB, shipped in the app; written by scripts/build_globe_geo.py from ne_110m_land and ne_110m_admin_0_boundary_lines_land, rounded to 0.05 degree); drawn by the radar globe: the land and its outlines when the basemap is None | Made with Natural Earth. Free vector and raster map data @ naturalearthdata.com. Natural Earth needs no credit; it is given here and in the docs anyway | https://www.naturalearthdata.com/about/terms-of-use/ |
 | Radar site catalogue: NOAA NCEI HOMR NEXRAD station list | US government work (public domain) | src/lib/data/nexradSites.json and src/lib/data/radarCatalogue.json (156 NEXRAD and 47 TDWR sites; shipped in the app; a transcription, not official NWS or FAA material) | NOAA National Centers for Environmental Information, Historical Observing Metadata Repository; NOAA asks for credit | https://www.ncei.noaa.gov/access/homr/file/nexrad-stations.txt |
 | Radar site catalogue: Bureau of Meteorology / NCI Australian operational radar archive site list | CC BY 4.0 (licence file shipped with the archive; the NCI collection record says licences vary by dataset) | src/lib/data/radarCatalogue.json (positions, band, Doppler and dual-polarisation flags, in-service dates of 82 Australian radar sites; shipped in the app) | Bureau of Meteorology and NCI Australia: Soderholm J., A. Protat, C. Jakob, 2019, Australian Operational Weather Radar Dataset, doi:10.25914/5cb686a8d9450 | https://thredds.nci.org.au/thredds/fileServer/rq0/radar_site_list.csv |
 | Radar site catalogue: EUMETNET OPERA radar database | public information (no separate licence text on the metadata table) | src/lib/data/radarCatalogue.json (positions, ids, band, polarisation and status of 217 European radars; shipped in the app) | EUMETNET OPERA radar database (Operational Programme for the Exchange of Weather Radar Information) | https://www.eumetnet.eu/activities/observations-programme/current-activities/opera/ |
@@ -108,80 +108,15 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 
 Resolved from `python/pyproject.toml` (dependencies and the `radarx` extra) and the packages the PyInstaller spec collects, with everything they require, in the environment the file was generated in. Versions of platform-specific wheels can differ in a release build.
 
-70 packages. Licences: MIT (22), BSD-3-Clause (21), Apache-2.0 (13), PSF-2.0 (3), Apache-2.0 OR BSD-3-Clause (2), Apache-2.0 AND MIT (1), MPL-2.0 (1), MIT-0 (1), CC-BY-4.0 (1), CC0-1.0 (1), BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (1), Apache-2.0 OR BSD-2-Clause (1), MIT-CMU (1), BSD-2-Clause (1).
+5 packages. Licences: BSD-3-Clause (2), MIT (1), Apache-2.0 OR BSD-3-Clause (1), MIT-CMU (1).
 
 | Package | Version | Licence | Identified by | Link |
 | --- | --- | --- | --- | --- |
-| aiobotocore | 3.9.2 | Apache-2.0 |  | https://github.com/aio-libs/aiobotocore |
-| aiohappyeyeballs | 2.6.1 | PSF-2.0 | classifier | https://aiohappyeyeballs.readthedocs.io |
-| aiohttp | 3.14.5 | Apache-2.0 AND MIT |  | https://github.com/aio-libs/aiohttp |
-| aioitertools | 0.13.0 | MIT |  | https://aioitertools.omnilib.dev |
-| aiosignal | 1.4.0 | Apache-2.0 | classifier | https://github.com/aio-libs/aiosignal |
-| attrs | 26.1.0 | MIT |  | https://www.attrs.org/ |
-| boto3 | 1.43.8 | Apache-2.0 | License field | https://github.com/boto/boto3 |
-| botocore | 1.43.106 | Apache-2.0 | License field | https://github.com/boto/botocore |
-| Cartopy | 0.26.0 | BSD-3-Clause |  | https://cartopy.readthedocs.io/stable/ |
-| certifi | 2026.4.22 | MPL-2.0 | classifier | https://github.com/certifi/python-certifi |
-| cffi | 2.1.1 | MIT-0 |  | https://cffi.readthedocs.io/ |
-| cftime | 1.6.5 | MIT |  |  |
-| charset-normalizer | 3.4.7 | MIT | License field | https://charset-normalizer.readthedocs.io/ |
-| click | 8.3.3 | BSD-3-Clause |  | https://click.palletsprojects.com/ |
-| cloudpickle | 3.1.2 | BSD-3-Clause | classifier | https://github.com/cloudpipe/cloudpickle |
-| cmweather | 0.3.2 | MIT | classifier | https://github.com/openradar/cmweather |
-| colorcet | 3.1.0 | CC-BY-4.0 | override: metadata says only 'CC-BY License'; the LICENSE.txt in the distribution is Creative Commons Attribution 4.0 | https://colorcet.holoviz.org |
-| contourpy | 1.3.3 | BSD-3-Clause | classifier | https://github.com/contourpy/contourpy |
-| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause |  | https://cryptography.io/ |
-| cycler | 0.12.1 | BSD-3-Clause | classifier | https://matplotlib.org/cycler/ |
-| dask | 2026.3.0 | BSD-3-Clause |  | https://github.com/dask/dask/ |
-| donfig | 0.8.1.post1 | MIT | classifier | https://github.com/pytroll/donfig |
-| fonttools | 4.62.1 | MIT | License field | http://github.com/fonttools/fonttools |
-| frozenlist | 1.8.0 | Apache-2.0 | License field | https://github.com/aio-libs/frozenlist |
-| fsspec | 2026.9.0 | BSD-3-Clause |  | https://filesystem-spec.readthedocs.io/en/latest/ |
-| google-crc32c | 1.8.0 | Apache-2.0 | licence file LICENSE (detected) | https://github.com/googleapis/python-crc32c |
-| h5netcdf | 1.8.1 | BSD-3-Clause | classifier | https://h5netcdf.org |
-| h5py | 3.16.0 | BSD-3-Clause |  | https://www.h5py.org/ |
-| icechunk | 2.0.4 | Apache-2.0 | licence file LICENSE (detected) | https://icechunk.io |
-| idna | 3.13 | BSD-3-Clause |  | https://github.com/kjd/idna |
-| jmespath | 1.1.0 | MIT | classifier | https://github.com/jmespath/jmespath.py |
-| kiwisolver | 1.5.0 | BSD-3-Clause | classifier | https://github.com/nucleic/kiwi |
-| lat_lon_parser | 1.3.1 | CC0-1.0 | override: classifier 'CC0 1.0 Universal'; LICENSE file is the CC0 1.0 legal code |  |
-| locket | 1.0.0 | BSD-3-Clause | classifier | http://github.com/mwilliamson/locket.py |
-| matplotlib | 3.10.9 | PSF-2.0 | classifier | https://matplotlib.org |
-| multidict | 6.7.1 | Apache-2.0 | License field | https://github.com/aio-libs/multidict |
-| netCDF4 | 1.7.4 | MIT |  | https://unidata.github.io/netcdf4-python/ |
-| numcodecs | 0.16.5 | MIT |  | https://numcodecs.readthedocs.io/ |
-| numpy | 2.4.4 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 |  | https://numpy.org |
-| packaging | 26.1 | Apache-2.0 OR BSD-2-Clause |  | https://packaging.pypa.io/ |
-| pandas | 3.0.2 | BSD-3-Clause | classifier | https://pandas.pydata.org |
-| partd | 1.4.2 | BSD-3-Clause | License field | http://github.com/dask/partd/ |
+| cffi | 2.0.0 | MIT |  | https://cffi.readthedocs.io/ |
+| cryptography | 47.0.0 | Apache-2.0 OR BSD-3-Clause |  | https://cryptography.io/ |
 | pillow | 12.2.0 | MIT-CMU |  | https://pillow.readthedocs.io |
-| platformdirs | 4.9.6 | MIT |  | https://platformdirs.readthedocs.io |
-| pooch | 1.9.0 | BSD-3-Clause |  | https://www.fatiando.org/pooch |
-| propcache | 0.5.2 | Apache-2.0 | classifier | https://github.com/aio-libs/propcache |
-| pycparser | 3.11 | BSD-3-Clause |  | https://github.com/eliben/pycparser |
-| PyJWT | 2.15.1 | MIT |  | https://github.com/jpadilla/pyjwt |
-| pyparsing | 3.3.2 | MIT |  | https://pyparsing-docs.readthedocs.io/en/latest/ |
-| pyproj | 3.7.2 | MIT |  | https://github.com/pyproj4/pyproj |
-| pyshp | 3.1.6 | MIT |  | https://github.com/GeospatialPython/pyshp |
-| python-dateutil | 2.9.0.post0 | Apache-2.0 OR BSD-3-Clause | classifier | https://github.com/dateutil/dateutil |
-| PyYAML | 6.0.3 | MIT | classifier | https://pyyaml.org/ |
-| radarx | 0.5.1 | MIT | classifier | https://github.com/syedhamidali/radarx |
-| requests | 2.33.1 | Apache-2.0 | classifier | https://requests.readthedocs.io |
-| s3fs | 2026.4.0 | BSD-3-Clause | classifier | http://github.com/fsspec/s3fs/ |
-| s3transfer | 0.17.0 | Apache-2.0 | classifier | https://github.com/boto/s3transfer |
-| scipy | 1.17.1 | BSD-3-Clause | classifier | https://scipy.org/ |
-| shapely | 2.2.0 | BSD-3-Clause |  | https://shapely.readthedocs.io/ |
-| six | 1.17.0 | MIT | classifier | https://github.com/benjaminp/six |
-| toolz | 1.1.0 | BSD-3-Clause |  | https://github.com/pytoolz/toolz |
-| typing_extensions | 4.15.0 | PSF-2.0 |  | https://typing-extensions.readthedocs.io/ |
-| urllib3 | 2.6.3 | MIT |  | https://urllib3.readthedocs.io |
-| websockets | 16.0 | BSD-3-Clause |  | https://github.com/python-websockets/websockets |
-| wrapt | 2.1.2 | BSD-2-Clause |  | https://github.com/GrahamDumpleton/wrapt |
-| xarray | 2026.4.0 | Apache-2.0 |  | https://docs.xarray.dev |
-| xmltodict | 1.0.4 | MIT |  | https://github.com/martinblech/xmltodict |
-| xradar | 0.12.0 | MIT |  | https://docs.openradarscience.org/projects/xradar |
-| yarl | 1.25.1 | Apache-2.0 | License field | https://github.com/aio-libs/yarl |
-| zarr | 3.2.1 | MIT |  | https://zarr.readthedocs.io/ |
+| pycparser | 3.0 | BSD-3-Clause |  | https://github.com/eliben/pycparser |
+| websockets | 13.1 | BSD-3-Clause | classifier | https://github.com/python-websockets/websockets |
 
 ## Frontend (npm)
 
