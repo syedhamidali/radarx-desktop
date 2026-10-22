@@ -159,6 +159,21 @@ def test_decay_models_are_named_and_the_default_changes_nothing() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_a_nearly_empty_frame_is_persistence_not_a_moved_clutter_field() -> None:
+    """Clear-air returns below the motion floor must not be advected: nothing to forecast."""
+    rng = np.random.default_rng(1)
+    frames = []
+    for k in range(4):
+        f = np.full((120, 120), np.nan, dtype=np.float32)
+        _, xx = np.mgrid[0:120, 0:120]
+        f[(xx + 3 * k) % 17 == 0] = rng.uniform(0.0, 8.0)  # weak, below the 10 dBZ floor
+        frames.append(f)
+    times = np.asarray([T0 + np.timedelta64(300 * k, "s") for k in range(4)])
+    nc = nr.nowcast(fr.from_arrays(np.stack(frames), times, CELL), lead_min=30, step_min=5)
+    assert np.all(nc.motion.u == 0) and np.all(nc.motion.v == 0)
+    assert any("almost no echo" in n for n in nc.notes)
+
+
 def test_nowcast_known_answer_and_record(tmp_path) -> None:
     data, times = translated_sequence(2.5, 1.0)
     seq = fr.from_arrays(data, times, CELL)

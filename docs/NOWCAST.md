@@ -157,7 +157,11 @@ ensemble perturbs with; they are not scored.
   band (V5) and the stratiform atmospheric-river rain (V6) lose to persistence after 20 to 25 min. The
   quiet case (V8, 0.0 % of the area ≥ 20 dBZ) is a warning rather than a score: what little echo
   there is (ground clutter, clear-air returns) does not move, the nowcast moves it, and persistence
-  wins at every lead. **A near-empty frame must not be extrapolated.**
+  wins at every lead. **A near-empty frame must not be extrapolated.** The engine now follows this: when fewer
+  than 1 % of the covered cells in the latest frame reach 10 dBZ (the quiet case had about 0.3 %; every storm case
+  had at least 5 %), the motion is set to zero, so the result is persistence, and the run record says so. The 1 %
+  limit was chosen after seeing the quiet case, so that case is not independent evidence for it, and the verification
+  scores above were not re-run with it.
 
 In one sentence: *use the nowcast for the next 0 to 45 minutes of moving convection; expect no gain
 over the last frame for stationary or rotating rain patterns, and none beyond an hour anywhere.*

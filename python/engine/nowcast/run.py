@@ -9,6 +9,7 @@ default, the seed, the software versions) and the layer provenance of class ``fo
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -38,6 +39,8 @@ DEFAULT_DBZ_THRESHOLDS = (20.0, 35.0, 45.0)
 DEFAULT_RATE_THRESHOLDS = (0.5, 2.0, 10.0)
 #: dBZ given to an observed cell without echo before interpolation (below any threshold)
 DRY_DBZ = -10.0
+# below this share of echo cells in the latest frame the motion is not trusted and set to zero
+MIN_ECHO_FRACTION = 0.01
 
 METHOD_TEXT = (
     "Advection nowcast: motion of the echo pattern from the last frames by dense pyramidal "
@@ -301,6 +304,23 @@ def nowcast(
     )
     t_motion = time.perf_counter() - t_m0
     notes += motion.notes
+    echo_floor = mo.DEFAULT_FLOOR_DBZ if is_refl else 0.1
+    seen = frames.coverage
+    echo_fraction = (
+        float(np.mean(np.nan_to_num(frames.data[end - 1], nan=-1e9)[seen] >= echo_floor))
+        if seen.any()
+        else 0.0
+    )
+    if echo_fraction < MIN_ECHO_FRACTION and motion_method != "none":
+        # a near-empty frame has no storm to move: what the motion filter would follow is
+        # stationary clutter, which verified worse than persistence (docs/NOWCAST.md)
+        motion = dataclasses.replace(
+            motion, u=np.zeros_like(motion.u), v=np.zeros_like(motion.v), global_uv=(0.0, 0.0)
+        )
+        notes.append(
+            f"almost no echo in the latest frame ({100 * echo_fraction:.2f} % of the cells): "
+            "zero motion, so the nowcast is persistence; there is nothing to forecast"
+        )
     if sub.n < 2 and motion_method != "none":
         notes.append("a single frame: zero motion (Eulerian persistence)")
     check()
