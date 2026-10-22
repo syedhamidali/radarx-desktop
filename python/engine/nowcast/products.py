@@ -298,7 +298,7 @@ def figure(
     ]
     n = 1 + len(picks)
     fig, axes = plt.subplots(2, n, figsize=(3.3 * n + 0.8, 6.9), constrained_layout=True)
-    fig.get_layout_engine().set(rect=(0, 0.05, 1, 0.96))  # room for the footer and the title
+    fig.get_layout_engine().set(rect=(0, 0.05, 1, 0.96))  # adjusted to the footer below
     axes = np.atleast_2d(axes)
     is_refl = nc.field == "reflectivity"
     origin = nc.config["origin_index"]
@@ -432,7 +432,11 @@ def figure(
     )
     import textwrap
 
-    fig.text(0.01, 0.005, textwrap.fill(footer, 150), fontsize=6.5, color="#444", va="bottom")
+    wrapped = textwrap.fill(footer, max(100, int(fig.get_figwidth() * 20)))
+    n_lines = wrapped.count("\n") + 1
+    # room for the footer (about 0.11 inch per line of 6.5 pt) and the title
+    fig.get_layout_engine().set(rect=(0, 0.012 + 0.11 * n_lines / fig.get_figheight(), 1, 0.96))
+    fig.text(0.01, 0.005, wrapped, fontsize=6.5, color="#444", va="bottom")
     fig.suptitle(
         f"Radar nowcast from {prov.iso_utc(nc.origin_time)}  |  {fr.cell_m / 1e3:g} km grid  |  "
         "FORECAST: experimental guidance, not an official forecast",
