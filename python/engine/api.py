@@ -122,6 +122,7 @@ __all__ = [
     "coerce_user_params",
     "export",
     "find_module",
+    "flood_indicators",
     "format_module",
     "info",
     "module",
@@ -2240,6 +2241,29 @@ def qpe(
     if plot is not None:
         save_figure(result.plot(field), plot)
     return result
+
+
+def flood_indicators(result: Any, **options: Any) -> Any:
+    """Flash-flood indicators of a rainfall result (``rxd indicators``).
+
+    Compares the rainfall of the period of ``result`` (from :func:`qpe`) with guidance depth,
+    precipitation
+    frequency and climatology files that you supply: ``duration_h=1``, ``guidance="ffg.nc"``,
+    ``frequency=[(2, "a2.tif"), (10, "a10.tif")]``, ``climatology="p995.nc"`` (each with
+    ``*_units`` and ``*_variable``), ``vintage="..."``, ``max_distance_km=25``. Nothing is
+    downloaded. The result is labelled ``RETRIEVED INDICATOR`` (``FORECAST INDICATOR`` with
+    ``input_class="FORECAST"``): experimental guidance, not an official warning; antecedent soil
+    moisture and urban drainage are not modelled. See ``docs/HYDROLOGY.md``.
+
+    Returns
+    -------
+    engine.hydro.indicators.IndicatorResult
+        ``.layers`` (values, classes, provenance), ``.summary()``, and
+        ``engine.hydro.indicators.to_dataset`` / ``figure`` for files and maps.
+    """
+    from engine.hydro import indicators as hi
+
+    return hi.run(result, **options)
 
 
 def _qpe_sources(files: Any) -> list[Any]:

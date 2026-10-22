@@ -101,6 +101,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes, with an optional synthesised sound track (`--sound`) |
 | Hydrology | `rxd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
 | | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
+| | `rxd indicators` | flash-flood indicators: rain vs guidance, return period, vs climatology |
 | Forecast | `rxd nowcast` | advection nowcast of the next 0 to 2 hours with ensemble, probabilities and a verification against persistence ({doc}`NOWCAST`) |
 | Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
 | Remote | `rxd serve` | run the engine here for the app on your own computer, through an SSH port forward ({doc}`cluster`) |
@@ -411,6 +412,10 @@ wrote rain.png
   mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
   with `--frequency table.json`, the return period of the basin-mean depth.
 * A long series is read one file at a time; give `--extent W,S,E,N` so that each file is decoded once.
+* `rxd indicators -i FILES --guidance ffg.nc [--frequency-grid 10=a10.tif ...] [--climatology p995.nc] --vintage TEXT` compares the
+  rainfall of the period with guidance, precipitation-frequency and climatology files you supply (NetCDF, GeoTIFF or CSV; nothing
+  is downloaded) and writes labelled indicator layers (`-o .nc/.json`, `-p` maps). Experimental guidance, not an official warning;
+  see {doc}`HYDROLOGY`.
 
 ### Save: `export`
 

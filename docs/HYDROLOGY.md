@@ -269,6 +269,76 @@ with a table per basin id); the largest basin-mean depth over any window of that
 log–log (`<2` / `>100` are flagged, never extrapolated). Those tables are *point* depths and no areal
 reduction factor is applied, so the return period of a large basin is an **upper bound**.
 
+## Flash-flood indicators
+
+```{admonition} Experimental guidance, not an official warning
+:class: warning
+These maps compare the radar rainfall with numbers **you supply**. They are indicators of unusual or
+guidance-exceeding rain, not a flood forecast and not a warning. Follow your official weather service (in the US,
+the National Weather Service). Soil moisture, snow, urban drainage, terrain and basin response are **not modelled**
+unless they are contained in the guidance you supplied. No layer uses the word "warning" and none is coloured
+as one.
+```
+
+`rxd indicators` (and `api.flood_indicators`) takes the rainfall of a period and gives up to three layers:
+
+| Layer | What it is | Class |
+|---|---|---|
+| `ffg_ratio_<D>h` | rain of the period divided by a gridded **flash-flood guidance** depth of the same duration *D* (1, 3, 6, 24 h ...) | `RETRIEVED INDICATOR` |
+| `return_period_<D>h` | the **return period** of the rain from precipitation-frequency grids (depth for 2, 5, 10 ... years, for example NOAA Atlas 14 or a regional equivalent), log-log interpolation per cell; below the smallest or above the largest period the value is flagged, **never extrapolated** | `RETRIEVED INDICATOR` |
+| `relative_1h` | one-hour rain divided by the cell's **own climatological reference** (for example the 99.5th percentile of its one-hour totals in a record you have) | `RETRIEVED INDICATOR` |
+
+The class follows the rain it is made from: a radar estimate is `RETRIEVED`; with a nowcast as input
+(`input_class="FORECAST"`) the same layers are `FORECAST INDICATOR`. Every layer carries its inputs (file names, variable,
+units, the data **vintage** and valid time that you give or the file states, "not given" otherwise), the period, the
+thresholds, the class labels and the sentences above; the maps print them on the picture.
+
+**Why the relative indicator is the reference.** A test of this app's own research compared a machine-learning model (36 predictors:
+rainfall history, neighbourhood rain, terrain, HAND, drainage, built-up fraction, local hour) with simple rules on a season
+it never saw (May to September 2025, 276 million land cell-hours, outcome: a flash-flood warning or report within 3 h). It
+did **not** beat the one-hour rain relative to the cell's own climatology: PR-AUC 0.022 for the model, 0.025 for the 1-h rain
+and 0.025 for the relative 1-h rain; the best critical success index of any method was 0.044; the false-alarm ratio at useful
+hit rates was 0.94 to 0.97; 43 % of the positive cell-hours had less than 1 mm of rain in the previous 3 h (the warning
+polygons are drawn ahead of the rain); and skill was regional. The classic criterion "3-h rain at or above guidance" caught 4 %
+of the warned or reported cell-hours with a false-alarm ratio of 0.92. So the app offers transparent rules whose
+numbers you can check, and no learned model; the outcome used there is a forecaster's decision, not a measured flood, so even the
+reference rule is weak. Read it as "this cell has more rain than usual".
+
+**The rainfall period must match the duration.** The ratio compares the rain of the *whole period* of the result with a
+guidance depth of duration `--duration-h`. A period 5 % longer than the duration is refused (give `--start`/`--end` for exactly
+the hour you want); a period shorter than 90 % of it is allowed and said to give **lower bounds** (the rain of the full
+duration can only be larger).
+
+**Files you supply** (nothing is downloaded; regular latitude/longitude grids or points, WGS 84):
+
+| Format | What the program reads |
+|---|---|
+| NetCDF (`.nc`) | one 2-D variable (`--guidance-variable` if there are several) with 1-D `lat`/`latitude` and `lon`/`longitude` coordinates, either latitude order; `units` attribute `mm`, `cm`, `in` or `m`; the global attributes `vintage`, `valid_time`, `source` are carried into the output |
+| GeoTIFF (`.tif`) | one band, north-up, geographic WGS 84 (the pixel scale and tie point tags), the file's no-data value; units on the command line (default mm) |
+| CSV | `lat,lon,value` rows (other columns are ignored): each cell takes the nearest point within `--max-distance-km` (25), otherwise no value; suitable for guidance given by zone or station |
+
+Grids are brought to the analysis grid by bilinear interpolation (a cell where any of the four neighbours is missing, or outside the
+file, has no value). The depth units are converted to mm and the conversion is written in the output. Give the vintage
+yourself with `--vintage` when the file does not say it ("NWS FFG issued 2024-05-01 18Z"): guidance changes every few hours and
+a ratio against the wrong issue is a wrong number. Frequency grids are **point** depths: for a basin mean use the areal
+reduction in the basin table instead.
+
+```bash
+rxd indicators -i 'event/KHPX/*_V06' --start 2021-12-11T02:30 --end 2021-12-11T03:30 \
+    --guidance ffg_1h.nc --vintage 'FFG issued 2021-12-11 00Z' -o ind.nc -p ind.png
+rxd indicators -i 'event/KHPX/*_V06' --duration-h 3 --frequency-grid 2=atlas_2y.tif \
+    --frequency-grid 10=atlas_10y.tif --frequency-grid 100=atlas_100y.tif --frequency-units in
+rxd indicators -i 'event/KHPX/*_V06' --climatology p995_1h.nc --json
+```
+
+`-o x.nc` writes a CF grid with `rainfall`, each layer, its `_class` (with `class_labels`, -1 = no value) and for the return
+period a `_flag`; every variable has the label, the sentence, the period and the parameters as attributes. `-p ind.png` writes
+one map per layer (`ind_<layer>.png`) in classes with the legend, the label and the inputs on the picture; `-o x.json` the
+summary (area per class, inputs, vintage). The return-period interpolation and the climatological reference are functions of the radarx library; the program uses them
+when the installed radarx has them and otherwise computes the same thing itself.
+
+**Not yet:** a panel in the app, flash-flood potential indices from terrain and land cover, soil-moisture and land-surface inputs, and an accuracy test on stream gauges (the missing measured outcome).
+
 ## Accuracy against a known truth
 
 These numbers come from the validation runs of the method; the DSD runs use the radarx forward

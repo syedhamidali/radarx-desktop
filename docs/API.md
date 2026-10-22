@@ -224,6 +224,7 @@ res = api.qpe(files, relation="tropical", freezing_level_m=3800, gauges="gauges.
 res.validation["cross_validation"]      # leave-one-gauge-out skill
 res.basin_series.summary()              # one dict per basin
 vol.qpe()                               # the instantaneous rate of one volume (res.rate_last)
+ind = api.flood_indicators(res, guidance="ffg.nc", vintage="FFG issued 18Z")   # indicators, labelled; files you supply
 ```
 
 Files are passed as paths and opened one at a time. Options are the `rxd qpe` ones; unknown names raise

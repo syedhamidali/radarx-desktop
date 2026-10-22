@@ -82,6 +82,10 @@ def register(command: Any, cli: Any) -> None:
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.set_defaults(func=cmd_basin)
 
+    from engine.hydro.indicators_cli import register as register_indicators
+
+    register_indicators(command, cli)
+
 
 def _estimator_options(p: argparse.ArgumentParser) -> None:
     g = p.add_argument_group("estimator")

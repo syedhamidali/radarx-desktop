@@ -381,6 +381,110 @@ class TestBasinCommand:
         assert 2 < ex["return_period_years"] < 10
 
 
+class TestIndicatorsCommand:
+    """``rxd indicators`` on synthetic volumes (uniform 10 mm/h for 20 min = 3.33 mm everywhere)."""
+
+    BASE = ("-P", "min_dbz=-30", "--resolution-m", "2000", "--max-range-km", "100")
+
+    @staticmethod
+    def _grid_file(path, value, units="mm"):
+        import xarray as xr
+
+        lat = np.linspace(33.0, 37.0, 41)
+        lon = np.linspace(-99.0, -95.0, 41)
+        ds = xr.Dataset(
+            {"depth": (("lat", "lon"), np.full((41, 41), value, "f4"), {"units": units})},
+            coords={"lat": lat, "lon": lon},
+        )
+        ds.to_netcdf(path)
+        return path
+
+    def test_ratio_to_guidance_label_vintage_and_files(self, capsys, volumes):
+        import xarray as xr
+
+        self._grid_file("ffg.nc", 5.0 / 25.4, units="in")  # 5 mm in inches
+        code, out, _ = run(
+            capsys, "indicators", "-i", *volumes, *self.BASE, "--guidance", "ffg.nc",
+            "--vintage", "FFG test 2024-05-01 18Z", "-o", "ind.nc", "-o", "ind.json",
+            "-p", "ind.png",
+            "--json",
+        )  # fmt: skip
+        assert code == 0
+        doc = json.loads(out)
+        assert doc["label"] == "RETRIEVED INDICATOR"
+        assert "not an official warning" in doc["product_text"]
+        assert "Antecedent soil moisture" in doc["not_modelled"]
+        lay = doc["layers"]["ffg_ratio_1h"]
+        assert lay["provenance"]["guidance"]["vintage"] == "FFG test 2024-05-01 18Z"
+        assert lay["provenance"]["guidance"]["units_in_file"] == "in"
+        assert lay["provenance"]["lower_bound"] is True  # 20 min of a 1 h guidance
+        assert any("lower bounds" in n for n in doc["notes"])
+        # 3.33 mm / 5 mm = 0.67: the class "50 to 75 %" holds the cells with rain
+        cls = lay["classes"]
+        assert cls["50 to 75 %"]["cells"] > 1000
+        assert cls["150 % or more of guidance"]["cells"] == 0
+        ds = xr.open_dataset("ind.nc")
+        assert float(ds["ffg_ratio_1h"].where(ds["rainfall"] > 1).mean()) == pytest.approx(
+            10 * 1200 / 3600 / 5.0, rel=0.03
+        )
+        assert ds["ffg_ratio_1h"].attrs["product_label"] == "RETRIEVED INDICATOR"
+        assert "not an official warning" in ds.attrs["comment"]
+        assert json.loads(Path("ind.json").read_text())["layers"]
+        assert Path("ind_ffg_ratio_1h.png").stat().st_size > 3000
+
+    def test_return_period_and_relative_indicators(self, capsys, volumes, tmp_path):
+        for years, depth in ((2, 2.0), (10, 4.0), (100, 8.0)):
+            self._grid_file(f"f{years}.nc", depth)
+        self._grid_file("clim.nc", 6.0)
+        code, out, _ = run(
+            capsys, "indicators", "-i", *volumes, *self.BASE, "--duration-h", "0.35",
+            "--frequency-grid", "2=f2.nc", "--frequency-grid", "10=f10.nc",
+            "--frequency-grid", "100=f100.nc", "--climatology", "clim.nc", "-o", "i.json", "-q",
+            "--json",
+        )  # fmt: skip
+        assert code == 0
+        doc = json.loads(out)
+        rp = doc["layers"]["return_period_0.35h"]
+        # 3.33 mm lies between the 2 year (2 mm) and 10 year (4 mm) depths: log-log gives 6.5 years
+        assert rp["classes"]["5 to 10 years"]["cells"] > 1000
+        rel = doc["layers"]["relative_1h"]
+        # 3.33 / 6 = 0.56: between half the reference and the reference
+        assert rel["classes"]["half to the reference"]["cells"] > 1000
+        assert "did not beat this rule" in rel["provenance"]["lab_result"]
+
+    def test_usage_errors(self, capsys, volumes):
+        code, _, err = run(capsys, "indicators", "-i", *volumes, *self.BASE)
+        assert code == 2 and "at least one of" in err
+        self._grid_file("g.nc", 5.0)
+        code, _, err = run(
+            capsys,
+            "indicators",
+            "-i",
+            *volumes,
+            *self.BASE,
+            "--guidance",
+            "g.nc",
+            "--duration-h",
+            "0.1",
+        )
+        assert code != 0 and "longer than" in err
+        code, _, err = run(
+            capsys, "indicators", "-i", *volumes, *self.BASE, "--frequency-grid", "ten=a.nc"
+        )
+        assert code == 2 and "YEARS=FILE" in err
+        code, _, err = run(
+            capsys, "indicators", "-i", *volumes, *self.BASE, "--frequency-grid", "10=a.nc"
+        )
+        assert code == 2 and "at least two" in err
+
+    def test_api(self, volumes):
+        res = api.qpe(volumes, min_dbz=-30.0, resolution_m=2000.0, max_range_km=100.0)
+        self._grid_file("g.nc", 10.0)
+        ind = api.flood_indicators(res, guidance="g.nc", vintage="v")
+        assert float(np.nanmax(ind.layers["ffg_ratio_1h"].values)) < 0.5
+        assert "flood_indicators" in api.__all__
+
+
 class TestApiAndModule:
     def test_api_qpe_volume_and_list(self, volumes, tmp_path):
         res = api.qpe(
