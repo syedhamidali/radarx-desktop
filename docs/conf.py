@@ -144,7 +144,21 @@ exclude_patterns = [
     "zenodo",
     "images/README*",
     *(f"{name}.md" for name in INTERNAL_PAGES),
+    # The archived copy names no software version: the What's new chapter is a list of release numbers.
+    *(["history.md"] if DEPOSIT else []),
 ]
+
+
+def setup(app):  # noqa: ANN001
+    if DEPOSIT:
+        # leave the What's new entries out of the home page of the archived copy (page excluded above)
+        def _drop_history(app, docname, source):  # noqa: ANN001
+            if docname == "index":
+                source[0] = "\n".join(
+                    line for line in source[0].split("\n") if line.strip() != "history" and "{doc}`history`" not in line
+                )
+
+        app.connect("source-read", _drop_history)
 
 
 # -- citation and image credits -------------------------------------------------------------------

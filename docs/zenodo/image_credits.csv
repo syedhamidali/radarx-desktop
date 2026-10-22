@@ -89,3 +89,12 @@ images/winds/mayfield_after_analytic.png,NEXRAD,,not published
 images/winds/mayfield_after_variational.png,NEXRAD,,not published
 images/winds/mayfield_before_raw_aliased.png,NEXRAD,,not published
 images/winds/mayfield_publication_light.png,NEXRAD,,not published
+images/nowcast/example_kpah.png,NEXRAD,,"figure from the KPAH Level II volumes of 11 Dec 2021; no map, no imagery"
+images/nowcast/panel_dark.png,OSM;NEXRAD,yes,panel screenshot with the KTLX volumes of 20 May 2013; map tiles credited in the frame; the local file path in the input field was painted over
+images/nowcast/panel_light.png,OSM;NEXRAD,yes,panel screenshot with the KTLX volumes of 20 May 2013; map tiles credited in the frame; the local file path in the input field was painted over
+images/nowcast/probabilistic.png,NEXRAD,,"verification figure computed from eight NEXRAD cases; no map, no imagery"
+images/nowcast/saved_frame.png,NEXRAD,,picture saved by the Nowcast panel from the KTLX volumes of 20 May 2013; no basemap
+images/nowcast/skill_by_event.png,NEXRAD,,"verification figure computed from eight NEXRAD cases; no map, no imagery"
+images/nowcast/skill_vs_lead.png,NEXRAD,,"verification figure computed from eight NEXRAD cases; no map, no imagery"
+images/nowcast/skill_vs_persistence.png,NEXRAD,,"verification figure computed from eight NEXRAD cases; no map, no imagery"
+images/ui/live-map.png,OSM;NEXRAD,yes,"live composite of KTLX, KVNX and KINX (21 Oct 2026); map tiles credited in the frame"
