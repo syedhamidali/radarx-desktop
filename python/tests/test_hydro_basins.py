@@ -303,3 +303,168 @@ class TestFrequency:
         assert hb.FrequencyTable.from_json(p, "a").depth_mm[1] == 90.0
         with pytest.raises(hb.BasinError, match="no frequency table"):
             hb.FrequencyTable.from_json(p, "zzz")
+
+
+# ---------------------------------------------------------------------------
+# Basin series with a known answer, outlines, GeoJSON, areal reduction
+# ---------------------------------------------------------------------------
+
+
+def _series(grid, ring_km, rate_of_xy, times_s):
+    """A BasinSeries from a prescribed rate field at the given node times (seconds)."""
+    from types import SimpleNamespace
+
+    bset = hb.BasinSet.from_polygon(_lonlat(grid, ring_km), "b1")
+    col = bset.collector(grid)
+    xx, yy = np.meshgrid(grid.x / 1e3, grid.y / 1e3)
+    t0 = np.datetime64("2024-05-01T20:00:00", "ns")
+    rate = rate_of_xy(xx, yy).astype(np.float32)
+    for s in times_s:
+        col.add(t0 + np.timedelta64(int(s * 1e9), "ns"), rate)
+    total = times_s[-1] - times_s[0]
+    acc = rate * total / 3600.0
+    res = SimpleNamespace(
+        accumulation=acc,
+        accumulation_sigma=0.2 * acc,
+        rate_max=rate,
+        valid_fraction=np.ones_like(rate),
+    )
+    return col.finish(res), total
+
+
+# a square basin offset by a quarter cell, so edge cells are only partly inside
+SQUARE = [(-4.25, -4.25), (5.75, -4.25), (5.75, 5.75), (-4.25, 5.75)]
+
+
+class TestBasinSeriesKnownAnswer:
+    def test_constant_rate_gives_rate_times_time_at_irregular_nodes(self, grid):
+        s, total = _series(grid, SQUARE, lambda x, y: np.full(x.shape, 10.0), [0, 180, 600, 1500])
+        want = 10.0 * total / 3600.0
+        assert s.cum_mean[0][-1] == pytest.approx(want, rel=1e-6)
+        assert np.allclose(s.mean_rate[0], 10.0)
+        assert s.stats[0]["accumulation_mean_mm"] == pytest.approx(want, rel=1e-6)
+        assert s.stats[0]["accumulation_sigma_mm"] == pytest.approx(0.2 * want, rel=1e-6)
+        assert s.stats[0]["coverage"] == pytest.approx(1.0)
+
+    def test_two_level_field_is_area_weighted_not_pixel_counted(self, grid):
+        # 0 mm/h for x < 0.5 km (cell edge) and 20 mm/h beyond: the polygon spans -4.25..5.75 km
+        # (grid x are cell centres at integer km), so exactly (5.75 - 0.5) / 10 of it is wet,
+        # although whole cells are either dry or wet
+        s, _ = _series(grid, SQUARE, lambda x, y: np.where(x > 0.75, 20.0, 0.0), [0, 600, 1200])
+        share = (5.75 - 0.5) / 10.0
+        assert s.mean_rate[0][0] == pytest.approx(20.0 * share, rel=2e-3)
+        assert s.cum_mean[0][-1] == pytest.approx(20.0 * share * 1200 / 3600.0, rel=2e-3)
+        # the wet area is the wet share of the (true-area) basin, from the accumulation field
+        xx, _ = np.meshgrid(grid.x / 1e3, grid.y / 1e3)
+        field = np.where(xx > 0.75, 20.0, 0.0) * 1200 / 3600.0
+        z = hb.zonal_stats(field, s.weights[0], (5.0,))
+        assert z["area_ge_5_km2"] == pytest.approx(share * z["area_km2"], rel=2e-3)
+
+    def test_hyetograph_sums_to_the_cumulative_depth(self, grid):
+        s, _ = _series(grid, SQUARE, lambda x, y: np.full(x.shape, 6.0), [0, 300, 900, 1800])
+        hy = s.hyetograph(0, bin_minutes=10)
+        assert sum(hy["depth_mm"]) == pytest.approx(6.0 * 0.5, rel=1e-6)
+        assert all(i == pytest.approx(6.0, rel=1e-6) for i in hy["intensity_mm_h"])
+
+
+class TestOutlines:
+    def test_collinear_points_are_dropped_and_corners_kept(self):
+        edge = np.linspace(0, 1, 50)
+        ring = np.vstack(
+            [
+                np.column_stack([edge, np.zeros(50)]),
+                np.column_stack([np.ones(50), edge]),
+                np.column_stack([edge[::-1], np.ones(50)]),
+                np.column_stack([np.zeros(50), edge[::-1]]),
+            ]
+        )
+        ring = np.vstack([ring, ring[:1]])
+        out = hb.simplify_ring(ring, 1e-6)
+        assert len(out) == 5 and np.allclose(out[0], out[-1])
+        assert _shoelace(out[:-1]) == pytest.approx(1.0)
+
+    def test_circle_simplifies_within_the_tolerance(self):
+        a = np.linspace(0, 2 * np.pi, 2001)
+        ring = np.column_stack([np.cos(a), np.sin(a)])
+        tol = 1e-3
+        out = hb.simplify_ring(ring, tol)
+        assert 20 < len(out) < 400
+
+        def dist(p):
+            def cross(a, b):
+                return a[0] * b[1] - a[1] * b[0]
+
+            return min(
+                abs(float(cross(out[i + 1] - out[i], p - out[i])))
+                / float(np.hypot(*(out[i + 1] - out[i])))
+                for i in range(len(out) - 1)
+            )
+
+        assert max(dist(p) for p in ring[::37]) <= tol * 1.5
+
+    def test_outline_fits_the_vertex_budget_and_keeps_holes_and_parts(self):
+        a = np.linspace(0, 2 * np.pi, 4001)
+        outer = np.column_stack([np.cos(a), np.sin(a)])
+        hole = 0.3 * outer[::-1]
+        bas = hb.Basin("m", "m", [[outer, hole], [outer + 5.0]])
+        geom, tol, n = hb.outline_geometry(bas, max_vertices=300)
+        assert geom["type"] == "MultiPolygon" and len(geom["coordinates"]) == 2
+        assert len(geom["coordinates"][0]) == 2  # exterior and hole
+        assert n <= 300 and tol > 5e-5
+
+    def test_feature_collection_carries_statistics_and_labels(self, grid):
+        s, _ = _series(grid, SQUARE, lambda x, y: np.full(x.shape, 12.0), [0, 600, 1200])
+        fc = hb.feature_collection(s, meta={"title": "t"})
+        assert fc["type"] == "FeatureCollection" and fc["provenance_type"] == "RETRIEVED"
+        f = fc["features"][0]
+        assert f["geometry"]["type"] == "Polygon"
+        assert f["properties"]["accumulation_mean_mm"] == pytest.approx(4.0, rel=1e-6)
+        assert f["properties"]["id"] == "b1" and fc["title"] == "t"
+        assert "mm" in fc["units"]["accumulation_*_mm"]
+        json.dumps(fc)  # plain JSON
+
+
+class TestArealReduction:
+    def _table(self, **kw):
+        return hb.FrequencyTable(6.0, np.array([2.0, 100.0]), np.array([50.0, 110.0]), **kw)
+
+    def test_factor_turns_an_area_mean_back_into_the_point_depth(self):
+        # the 2-year point depth is 50 mm; an area mean of 40 mm with factor 0.8 is exactly that
+        tab = self._table(arf=(np.array([1.0]), np.array([0.8])))
+        point = 40.0 / tab.arf_for(300.0)
+        assert tab.return_period(point)["return_period_years"] == pytest.approx(2.0)
+
+    def test_curve_is_linear_in_log_area(self):
+        tab = self._table(arf=(np.array([10.0, 1000.0]), np.array([1.0, 0.8])))
+        assert tab.arf_for(100.0) == pytest.approx(0.9)
+        assert tab.arf_for(1.0) == pytest.approx(1.0)  # clamped, never extrapolated
+        assert tab.arf_for(1e5) == pytest.approx(0.8)
+
+    def test_json_parsing_and_errors(self, tmp_path):
+        p = tmp_path / "f.json"
+        doc = {"duration_hours": 6, "depth_mm": {"2": 50, "100": 110}, "areal_reduction": 0.9}
+        p.write_text(json.dumps(doc))
+        assert hb.FrequencyTable.from_json(p).arf_for(10.0) == 0.9
+        doc["areal_reduction"] = {"area_km2": [1000, 10], "factor": [0.8, 1.0]}
+        p.write_text(json.dumps(doc))
+        assert hb.FrequencyTable.from_json(p).arf_for(100.0) == pytest.approx(0.9)
+        for bad in (1.2, 0.0, {"area_km2": [1, 2], "factor": [0.9]}, "x"):
+            doc["areal_reduction"] = bad
+            p.write_text(json.dumps(doc))
+            with pytest.raises(hb.BasinError, match=r"areal_reduction|reduction factors"):
+                hb.FrequencyTable.from_json(p)
+
+    def test_exceedance_uses_the_factor_and_says_when_it_does_not(self, grid, tmp_path):
+        # 80 mm in one hour over the basin
+        s, _ = _series(grid, SQUARE, lambda x, y: np.full(x.shape, 80.0), [0, 1800, 3600])
+        doc = {"duration_hours": 1, "depth_mm": {"2": 50, "100": 110}}
+        p = tmp_path / "f.json"
+        p.write_text(json.dumps(doc))
+        plain = hb.exceedance(s, p)[0]
+        assert plain["areal_reduction_factor"] is None and "lower bound" in plain["note"]
+        doc["areal_reduction"] = 0.8  # an 80 mm area mean is a 100 mm point depth
+        p.write_text(json.dumps(doc))
+        with_arf = hb.exceedance(s, p)[0]
+        assert with_arf["point_equivalent_depth_mm"] == pytest.approx(100.0)
+        assert with_arf["return_period_years"] > plain["return_period_years"]
+        assert "lower bound" not in with_arf["note"]
