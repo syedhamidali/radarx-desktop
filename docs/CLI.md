@@ -255,6 +255,31 @@ precipitable water 22 mm (to 7.0 hPa)
 `-v` adds the definitions and references, `--json` everything, `-o result.json` / `-o profile.csv` write the full
 result or the levels (with a provenance header).
 
+### Weather: `env`
+
+Model analyses and forecasts, reanalysis and radar products from open archives, with the same rules as in the app:
+**nothing is downloaded until you have seen the servers, the number of files and the exact size and said yes**, the
+download is cached (size-limited, shared with the app) and works offline afterwards.
+Actions: `providers`, `inventory SOURCE`, `estimate SOURCE`, `fetch SOURCE`, `show SOURCE` (the fields as a table and
+NetCDF), `profile SOURCE --lat --lon` (a model column read as a sounding), `cache`.
+
+```console
+$ rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km
+HRRR model analysis and forecast (NOAA, AWS open data)  [MODEL]
+  From      noaa-hrrr-bdp-pds.s3.amazonaws.com
+  Download  2 file(s), 1.6 MB
+  Saved to  /Users/you/.xradar-desktop/environment-cache
+  Credit    High-Resolution Rapid Refresh (HRRR), NOAA/NCEP/EMC, ...
+  Note      run 2021-12-11 03 UTC, forecast hour 0 (analysis), valid 2021-12-11 03:00 UTC; requested 03:00 UTC, ...
+$ rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V cape -V srh_0_3km -o env.nc   # asks first
+```
+
+`estimate` downloads nothing. `fetch`, `show` and `profile` ask on a terminal; in a script `--yes` approves exactly the
+estimate that was printed. `-V` takes a short name or the source's own words, `-P KEY=VALUE` the source's options,
+`--bbox W,S,E,N` the area, `--time` the time wanted (the nearest valid time is used and named; nothing is interpolated).
+`rxd env cache` shows and sets the folder (`--dir`), the limit (`--max-mb`), offline mode (`--offline`, `--online`)
+and empties it (`--clear`). Sources and their options: {doc}`environment-sources`.
+
 ### Clean: `pipeline`
 
 A recipe is an ordered list of steps (SNR gate, clutter filter, biological-echo filter,

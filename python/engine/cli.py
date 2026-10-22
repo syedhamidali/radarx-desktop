@@ -401,6 +401,7 @@ GROUPS = (
     ("Hydrology", (("qpe", "rain rate / accumulation with uncertainty, gauges (docs/HYDROLOGY.md)"),
                    ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
     ("Forecast", (("nowcast", "advection nowcast (0-2 h) with ensemble, probabilities and verification"),)),
+    ("Weather", (("env", "model, reanalysis and radar-product data: estimate, fetch with consent, show, profile"),)),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
     ("Remote", (("serve", "run the engine here for the app on your own computer (through ssh)"),)),
     ("Account", (("login", "sign in with your free radarx account (needed once; most commands require it)"),
@@ -872,6 +873,11 @@ def build_parser() -> argparse.ArgumentParser:
     from engine.nowcast.cli import register as register_nowcast
 
     register_nowcast(command, sys.modules[__name__])
+
+    # -- environment data: env (engine/environment/cli.py) ---------------------------------
+    from engine.environment.cli import register as register_env
+
+    register_env(command, sys.modules[__name__])
 
     # -- examples / completion -----------------------------------------------------------
     p = command(
@@ -2009,6 +2015,12 @@ rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -
 rxd nowcast -i 'mayfield/KHPX/*_V06' --lead 60 --step 5 -o nowcast/
 rxd nowcast -i 'mayfield/KHPX/*_V06' --ensemble 20 -o nowcast.nc -p nowcast.png
 rxd nowcast -i 'mayfield/KHPX/*_V06' --verify -o scores.json""",
+    "weather": """\
+# WEATHER - model and reanalysis fields, radar products; nothing is downloaded without your yes
+rxd env providers
+rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km
+rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V @storm_environment -o env.nc
+rxd env profile hrrr --time 2021-12-11T03:00Z --lat 36.74 --lon -88.64""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images
 rxd export -i {SAMPLE} -o ktlx.nc
@@ -2038,6 +2050,7 @@ TOPIC_ALIASES = {
     "qpe": "hydrology",
     "basin": "hydrology",
     "nowcast": "forecast",
+    "env": "weather",
     "export": "save",
     "config": "reproduce",
 }
