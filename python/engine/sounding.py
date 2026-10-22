@@ -72,6 +72,9 @@ class Sounding:
     dewpoint_filled: Any = None
     #: "observed" (a radiosonde) or "model" (a model/reanalysis column such as ERA5 or HRRR)
     data_class: str = "observed"
+    #: a ready-made provenance (a model column from the environment providers has run time,
+    #: forecast hour and grid spacing to show); ``None`` = the generic one below
+    prov: Any = None
 
     @property
     def surface_height_m(self) -> float:
@@ -93,6 +96,8 @@ class Sounding:
         )
 
     def layer_provenance(self) -> layer_provenance.LayerProvenance:
+        if self.prov is not None:
+            return self.prov
         model = self.data_class == "model"
         return layer_provenance.sounding(
             station=self.station or self.station_name,
