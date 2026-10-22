@@ -183,6 +183,10 @@ export interface MosaicLayer {
   legend: [number, string][];
   mosaicId: string;
   variable: string;
+  /** A short note drawn beside the legend (the live map: "echo below 5 dBZ not drawn"). */
+  legendNote?: string;
+  /** Draw the range rings subtly / not at all (the live map's setting); default: as before. */
+  ringStyle?: 'normal' | 'subtle' | 'off';
 }
 
 export interface FileRow {
@@ -878,6 +882,15 @@ function sanitizeFilename(name: string): string {
 export async function exportMosaic(format: 'netcdf' | 'png'): Promise<boolean> {
   const res = get(mosaicResult);
   if (!res) return false;
+  return exportMosaicById(res.mosaic_id, format, `mosaic_${res.product}_${res.variable}`);
+}
+
+/**
+ * Save the composite the engine holds under `mosaicId` (the mosaic panel's result, or a frame of
+ * the live map): NetCDF (the merged grid with its provenance) or a georeferenced PNG (with `.pgw`
+ * and `.prj` sidecars for GIS). The engine's attributes carry the data credit of the volumes.
+ */
+export async function exportMosaicById(mosaicId: string, format: 'netcdf' | 'png', baseName: string): Promise<boolean> {
   if (!inTauri()) {
     addToast('info', 'Exporting a mosaic needs the desktop app (file dialog)');
     return false;
@@ -885,7 +898,7 @@ export async function exportMosaic(format: 'netcdf' | 'png'): Promise<boolean> {
   if (exportPending) return false;
   const ext = format === 'netcdf' ? 'nc' : 'png';
   const label = format === 'netcdf' ? 'NetCDF' : 'PNG';
-  const defaultName = `${sanitizeFilename(`mosaic_${res.product}_${res.variable}`)}.${ext}`;
+  const defaultName = `${sanitizeFilename(baseName)}.${ext}`;
   mosaicExporting.set(true);
   try {
     const { save } = await import('@tauri-apps/plugin-dialog');
@@ -919,7 +932,7 @@ export async function exportMosaic(format: 'netcdf' | 'png'): Promise<boolean> {
         },
       };
       // The OS dialog already asked the user to confirm replacing an existing file.
-      void wsManager.send({ type: 'export_mosaic', mosaic_id: res.mosaic_id, format, path, overwrite: true });
+      void wsManager.send({ type: 'export_mosaic', mosaic_id: mosaicId, format, path, overwrite: true });
     });
     addToast('success', `Saved ${saved}`, 5000);
     return true;

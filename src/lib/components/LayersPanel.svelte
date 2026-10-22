@@ -8,18 +8,25 @@
    */
   import { layerList, activeScanTime } from '../stores/layers';
   import { activeFileId } from '../stores/fileManager';
+  import { liveShownFrame } from '../stores/live';
+  import { liveLayerLine } from '../utils/liveDisplay';
   import { KINDS, KIND_INFO, formatOffset, formatUtc, type LayerGroup } from '../utils/provenance';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import ProvenanceChip from './ProvenanceChip.svelte';
 
   const rows = $derived($layerList);
   const scan = $derived($activeScanTime);
+  // With no radar file open, the live composite is what the panel describes: say when it is valid
+  // and which radars it is made of, instead of "unknown".
+  const liveFrame = $derived($liveShownFrame);
+  const hasLive = $derived(rows.some((r) => r.id === 'live:composite'));
 
   /** "2022-03-30 00:05 UTC · +12 min" (the active scan itself has no offset); "time unknown" when the engine gave none. */
   function whenText(r: { id: string; provenance: { valid_time?: string } | null; offset: number | null }): string {
     const t = r.provenance?.valid_time;
     if (!t) return 'time unknown';
-    return r.id === `file:${$activeFileId}` ? formatUtc(t) : `${formatUtc(t)} \u00b7 ${formatOffset(r.offset)}`;
+    // no offset when there is no active radar scan to count from (the live composite alone)
+    return r.id === `file:${$activeFileId}` || (r.offset === null && !scan) ? formatUtc(t) : `${formatUtc(t)} \u00b7 ${formatOffset(r.offset)}`;
   }
 
   const grouped = $derived.by(() => {
@@ -39,7 +46,7 @@
       <p class="empty">No layers yet. Open a radar file, run a module or fetch data and each layer is listed here with what it is and where it comes from.</p>
     {:else}
       <p class="ref mono" title="Valid time of the radar moments of the active file; every offset below is relative to it.">
-        Radar scan: {scan ? formatUtc(scan) : 'unknown'}
+        {#if scan}Radar scan: {formatUtc(scan)}{:else if hasLive && liveFrame}{liveLayerLine(liveFrame.time, liveFrame.radars.map((r) => r.station))}{:else}Radar scan: unknown{/if}
       </p>
       {#each grouped as g (g.group)}
         <h4 class="hud-label">{g.group}</h4>

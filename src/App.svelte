@@ -82,6 +82,7 @@
   // The live map (its store, the tile map and the radar chooser) loads the first time it is asked for.
   const liveView = lazy(() => import('./lib/components/LiveMapView.svelte'));
   const liveChooser = lazy(() => import('./lib/components/LiveRadarChooser.svelte'));
+  const livePane = lazy(() => import('./lib/components/LiveRadarPane.svelte'));
 
   // --- Derived from stores (Svelte 5 runes) ---
   const filePath = $derived($radarData.filePath);
@@ -145,7 +146,7 @@
   let liveChooserOpen = $state(false);
   /** After the chooser saves: start the live map (set when the chooser was opened by the Live button). */
   let liveStartAfterChoose = false;
-  $effect(() => { if (viewMode === 'live') void liveView.load(); });
+  $effect(() => { if (viewMode === 'live') { void liveView.load(); void livePane.load(); } });
   $effect(() => { if (liveChooserOpen) void liveChooser.load(); });
   /** The cross-section pane under the PPI (only beside the 2D view). */
   const crossSectionDocked = $derived($crossSectionStore.layout === 'dock' && viewMode === '2d' && $diffMode !== 'diff');
@@ -1113,7 +1114,11 @@
       class:collapsed={!leftSidebarOpen}
       style="width: {leftSidebarOpen ? leftSidebarWidth + 'px' : '0'}"
     >
-      <DataInspector />
+      {#if viewMode === 'live' && livePane.component}
+        <livePane.component onchoose={onLiveChooser} />
+      {:else}
+        <DataInspector />
+      {/if}
     </aside>
     {#if leftSidebarOpen}
       <!-- A focusable separator is a widget (ARIA window splitter): svelte only knows the static role. -->
