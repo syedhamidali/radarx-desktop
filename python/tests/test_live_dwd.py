@@ -79,10 +79,10 @@ class TestLatest:
 
     def test_check_reports_held_for_a_dwd_volume(self) -> None:
         c = live.LiveCache()
+        name = live.latest("dwd:ess")["name"]
         v = live.HeldVolume(
-            "dwd:ess", live.latest("dwd:ess")["name"], "dwd:ess:202610220925", 5, None, FakeReader("x"),
-            provider="dwd",
-        )  # fmt: skip
+            "dwd:ess", name, "dwd:ess:202610220925", 5, None, FakeReader("x"), provider="dwd"
+        )
         c.hold(v)
         res = live.check(["dwd:ess"], cache=c)
         assert res[0]["held"] is True
