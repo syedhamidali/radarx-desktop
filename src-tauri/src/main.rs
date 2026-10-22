@@ -80,8 +80,11 @@ fn server_script() -> PathBuf {
     project_root().join("python/server.py")
 }
 
-/// File types the Share bar offers (src/lib/utils/share.ts): only these can be revealed.
-const REVEALABLE: [&str; 8] = ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"];
+/// File types the Share bar offers (src/lib/utils/share.ts) plus the Autopilot's gridded products
+/// (NetCDF / CSV results): only these can be revealed.
+const REVEALABLE: [&str; 10] = [
+    "png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm", "nc", "csv",
+];
 
 /// An existing regular file with an absolute path and one of the share extensions. The command is
 /// reachable from the web view, so it must not become "open any path with the file manager".
@@ -91,6 +94,28 @@ fn revealable(p: &Path) -> bool {
         && p.extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| REVEALABLE.contains(&e.to_ascii_lowercase().as_str()))
+}
+
+/// What a dropped path is: "file", "zarr" (a folder holding a Zarr store), "folder" or "missing".
+/// Reads only file-system metadata, so a dropped folder can go to the Autopilot instead of the
+/// single-file opener (src/lib/utils/dropRoute.ts).
+fn path_kind(p: &Path) -> &'static str {
+    match std::fs::metadata(p) {
+        Ok(m) if m.is_dir() => {
+            if p.join(".zgroup").exists() || p.join("zarr.json").exists() {
+                "zarr"
+            } else {
+                "folder"
+            }
+        }
+        Ok(_) => "file",
+        Err(_) => "missing",
+    }
+}
+
+#[tauri::command]
+fn path_kinds(paths: Vec<String>) -> Vec<&'static str> {
+    paths.iter().map(|s| path_kind(Path::new(s))).collect()
 }
 
 /// Shows a saved file in the system file manager (Finder / Explorer / the default file manager).
@@ -927,6 +952,7 @@ fn main() {
             oauth::oauth_listen_wait,
             oauth::oauth_listen_cancel,
             reveal_in_folder,
+            path_kinds,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -973,6 +999,21 @@ mod tests {
         assert!(!revealable(&dir.join("missing.png")), "missing");
         assert!(!revealable(Path::new("map.png")), "a relative path");
         assert!(!revealable(Path::new("/etc/passwd")), "a system file");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dropped_paths_are_told_apart() {
+        let dir = std::env::temp_dir().join(format!("radarx-kinds-{}", std::process::id()));
+        let zarr = dir.join("vol.zarr");
+        std::fs::create_dir_all(&zarr).unwrap();
+        std::fs::write(zarr.join(".zgroup"), b"{}").unwrap();
+        let file = dir.join("KHPX20211211_015357_V06");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(path_kind(&dir), "folder");
+        assert_eq!(path_kind(&zarr), "zarr");
+        assert_eq!(path_kind(&file), "file");
+        assert_eq!(path_kind(&dir.join("gone")), "missing");
         std::fs::remove_dir_all(&dir).ok();
     }
 

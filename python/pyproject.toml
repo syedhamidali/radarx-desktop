@@ -1,12 +1,14 @@
 [project]
 name = "radarx-desktop-engine"
-version = "0.3.2"
+version = "0.3.3"
 description = "Python sidecar engine for radarx-desktop"
 requires-python = ">=3.10"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
 authors = [{ name = "Radarx Desktop by LabShope Technologies" }]
 dependencies = [
-    "xradar>=0.12,<1.0",
+    # 0.13 changes CfRadial1 output (units strings) and error text that the exporters and tests depend on:
+    # stay on 0.12 until the engine is checked against 0.13.
+    "xradar>=0.12,<0.13",
     "xarray>=2026.4,<2027.0",
     # Plain dask only (xradar requires it anyway): [complete] would add distributed, bokeh, jinja2,
     # tornado, msgpack ... which the engine never imports.

@@ -502,6 +502,16 @@ def describe_reader(reader: Any, schema: Mapping[str, Any] | None = None) -> dic
         gate_spacing_m=spacing,
         n_sweeps=n_sweeps or None,
     ).to_dict()
+    # Data fetched from an open network (NEXRAD on AWS, DWD, FMI, ...): the network, its credit
+    # line and licence travel with the layer and into every export (data_attribution, data_licence).
+    credit = getattr(reader, "_source_credit", None)
+    if isinstance(credit, Mapping):
+        network = _clean(credit.get("source"))
+        if network:
+            prov["source"] = f"{prov['source']} ({network})" if prov["source"] else network
+        for key in ("attribution", "licence"):
+            if _clean(credit.get(key)):
+                prov[key] = _clean(credit.get(key))
     with contextlib.suppress(Exception):
         reader._layer_ctx = {"source": prov["source"], "scan_time": prov.get("valid_time", "")}
         reader._layer_prov = prov

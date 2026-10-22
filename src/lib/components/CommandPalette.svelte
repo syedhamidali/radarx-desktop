@@ -199,6 +199,27 @@
       icon: '\u{1F3AC}',
       action: () => dispatch('action', { type: 'movie-studio' }),
     });
+    actions.push({
+      id: 'radar-map',
+      label: 'Radar network map: which radars exist and which data you can load',
+      category: 'File',
+      icon: '\u{1F5FA}',
+      action: () => dispatch('action', { type: 'radar-map' }),
+    });
+    actions.push({
+      id: 'live-map',
+      label: 'Live map: the latest scans of your default radars',
+      category: 'View',
+      icon: '\u{1F4E1}',
+      action: () => dispatch('action', { type: 'live-map' }),
+    });
+    actions.push({
+      id: 'live-radars',
+      label: 'Live map: choose the default radars...',
+      category: 'View',
+      icon: '\u{1F4CD}',
+      action: () => dispatch('action', { type: 'live-radars' }),
+    });
 
     return actions;
   }

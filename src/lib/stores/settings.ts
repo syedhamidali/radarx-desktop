@@ -1,5 +1,6 @@
 import { writable, derived, get } from 'svelte/store';
 import { basename } from '../utils/env';
+import { normalizeRadarIds, clampIntervalMin } from '../utils/liveLogic';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +59,13 @@ export interface ShortcutBinding {
   key: string; // e.g. "ctrl+o", "meta+k", "space"
 }
 
+export interface LiveSettings {
+  /** Default radars of the live map: NEXRAD ids in display order (empty = none chosen yet). */
+  radars: string[];
+  /** Minutes between two updates of the live map (2..15). */
+  intervalMin: number;
+}
+
 export interface AppSettings {
   display: DisplaySettings;
   rendering: RenderingSettings;
@@ -65,6 +73,7 @@ export interface AppSettings {
   data: DataSettings;
   export_: ExportSettings;
   updates: UpdateSettings;
+  live: LiveSettings;
   shortcuts: Record<string, ShortcutBinding>;
   mapStyle: string;
   colormap: string;
@@ -113,6 +122,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
     downloadInBackground: false,
     lastCheckedAt: 0,
     skippedVersion: '',
+  },
+  live: {
+    radars: [],
+    intervalMin: 5,
   },
   shortcuts: {
     'open-file': { key: 'mod+o' },
@@ -187,6 +200,8 @@ function loadSettings(): AppSettings {
       for (const [v, c] of Object.entries(merged.display.defaultCmapPerVariable)) {
         if (typeof c !== 'string') delete merged.display.defaultCmapPerVariable[v];
       }
+      merged.live.radars = normalizeRadarIds(merged.live.radars);
+      merged.live.intervalMin = clampIntervalMin(merged.live.intervalMin);
       merged.theme.fontSize = Math.min(18, Math.max(11, merged.theme.fontSize));
       merged.export_.dpi = Math.min(600, Math.max(72, Math.round(merged.export_.dpi)));
       if (!['dark', 'light', 'auto'].includes(merged.theme.mode)) merged.theme.mode = 'dark';
@@ -308,3 +323,17 @@ export function toggleMapHidden(): void {
   setMapHidden(!get(settings).display.hideMap);
 }
 export const accentColor = derived(settings, ($s) => $s.theme.accentColor);
+
+// ─── Live map: default radars and update interval ─────────────────────────────
+
+/** The default radars of the live map (ordered NEXRAD ids; empty until the user chose some). */
+export const liveRadars = derived(settings, ($s) => $s.live.radars);
+export const liveIntervalMin = derived(settings, ($s) => $s.live.intervalMin);
+
+export function setLiveRadars(ids: readonly string[]): void {
+  settings.updateSetting('live', { radars: normalizeRadarIds(ids) });
+}
+
+export function setLiveIntervalMin(min: number): void {
+  settings.updateSetting('live', { intervalMin: clampIntervalMin(min) });
+}

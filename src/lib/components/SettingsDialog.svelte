@@ -24,9 +24,10 @@
 
   // The radar-sites section brings the site catalogue with it: fetch it when the Data tab is first shown.
   const radarSitesSettings = lazy(() => import('./RadarSitesSettings.svelte'));
+  const liveSettings = lazy(() => import('./LiveSettings.svelte'));
   type TabId = 'general' | 'display' | 'data' | 'export' | 'updates' | 'shortcuts';
   let activeTab: TabId = $state('general');
-  $effect(() => { if (activeTab === 'data') void radarSitesSettings.load(); });
+  $effect(() => { if (activeTab === 'data') { void radarSitesSettings.load(); void liveSettings.load(); } });
 
   // Local copy for live editing
   const s = $derived($settings);
@@ -472,6 +473,10 @@
 
             {#if radarSitesSettings.component}
               <div class="settings-section"><radarSitesSettings.component /></div>
+            {/if}
+
+            {#if !$webUi && liveSettings.component}
+              <div class="settings-section"><liveSettings.component /></div>
             {/if}
 
             {#if !$webUi}

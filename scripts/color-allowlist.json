@@ -12,6 +12,7 @@
     { "file": "src/lib/components/LogoMark.svelte", "line": "linear-gradient(#000 0 0)", "why": "CSS mask: only the alpha matters, not a visible colour" },
     { "file": "src/lib/components/MapBackground.svelte", "text": "#e9e8ee", "why": "paper colour under the map tiles (goes through the basemap theme filter with the tiles)" },
     { "file": "src/lib/components/MapBackground.svelte", "text": "#8b9cf8", "why": "default colour of a radar marker without an assigned colour" },
+    { "file": "src/lib/components/RadarNetworkMap.svelte", "text": "#e9e8ee", "why": "paper colour under the map tiles of the radar network map (goes through the basemap theme filter with the tiles)" },
     { "file": "src/lib/components/OnboardingTour.svelte", "line": "fill=\"white\"", "why": "SVG mask: white shows, black hides; not a visible colour" },
     { "file": "src/lib/components/OnboardingTour.svelte", "line": "fill=\"black\"", "why": "SVG mask: white shows, black hides; not a visible colour" },
     { "file": "src/lib/components/LookPanel.svelte", "text": "#808080", "why": "initial value of a colour input when a look has no colour yet" }

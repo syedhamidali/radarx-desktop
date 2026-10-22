@@ -3,7 +3,8 @@
 Process a whole day of scans, a folder of cases or a nightly feed with the same commands you use
 for one file. There is no special "batch mode": `rxd` returns clear exit codes, writes files you
 name, and prints machine-readable results with `--json`, so ordinary shell tools do the looping.
-Read {doc}`the command line page <CLI>` first for the options used here.
+Read {doc}`the command line page <CLI>` first for the options used here. To do the same in the app,
+without a terminal, follow the tutorial {doc}`tutorial-bulk-data`.
 
 ## Which commands take many files
 

@@ -16,9 +16,10 @@
 
 import { writable, derived, get } from 'svelte/store';
 import { wsManager } from '../utils/websocket';
+import { cancelSummary } from '../utils/autopilotText';
 
-/** Dropping at least this many paths opens Autopilot instead of opening every file. */
-export const AUTOPILOT_DROP_MIN = 3;
+/** Dropping at least this many paths (or any folder) opens Autopilot: utils/dropRoute.ts. */
+export { AUTOPILOT_DROP_MIN } from '../utils/dropRoute';
 
 export type Phase = 'idle' | 'inspecting' | 'planning' | 'planned' | 'running' | 'done' | 'error';
 
@@ -58,6 +59,8 @@ export interface Plan {
   governor: {
     machine: { ram_bytes: number | null; available_bytes: number | null; cpus: number | null };
     budget_bytes: number;
+    /** given | ram | available | minimum: which rule set the budget (engine govern.budget_explained). */
+    budget_source?: string;
     total_seconds_estimate: number;
     peak_memory_bytes_estimate: number;
     reductions: Reduction[];
@@ -83,7 +86,8 @@ export interface Inventory {
   note: string;
 }
 
-export interface GalleryItem { step: string; name: string; path: string; png?: string }
+/** `viewer`: a radar volume the viewer can open (map grids such as mosaics are not). */
+export interface GalleryItem { step: string; name: string; path: string; png?: string; viewer?: boolean }
 
 export interface RunRecord {
   steps: { id: string; title: string; status: string; error?: string; files?: string[]; notes?: string[]; elapsed_s?: number }[];
@@ -102,12 +106,16 @@ export interface State {
   record: RunRecord | null;
   gallery: GalleryItem[];
   error: string | null;
+  /** After a cancelled run: what was cancelled and what was kept (cancelSummary). */
+  notice: string | null;
+  /** Cancel was asked; the engine stops after the current volume and still sends the record. */
+  cancelling: boolean;
   requestId: string | null;
 }
 
 const initial: State = {
   phase: 'idle', inputs: [], inventory: null, plan: null, selected: {}, outDir: '', budgetGb: null,
-  progress: null, record: null, gallery: [], error: null, requestId: null,
+  progress: null, record: null, gallery: [], error: null, notice: null, cancelling: false, requestId: null,
 };
 
 export const state = writable<State>({ ...initial });
@@ -172,13 +180,15 @@ export function run(): void {
   const stepIds = s.plan.steps.filter((st) => s.selected[st.id]).map((st) => st.id);
   if (stepIds.length === 0 || !s.outDir) return;
   const requestId = rid();
-  state.update((x) => ({ ...x, phase: 'running', requestId, error: null, record: null, gallery: [], progress: { pct: 0, text: 'Starting...' } }));
+  state.update((x) => ({ ...x, phase: 'running', requestId, error: null, notice: null, cancelling: false, record: null, gallery: [], progress: { pct: 0, text: 'Starting...' } }));
   void wsManager.send({ type: 'auto_run', request_id: requestId, inventory: s.inventory, plan: s.plan, step_ids: stepIds, out_dir: s.outDir });
 }
 
 export function cancel(): void {
   const s = get(state);
-  if (s.requestId) void wsManager.send({ type: 'auto_cancel', request_id: s.requestId });
+  if (!s.requestId || !get(busy)) return;
+  state.update((x) => ({ ...x, cancelling: true, progress: x.progress ? { ...x.progress, text: 'Cancelling: stops after the current volume...' } : x.progress }));
+  void wsManager.send({ type: 'auto_cancel', request_id: s.requestId });
 }
 
 export function reset(): void {
@@ -211,11 +221,17 @@ export function initAutopilot(): void {
   });
   wsManager.onMessage('auto_run_result', (msg) => {
     if (!mine(msg)) return;
-    state.update((s) => ({ ...s, record: msg.record, gallery: msg.gallery ?? [], phase: 'done', progress: null }));
+    const record = msg.record as RunRecord;
+    const notice = cancelSummary(record?.steps ?? [])?.text ?? null;
+    state.update((s) => ({ ...s, record, gallery: msg.gallery ?? [], notice, cancelling: false, phase: 'done', progress: null }));
   });
   wsManager.onMessage('auto_cancelled', (msg) => {
     if (!mine(msg)) return;
-    state.update((s) => ({ ...s, phase: s.plan ? 'planned' : 'idle', progress: null, error: 'Cancelled' }));
+    // The acknowledgement of a live request (`found: true`): a run still answers with its record
+    // (results before the cancel, the step marked cancelled), an inspection with a final
+    // auto_cancelled. Only then does the panel leave the running state.
+    if (!get(busy) || msg.found === true) return;
+    state.update((s) => ({ ...s, phase: s.plan ? 'planned' : 'idle', progress: null, cancelling: false, error: 'Cancelled' }));
   });
   wsManager.onMessage('auto_error', (msg) => {
     if (!mine(msg)) return;
@@ -226,7 +242,8 @@ export function initAutopilot(): void {
     if (s.phase !== 'inspecting' && s.phase !== 'running') return;
     if (typeof msg?.progress === 'number' || typeof msg?.percent === 'number') {
       const pct = Number(msg.progress ?? msg.percent);
-      state.update((x) => ({ ...x, progress: { pct, text: String(msg.message ?? msg.text ?? '') } }));
+      const text = String(msg.message ?? msg.text ?? '');
+      state.update((x) => ({ ...x, progress: { pct, text: x.cancelling ? `Cancelling, finishing: ${text}` : text } }));
     }
   });
 }

@@ -8,6 +8,9 @@ on the 3D ground.
 The layer is **off by default**, loads its code only when you switch it on, and **never touches the network
 without asking you first**.
 
+This layer shows the NEXRAD sites around the open file. For every radar in the world, with what can be loaded
+from which network, open the **radar network map** from the Cloud data panel's *Map* tab ({doc}`RADAR_MAP`).
+
 ## What a marker says
 
 | Marker | Meaning |
@@ -93,7 +96,9 @@ ESS,Essen,51.4056,6.9672,185,DWD
   whose id is also a built-in id replaces it.
 * *Include the built-in NEXRAD list* can be switched off to show only your sites.
 
-Other networks cannot be downloaded: only AWS NEXRAD Level II can be fetched. Open their files from disk.
+Sites from your own list cannot be downloaded through this layer. For the networks the app can load (NEXRAD,
+DWD, the FMI sample) and a world map of every catalogued radar with its source and licence, see
+{doc}`RADAR_MAP`; files of other networks open from disk.
 
 ## Keyboard
 

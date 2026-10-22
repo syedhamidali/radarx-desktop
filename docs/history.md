@@ -3,6 +3,19 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.3.3
+
+- **Autopilot:** dropping a single folder opens it (also folders made of links), the memory budget says where it comes
+  from (for example `RAM 17.2 GB, available 3.0 GB -> budget 2.7 GB`), *Cancel* keeps and shows the results written
+  before it and *Run again* resumes, a mosaic or other map grid is no longer opened as an empty radar view, and mosaic
+  and wind time steps get their own names again (two could overwrite each other and hide the results gallery)
+  ({doc}`AUTOPILOT`).
+- **Tutorial:** *A whole event in the app (bulk data)* follows a folder of 44 volumes from four radars from the first
+  look to the results, the memory budget, cancelling and resuming, tracks, bulk export and what changes with hundreds
+  of volumes ({doc}`tutorial-bulk-data`).
+- **Python package:** the command-line package stays on the 0.12 line of the radar-reading library it depends on until
+  the next line has been checked (the 0.13 line changes some exported unit strings).
+
 ## 0.3.2
 
 - **Movies in the installed app:** the Movie Studio can now fetch its movie components on request. They are an

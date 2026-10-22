@@ -722,6 +722,31 @@ def _guess_formats(path: str) -> tuple[list[str], bool]:
     return ordered, hinted
 
 
+class GriddedProductError(ValueError):
+    """A NetCDF on a map grid (mosaic, wind or rainfall grid), not a radar volume with sweeps."""
+
+
+# dimensions of a map / Cartesian grid: a variable spanning only these is not a radar sweep
+_GRID_DIMS = frozenset(
+    {"x", "y", "z", "lat", "lon", "latitude", "longitude", "height", "level", "time"}
+)
+
+
+def _gridded_product_message(ds: xr.Dataset, moment_vars: list[str]) -> str | None:
+    """Why ``ds`` is a gridded product (None when it may be a radar sweep)."""
+    if any(c in ds for c in ("radialAzim", "azimuth", "Azimuth", "azi")):
+        return None
+    if not moment_vars or not all(set(ds[v].dims) <= _GRID_DIMS for v in moment_vars):
+        return None
+    title = str(ds.attrs.get("title") or "").strip()
+    what = f" ({title})" if title else ""
+    return (
+        f"it is a gridded product on a map grid{what}, not a radar volume with sweeps, so the "
+        "radar viewer cannot show it. Look at the PNG written next to it, open it in a GIS or "
+        "xarray, or make a mosaic again in the Mosaic panel."
+    )
+
+
 def _open_generic_netcdf(path: str) -> xr.DataTree:
     """Fallback opener for non-standard NetCDF radar files (e.g. IMD/IRIS-origin).
 
@@ -734,6 +759,9 @@ def _open_generic_netcdf(path: str) -> xr.DataTree:
         moment_vars = [v for v in ds.data_vars if ds[v].ndim == 2 and ds[v].dtype.kind == "f"]
         if not moment_vars:
             raise ValueError("No 2D float variables found — not a radar file")
+        gridded = _gridded_product_message(ds, moment_vars)
+        if gridded:
+            raise GriddedProductError(gridded)
 
         # Find azimuth and range coordinates
         azimuth = None
@@ -807,6 +835,9 @@ class RadarReader:
     def __init__(self) -> None:
         self._dtree: xr.DataTree | None = None
         self._path: str | None = None
+        #: Credit of data fetched from an open network ({"source", "attribution", "licence"});
+        #: read by layer_provenance.describe_reader so exports carry it. Reset on every open.
+        self._source_credit: dict[str, str] | None = None
         self._format: str | None = None
         # (tree, n_children, [sweep nodes]) — rebuilt when the tree object changes
         self._nodes_cache: tuple[xr.DataTree, int, list[xr.DataTree]] | None = None
@@ -981,6 +1012,8 @@ class RadarReader:
                 with hdf5_guard.native_section():
                     dtree = _open_generic_netcdf(open_path)
                 schema = self._build_schema(dtree, "generic_netcdf")
+            except GriddedProductError as exc:
+                raise ValueError(f"Could not open {p.name}: {exc}") from exc
             except Exception as exc:
                 logger.debug("Generic NetCDF fallback failed: %s", exc)
                 errors.append(("generic_netcdf", exc))
@@ -1030,6 +1063,21 @@ class RadarReader:
         logger.info("Opened %s as a CfRadial2 Zarr store", p)
         return schema
 
+    def adopt_datatree(
+        self, dtree: xr.DataTree, source: str, fmt: str, *, source_type: str = ""
+    ) -> dict[str, Any]:
+        """Make an already built datatree the open file (a volume assembled from several files,
+        e.g. the per-sweep files of DWD Open Data).  Returns the schema; the reader's state is
+        only replaced once the schema was built, like :meth:`open_file`."""
+        schema = self._build_schema(dtree, fmt)
+        if not schema["sweeps"]:
+            raise ValueError(f"no radar sweeps found (as {fmt})")
+        self._commit(dtree, source, fmt)
+        schema["source"] = source
+        if source_type:
+            schema["source_type"] = source_type
+        return schema
+
     def open_s3_file(self, s3_path: str) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).
 
@@ -1059,6 +1107,12 @@ class RadarReader:
             self._path = s3_path
             result["source"] = s3_path
             result["source_type"] = "nexrad_l2_s3"
+            self._source_credit = {
+                "source": "NEXRAD Level II (NOAA NWS) via the Unidata AWS Open Data bucket",
+                "attribution": "Data: NOAA National Weather Service NEXRAD Level II, "
+                "distributed by Unidata on AWS Open Data",
+                "licence": "US government data (public domain); NOAA asks for credit",
+            }
             return result
         finally:
             _unlink_quietly(tmp_path)
@@ -1324,6 +1378,7 @@ class RadarReader:
     def _reset_caches(self) -> None:
         self._nodes_cache = None
         self._kinds_cache = None
+        self._source_credit = None
         self._arco_session = None
         self._arco_scan_key = None
         self._arco_sweep_names = []

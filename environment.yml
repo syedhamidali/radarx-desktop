@@ -12,7 +12,7 @@ dependencies:
   - sphinx-copybutton
   - ipykernel
   # the engine (autodoc imports it; notebooks run it)
-  - xradar >=0.12
+  - xradar >=0.12,<0.13
   - xarray >=2024.10
   - dask
   - numpy

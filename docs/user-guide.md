@@ -15,7 +15,15 @@ usage
 ACCOUNTS
 opening-data
 viewing
+LIVE
 settings
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Tutorials
+
+tutorial-bulk-data
 ```
 
 ```{toctree}
@@ -29,6 +37,7 @@ VARMAP
 DATA_CHECK
 AUTOPILOT
 RADAR_SITES
+RADAR_MAP
 RHI
 CROSSSECTION
 CELLS

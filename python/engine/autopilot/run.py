@@ -83,6 +83,15 @@ def _time_steps(step: dict[str, Any], inv: dict[str, Any]) -> list[dict[str, str
     return steps
 
 
+class StepCancelledError(AutopilotError):
+    """Cancel inside a step; carries the files the step had already written (they are kept)."""
+
+    def __init__(self, files: list[str], notes: list[str]) -> None:
+        super().__init__("cancelled")
+        self.files = list(files)
+        self.notes = list(notes)
+
+
 def _run_step(
     step: dict[str, Any],
     inv: dict[str, Any],
@@ -99,7 +108,7 @@ def _run_step(
 
     def check_cancel() -> None:
         if cancel is not None and cancel():
-            raise AutopilotError("cancelled")
+            raise StepCancelledError(files_written, notes)
 
     def say(pct: int, text: str) -> None:
         if progress:
@@ -156,24 +165,40 @@ def _run_step(
         params["threshold_dbz"] = 35.0
     elif kind in ("mosaic", "winds"):
         steps_t = _time_steps(step, inv)
-        kept, skipped = _subsample([json.dumps(s, sort_keys=True) for s in steps_t], step)
+        # Keep the key order of each row: the reference radar comes first and its volume time
+        # labels the step's files. Sorting the keys named the files after another radar's nearest
+        # volume, so two steps could share a label and overwrite each other.
+        kept, skipped = _subsample([json.dumps(s) for s in steps_t], step)
         if skipped:
             notes.append(
                 f"{len(skipped)} time step(s) skipped by the governor (every "
                 f"{next((r['every'] for r in step.get('reductions', []) if r.get('every')), 1)}.)"
             )
+        groups = _by_radar(step, inv)
+        ref = max(groups, key=lambda r: len(groups[r])) if groups else None
+        used: set[str] = set()
         for n, raw in enumerate(kept):
             check_cancel()
             row = json.loads(raw)
             paths = list(row.values())
-            label = _stamp(paths[0], inv).split("_", 1)[-1]
+            # named after the reference radar's time (the one the steps follow): the first radar
+            # in name order can repeat its nearest volume for two steps and overwrite a result
+            label = _stamp(row.get(ref) or paths[0], inv).split("_", 1)[-1]
+            if label in used:
+                label = f"{label}_{n + 1:03d}"
+            used.add(label)
             say(int(100 * n / max(1, len(kept))), f"{kind} {label} ({', '.join(row)})")
             target = out / f"{kind}_{label}.nc"
             plot = out / f"{kind}_{label}.png"
             if kind == "mosaic":
                 api.mosaic(paths, out=target, plot=plot, progress=lambda a, b: None)
             else:
-                api.winds(paths, out=target, plot=plot, cancel=cancel)
+                try:
+                    api.winds(paths, out=target, plot=plot, cancel=cancel)
+                except Exception as exc:
+                    if cancel is not None and cancel():
+                        raise StepCancelledError(files_written, notes) from exc
+                    raise
             files_written += [str(target), str(plot)]
     elif kind == "qpe":
         groups = _by_radar(step, inv)
@@ -322,8 +347,20 @@ def run_plan(
                 error=str(exc),
                 elapsed_s=round(time.perf_counter() - t0, 1),
             )
+            if isinstance(exc, StepCancelledError):
+                # what the step wrote before the cancel stays on disk: list it (not marked done,
+                # so Run again redoes this step whole)
+                entry.update(files=exc.files, notes=exc.notes)
             record["steps"].append(entry)
             if "cancel" in str(exc):
+                for later in chosen[i + 1 :]:
+                    record["steps"].append(
+                        {
+                            k: later.get(k)
+                            for k in ("id", "title", "why", "provenance", "rxd_command")
+                        }
+                        | {"status": "not run (cancelled)"}
+                    )
                 break
             continue
         except Exception as exc:

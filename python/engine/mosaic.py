@@ -2016,7 +2016,8 @@ def to_dataset(rec: MosaicRecord) -> xr.Dataset:
 def write_netcdf(rec: MosaicRecord, path: str | os.PathLike[str]) -> None:
     """Write the mosaic as a CF-1.10 NetCDF4 file (see :func:`to_dataset`)."""
     ds = to_dataset(rec)
-    ds.to_netcdf(path, engine="netcdf4", format="NETCDF4")
+    with hdf5_guard.new_file(path):
+        ds.to_netcdf(path, engine="netcdf4", format="NETCDF4")
 
 
 def world_file(rec: MosaicRecord) -> str:
