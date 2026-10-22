@@ -2407,6 +2407,10 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
 
             if live.release_reader(removed):
                 logger.info("Released the live volume file of %s", file_id)
+            # Free the decompressed copy of a .gz now: waiting for the garbage collector to find
+            # the reader leaves up to gigabytes on disk for as long as anything still points at it
+            # (a finishing prefetch, a cache entry, a traceback).
+            await asyncio.get_running_loop().run_in_executor(None, removed.close)
             # Entries are token-keyed so they could never be served again; free the memory.
             _renderer().invalidate_cache()
             store = derived.store_for(removed, create=False)

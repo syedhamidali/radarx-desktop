@@ -88,10 +88,11 @@ MB = 1024 * 1024
 
 
 def _total_ram() -> int | None:
-    try:
-        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
-    except (ValueError, OSError, AttributeError):
-        return None
+    # engine.reader knows Windows too (os.sysconf does not exist there); imported late because
+    # it pulls in xarray
+    from engine.reader import system_memory_bytes
+
+    return system_memory_bytes()
 
 
 def module_memory_limit_bytes() -> int | None:
