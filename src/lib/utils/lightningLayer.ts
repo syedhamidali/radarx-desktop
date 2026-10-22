@@ -375,7 +375,7 @@ export interface OpenParams {
   parallaxOn: boolean;
   parallaxKm: number;
   qc: { maxChi2: number; minStations: number };
-  link: { distanceM: number; timeS: number; minPoints: number; maxDurationS: number | null; metric: 'ellipsoid' | 'box' };
+  link: { distanceM: number; timeS: number; minPoints: number; maxDurationS: number | null };
 }
 
 export const DEFAULT_OPEN: OpenParams = {
@@ -383,7 +383,7 @@ export const DEFAULT_OPEN: OpenParams = {
   parallaxKm: 10,
   // Fuchs et al. (2016): chi-square at most 1 and at least six stations; 3 km, 150 ms, at most 3 s (Colorado LMA values)
   qc: { maxChi2: 1, minStations: 6 },
-  link: { distanceM: 3000, timeS: 0.15, minPoints: 1, maxDurationS: 3, metric: 'ellipsoid' },
+  link: { distanceM: 3000, timeS: 0.15, minPoints: 1, maxDurationS: 3 },
 };
 
 /** The `lightning_open` message for the files, the radar (when one is open) and the parameters. */
@@ -398,7 +398,6 @@ export function buildOpenRequest(requestId: string, paths: string[], radar: { la
     time_s: p.link.timeS,
     min_points: p.link.minPoints,
     max_duration_s: p.link.maxDurationS,
-    metric: p.link.metric,
   };
   return msg;
 }

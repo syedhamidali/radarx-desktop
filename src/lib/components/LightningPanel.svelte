@@ -175,12 +175,6 @@
             <label>Chi-square at most <input class="num" type="number" min="0.1" max="50" step="0.1" value={cfg.open.qc.maxChi2} onchange={(e) => setOpen((o) => (o.qc.maxChi2 = +e.currentTarget.value || 1))} /></label>
             <label>Stations at least <input class="num" type="number" min="0" max="30" step="1" value={cfg.open.qc.minStations} onchange={(e) => setOpen((o) => (o.qc.minStations = Math.max(0, Math.round(+e.currentTarget.value || 0))))} /></label>
           </div>
-          <label>Metric
-            <select value={link.metric} onchange={(e) => setOpen((o) => (o.link.metric = e.currentTarget.value === 'box' ? 'box' : 'ellipsoid'))}>
-              <option value="ellipsoid">Space-time ellipsoid (Fuchs et al. 2016)</option>
-              <option value="box">Separate limits: distance and time</option>
-            </select>
-          </label>
           <button onclick={rereadLightning} disabled={st.loading || !connected}>Apply</button>
         </fieldset>
       {/if}
@@ -195,7 +189,7 @@
         <p class="hint">{coverageNote(data)}</p>
         <p class="hint">Brightness scale: {data.strengthInfo.brightnessScale}. Times are UTC. Files: <span class="mono">{data.files.slice(0, 2).join(', ')}{data.files.length > 2 ? ` and ${data.files.length - 2} more` : ''}</span>.</p>
         {#if data.kind === 'lma' && data.meta?.link}
-          <p class="hint">Clustering used D = {data.meta.link.distance_m} m, T = {data.meta.link.time_s} s, minimum points {data.meta.link.min_points}, longest flash {data.meta.link.max_duration_s ?? 'no limit'} s, metric {data.meta.link.metric}; quality filter chi-square at most {data.meta.qc?.max_chi2 ?? 'off'}, at least {data.meta.qc?.min_stations ?? 'off'} stations.</p>
+          <p class="hint">Clustering used D = {data.meta.link.distance_m} m, T = {data.meta.link.time_s} s, minimum points {data.meta.link.min_points}, longest flash {data.meta.link.max_duration_s ?? 'no limit'} s; quality filter chi-square at most {data.meta.qc?.max_chi2 ?? 'off'}, at least {data.meta.qc?.min_stations ?? 'off'} stations.</p>
         {/if}
         <p class="hint">Valid from {formatUtc(new Date(data.tRefMs + (data.coverage[0]?.[0] ?? 0) * 1000).toISOString())}.</p>
         <p class="hint">Modelled or proxy lightning is a separate layer and is never mixed with these observed flashes.</p>
@@ -217,7 +211,7 @@
   .head { display: flex; align-items: flex-start; gap: var(--space-2); }
   .id { font-size: var(--fs-sm); line-height: 1.3; }
   .toggles { display: flex; gap: var(--space-4); }
-  label { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-xs); color: var(--c-text-dim); }
+  label { display: flex; flex-direction: column; align-items: stretch; text-align: left; gap: 2px; font-size: var(--fs-xs); color: var(--c-text-dim); }
   label.chk { flex-direction: row; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
   fieldset { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
   legend { font-size: 10.5px; text-transform: uppercase; letter-spacing: var(--ls-label); color: var(--c-muted); padding: 0 4px; }

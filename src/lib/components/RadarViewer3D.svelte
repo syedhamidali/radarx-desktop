@@ -1460,7 +1460,7 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     const pts = sceneNow(site.lat, site.lon, Number.isFinite(altM) ? altM / 1000 : 0, rangeKm);
     const n = drawLightning(ctx, cam, pts, vexag);
     const flashes = new Set(pts.map((p) => p.flash)).size;
-    const label = `Lightning (observed, ${data.kind === 'glm' ? 'GLM, no height: on the ground' : 'LMA'}): ${flashes} ${flashes === 1 ? 'flash' : 'flashes'}${n < pts.length ? `, first ${n} points drawn` : ''}`;
+    const label = `Lightning (observed, ${data.kind === 'glm' ? 'GLM, no height: on the ground' : 'LMA'}): ${flashes} ${flashes === 1 ? 'flash' : 'flashes'} within ${Math.round(rangeKm)} km${n < pts.length ? `, first ${n} points drawn` : ''}`;
     drawLightningLabel(ctx, label, cssH);
   }
 

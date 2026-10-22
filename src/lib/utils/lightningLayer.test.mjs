@@ -235,7 +235,7 @@ test('the open request carries every parameter the user sees', () => {
   assert.equal('parallax_to_km' in r, false, 'no parallax correction unless asked');
   assert.equal(r.max_chi2, 1);
   assert.equal(r.min_stations, 6);
-  assert.deepEqual(r.link, { distance_m: 3000, time_s: 0.15, min_points: 1, max_duration_s: 3, metric: 'ellipsoid' });
+  assert.deepEqual(r.link, { distance_m: 3000, time_s: 0.15, min_points: 1, max_duration_s: 3 });
   const p = buildOpenRequest('r2', ['/a.nc'], null, { ...DEFAULT_OPEN, parallaxOn: true, parallaxKm: 9.5 });
   assert.equal(p.parallax_to_km, 9.5);
   assert.equal('box' in p, false, 'without a radar the whole file is read');

@@ -137,7 +137,7 @@
 <style>
   .lightning-canvas { position: absolute; left: 0; top: 0; pointer-events: none; z-index: 4; }
   .ltg-badge {
-    position: absolute; left: var(--space-3); bottom: var(--space-3); z-index: 5; max-width: min(520px, calc(100% - 2 * var(--space-3)));
+    position: absolute; left: var(--space-3); top: var(--space-3); z-index: 5; max-width: min(520px, calc(100% - 2 * var(--space-3)));
     display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--space-2); padding: 4px var(--space-2);
     background: rgba(var(--c-surface-1-rgb), 0.82); border: 1px solid var(--c-border); border-radius: var(--radius-sm);
     font-size: var(--fs-xs); color: var(--c-text); pointer-events: none; backdrop-filter: blur(4px);

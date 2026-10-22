@@ -79,7 +79,6 @@ function load(): LightningSettings {
           timeS: num(raw.open?.link?.timeS, d.open.link.timeS, 0.005, 10),
           minPoints: Math.round(num(raw.open?.link?.minPoints, d.open.link.minPoints, 1, 50)),
           maxDurationS: raw.open?.link?.maxDurationS === null ? null : num(raw.open?.link?.maxDurationS, 3, 0.5, 60),
-          metric: raw.open?.link?.metric === 'box' ? 'box' : 'ellipsoid',
         },
       },
     };

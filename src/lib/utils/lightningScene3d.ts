@@ -21,9 +21,9 @@ export function drawLightningLabel(ctx: CanvasRenderingContext2D, text: string, 
   ctx.lineWidth = 3;
   ctx.lineJoin = 'round';
   ctx.strokeStyle = 'rgba(6,8,16,0.85)';
-  ctx.strokeText(text, 12, cssH - 12);
+  ctx.strokeText(text, 68, cssH - 12);
   ctx.fillStyle = 'rgba(255,240,170,0.96)';
-  ctx.fillText(text, 12, cssH - 12);
+  ctx.fillText(text, 68, cssH - 12);
   ctx.restore();
 }
 
