@@ -47,8 +47,10 @@ METHOD_TEXT = (
     "motion error of past forecasts."
 )
 SKILL_TEXT_DEFAULT = (
-    "Skill is case dependent and falls with lead time; see the verification page "
-    "(docs: Nowcast) for the measured scores against persistence."
+    "Verified on 8 public NEXRAD cases (2013-2022) against Eulerian persistence: at +30 min the "
+    "pooled CSI was 0.68 (persistence 0.67) for >= 20 dBZ and 0.37 (0.29) for >= 35 dBZ; the "
+    "nowcast beat persistence up to about 45 min for moving convection, not for stationary or "
+    "rotating rain patterns, and nowhere beyond 60 min (docs: Nowcast)."
 )
 GUIDANCE_TEXT = "Experimental guidance, not an official forecast."
 
