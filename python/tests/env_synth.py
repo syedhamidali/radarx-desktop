@@ -70,6 +70,7 @@ def message(
     uv_grid_relative: bool = False,
     lat_first: float | None = None,
     lon_first: float | None = None,
+    step: float = 0.01,
 ) -> bytes:
     """One GRIB2 message holding *values* (shape ny x nx) on a small grid."""
     import eccodes as ec
@@ -96,7 +97,7 @@ def message(
             ec.codes_set(gid, "Nj", ny)
             la0 = 40.0 if lat_first is None else lat_first
             lo0 = 270.0 if lon_first is None else lon_first
-            d = 0.01
+            d = step
             ec.codes_set(gid, "latitudeOfFirstGridPointInDegrees", la0)
             ec.codes_set(gid, "longitudeOfFirstGridPointInDegrees", lo0)
             ec.codes_set(gid, "latitudeOfLastGridPointInDegrees", la0 - d * (ny - 1))

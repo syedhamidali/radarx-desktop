@@ -76,11 +76,22 @@ class GribField:
     keys: dict[str, Any] = field(default_factory=dict)
 
 
-def _utc(date: int, hhmm: int) -> datetime:
-    d = f"{int(date):08d}"
-    return datetime(
-        int(d[:4]), int(d[4:6]), int(d[6:8]), int(hhmm) // 100, int(hhmm) % 100, tzinfo=UTC
+#: GRIB2 code table 4.4 (unit of the forecast time) -> length of one unit
+_STEP_UNITS = {0: timedelta(minutes=1), 1: timedelta(hours=1), 2: timedelta(days=1),
+               10: timedelta(hours=3), 11: timedelta(hours=6), 12: timedelta(hours=12),
+               13: timedelta(seconds=1)}  # fmt: skip
+
+
+def _times(ec: Any, gid: Any) -> tuple[datetime, datetime]:
+    """Reference (run) time and valid time. Built from the second-resolution keys, because the
+    ``dataTime`` / ``validityTime`` keys cannot hold seconds (MRMS files are stamped 03:00:39)."""
+    ref = datetime(
+        *(int(ec.codes_get(gid, k)) for k in ("year", "month", "day", "hour", "minute", "second")),
+        tzinfo=UTC,
     )
+    unit = _STEP_UNITS.get(int(_get(ec, gid, "indicatorOfUnitOfTimeRange", 1) or 1))
+    lead = int(_get(ec, gid, "forecastTime", 0) or 0)
+    return ref, ref + (unit or timedelta(hours=1)) * lead
 
 
 def _lon180(lon: np.ndarray) -> np.ndarray:
@@ -118,11 +129,18 @@ def _grid(ec: Any, gid: Any, nj: int, ni: int, *, geometry: bool) -> Grid:
     return Grid(kind, lat, lon, f"{names.get(kind, kind)} grid {ni} x {nj}", spacing)
 
 
-def iter_fields(source: Path | bytes, *, geometry: bool = True) -> Iterator[GribField]:
+def iter_fields(
+    source: Path | bytes,
+    *,
+    geometry: bool = True,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> Iterator[GribField]:
     """Decode every GRIB message in a file (``.gz`` is unpacked in memory) or a bytes object.
 
     ``geometry=False`` skips latitude/longitude of curvilinear grids (a caller that already has
-    them for this grid saves 30 MB of work per message).
+    them for this grid saves 30 MB of work per message). ``bbox`` crops a regular latitude/
+    longitude grid right after decoding, so a large field (98 million values) is never kept whole
+    as 32-bit numbers.
     """
     ec = require_eccodes()
     if isinstance(source, (bytes, bytearray, memoryview)):
@@ -147,16 +165,20 @@ def iter_fields(source: Path | bytes, *, geometry: bool = True) -> Iterator[Grib
         try:
             ni, nj = int(ec.codes_get(gid, "Ni")), int(ec.codes_get(gid, "Nj"))
             ec.codes_set(gid, "missingValue", float("nan"))
-            values = np.asarray(ec.codes_get_values(gid), dtype=np.float32).reshape(nj, ni)
+            values = np.asarray(ec.codes_get_values(gid)).reshape(nj, ni)
             grid = _grid(ec, gid, nj, ni, geometry=geometry)
-            ref = _utc(ec.codes_get(gid, "dataDate"), ec.codes_get(gid, "dataTime"))
-            valid = _utc(ec.codes_get(gid, "validityDate"), ec.codes_get(gid, "validityTime"))
+            ref, valid = _times(ec, gid)
             level = _get(ec, gid, "level")
             if grid.kind == "regular_ll" and grid.lat.size > 1 and grid.lat[0] > grid.lat[-1]:
                 grid = Grid(
                     grid.kind, grid.lat[::-1].copy(), grid.lon, grid.description, grid.spacing
                 )
                 values = values[::-1]  # south to north, so every regular grid reads the same way
+            if bbox is not None and grid.lat.ndim == 1:
+                rows, cols = window(grid, bbox)
+                grid = crop_grid(grid, rows, cols)
+                values = values[rows, cols]
+            values = values.astype(np.float32)
             yield GribField(
                 short_name=str(_get(ec, gid, "shortName", "")),
                 name=str(_get(ec, gid, "name", "")),
@@ -183,8 +205,13 @@ def iter_fields(source: Path | bytes, *, geometry: bool = True) -> Iterator[Grib
             ec.codes_release(gid)
 
 
-def read_first(source: Path | bytes, *, geometry: bool = True) -> GribField:
-    for fld in iter_fields(source, geometry=geometry):
+def read_first(
+    source: Path | bytes,
+    *,
+    geometry: bool = True,
+    bbox: tuple[float, float, float, float] | None = None,
+) -> GribField:
+    for fld in iter_fields(source, geometry=geometry, bbox=bbox):
         return fld
     raise InvalidRequest("No GRIB2 message found in the file.")
 
@@ -193,6 +220,8 @@ def clean_units(units: str, grib_name: str = "") -> str:
     """Units as CF writes them: ecCodes says ``m s**-1``, CF says ``m s-1``. NCEP stores radar
     reflectivity in dBZ although the GRIB2 table calls the unit ``dB``; the name decides."""
     text = str(units or "").replace("**", "").strip()
+    if text.lower() == "unknown":  # ecCodes' word for a parameter it has no table entry for
+        return ""
     if text == "dB" and grib_name in REFLECTIVITY_NAMES:
         return "dBZ"
     return text
