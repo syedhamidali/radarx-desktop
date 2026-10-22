@@ -24,6 +24,7 @@ import contextlib
 import logging
 import os
 import re
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,6 +32,7 @@ from typing import Any
 
 import numpy as np
 
+from engine import memtrim
 from engine import provenance as prov
 
 logger = logging.getLogger(__name__)
@@ -441,9 +443,10 @@ def _grid_group(
         for _, rd in readers:
             with _suppress():
                 rd.close()
+        readers.clear()
     if rec.merged_aeqd is None:
         raise FrameError("the mosaic engine did not return the working grid")
-    return {
+    out = {
         "merged": np.asarray(rec.merged_aeqd, dtype=np.float32),
         "covered": rec.covered_aeqd,
         "bbox": tuple(rec.bbox),
@@ -457,6 +460,40 @@ def _grid_group(
         "time": me._iso_to_dt64(rec.analysis_time) if rec.analysis_time else None,
         "warnings": list(rec.warnings),
     }
+    del rec
+    with _suppress():  # a worker that grids many frames hands its freed pages back each time
+        memtrim.trim()
+    return out
+
+
+#: Resident memory one gridding worker needs for a single volume, measured on NEXRAD Level II
+#: (about 1.2 GB peak), and for each further volume of the same frame (about 0.35 GB); the
+#: product is doubled as a margin because the volumes of one site differ in size.
+_WORKER_BASE_BYTES = int(1.2 * 1024**3)
+_WORKER_PER_VOLUME_BYTES = int(0.35 * 1024**3)
+_WORKER_MARGIN = 2.0
+#: A gridding worker is replaced after this many frames, so that whatever a dependency keeps
+#: between volumes can never add up over a long run (Python 3.11 and later).
+_FRAMES_PER_WORKER = 8
+
+
+def workers_for_memory(requested: int, volumes_per_frame: int, budget_bytes: int | None) -> int:
+    """How many gridding workers fit the memory budget (at least 1, at most ``requested``)."""
+    if budget_bytes is None or requested <= 1:
+        return max(1, int(requested))
+    per_worker = (
+        _WORKER_BASE_BYTES + max(0, volumes_per_frame - 1) * _WORKER_PER_VOLUME_BYTES
+    ) * _WORKER_MARGIN
+    return max(1, min(int(requested), int(budget_bytes // per_worker)))
+
+
+def _memory_budget_bytes() -> int | None:
+    try:
+        from engine import governor
+
+        return int(governor.machine_budget().budget_bytes)
+    except Exception:  # an unknown budget does not stop the run
+        return None
 
 
 _NEXRAD_NAME = re.compile(r"^[A-Z]{4}(\d{8})_(\d{6})(?:_|\.|$)")
@@ -601,7 +638,18 @@ def from_radar_files(
         from concurrent.futures import ProcessPoolExecutor
 
         spec = grid_spec()
-        with ProcessPoolExecutor(max_workers=int(workers)) as pool:
+        biggest = max(len(groups[gi]) for gi in rest)
+        n_workers = workers_for_memory(int(workers), biggest, _memory_budget_bytes())
+        n_workers = min(n_workers, len(rest))
+        if n_workers < int(workers):
+            notes.append(
+                f"gridding used {n_workers} worker process(es) instead of {int(workers)}: "
+                "that is what the memory budget allows"
+            )
+        pool_kw: dict[str, Any] = {}
+        if sys.version_info >= (3, 11):
+            pool_kw["max_tasks_per_child"] = _FRAMES_PER_WORKER
+        with ProcessPoolExecutor(max_workers=n_workers, **pool_kw) as pool:
             futures = {
                 pool.submit(_grid_group, [f for _, f in groups[gi]], variable, product, spec): gi
                 for gi in rest
