@@ -9,6 +9,7 @@ import contextlib
 import contextvars
 import functools
 import gc
+import importlib
 import inspect
 import json
 import logging
@@ -5767,6 +5768,13 @@ def _preload_heavy_imports() -> None:
         import scipy.ndimage  # noqa: F401  (deferred at import: QC, 3D volume, tracking use it)
     except Exception as exc:
         logger.debug("scipy preload failed: %s", exc)
+    for name in ("netCDF4", "PIL.Image", "PIL.ImageDraw", "PIL.ImageFont"):
+        # Deferred at import (engine/hdf5_guard.py, engine/renderer.py): first open / first
+        # picture would otherwise pay for them.
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            logger.debug("%s preload failed: %s", name, exc)
 
 
 async def _run_server(
