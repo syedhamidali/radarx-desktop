@@ -594,12 +594,19 @@ def cfradial1_dataset(dtree: xr.DataTree) -> xr.Dataset:
 
     sweeps = sorted_sweep_names(dtree)
     dim0 = _ray_dim(dtree[sweeps[0]].to_dataset()) if sweeps else None
-    dataset = c1._variable_mapper(dtree, dim0=dim0)
+    dataset = c1._combine_sweeps(dtree, dim0=dim0)
+    # the padded (time, range) layout has none of the ragged-layout index variables
+    dataset = dataset.drop_vars(c1.RAGGED_LAYOUT_VARS, errors="ignore")
+    # latitude, longitude and altitude are in the dataset from the root already; the copies the
+    # optional groups hold (own or inherited) would conflict with them
+    station = ["latitude", "longitude", "altitude"]
     if "radar_calibration" in dtree.children:
-        dataset.update(c1._calib_mapper(dtree["radar_calibration"].to_dataset()))
+        calib = c1._map_radar_calibration(dtree["radar_calibration"].to_dataset(inherit=False))
+        dataset.update(calib.drop_vars(station, errors="ignore"))
     for name in ("radar_parameters", "georeferencing_correction"):
         if name in dtree.children:
-            dataset.update(dtree[name].to_dataset().reset_coords())
+            sub = dtree[name].to_dataset(inherit=False)
+            dataset.update(sub.drop_vars(station, errors="ignore").reset_coords())
     if "sweep_mode" in dataset.variables:
         dataset["sweep_mode"] = dataset["sweep_mode"].astype("S")
     return dataset

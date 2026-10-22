@@ -2,7 +2,7 @@
 
 Each test computes a result the slow, straightforward way and the way the engine now does it, and
 requires identical output. Covers: deferred scipy import, "mask only the moment you read",
-and the faster CfRadial1 writer.
+and the CfRadial1 writer.
 """
 
 from __future__ import annotations
@@ -247,30 +247,6 @@ def test_lazy_module_behaves_like_the_module():
 # ---------------------------------------------------------------------------------------------
 
 
-def test_cfradial1_fast_mapper_is_identical_to_xradars():
-    from xradar.io.export import cfradial1 as cf1
-
-    tree = exporter._netcdf_safe_tree(make_tree(6))
-    slow = cf1._variable_mapper(tree)
-    fast = exporter._cfradial1_variables(cf1, tree)
-    assert fast.identical(slow)
-    assert fast.sizes["range"] == 120  # the union of the two gate counts
-
-
-def test_cfradial1_file_is_identical_to_xradars(tmp_path):
-    from xradar.io.export.cfradial1 import to_cfradial1
-
-    tree = exporter._netcdf_safe_tree(make_tree(6))
-    stock, ours = tmp_path / "stock.nc", tmp_path / "ours.nc"
-    to_cfradial1(dtree=exporter._netcdf_safe_tree(make_tree(6)), filename=str(stock))
-    exporter._to_cfradial1(tree, str(ours))
-    with xr.open_dataset(stock) as a, xr.open_dataset(ours) as b:
-        assert a.identical(b)
-        for name in a.variables:
-            assert a[name].dtype == b[name].dtype
-            assert a[name].encoding.get("dtype") == b[name].encoding.get("dtype")
-
-
 def test_cfradial1_export_through_the_exporter(tmp_path):
     reader = make_reader(make_tree(4))
     out = exporter.RadarExporter().export(
@@ -281,14 +257,17 @@ def test_cfradial1_export_through_the_exporter(tmp_path):
         assert ds.attrs["Conventions"].startswith("CF-1.")  # the standards-clean writer
 
 
-def test_cfradial1_falls_back_to_xradars_mapper(tmp_path, monkeypatch):
+def test_cfradial1_dataset_carries_xradars_own_merge_of_the_sweeps():
+    # xradar >= 0.13 merges the sweeps in a second or two (0.12 took a minute on a NEXRAD volume),
+    # so the engine uses its merge as it is: the moments must be the same arrays.
     from xradar.io.export import cfradial1 as cf1
 
-    def boom(*_a, **_k):
-        raise RuntimeError("fast path unavailable")
+    from engine import cfwrite
 
-    monkeypatch.setattr(exporter, "_cfradial1_variables", boom)
-    out = tmp_path / "fallback.nc"
-    exporter._to_cfradial1(exporter._netcdf_safe_tree(make_tree(4)), str(out))
-    assert out.exists()
-    assert cf1._variable_mapper.__name__ == "_variable_mapper"  # restored after the export
+    tree = exporter._netcdf_safe_tree(make_tree(6))
+    stock = cf1._combine_sweeps(tree)
+    ours = cfwrite.cfradial1_dataset(tree)
+    assert ours.sizes["range"] == stock.sizes["range"] == 120  # the union of the two gate counts
+    assert ours.sizes["time"] == stock.sizes["time"]
+    for name in ("DBZH", "ZDR", "VRADH", "time", "elevation", "azimuth"):
+        assert ours[name].equals(stock[name]), name

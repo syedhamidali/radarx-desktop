@@ -1219,7 +1219,10 @@ def process_sweep(ds):
 def main(src, dst):
     import xradar as xd
 
-    tree = xd.io.open_cfradial1_datatree(src) if src.endswith(".nc") else xr.open_datatree(src)
+    if src.endswith(".nc"):
+        tree = xd.open_datatree(src, engine="cfradial1")
+    else:
+        tree = xr.open_datatree(src)
     outputs = {{}}
     for name, node in tree.children.items():
         if not name.startswith("sweep"):

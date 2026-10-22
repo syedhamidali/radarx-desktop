@@ -8,10 +8,9 @@ import logging
 import os
 import re
 import shutil
-import threading
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -395,91 +394,6 @@ def _netcdf_safe_tree(
     return safe
 
 
-# xradar's CfRadial1 writer merges the sweeps with ``compat="no_conflicts"``. The per-sweep scalars
-# below (strings among them) are broadcast along ``time`` first and then thrown away, and carrying
-# them through that merge is what makes a NEXRAD volume take a minute and 12 GB. Dropping them
-# before the merge gives the identical result (tests/test_perf_equivalence.py checks it).
-_CF1_SWEEP_SCALARS = ["sweep_fixed_angle", "sweep_number", "sweep_mode", "prt_mode", "follow_mode"]
-_CF1_LOCK = threading.Lock()
-
-
-def _cfradial1_variables(cf1: Any, dtree: xr.DataTree, dim0: str | None = None) -> xr.Dataset:
-    """``xradar.io.export.cfradial1._variable_mapper`` minus the wasted merge work."""
-    sweep_info = cf1._sweep_info_mapper(dtree)
-    vol_info = cf1._main_info_mapper(dtree)
-    if "fixed_angle" in vol_info:
-        vol_info = vol_info.drop_vars("fixed_angle")
-    sweep_datasets = []
-    for grp in dtree.groups:
-        if "sweep" not in grp:
-            continue
-        data = dtree[grp].to_dataset(inherit="all_coords")
-        if dim0 is None:
-            dim0 = "elevation" if data.sweep_mode.load().astype(str) == "rhi" else "azimuth"
-            if dim0 not in data.dims:
-                dim0 = "time"
-                assert dim0 in data.dims
-        if dim0 != "time" and dim0 in data.dims:
-            data = data.swap_dims({dim0: "time"})
-        data = data.sortby("time").drop_vars(["x", "y", "z", *_CF1_SWEEP_SCALARS], errors="ignore")
-        data.attrs = {}
-        sweep_datasets.append(data)
-    result = xr.combine_by_coords(
-        sweep_datasets,
-        data_vars="all",
-        compat="no_conflicts",
-        join="outer",
-        coords="minimal",
-        combine_attrs="no_conflicts",
-    )
-    result = result.drop_vars(
-        ["latitude", "longitude", "altitude", "spatial_ref", "crs_wkt"], errors="ignore"
-    )
-    result.update(sweep_info)
-    result.update(cf1.calculate_sweep_indices(dtree, result))
-    result = result.reset_coords(["elevation", "azimuth"])
-    result.update(vol_info)
-    return result
-
-
-@contextlib.contextmanager
-def _fast_cfradial1_mapper() -> Iterator[None]:
-    """Swap xradar's CfRadial1 variable merge for :func:`_cfradial1_variables` while the block runs.
-
-    Falls back to xradar's own mapper when its private helpers are missing or anything in the
-    faster path fails, so the file written is always the one xradar would write.
-    """
-    from xradar.io.export import cfradial1 as cf1
-
-    stock = getattr(cf1, "_variable_mapper", None)
-    helpers = ("_sweep_info_mapper", "_main_info_mapper", "calculate_sweep_indices")
-    if stock is None or not all(hasattr(cf1, h) for h in helpers):
-        yield
-        return
-
-    def mapper(tree: xr.DataTree, dim0: str | None = None) -> xr.Dataset:
-        try:
-            return _cfradial1_variables(cf1, tree, dim0)
-        except Exception as exc:
-            logger.debug("fast CfRadial1 merge failed (%s); using xradar's", exc)
-            return stock(tree, dim0)
-
-    with _CF1_LOCK:  # the swap is process-wide
-        cf1._variable_mapper = mapper
-        try:
-            yield
-        finally:
-            cf1._variable_mapper = stock
-
-
-def _to_cfradial1(dtree: xr.DataTree, filename: str) -> None:
-    """``xradar.io.export.to_cfradial1`` using the faster variable merge."""
-    from xradar.io.export import cfradial1 as cf1
-
-    with _fast_cfradial1_mapper():
-        cf1.to_cfradial1(dtree=dtree, filename=filename)
-
-
 def _safe_stem(name: str) -> str:
     """Make *name* safe to use as (part of) a file name: no separators or '..'."""
     stem = re.sub(r"[^\w.\-]+", "_", str(name)).strip("._")
@@ -678,7 +592,7 @@ def figure_file_metadata(
         layer=layer_provenance.for_variable(variable, scan_time=data_time or "").to_dict(),
     )
     if fmt == "pdf":
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         out = {
             "Creator": meta["Software"],
@@ -686,7 +600,7 @@ def figure_file_metadata(
             "Keywords": ", ".join(
                 x for x in ("radar", variable, f"sweep {sweep}", meta.get("Source", "")) if x
             ),
-            "CreationDate": datetime.now(timezone.utc),
+            "CreationDate": datetime.now(UTC),
         }
         if meta.get("Title"):
             out["Title"] = meta["Title"]
@@ -1708,10 +1622,7 @@ class RadarExporter:
         # CfRadial1 pads every sweep to one grid (peak ~8 x the decoded volume): refuse with a
         # clear message (and the alternatives) instead of running out of memory or disk.
         governor.check_tree_export(datatree, "nc", output_path)
-        with (
-            _output_target(output_path, suffix=".nc", prefix="radarx_export_") as target,
-            _fast_cfradial1_mapper(),
-        ):
+        with _output_target(output_path, suffix=".nc", prefix="radarx_export_") as target:
             cfwrite.write_cfradial1(
                 _netcdf_safe_tree(datatree, mask=mask, value_masks=vm),
                 target,

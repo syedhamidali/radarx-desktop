@@ -446,7 +446,7 @@ class TestCfRadial1:
     def test_round_trip_values_masks_flags_times(self, cf1_path, volume_with_derived):
         import xradar as xd
 
-        back = xd.io.open_cfradial1_datatree(str(cf1_path))
+        back = xd.open_datatree(str(cf1_path), engine="cfradial1")
         names = sorted_sweep_names(back)
         assert len(names) == 3
         src = volume_with_derived
@@ -575,11 +575,7 @@ class TestCfRadial2:
     def test_xradar_reads_the_file_back(self, cf2_path):
         import xradar as xd
 
-        back = (
-            xd.io.open_cfradial2_datatree(str(cf2_path))
-            if hasattr(xd.io, "open_cfradial2_datatree")
-            else xr.open_datatree(cf2_path)
-        )
+        back = xd.open_datatree(str(cf2_path), engine="cfradial2")
         assert "sweep_0" in back.children
 
 
