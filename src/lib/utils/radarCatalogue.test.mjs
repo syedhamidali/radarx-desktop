@@ -33,6 +33,92 @@ test('every site has a position, a source with a licence, a date and an access c
   assert.equal(cat.sites.length, DOC.sites.length, 'the loader drops nothing from our own file');
 });
 
+test('no two sites share an id, ignoring case; every network has its sources recorded', () => {
+  const ids = cat.sites.map((s) => s.id.toLowerCase());
+  assert.equal(new Set(ids).size, ids.length);
+  for (const s of cat.sites) assert.ok(s.source in DOC.sources, `${s.id}: unknown source ${s.source}`);
+  const net = Object.fromEntries(cat.networks().map((n) => [n.id, n.count]));
+  assert.equal(net.NEXRAD, 156);
+  assert.equal(net.TDWR, 47);
+  assert.equal(net.BoM, 82);
+  assert.equal(net.DWD, 17);
+  assert.equal(net.FMI, 10);
+  assert.equal(cat.sites.length, 1072);
+});
+
+test('TDWR: the 47 FAA Terminal Doppler radars of the HOMR station list', () => {
+  const tdwr = cat.filter({ networks: ['TDWR'] });
+  assert.equal(tdwr.length, 47);
+  for (const s of tdwr) {
+    assert.match(s.id, /^T[A-Z]{3}$/);
+    assert.equal(s.country, 'United States of America');
+    assert.equal(s.source, 'homr');
+    assert.equal(s.data_access, 'open-link', 'no loader exists for TDWR yet');
+    assert.ok(s.url.startsWith('https://www.ncei.noaa.gov/'));
+    assert.ok(['operational', 'unknown'].includes(s.status), `${s.id}: ${s.status}`);
+  }
+  assert.ok(cat.sourceOf(tdwr[0]).licence.toLowerCase().includes('public domain'));
+  // known answer: the Denver TDWR; HOMR gives 39.728056, -104.52611 and the radar's own Level II
+  // file header (a real TDEN volume, 2026-10-21) says 39.727, -104.526: within a few hundred metres.
+  const den = cat.byId('tden');
+  assert.equal(den.name, 'Denver');
+  assert.equal(den.lat, 39.72806);
+  assert.equal(den.lon, -104.52611);
+  assert.ok(haversineKm(den.lat, den.lon, 39.727, -104.526) < 0.3);
+  assert.equal(den.elev_m, 1738); // 5702 ft
+  // TDWR ids never collide with NEXRAD ids, and the nearest radar to the Denver airport TDWR is itself
+  const nexrad = new Set(cat.filter({ networks: ['NEXRAD'] }).map((s) => s.id));
+  assert.ok(tdwr.every((s) => !nexrad.has(s.id)));
+  assert.equal(cat.nearest(39.728, -104.526, 1)[0].site.id, 'TDEN');
+  assert.equal(cat.search('tdwr', 200).filter((s) => s.network === 'TDWR').length, 47);
+});
+
+test('Australia: the BoM/NCI radar list replaces the OSCAR rows it duplicates', () => {
+  const au = cat.filter({ networks: ['BoM'] });
+  assert.equal(au.length, 82);
+  for (const s of au) {
+    assert.equal(s.country, 'Australia');
+    assert.equal(s.source, 'aura');
+    assert.equal(s.data_access, 'open-link', `${s.id}: nothing here is loadable`);
+    assert.ok(s.url.startsWith('https://www.bom.gov.au/australia/radar/'), s.id);
+    assert.ok(s.note.includes('NCI'), s.id);
+    assert.ok(['operational', 'closed', 'not operational'].includes(s.status), s.id);
+  }
+  assert.ok(cat.sourceOf(au[0]).licence.startsWith('CC BY 4.0'));
+  // known answer: Melbourne (Laverton), archive radar 2, S-band dual-pol; the volume read from the
+  // archive on 2026-10-22 carries latitude -37.852, longitude 144.752 in its ODIM header.
+  const mel = cat.byId('au-2');
+  assert.equal(mel.name, 'Melbourne');
+  assert.equal(mel.band, 'S');
+  assert.equal(mel.polarisation, 'dual');
+  assert.equal(mel.wigos, '0-20000-0-94865');
+  assert.ok(haversineKm(mel.lat, mel.lon, -37.852, 144.752) < 0.6);
+  assert.ok(mel.note.includes('verified'), 'radar 2 is the one whose archive access was tested');
+  // one row per physical site: the old Townsville (Hervey Range) radar 73 is merged into 106
+  assert.equal(cat.byId('au-73'), null);
+  assert.ok(cat.byId('au-106').note.includes('access not verified'));
+  // an OSCAR row is never kept next to the BoM entry for the same radar (within 3 km)
+  const oscarAu = cat.sites.filter((s) => s.network === 'OSCAR/Australia');
+  assert.equal(oscarAu.length, 4);
+  for (const o of oscarAu) {
+    assert.equal(o.data_access, 'unknown');
+    assert.ok(au.every((a) => haversineKm(o.lat, o.lon, a.lat, a.lon) >= 3), o.id);
+  }
+  // 66 OSCAR rows were listed: 62 merged into the list's sites, 4 kept (above)
+});
+
+test('South Africa: names without the OSCAR "Radar " prefix, no data access claimed', () => {
+  const za = cat.filter({ countries: ['South Africa'] });
+  assert.equal(za.length, 14);
+  for (const s of za) {
+    assert.ok(!s.name.startsWith('Radar '), s.name);
+    assert.equal(s.data_access, 'unknown');
+    assert.equal(s.source, 'oscar');
+    assert.ok(s.note.includes('No data access was verified'));
+  }
+  assert.ok(za.some((s) => s.name === 'Cape Town'));
+});
+
 test('the loader drops malformed entries instead of guessing', () => {
   const c = new RadarCatalogue({
     retrieved: '2026-10-22',
