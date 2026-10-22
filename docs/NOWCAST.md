@@ -45,6 +45,66 @@ deterministic nowcast at three leads, the ensemble spread, and the probability o
 threshold. Every forecast panel says `FORECAST`; the light grey outside the circle is "not observed
 or not forecastable", never "no rain".
 
+## In the app: the Nowcast panel
+
+Open the **Nowcast** panel in the right-hand sidebar, or press `Ctrl+K` (`Cmd+K` on a Mac) and type
+*Nowcast*; there is one entry for the open files and one for the live map.
+
+```{image} images/nowcast/panel_light.png
+:alt: The Nowcast panel next to the map in the light theme: the forecast label with the FCST chip at the top left of the map, the nowcast of 30 minutes ahead, the lead-time slider and the colour bar at the bottom, and the panel with its settings and result on the right
+:width: 100%
+```
+
+```{image} images/nowcast/panel_dark.png
+:alt: The same view in the dark theme
+:width: 100%
+```
+
+(KTLX, 20 May 2013, origin 22:00 UTC, shown 30 minutes ahead. This is one of the verification cases, not a
+tuning case.)
+
+**Start from** one of three sources:
+
+* **Open files**: the radar volumes that are open and ticked (the same ticks as the Mosaic panel), in
+  time order. The motion comes from the last three scan times; volumes of several radars scanned within
+  about two and a half minutes of each other form one frame.
+* **Live map**: the newest frames of the live map's recent loop. Nothing is downloaded for this; the
+  app keeps the last four composites available, so let the live map update a few times first.
+* **Gridded file**: a NetCDF of gridded frames written earlier (the same file `rxd nowcast` reads), for
+  example the frames of a past event. Typing the path works everywhere; the file dialog is in the desktop app.
+
+**Forecast** settings: the lead time (5 to 120 minutes in whole steps), the step (5, 10 or 15 minutes),
+the number of ensemble members (0 to 8; with none, the probabilities are the neighbourhood probability of the
+single run) and, for open volumes, the grid cell (1 km is the grid the skill was measured on). A progress bar
+and **Cancel** are shown while it runs.
+
+**The result** is drawn on the map (the 2D map when radar files are open, the map of the live view
+otherwise) with a **lead-time slider** at the bottom of the map and in the panel: the arrow keys, `Home`
+and `End` move it, the play button loops through the leads. **Show** chooses the nowcast itself or the
+probability of at least a threshold (20, 35 and 45 dBZ, or 0.5, 2 and 10 mm h⁻¹); the probabilities of all
+leads are drawn when first chosen, and a probability below 2 percent is left transparent. The panel also shows
+the **position uncertainty** (one standard deviation, in km) of the shown lead and as a line over all leads,
+the share of the grid that could be forecast (the rest is "not forecastable", never "dry"), the mean motion,
+and the notes of the run (for example that the latest frame was nearly empty, so the result is persistence).
+**Observations** takes the forecast off the map.
+
+**It is always labelled a forecast.** Every frame on the map carries the **FCST** chip, the words
+*FORECAST +30 min*, the origin time, the valid time, the position uncertainty, the sentence *Experimental
+guidance, not an official forecast* and the skill statement of the method (with **More** for the whole text).
+The label cannot be switched off while a forecast frame is drawn. **Picture** saves the shown frame as a PNG
+with the whole label drawn into the picture:
+
+```{image} images/nowcast/saved_frame.png
+:alt: A saved forecast picture: a red band with FCST, FORECAST +5 min, the origin and valid time above the map image, the colour bar below it, and the guidance and skill sentences printed under it
+:width: 60%
+```
+
+In the desktop app **NetCDF**, **Record** (the reproducible run record) and **Figure** (the overview
+figure) save the whole nowcast, and each of them states the same forecast class, origin time and guidance.
+The panel repeats the measured limits of the method (the sections above): it moves the pattern only, it did
+not beat holding the last frame still beyond an hour, stationary or rotating rain gains nothing, and the
+probabilities are too sharp at both ends.
+
 ## How it works
 
 Notation: a frame is a grid of composite reflectivity *Z* (dBZ) or rain rate *R* (mm h⁻¹) with
@@ -364,18 +424,24 @@ statement, the guidance sentence, every parameter, the seed and the full run rec
 ## Protocol (for tooling)
 
 ```
-→ {type:"nowcast_run", request_id, file_ids:[...open files in time order...],
+→ {type:"nowcast_run", request_id, file_ids:[...open files in time order...]
+   | mosaic_ids:[...the engine's recent composites, as the live map holds them...]
+   | frames_path:"gridded frames .nc" (desktop only),
    options:{lead_min, step_min, n_members, motion_method, n_frames, origin, resolution_m, max_range_km,
             extent, variable, product, group_s, zr_relation, decay, seed, thresholds, rate_thresholds}}
 ← progress…, {type:"nowcast_result", request_id, nowcast_id, origin_time, leads_min, valid_times, field,
    units, grid, corners, motion, stats, notes, provenance, record,
    layers:[{lead_min, kind:"deterministic"|"probability", threshold?, png_b64, vmin, vmax, legend, label}]}
 ← {type:"nowcast_error", request_id, message}     → {type:"nowcast_cancel", request_id}
+→ {type:"nowcast_layers", request_id, nowcast_id, kind:"deterministic"|"probability", threshold?, rate?}
+← {type:"nowcast_layers_result", request_id, nowcast_id, kind, threshold, rate, layers:[...every lead...], corners}
 → {type:"nowcast_export", request_id, nowcast_id, path, overwrite?}   ← {type:"file_saved", path}
 ```
 
 The layers are map-ready PNGs on the same image grid as a mosaic (with `corners`), so a panel can draw
-them with the existing map layer; `provenance` is the FORECAST layer provenance.
+them with the existing map layer; `provenance` is the FORECAST layer provenance. With `options.layers` set to
+`deterministic` (what the app does) only the nowcast is drawn with the run; the probability layers of one
+threshold come with `nowcast_layers`.
 
 ## References
 
