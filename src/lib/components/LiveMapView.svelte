@@ -9,12 +9,20 @@
   import {
     liveState, liveFrames, liveShownIndex, liveShownFrame, liveLoopPlaying, liveConsentPrompt,
     startLive, stopLive, pauseLive, resumeLive, refreshLive, rescheduleLive, clearLiveFrames,
+    liveHeld, liveOpenedNow, liveAction, liveNotice, clearLiveNotice,
+    ensureFrameFloor, openLiveVolumes, openableNow, saveLiveComposite, heldSummary,
     LIVE_RING_KM, MAX_FRAMES, type LiveFrame,
   } from '../stores/live';
-  import { liveRadars, liveIntervalMin, setLiveIntervalMin, mapHidden } from '../stores/settings';
+  import {
+    liveRadars, liveIntervalMin, setLiveIntervalMin, mapHidden,
+    liveFloorDbz, setLiveFloorDbz, liveRings, setLiveRings,
+  } from '../stores/settings';
   import { BUILTIN_SITES } from '../stores/radarSites';
   import { RADAR_COLORS, mosaicLayer, mosaicResult, type MosaicLayer, type GeoBounds } from '../stores/mosaic';
   import { countdownText, hhmmss, radarStatusText, stepFrame, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN } from '../utils/liveLogic';
+  import {
+    FLOOR_CHOICES, footprintBounds, compositeLabel, legendAtFloor, floorText, multiDopplerBlocked, engineFloor,
+  } from '../utils/liveDisplay';
   import { latLonToPixel } from '../utils/geoProjection';
   import PanZoomMap from './PanZoomMap.svelte';
   import RadarSiteConsent from './RadarSiteConsent.svelte';
@@ -46,6 +54,7 @@
   const isLatest = $derived(shownIndex === null || shownIndex === frames.length - 1);
   const radarIds = $derived(s.running ? s.stations : $liveRadars);
   const byId = new Map(BUILTIN_SITES.map((st) => [st.id.toUpperCase(), st]));
+  const radarSites = $derived(radarIds.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x));
 
   // Map centre: the frame's grid centre, else the centroid of the default radars, else the US.
   const centre = $derived.by(() => {
@@ -64,21 +73,32 @@
   const overlay = $derived.by((): MosaicLayer | null => {
     if (forecastOn && $mosaicLayer) return $mosaicLayer;
     if (!frame) return null;
+    // The colour scale starts at the display floor the picture was drawn with (stated beside it).
+    const lg = legendAtFloor(frame.legend, frame.vmin, frame.floor);
     return {
       image: frame.image,
       corners: frame.corners,
       radars: frame.radarInfo.map((r, i) => ({ ...r, color: RADAR_COLORS[i % RADAR_COLORS.length] })),
       ringKm: LIVE_RING_KM,
-      opacity: 0.85,
+      ringStyle: $liveRings ? 'subtle' : 'off',
+      opacity: 0.92,
       visible: true,
       view: true,
       units: frame.units,
-      vmin: frame.vmin,
+      vmin: lg.vmin,
       vmax: frame.vmax,
-      legend: frame.legend,
+      legend: lg.legend,
+      legendNote: frame.floor === null ? 'all echo drawn' : `echo below ${frame.floor} dBZ not drawn`,
       mosaicId: frame.mosaicId,
       variable: frame.variable,
     };
+  });
+
+  // The picture follows the "Hide echo below N dBZ" setting (the engine redraws the same composite).
+  $effect(() => {
+    const f = frame;
+    void $liveFloorDbz;
+    if (f && !forecastOn) void ensureFrameFloor(f);
   });
 
   let fit = $state<GeoBounds | null>(null);
@@ -95,9 +115,28 @@
       fit = { west: f.grid.west, south: f.grid.south, east: f.grid.east, north: f.grid.north };
     }
   });
+  // Position the map on the radars' footprint (their range discs) as soon as the radars are known,
+  // and on the composite's own box once the first frame of the session exists (not on every update:
+  // the user may have panned). A different set of radars starts again, with a new map centre.
+  let fitKey = '';
+  const sessionKey = $derived((s.running ? s.stations : $liveRadars).join(','));
   $effect(() => {
-    // Fit the map to the first frame of the session (not on every update: the user may have panned).
-    if (frame && !fittedOnce) { fittedOnce = true; fit = frameBounds(frame); }
+    const key = sessionKey;
+    if (forecastOn || !key) return;
+    const f = frame;
+    if (!fitKey.startsWith(`${key}|`)) {
+      fitKey = `${key}|sites`;
+      fittedOnce = false;
+      if (anchor) anchor = centre;
+    }
+    if (f && !fittedOnce) {
+      fittedOnce = true;
+      fitKey = `${key}|frame`;
+      fit = frameBounds(f);
+    } else if (!f && !fittedOnce && fitKey === `${key}|sites`) {
+      const b = footprintBounds(radarSites, LIVE_RING_KM);
+      if (b) fit = b;
+    }
   });
   function frameBounds(f: LiveFrame): GeoBounds {
     return { west: f.grid.west, south: f.grid.south, east: f.grid.east, north: f.grid.north };
@@ -122,6 +161,17 @@
     const c = countdownText(s.nextDueAt, now);
     return c ? `next in ${c}` : '';
   });
+  // ── What to do with the data ────────────────────────────────────────────────────────────────
+  const held = $derived($liveHeld);
+  const acting = $derived($liveAction !== '');
+  const openable = $derived(frame ? openableNow() : []);
+  const canAct = $derived(openable.length > 0 && isLatest && !acting);
+  const heldText = $derived(heldSummary(held, openable));
+  const actHint = $derived(!isLatest ? 'Go back to the newest frame first: these buttons use the newest volumes the live map holds.' : openable.length === 0 ? 'No volume is held yet: wait for the first update.' : '');
+  const windHint = $derived(multiDopplerBlocked(openable) ?? '');
+  const notice = $derived($liveNotice);
+  function onFloor(e: Event) { setLiveFloorDbz(Number((e.currentTarget as HTMLSelectElement).value)); }
+  const floorNow = $derived(engineFloor($liveFloorDbz));
   const radarRows = $derived(radarIds.map((id) => ({ id, entry: s.radars[id] ?? { station: id, status: 'pending' as const }, inFrame: !!frame?.radars.some((r) => r.station === id) })));
 
   function onInterval(e: Event) {
@@ -199,14 +249,44 @@
     {#each radarRows as r (r.id)}
       <span class="live-radar" data-status={r.entry.status} class:out={s.running && !r.inFrame && r.entry.status === 'ok'}>
         <b class="mono">{r.id}</b> <span class="live-fact">{s.running || r.entry.status !== 'pending' ? radarStatusText(r.entry, now) : 'not checked'}</span>
+        {#if held.some((h) => h.station === r.id && h.on_disk)}
+          <button type="button" class="chip-open" disabled={acting || !isLatest} title="Open this volume as a normal file (already downloaded: {heldSummary(held, [r.id])})" onclick={() => openLiveVolumes([r.id], 'open')}>Open this volume</button>
+        {/if}
       </span>
     {/each}
   </div>
 
+  <!-- What to do with the data: the volumes behind the picture are normal radar files -->
+  <div class="live-actions" aria-label="What to do with the live data">
+    <button type="button" class="live-btn" data-testid="live-open-volumes" disabled={!canAct} onclick={() => openLiveVolumes(openable, 'open')}
+      title={actHint || `Open the volumes behind this picture as normal files (2D, 3D, Mosaic, Multi-Doppler, cells, modules, export): ${heldText}. They stay open when the live map updates.`}>Open these volumes</button>
+    <button type="button" class="live-btn" data-testid="live-view-3d" disabled={!canAct} onclick={() => openLiveVolumes(openable, '3d')}
+      title={actHint || `Open the volumes and show them in 3D: ${heldText}.`}>View in 3D</button>
+    <button type="button" class="live-btn" data-testid="live-multidoppler" disabled={!canAct} onclick={() => openLiveVolumes(openable, 'wind')}
+      title={actHint || windHint || `Open the volumes, tick these radars in the Multi-Doppler panel and run it: ${heldText}. The engine says plainly when the radars do not overlap.`}>Multi-Doppler winds from these radars</button>
+    <span class="live-sep" aria-hidden="true"></span>
+    <span class="live-item">Save the composite</span>
+    <button type="button" class="live-btn" data-testid="live-save-nc" disabled={!frame} onclick={() => saveLiveComposite('netcdf')} title="NetCDF: the merged grid with its provenance and the data credit (the values are not floored)">NetCDF</button>
+    <button type="button" class="live-btn" data-testid="live-save-png" disabled={!frame} onclick={() => saveLiveComposite('png')} title="A georeferenced PNG (with .pgw and .prj for GIS), as drawn, with the credit in its text">PNG</button>
+    <span class="live-spacer"></span>
+    <label class="live-item" title="Reflectivity below this is not drawn (the NWS convention is about 5 dBZ). A display choice: the data, the exports and the read-out are not changed.">Hide echo below
+      <select data-testid="live-floor" value={$liveFloorDbz} onchange={onFloor} aria-label="Hide echo below N dBZ">
+        {#each FLOOR_CHOICES as c}<option value={c}>{c <= -20 ? 'nothing (all echo)' : `${c} dBZ`}</option>{/each}
+      </select>
+    </label>
+    <label class="live-item"><input type="checkbox" checked={$liveRings} onchange={(e) => setLiveRings(e.currentTarget.checked)} data-testid="live-rings" /> Range rings</label>
+  </div>
+  {#if notice}
+    <div class="live-notice" class:bad={notice.kind === 'error'} role="status" data-testid="live-notice">
+      <span>{notice.text}</span>
+      <button type="button" class="live-btn small" onclick={clearLiveNotice} aria-label="Dismiss this message">&times;</button>
+    </div>
+  {/if}
+
   <!-- Map -->
   <div class="live-map">
     {#if anchor}
-      <PanZoomMap centerLat={anchor.lat} centerLon={anchor.lon} maxRange={400_000} {overlay} showTiles={!$mapHidden} {fit} label="Live map. Scroll to zoom, drag to pan, double-click to fit the composite.">
+      <PanZoomMap centerLat={anchor.lat} centerLon={anchor.lon} maxRange={400_000} {overlay} showTiles={!$mapHidden} {fit} linesAbove={!!overlay && !forecastOn} label="Live map. Scroll to zoom, drag to pan, double-click to fit the composite.">
         {#snippet children(v)}
           {#each radarRows as r (r.id)}
             {@const site = byId.get(r.id)}
@@ -235,7 +315,7 @@
     {#if frame && !forecastOn}
       <div class="live-prov">
         <ProvenanceChip provenance={frame.provenance} />
-        <span>Composite (column maximum of {frame.variable}) merged from {frame.radars.length} radar volume{frame.radars.length === 1 ? '' : 's'}, {Math.round(frame.grid.resolution_m / 1000)} km grid. {!isLatest ? 'Recent loop: not the newest frame.' : ''} Not an official product.</span>
+        <span>{compositeLabel({ variable: frame.variable, radars: frame.radars.length, resolutionM: frame.grid.resolution_m, floor: frame.floor, smoothed: frame.smoothed, isLatest })}{frame.floor !== floorNow ? ` (this frame keeps the setting it was drawn with: ${floorText(frame.floor).toLowerCase()})` : ''}</span>
         <button type="button" class="live-btn small" onclick={fitNow}>Fit</button>
       </div>
     {/if}
@@ -290,6 +370,12 @@
   .live-btn { height: 24px; padding: 0 var(--space-2); font-size: var(--fs-xs); }
   .live-btn.small { height: 22px; }
   .live-btn.primary { background: rgba(var(--c-accent-rgb), 0.18); border-color: rgba(var(--c-accent-rgb), 0.5); color: var(--c-accent); }
+  .live-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; padding: var(--space-1) var(--space-3); font-size: var(--fs-xs); border-bottom: 1px solid var(--c-border); background: var(--c-surface-1); }
+  .live-sep { width: 1px; align-self: stretch; background: var(--c-border); margin: 0 2px; }
+  .live-actions input[type='checkbox'] { vertical-align: -2px; margin-right: 2px; }
+  .live-notice { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 3px var(--space-3); font-size: var(--fs-xs); color: var(--c-text); background: rgba(var(--c-accent-rgb), 0.08); border-bottom: 1px solid var(--c-border); }
+  .live-notice.bad { color: var(--c-caution); background: rgba(var(--c-caution-rgb), 0.1); }
+  .chip-open { height: 18px; padding: 0 6px; font-size: var(--fs-2xs); margin-left: 4px; }
   .live-radar { display: inline-flex; gap: 5px; align-items: baseline; padding: 1px 6px; border-radius: var(--radius-sm); border: 1px solid var(--c-border); }
   .live-radar[data-status='ok'] { border-color: rgba(var(--c-nominal-rgb), 0.45); }
   .live-radar[data-status='ok'].out { border-style: dashed; }

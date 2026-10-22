@@ -30,6 +30,7 @@
     showTiles = true,
     opacity = 0.9,
     fit = null,
+    linesAbove = false,
     label = 'Map. Scroll to zoom, drag to pan, double-click to fit.',
     children,
   }: {
@@ -42,6 +43,8 @@
     opacity?: number;
     /** When set (and whenever it changes), the view pans and zooms to this lon/lat box. */
     fit?: GeoBounds | null;
+    /** Draw place names, roads and boundaries above the overlay (a calm base below it). */
+    linesAbove?: boolean;
     label?: string;
     children?: Snippet<[MapView]>;
   } = $props();
@@ -179,6 +182,7 @@
       {opacity}
       {showTiles}
       {overlay}
+      {linesAbove}
     />
     {@render children?.(view)}
   {/if}
@@ -193,6 +197,7 @@
     background: var(--c-surface-0);
     cursor: grab;
     outline: none;
+    isolation: isolate; /* blend modes of the layers inside stay inside the map */
   }
   .pz-map.dragging { cursor: grabbing; }
   .pz-map:focus-visible { box-shadow: inset 0 0 0 2px var(--c-accent); }
