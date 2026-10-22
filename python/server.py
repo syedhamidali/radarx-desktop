@@ -57,6 +57,7 @@ from engine import (
     quality,
     rhi,
     varmap,
+    watchdog,
     web,
 )
 from engine import multidoppler as mdop
@@ -75,6 +76,7 @@ from engine.cloud import (
 from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.environment.messages import EnvironmentMessages
 from engine.exporter import _FORMAT_EXT, RadarExporter
+from engine.jobs import JobCancelled, JobRegistry, cancel_on_progress
 from engine.processor import (
     MAX_SECTION_POINTS,
     RadarProcessor,
@@ -383,6 +385,47 @@ async def _run_holding(lock: asyncio.Lock, func: Callable[..., Any], *args: Any)
         lock.release()
         raise
     return await future
+
+
+DEFAULT_CLOUD_TIMEOUT_S = 300.0
+
+
+def cloud_timeout_s() -> float | None:
+    """Overall limit of one cloud listing or download-and-open in seconds.
+
+    ``XRADAR_CLOUD_TIMEOUT_S`` changes it (default 300; ``0`` or less switches it off; an
+    unparsable value keeps the default). A connection that stalls half-way never fails by
+    itself, so without a limit the request (and its progress bar) would hang for ever.
+    """
+    raw = os.environ.get("XRADAR_CLOUD_TIMEOUT_S", "").strip()
+    if not raw:
+        return DEFAULT_CLOUD_TIMEOUT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_CLOUD_TIMEOUT_S
+    if value != value:  # NaN
+        return DEFAULT_CLOUD_TIMEOUT_S
+    return value if 0 < value < float("inf") else None
+
+
+def _cloud_timeout_text() -> str:
+    limit = cloud_timeout_s()
+    return (
+        f"timed out after {limit:g} s. The cloud service may be slow or unreachable: check the "
+        "internet connection and try again."
+    )
+
+
+async def _cloud_call(func: Callable[..., Any], *args: Any) -> Any:
+    """Run a blocking cloud call in the executor, at most :func:`cloud_timeout_s` seconds.
+
+    Raises ``TimeoutError`` on expiry; the worker thread cannot be killed and ends on its own
+    (its late result is dropped).
+    """
+    job = asyncio.get_running_loop().run_in_executor(None, func, *args)
+    limit = cloud_timeout_s()
+    return await (asyncio.wait_for(job, limit) if limit else job)
 
 
 class UnknownFileError(KeyError):
@@ -899,6 +942,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         self._access_token: str | None = None
         self._why_refused = "no_session"
         self._app_started = False
+        #: Cancel flags of the modules and exports this connection is running (``cancel_module``,
+        #: ``cancel_export``; engine/jobs.py).
+        self._jobs = JobRegistry()
 
     # ------------------------------------------------------------------
     # Accounts: the gate, auth_session / auth_signout, the activity log
@@ -1305,6 +1351,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "get_cross_section_3d": self._handle_get_cross_section_3d,
             "list_modules": self._handle_list_modules,
             "run_module": self._handle_run_module,
+            "cancel_module": self._handle_cancel_module,
+            "cancel_export": self._handle_cancel_export,
             "list_derived": self._handle_list_derived,
             "clear_derived": self._handle_clear_derived,
             "list_pipeline_steps": self._handle_list_pipeline_steps,
@@ -1376,6 +1424,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
                 f"Unexpected error in {msg_type}: the operation tried to stop the program "
                 f"({type(exc).__name__}). Nothing was changed; try again."
             )
+        except JobCancelled:
+            await self.send({"type": "export_cancelled", "request": msg_type})
         except Exception as exc:
             self._record("error", **{"class": type(exc).__name__})
             level, text = _failure_text(str(msg_type), exc)
@@ -1839,12 +1889,13 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         if not station or not date:
             await self.send_error("list_nexrad_l2_files: 'station' and 'date' required")
             return
-        loop = asyncio.get_running_loop()
         try:
-            files = await loop.run_in_executor(None, list_nexrad_l2_files, station, date)
+            files = await _cloud_call(list_nexrad_l2_files, station, date)
             await self.send(
                 {"type": "nexrad_l2_files", "station": station, "date": date, "files": files}
             )
+        except TimeoutError:
+            await self.send_error(f"list_nexrad_l2_files failed: {_cloud_timeout_text()}")
         except Exception as exc:
             await self.send_error(f"list_nexrad_l2_files failed: {exc}")
 
@@ -1861,7 +1912,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         reader = RadarReader()
         self._web_prepare_reader(reader)
         job = loop.run_in_executor(None, opener, reader)
-        schema = await (asyncio.wait_for(job, timeout) if timeout else job)
+        limit = timeout or cloud_timeout_s()
+        schema = await (asyncio.wait_for(job, limit) if limit else job)
         await self._web_enforce_budget(reader)
         await self._enforce_memory_budget(
             str(schema.get("source") or "cloud file").rsplit("/", 1)[-1], reader
@@ -1889,6 +1941,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         try:
             await self.send_progress(15, f"Downloading {s3_path.split('/')[-1]}...")
             await self._open_with_new_reader(lambda r: r.open_s3_file(s3_path))
+        except TimeoutError:
+            await self.send_error(f"open_nexrad_l2 failed: {_cloud_timeout_text()}")
         except Exception as exc:
             await self.send_error(f"open_nexrad_l2 failed: {exc}")
 
@@ -1900,8 +1954,10 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         if not isinstance(station, str) or not station:
             await self.send_error("get_nexrad_latest_info: 'station' required")
             return
-        loop = asyncio.get_running_loop()
-        info = await loop.run_in_executor(None, latest_scan_info, station)
+        try:
+            info = await _cloud_call(latest_scan_info, station)
+        except TimeoutError:
+            info = {"station": station, "status": "offline", "message": _cloud_timeout_text()}
         await self.send({"type": "nexrad_latest_info", **info})
 
     # ── Live map (engine/live.py): newest volume per default radar, one composite ──────────
@@ -2135,11 +2191,12 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             await self.send_error("open_nexrad_realtime: 'station' required")
             return
         await self.send_progress(5, f"Finding latest scan for {station}...")
-        loop = asyncio.get_running_loop()
         try:
-            latest = await loop.run_in_executor(None, get_latest_nexrad_l2, station)
+            latest = await _cloud_call(get_latest_nexrad_l2, station)
             await self.send_progress(15, f"Downloading {latest['name']}...")
             await self._open_with_new_reader(lambda r: r.open_s3_file(latest["path"]))
+        except TimeoutError:
+            await self.send_error(f"open_nexrad_realtime failed: {_cloud_timeout_text()}")
         except Exception as exc:
             await self.send_error(f"open_nexrad_realtime failed: {exc}")
 
@@ -2566,7 +2623,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
 
         loop = asyncio.get_running_loop()
 
-        progress_sync = self._progress_callback(loop)
+        export_cancel = self._jobs.start("export", file_id if isinstance(file_id, str) else None)
+        progress_sync = cancel_on_progress(self._progress_callback(loop), export_cancel)
         reader = _get_reader(file_id)
         include_derived = msg.get("include_derived")
         include_original = msg.get("include_original", True)
@@ -2597,6 +2655,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         except BaseException:
             self._web_discard(output_path)
             raise
+        finally:
+            self._jobs.finish("export", export_cancel)
 
         result_path: dict[str, Any] = {"path": saved_path}
         if self.session is not None:
@@ -2651,7 +2711,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
 
         loop = asyncio.get_running_loop()
 
-        progress_sync = self._progress_callback(loop)
+        export_cancel = self._jobs.start("export", file_id if isinstance(file_id, str) else None)
+        progress_sync = cancel_on_progress(self._progress_callback(loop), export_cancel)
 
         batch_reader = _get_reader(file_id)
 
@@ -2681,6 +2742,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if self.session is not None and output_dir:
                 shutil.rmtree(output_dir, ignore_errors=True)
             raise
+        finally:
+            self._jobs.finish("export", export_cancel)
 
         if self.session is not None:
             try:
@@ -2757,7 +2820,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
 
         loop = asyncio.get_running_loop()
 
-        progress_sync = self._progress_callback(loop)
+        export_cancel = self._jobs.start("export", file_id if isinstance(file_id, str) else None)
+        progress_sync = cancel_on_progress(self._progress_callback(loop), export_cancel)
 
         anim_reader = _get_reader(file_id)
 
@@ -2786,6 +2850,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         except BaseException:
             self._web_discard(output_path)
             raise
+        finally:
+            self._jobs.finish("export", export_cancel)
 
         result_path: dict[str, Any] = {"path": saved_path}
         if self.session is not None:
@@ -3842,8 +3908,16 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         """
         module_id = msg.get("module")
         label = module_id if isinstance(module_id, str) else None
+        file_id = msg.get("file_id")
         try:
-            await self._run_module(msg)
+            with self._jobs.running(
+                "module", file_id if isinstance(file_id, str) else None
+            ) as cancel:
+                await self._run_module(msg, cancel)
+        except (plugins.ModuleCancelled, derived.RunCancelledError):
+            await self.send(
+                {"type": "module_error", "module": label, "message": "Cancelled", "cancelled": True}
+            )
         except plugins.ModuleError as exc:
             logger.warning("Module '%s' error: %s", label, exc)
             await self.send({"type": "module_error", "module": label, "message": str(exc)})
@@ -3867,7 +3941,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             # line does not stay stuck at e.g. "Classifying hydrometeors (40%)".
             await self.send_progress(100, "Module finished")
 
-    async def _run_module(self, msg: dict[str, Any]) -> None:
+    async def _run_module(self, msg: dict[str, Any], cancel: threading.Event) -> None:
         module_id = msg.get("module")
         sweep = msg.get("sweep", 0)
         params = msg.get("params", {})
@@ -3889,7 +3963,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         resolved_id, reader = _resolve_reader(msg.get("file_id"))
         datatree = reader.datatree
         if all_sweeps:
-            await self._run_module_all_sweeps(msg, module_id, params, resolved_id, reader)
+            await self._run_module_all_sweeps(msg, module_id, params, resolved_id, reader, cancel)
             return
         if datatree is None:
             raise plugins.ModuleError("No file is open")
@@ -3899,7 +3973,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         await self.send_progress(5, f"Running module {module_id}...")
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
-        cancel = threading.Event()  # set when the connection (this task) goes away
+        # ``cancel`` is also set when the connection (this task) goes away, see below
 
         def _run() -> tuple[dict[str, Any], dict[str, Any], list[tuple[dict[str, Any], list]]]:
             payload, fields = plugins.run_module(
@@ -3954,6 +4028,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         params: dict[str, Any],
         resolved_id: str | None,
         reader: RadarReader,
+        cancel: threading.Event,
     ) -> None:
         """Run a per-sweep module on every sweep and register its fields as derived variables.
 
@@ -3982,7 +4057,6 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         await self.send_progress(2, f"{spec.title}: starting on {n_sweeps} sweeps")
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
-        cancel = threading.Event()  # set when the connection (this task) goes away
 
         def _grid(i: int) -> tuple[int, int]:
             ds = reader.get_sweep_dataset(i, mask=False)
@@ -4321,6 +4395,28 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             await self._send_derived_list(out_file_id, reader, evicted=evicted)
 
         await self._pipeline_guard("run_pipeline", body(), progress=True)
+
+    async def _handle_cancel_module(self, msg: dict[str, Any]) -> None:
+        """``{type: "cancel_module", file_id?}``: stop the module run(s) of this connection.
+
+        The waiting request ends at once with ``module_error`` (``cancelled: true``); a module
+        that checks ``ctx.cancelled`` / calls ``ctx.progress`` also stops computing. Answer:
+        ``{type: "cancel_requested", kind: "module", count}``.
+        """
+        file_id = msg.get("file_id")
+        count = self._jobs.cancel("module", file_id if isinstance(file_id, str) else None)
+        await self.send({"type": "cancel_requested", "kind": "module", "count": count})
+
+    async def _handle_cancel_export(self, msg: dict[str, Any]) -> None:
+        """``{type: "cancel_export", file_id?}``: stop the running export / batch / animation.
+
+        The job stops at its next progress report (between stages, files or frames), removes
+        its half-written file and answers ``{type: "export_cancelled"}``; files a batch had
+        already finished stay. Answer to this message: ``cancel_requested`` (``kind: "export"``).
+        """
+        file_id = msg.get("file_id")
+        count = self._jobs.cancel("export", file_id if isinstance(file_id, str) else None)
+        await self.send({"type": "cancel_requested", "kind": "export", "count": count})
 
     async def _handle_cancel_pipeline(self, msg: dict[str, Any]) -> None:
         """``{type: "cancel_pipeline", file_id?}``: stop a running pipeline after its step."""
@@ -5835,7 +5931,19 @@ async def _run_server(
             print(f"READY:{bound}", flush=True)
         # Import xradar while the user picks a file, so the first open does not pay for it.
         threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
-        await stop_event.wait()
+        limit = watchdog.stall_limit_s()
+        guard = (
+            watchdog.LoopWatchdog(
+                limit, lambda stalled: watchdog.exit_stalled(stalled, _crash_log_file)
+            ).start()
+            if limit
+            else None
+        )
+        try:
+            await stop_event.wait()
+        finally:
+            if guard is not None:
+                guard.stop()
 
     if web_mode:  # remove every session folder on shutdown
         for ctx in list(web.manager().sessions.values()):
