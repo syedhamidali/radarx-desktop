@@ -66,6 +66,23 @@ in `comment` (`options.mask_no_echo = false` keeps the raw values). No other fil
 | Figures | matplotlib default metadata only (`Software: Matplotlib`), title time without time zone | software/version, source file name, data time, parameters; title says UTC |
 | Recipes | saved JSON had `version` but nothing about who made it | `schema`, `created_with`, newer-version guard |
 
+## What changed with the radar-reading library 0.13
+
+The engine needs xradar 0.13 or newer, which in turn needs Python 3.12 or newer. The NetCDF and CfRadial2 exports
+keep their layout, units and attributes (the CF Checker passes on NEXRAD, CPOL and synthetic volumes, and the
+exports of ODIM, CfRadial, IRIS, Rainbow, Furuno, UF and HPL files were compared with the 0.12 ones variable by
+variable). What differs comes from how the new library reads the files, and it is data that was wrong or missing
+before, not a new convention:
+
+| Source | 0.12 | 0.13 |
+|---|---|---|
+| NEXRAD Level II | radials were dropped when a compressed block also carried a status message (sweep 4 of the KHPX example has 718 rays) | all radials are read (720) |
+| CfRadial1 export | rays that share a time stamp were merged into one; per-ray variables of files with a variable number of gates were written as full ray by gate arrays; rays were sorted by time across sweeps | every ray is kept, per-ray variables have one value per ray, rays follow the sweep order (so `ray_times_increase` can be `false`, as it is in the data) |
+| ODIM | total power `TH` / `TV` read as unitless linear numbers | read as `DBTH` / `DBTV` in dBZ (FM 301 naming); `site_name`, `node` and the WMO id are filled from the file |
+| IRIS | bins without data came out as real numbers (-32 dBZ, a Nyquist velocity estimate of 328 m/s); SNR in 2 bytes up to 19900 dB | bins without data are NaN; SNR is in dB; 8-bit HydroClass is one value per bin |
+| HPL lidar | the last ray of every sweep was lost | kept |
+| UF | the CfRadial1 export of a volume whose sweeps start at different times stopped with a merge error (the NPOL example) | it is written |
+
 ## Deliberately not followed
 
 * **CfRadial-only names** (`radar_equivalent_reflectivity_factor_h`, `ray_azimuth_angle`,

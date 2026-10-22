@@ -98,6 +98,10 @@ Each item was found in a profile first.
    in `exporter.py` drops them first (they are removed after the merge anyway) and falls back to
    xradar's own mapper if its private helpers move or anything fails. The written file is
    identical (checked with `Dataset.identical` on the real 997 MB file and in a unit test).
+   *Since xradar 0.13 this workaround is gone:* its own sweep merge (`_combine_sweeps`, a
+   positional `concat`) takes 1.6 s and 1.6 GB for `KHPX20211211_023231` (19 sweeps, 9720
+   rays) against 40 s and 3.4 GB for the 0.12 merge, and the whole export peaks at 3.0 GB
+   instead of 4.5 GB, so `exporter.py` uses it as it is.
 2. **Mask only what is read.** Level II moments carry reserved "no echo / range folded" codes
    that are turned into NaN (`reader.mask_variable`). Code that reads one moment decoded and
    copied all five or six of every sweep. `get_sweep_dataset(only=[...])` and
@@ -140,8 +144,8 @@ or mosaic), xradar and the palette library (preloaded in a thread after `READY`)
 
 * `python/tests/test_perf_equivalence.py` (14 tests): masking with `only=` and lazy masking equal
   the eager masking (values, dtype, attrs, coords, slicing, deep copy, arithmetic); the volume
-  extracted with the narrowed loader equals the old one bit for bit; the CfRadial1 dataset and
-  file equal xradar's; the fallback path works; `import server` does not import
+  extracted with the narrowed loader equals the old one bit for bit; the CfRadial1 dataset
+  carries xradar's own sweep merge; `import server` does not import
   `scipy.ndimage` until QC needs it.
 * One-off comparison on the real KHPX/KPAH volumes between the old and new code: 3D volumes of
   DBZH and VRADH, cross-section, vertical profile, profile and histogram statistics, a 2-radar
