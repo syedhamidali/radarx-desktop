@@ -1290,6 +1290,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "live_check": self._handle_live_check,
             "live_update": self._handle_live_update,
             "live_stop": self._handle_live_stop,
+            "live_restyle": self._handle_live_restyle,
+            "live_open_volumes": self._handle_live_open_volumes,
             "list_arco_scans": self._handle_list_arco_scans,
             "open_arco_scan": self._handle_open_arco_scan,
             "list_network_providers": self._handle_list_network_providers,
@@ -1944,6 +1946,13 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if msg.get(key) is not None and not isinstance(msg[key], dict):
                 await self._live_error(request_id, f"live_update: '{key}' must be an object")
                 return
+        try:
+            floor = (
+                live.clamp_floor(msg["floor_dbz"]) if "floor_dbz" in msg else live.DEFAULT_FLOOR_DBZ
+            )
+        except live.LiveError as exc:
+            await self._live_error(request_id, f"live_update: {exc}")
+            return
         loop = asyncio.get_running_loop()
         progress_sync = self._progress_callback(loop)
         await self.send_progress(3, "Live map: starting update")
@@ -1957,6 +1966,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
                     product=str(msg.get("product") or "composite"),
                     grid=msg.get("grid"),
                     merge=msg.get("merge"),
+                    floor_dbz=floor,
                     progress=progress_sync,
                 )
 
@@ -1982,6 +1992,109 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             await self._live_error(request_id, f"{type(exc).__name__}: {exc}")
         finally:
             await self.send_progress(100, "Live map: update finished")
+
+    async def _handle_live_restyle(self, msg: dict[str, Any]) -> None:
+        """``{type: "live_restyle", request_id, mosaic_id, floor_dbz}`` -> a ``live_frame`` with the
+        same composite drawn with another display floor (``null`` draws every echo). No download and
+        no new merge; the composite must still be in the engine's cache, else ``live_error``."""
+        from engine import live, mosaic
+
+        request_id = msg.get("request_id")
+        mosaic_id = msg.get("mosaic_id")
+        if self.session is not None:
+            await self._live_error(request_id, "The live map is a feature of the desktop app.")
+            return
+        if not isinstance(mosaic_id, str) or not mosaic_id:
+            await self._live_error(request_id, "live_restyle: missing 'mosaic_id'")
+            return
+        try:
+            floor = live.clamp_floor(msg.get("floor_dbz"))
+            loop = asyncio.get_running_loop()
+            record = await loop.run_in_executor(None, live.restyle, mosaic_id, floor)
+            header = {
+                "type": "live_frame",
+                "request_id": request_id,
+                "restyled": True,
+                **record.header(),
+                "display": record.display,
+            }
+            await self._send_binary_chunks([record.png], header, length_key="png_bytes")
+        except (live.LiveError, mosaic.MosaicError) as exc:
+            await self._live_error(request_id, str(exc))
+        except Exception as exc:
+            logger.error("Live restyle failed: %s\n%s", exc, traceback.format_exc())
+            await self._live_error(request_id, f"{type(exc).__name__}: {exc}")
+
+    async def _handle_live_open_volumes(self, msg: dict[str, Any]) -> None:
+        """``{type: "live_open_volumes", request_id, stations: [...]}``: open the volumes the live
+        map holds as normal files (each announced by a ``file_opened``), without a new download.
+
+        Every volume is pinned first (its file is kept until the opened file is closed, so the next
+        live update cannot take it away), then opened in its own reader. Answer:
+        ``live_volumes_opened`` with the file ids, the sizes and the disk the pinned files use;
+        a problem (nothing held, too many open) is a ``live_error``."""
+        from engine import live
+
+        request_id = msg.get("request_id")
+        if self.session is not None:
+            await self._live_error(request_id, "The live map is a feature of the desktop app.")
+            return
+        loop = asyncio.get_running_loop()
+        try:
+            stations = live.normalize_stations(msg.get("stations"))
+            pins = await loop.run_in_executor(None, live.pin_volumes, stations)
+        except (live.LiveError, ValueError) as exc:
+            await self._live_error(request_id, f"live_open_volumes: {exc}")
+            return
+        opened: list[dict[str, Any]] = []
+        failed: list[str] = []
+        for i, pin in enumerate(pins):
+            known = pin.file_id if pin.file_id in _readers() else None
+            if known is not None:
+                opened.append({**pin.as_dict(), "file_id": known, "already_open": True})
+                continue
+            await self.send_progress(
+                int(100 * i / max(len(pins), 1)), f"Opening {pin.name} ({i + 1}/{len(pins)})"
+            )
+            try:
+                reader, schema = await loop.run_in_executor(None, live.open_pinned, pin)
+                await self._enforce_memory_budget(pin.name, reader)
+                file_id = _register_reader(reader)
+            except Exception as exc:
+                logger.warning("live_open_volumes: %s failed: %s", pin.name, exc)
+                live.PINS.release(pin.key)
+                failed.append(f"{pin.station} ({exc})")
+                continue
+            live.PINS.bind(pin.key, file_id)
+            schema_serial = {k: _serializable(v) for k, v in schema.items()}
+            prov = await loop.run_in_executor(
+                None, layer_provenance.describe_reader, reader, schema
+            )
+            await self.send(
+                {
+                    "type": "file_opened",
+                    "data": schema_serial,
+                    "file_id": file_id,
+                    "provenance": prov,
+                }
+            )
+            opened.append({**pin.as_dict(), "file_id": file_id, "already_open": False})
+        await self.send_progress(100, "Opened")
+        if not opened:
+            await self._live_error(
+                request_id,
+                "live_open_volumes: no volume could be opened (" + "; ".join(failed) + ")",
+            )
+            return
+        await self.send(
+            {
+                "type": "live_volumes_opened",
+                "request_id": request_id,
+                "files": opened,
+                "failed": failed,
+                "pinned": live.PINS.status(),
+            }
+        )
 
     async def _handle_live_stop(self, msg: dict[str, Any]) -> None:
         """Release every volume the live map holds (the app stopped the live map or is closing)."""
@@ -2207,6 +2320,11 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         if removed is None:
             logger.debug("close_file: file_id %s not found (already closed?)", file_id)
         else:
+            # A volume opened from the live map owns a pinned file on disk: closing releases it.
+            from engine import live
+
+            if live.release_reader(removed):
+                logger.info("Released the live volume file of %s", file_id)
             # Entries are token-keyed so they could never be served again; free the memory.
             _renderer().invalidate_cache()
             store = derived.store_for(removed, create=False)

@@ -26,6 +26,15 @@ from engine import hdf5_guard, rhi
 
 logger = logging.getLogger(__name__)
 
+#: Where NEXRAD Level II volumes come from and the credit that travels with them (the Unidata
+#: AWS Open Data bucket; the data are US government work).
+NEXRAD_L2_CREDIT: dict[str, str] = {
+    "source": "NEXRAD Level II (NOAA NWS) via the Unidata AWS Open Data bucket",
+    "attribution": "Data: NOAA National Weather Service NEXRAD Level II, "
+    "distributed by Unidata on AWS Open Data",
+    "licence": "US government data (public domain); NOAA asks for credit",
+}
+
 # The netCDF-C / HDF5 libraries behind most radar formats crash the process when a file is opened
 # twice at once and are not thread-safe; engine.hdf5_guard shares one handle per file and puts
 # every open/read/close behind one lock (docs/STABILITY.md).
@@ -1078,13 +1087,17 @@ class RadarReader:
             schema["source_type"] = source_type
         return schema
 
-    def open_s3_file(self, s3_path: str) -> dict[str, Any]:
+    def open_s3_file(self, s3_path: str, keep_dir: str | None = None) -> dict[str, Any]:
         """Open a NEXRAD Level II file directly from S3 (anonymous access).
 
         Parameters
         ----------
         s3_path:
             Full S3 URL, e.g. ``s3://noaa-nexrad-level2/2024/01/01/KLOT/KLOT20240101_000000_V06``
+        keep_dir:
+            When given, the downloaded file is kept in this folder (under its own name) instead of
+            being deleted after the open; the result then carries ``local_path``. The live map
+            uses this so a held volume can be opened again as a normal file without a new download.
         """
         from engine.cloud import _s3
 
@@ -1094,8 +1107,12 @@ class RadarReader:
             raise ValueError(f"Invalid S3 path (expected s3://bucket/key): {s3_path}")
         filename = obj_key.split("/")[-1]
 
-        fd, tmp_path = tempfile.mkstemp(suffix=f"_{filename}", dir=self.tmp_dir)
-        os.close(fd)
+        if keep_dir is not None:
+            tmp_path = os.path.join(keep_dir, filename)
+        else:
+            fd, tmp_path = tempfile.mkstemp(suffix=f"_{filename}", dir=self.tmp_dir)
+            os.close(fd)
+        ok = False
         try:
             logger.info("Downloading s3://%s/%s -> %s", bucket, obj_key, tmp_path)
             try:
@@ -1107,15 +1124,14 @@ class RadarReader:
             self._path = s3_path
             result["source"] = s3_path
             result["source_type"] = "nexrad_l2_s3"
-            self._source_credit = {
-                "source": "NEXRAD Level II (NOAA NWS) via the Unidata AWS Open Data bucket",
-                "attribution": "Data: NOAA National Weather Service NEXRAD Level II, "
-                "distributed by Unidata on AWS Open Data",
-                "licence": "US government data (public domain); NOAA asks for credit",
-            }
+            self._source_credit = dict(NEXRAD_L2_CREDIT)
+            if keep_dir is not None:
+                result["local_path"] = tmp_path
+            ok = True
             return result
         finally:
-            _unlink_quietly(tmp_path)
+            if keep_dir is None or not ok:
+                _unlink_quietly(tmp_path)
 
     def open_arco_scan(self, station: str, scan_key: str) -> dict[str, Any]:
         """Open a VCP type from the NEXRAD ARCO icechunk store.
