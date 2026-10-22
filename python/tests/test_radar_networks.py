@@ -8,7 +8,7 @@ import re
 import threading
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.message import Message
 from pathlib import Path
 from typing import Any
@@ -46,7 +46,7 @@ def write_odim(
 ) -> None:
     import h5py
 
-    t0 = t0 or datetime(2026, 10, 21, 21, 50, 35, tzinfo=timezone.utc)
+    t0 = t0 or datetime(2026, 10, 21, 21, 50, 35, tzinfo=UTC)
     with h5py.File(path, "w") as h:
         h.attrs["Conventions"] = np.bytes_(b"ODIM_H5/V2_2")
         what = h.create_group("what")
@@ -146,7 +146,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 # ── DWD ───────────────────────────────────────────────────────────────────────────────────────
 
-DWD_T0 = datetime(2026, 10, 21, 21, 50, 57, tzinfo=timezone.utc)
+DWD_T0 = datetime(2026, 10, 21, 21, 50, 57, tzinfo=UTC)
 
 
 def dwd_name(moment: str, sweep: int, t: datetime, site: str = "ess") -> str:

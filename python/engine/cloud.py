@@ -12,7 +12,7 @@ import re
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -459,9 +459,7 @@ def scan_time(name: str) -> datetime | None:
     if not m:
         return None
     try:
-        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(
-            tzinfo=timezone.utc
-        )
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(tzinfo=UTC)
     except ValueError:
         return None
 
@@ -475,7 +473,7 @@ def nearest_scan_to_time(
     Returns None when nothing qualifies or the best candidate is further than *max_gap*.
     """
     if target.tzinfo is None:
-        target = target.replace(tzinfo=timezone.utc)
+        target = target.replace(tzinfo=UTC)
     best: tuple[float, datetime, dict[str, Any]] | None = None
     for f in files:
         name = f.get("name", "")
@@ -578,7 +576,7 @@ def list_nexrad_l2_files(
 
     files.sort(key=lambda f: f["name"])
 
-    is_past = dt.date() < datetime.now(timezone.utc).date()
+    is_past = dt.date() < datetime.now(UTC).date()
     expires = None if is_past else time.monotonic() + _TODAY_TTL_S
     # Don't pin an empty listing of a past day forever: the station may simply not have
     # uploaded yet (or the user typed the wrong day); keep it short-lived instead.
@@ -598,7 +596,7 @@ def list_nexrad_l2_files(
 def get_latest_nexrad_l2(station: str) -> dict[str, Any]:
     """Return the most recent Level II file for a station (today or yesterday, UTC)."""
     st = _normalize_station(station)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     last_exc: Exception | None = None
     for delta_days in (0, 1):
         date_str = (now - timedelta(days=delta_days)).strftime("%Y-%m-%d")
@@ -670,7 +668,7 @@ def latest_scan_info(station: str, *, use_cache: bool = True) -> dict[str, Any]:
             if hit is not None and hit[0] > now_mono:
                 return _with_age(copy.deepcopy(hit[1]))
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     last_exc: BaseException | None = None
     listed_ok = False
     result: dict[str, Any] | None = None
@@ -726,7 +724,7 @@ def latest_scan_info(station: str, *, use_cache: bool = True) -> dict[str, Any]:
 
 def _with_age(info: dict[str, Any]) -> dict[str, Any]:
     """Stamp *info* with this machine's UTC clock and, for an ok result, the scan's age."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     info["now"] = now.isoformat().replace("+00:00", "Z")
     if info.get("status") == "ok":
         t = datetime.fromisoformat(info["scan_time"].replace("Z", "+00:00"))

@@ -191,7 +191,7 @@ bundle that engine (see [docs/BUNDLING.md](docs/BUNDLING.md)); [ARCHITECTURE.md]
 
 ## Build from source
 
-You need Node.js 20+, Rust (stable), Python 3.10+ (3.12+ for radarx), and on Linux the WebKit/GTK and Cairo
+You need Node.js 20+, Rust (stable), Python 3.12+, and on Linux the WebKit/GTK and Cairo
 development packages.
 
 ```bash

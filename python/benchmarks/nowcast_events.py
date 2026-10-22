@@ -22,7 +22,7 @@ import json
 import re
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 BUCKET = "unidata-nexrad-level2"
@@ -133,7 +133,7 @@ def is_volume(path: Path) -> bool:
 
 
 def window(ev: dict) -> tuple[datetime, datetime]:
-    t0 = datetime.fromisoformat(ev["start"]).replace(tzinfo=timezone.utc)
+    t0 = datetime.fromisoformat(ev["start"]).replace(tzinfo=UTC)
     return t0, t0 + timedelta(hours=float(ev["hours"]))
 
 
@@ -160,9 +160,7 @@ def list_keys(ev: dict) -> list[dict]:
                 if name.endswith("_MDM") or not name.startswith(ev["radar"]):
                     continue
                 try:
-                    stamp = datetime.strptime(name[4:19], "%Y%m%d_%H%M%S").replace(
-                        tzinfo=timezone.utc
-                    )
+                    stamp = datetime.strptime(name[4:19], "%Y%m%d_%H%M%S").replace(tzinfo=UTC)
                 except ValueError:
                     continue
                 if t0 <= stamp < t1:

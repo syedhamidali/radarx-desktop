@@ -4,7 +4,7 @@ storm finding and tracking. Synthetic volumes only; no radar files are needed.""
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -17,8 +17,6 @@ import clipdata
 import clipwinds
 import lightning_obs
 import tilecache
-
-UTC = timezone.utc
 
 
 def touch(root: Path, radar: str, when: datetime) -> Path:

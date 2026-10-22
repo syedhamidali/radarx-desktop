@@ -24,7 +24,7 @@ says "not tested". Where a statement comes from how `rxd` is built rather than f
 ## Install without a window
 
 You do not need the app. `rxd` comes as a Python package (a "wheel") that is published with every release. It needs Python
-3.10 or newer (3.12 or newer for the optional radarx library, which mosaics, winds, rainfall and many algorithms need). Check what you have:
+3.12 or newer. Check what you have:
 
 ```bash
 python3 --version

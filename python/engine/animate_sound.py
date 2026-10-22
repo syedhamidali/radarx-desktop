@@ -26,7 +26,7 @@ import glob
 import math
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +34,7 @@ import numpy as np
 
 from engine.animate_plan import AnimateConfigError
 
-UTC = timezone.utc
+UTC = UTC
 
 DEFAULT_SEED = 7
 GLM_RADIUS_KM = 30.0

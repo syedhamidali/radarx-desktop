@@ -475,7 +475,7 @@ in fact finished within the same 4 GB budget, so treat a "will not run" as a war
 * **Print the command:** `--print-command` prints, at the end, the full command with everything that was chosen for you (the
   sweep, the output name, the budget). Keep that line in your log.
 * **Keep an analysis in a file:** `--config run.toml` reads the same options (long names). Options on the command line win, so a file is
-  a template for many inputs. JSON works everywhere; TOML needs Python 3.11 or newer.
+  a template for many inputs. TOML and JSON always work (YAML needs PyYAML).
 
   ```toml
   command = "run"

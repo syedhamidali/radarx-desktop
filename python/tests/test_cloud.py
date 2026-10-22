@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import ClassVar
 
 import pytest
@@ -10,7 +10,7 @@ import pytest
 import engine.cloud as cloud
 from tests.conftest import ARCO_SCAN_KEY
 
-_MODIFIED = datetime(2024, 1, 1, tzinfo=timezone.utc)
+_MODIFIED = datetime(2024, 1, 1, tzinfo=UTC)
 
 
 class FakePaginator:
@@ -89,7 +89,7 @@ class TestListFiles:
         assert len(fake_s3.calls) == 2
 
     def test_today_expires(self, fake_s3: FakeS3, monkeypatch: pytest.MonkeyPatch) -> None:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         cloud.list_nexrad_l2_files("KLOT", today)
         cloud.list_nexrad_l2_files("KLOT", today)
         assert len(fake_s3.calls) == 1
@@ -123,7 +123,7 @@ class TestListFiles:
             cloud.list_nexrad_l2_files("KLOT", date)
 
     def test_get_latest_falls_back_to_yesterday_and_reports_errors(self, fake_s3: FakeS3) -> None:
-        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y/%m/%d")
+        yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y/%m/%d")
         fake_s3.keys = [
             f"{yesterday}/KLOT/KLOT20240101_000000_V06",
             f"{yesterday}/KLOT/KLOT20240101_000500_V06",
@@ -250,7 +250,7 @@ class TestNearestScan:
     ]
 
     def test_picks_closest(self) -> None:
-        t = datetime(2024, 1, 1, 0, 3, tzinfo=timezone.utc)
+        t = datetime(2024, 1, 1, 0, 3, tzinfo=UTC)
         assert cloud.nearest_scan_to_time(self.FILES, t)["name"] == "KLOT20240101_000500_V06"
 
     def test_naive_target_is_utc_and_tie_goes_earlier(self) -> None:
@@ -272,7 +272,7 @@ class TestNearestScan:
 
     def test_scan_time(self) -> None:
         assert cloud.scan_time("2024/01/01/KLOT/KLOT20240101_000500_V06") == datetime(
-            2024, 1, 1, 0, 5, tzinfo=timezone.utc
+            2024, 1, 1, 0, 5, tzinfo=UTC
         )
         assert cloud.scan_time("KLOT20241399_000500_V06") is None
 
@@ -286,10 +286,10 @@ class TestLatestScanInfo:
 
     @staticmethod
     def _today() -> str:
-        return datetime.now(timezone.utc).strftime("%Y/%m/%d")
+        return datetime.now(UTC).strftime("%Y/%m/%d")
 
     def test_ok_reports_newest_volume_size_and_age(self, fake_s3: FakeS3) -> None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         older = (now - timedelta(minutes=14)).strftime("%Y%m%d_%H%M%S")
         newer = (now - timedelta(minutes=4)).strftime("%Y%m%d_%H%M%S")
         fake_s3.keys = [
@@ -309,7 +309,7 @@ class TestLatestScanInfo:
         assert info["source"] == "s3://unidata-nexrad-level2/"
 
     def test_falls_back_to_yesterday(self, fake_s3: FakeS3) -> None:
-        y = datetime.now(timezone.utc) - timedelta(days=1)
+        y = datetime.now(UTC) - timedelta(days=1)
         fake_s3.keys = [f"{y:%Y/%m/%d}/KLOT/KLOT{y:%Y%m%d}_235500_V06"]
         info = cloud.latest_scan_info("KLOT")
         assert info["status"] == "ok"
@@ -353,7 +353,7 @@ class TestLatestScanInfo:
         assert "denied" in info["message"]
 
     def test_successes_are_cached_briefly(self, fake_s3: FakeS3) -> None:
-        stamp = f"{datetime.now(timezone.utc):%Y%m%d_%H%M%S}"
+        stamp = f"{datetime.now(UTC):%Y%m%d_%H%M%S}"
         fake_s3.keys = [f"{self._today()}/KLOT/KLOT{stamp}_V06"]
         cloud.latest_scan_info("KLOT")
         n = len(fake_s3.calls)

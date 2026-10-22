@@ -37,7 +37,7 @@ import logging
 import os
 import threading
 from collections.abc import Iterator
-from typing import Any, TypeVar
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +58,6 @@ def native_section() -> Iterator[None]:
     """Run a block of native netCDF/HDF5 work (open a tree, write a file) one thread at a time."""
     with LOCK:
         yield
-
-
-F = TypeVar("F")
 
 
 @contextlib.contextmanager
@@ -91,7 +88,7 @@ def new_file(path: str | os.PathLike[str]) -> Iterator[None]:
         raise
 
 
-def guarded(func: F) -> F:
+def guarded[F](func: F) -> F:
     """Decorator: the whole function runs inside :func:`native_section`.
 
     For writers (``to_netcdf`` ...) and one-shot readers. Do not use it around code that waits

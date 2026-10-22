@@ -26,7 +26,7 @@ import contextlib
 import math
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from engine import provenance as _prov
@@ -152,7 +152,7 @@ def _parse(value: Any) -> datetime | None:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
 
 
 def time_offset_s(valid: Any, reference: Any) -> float | None:
@@ -569,7 +569,7 @@ def from_derived_info(info: Mapping[str, Any], valid_time: Any = "") -> LayerPro
     stamp = info.get("computed_at")
     run_time = ""
     if isinstance(stamp, (int, float)):
-        run_time = _prov.utc_stamp(datetime.fromtimestamp(stamp, timezone.utc))
+        run_time = _prov.utc_stamp(datetime.fromtimestamp(stamp, UTC))
     prov = derived_field(
         name=_clean(info.get("label")) or _clean(info.get("name")) or module,
         module=module,

@@ -23,7 +23,7 @@ import shutil
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -1061,7 +1061,7 @@ def provenance(res: AnimateResult, settings: dict[str, Any], dist: Path | None) 
             inputs.append(entry)
     doc = res.to_dict()
     doc["tool"] = "rxd animate"
-    doc["created_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    doc["created_utc"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     doc["command"] = o.command
     doc["versions"] = {
         "radarx_desktop_engine": _xrd_version(),

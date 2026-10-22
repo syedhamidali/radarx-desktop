@@ -99,5 +99,5 @@ of planned work is the GitHub issue "Roadmap: the futuristic radar workbench (ma
 
 - Node.js 20+ (CI uses 24 for the unit tests)
 - Rust (stable, via rustup); on Linux the WebKit/GTK development packages
-- Python 3.10+ (3.12+ for radarx) with `pip install -e "python[dev,radarx]"`
+- Python 3.12+ (xradar 0.13 and radarx need it) with `pip install -e "python[dev,radarx]"`
 - Tauri CLI comes with `npm ci` (`@tauri-apps/cli`)

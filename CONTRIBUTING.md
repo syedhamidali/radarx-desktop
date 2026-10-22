@@ -18,7 +18,7 @@ radar software that is fast, stable and **faithful to the science**; the science
 
 ## Set up
 
-You need Node.js 20+, Rust (stable), Python 3.10+ (3.12+ for radarx) and, on Linux, the WebKit/GTK development
+You need Node.js 20+, Rust (stable), Python 3.12+ and, on Linux, the WebKit/GTK development
 packages (see the [README](README.md#build-from-source)).
 
 ```bash

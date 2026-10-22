@@ -2236,12 +2236,8 @@ def load_config(path: str) -> dict[str, Any]:
     suffix = p.suffix.lower()
     try:
         if suffix == ".toml":
-            try:
-                import tomllib
-            except ImportError as exc:  # Python 3.10
-                raise UsageError(
-                    "reading .toml needs Python 3.11 or newer; use a .json or .yaml file instead"
-                ) from exc
+            import tomllib
+
             data = tomllib.loads(p.read_text(encoding="utf-8"))
         elif suffix in (".yaml", ".yml"):
             try:

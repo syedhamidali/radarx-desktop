@@ -23,7 +23,7 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -392,7 +392,7 @@ def _launch_from_stamp(stamp: str) -> str:
     yy, mo, dd, hh, mi = (int(g) for g in m.groups())
     year = 2000 + yy if yy < 70 else 1900 + yy
     try:
-        return datetime(year, mo, dd, hh, mi, tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return datetime(year, mo, dd, hh, mi, tzinfo=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         return ""
 
@@ -445,7 +445,7 @@ def parse_wyoming_text(text: str, file: str = "") -> Sounding:
                     datetime.strptime(
                         f"{m.group(4)} {m.group(3)} {m.group(2)} {m.group(1)}", "%Y %b %d %H"
                     )
-                    .replace(tzinfo=timezone.utc)
+                    .replace(tzinfo=UTC)
                     .strftime("%Y-%m-%dT%H:%M:%SZ")
                 )
             except ValueError:

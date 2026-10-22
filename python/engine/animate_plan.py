@@ -26,11 +26,11 @@ import os
 import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-UTC = timezone.utc
+UTC = UTC
 
 #: Largest distance in time (s) between a time step and the volume taken for it (5.5 min: one NEXRAD
 #: volume is 4.5 to 6 min, so a radar one scan away still counts as "the same moment" for a storm).

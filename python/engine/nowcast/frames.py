@@ -24,7 +24,6 @@ import contextlib
 import logging
 import os
 import re
-import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -646,10 +645,9 @@ def from_radar_files(
                 f"gridding used {n_workers} worker process(es) instead of {int(workers)}: "
                 "that is what the memory budget allows"
             )
-        pool_kw: dict[str, Any] = {}
-        if sys.version_info >= (3, 11):
-            pool_kw["max_tasks_per_child"] = _FRAMES_PER_WORKER
-        with ProcessPoolExecutor(max_workers=n_workers, **pool_kw) as pool:
+        with ProcessPoolExecutor(
+            max_workers=n_workers, max_tasks_per_child=_FRAMES_PER_WORKER
+        ) as pool:
             futures = {
                 pool.submit(_grid_group, [f for _, f in groups[gi]], variable, product, spec): gi
                 for gi in rest

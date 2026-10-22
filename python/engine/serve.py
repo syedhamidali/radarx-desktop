@@ -363,7 +363,7 @@ class RemoteEngine:
                     and message.get("type") == "engine_auth"
                     and token_matches(message.get("token"), self._token)
                 )
-        except (TimeoutError, asyncio.TimeoutError):
+        except TimeoutError:
             ok = False
         except Exception:
             # a closed or broken socket, a frame that is too large ...: nothing to reply to
