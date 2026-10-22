@@ -20,6 +20,7 @@ import { connectionStatus } from './radarData';
 import { addToast } from './toasts';
 import { registerJobSource } from './jobSources';
 import { getMask, isMaskActive, type ValueMask } from './valueMask';
+import type { FrameLabel } from '../utils/nowcastLogic';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -119,9 +120,23 @@ export interface MosaicHeader {
   value_mask_text?: string | null;
   /** Set by a QPE map layer (shown through this layer): RETRIEVED, or ADJUSTED to rain gauges. */
   provenance_type?: string;
+  /**
+   * Set when this layer is a nowcast frame (a FORECAST, never an observation): the label that the map
+   * prints on it (class chip, origin, valid time, lead, guidance, skill). Such a layer has no engine
+   * grid to probe, and the map always draws its label.
+   */
+  forecast?: ForecastTag;
   elapsed_ms: number;
   png_bytes: number;
   chunks: number;
+}
+
+/** The label of a nowcast frame on the map, with where it sits in its run. */
+export interface ForecastTag extends FrameLabel {
+  nowcastId: string;
+  /** Position of the frame in the run (for the slider). */
+  leadIndex: number;
+  leadCount: number;
 }
 
 export interface MosaicResult extends MosaicHeader {
@@ -735,6 +750,7 @@ function sendProbe(p: { lon: number; lat: number; x: number; y: number }): void 
 
 /** Throttled (~10/s, trailing edge kept) probe of the mosaic at a position. */
 export function probeMosaic(lon: number, lat: number, x: number, y: number): void {
+  if (get(mosaicResult)?.forecast) return; // a nowcast frame has no engine grid to ask
   const now = performance.now();
   const p = { lon, lat, x, y };
   // Keep the tooltip glued to the cursor even while a reply is pending
@@ -801,7 +817,11 @@ export function clearMosaic(): void {
  * same opacity, legend and hover probe (the engine registered the float grid under `mosaic_id`).
  * `header` is an engine `MosaicRecord.header()`; `pngBase64` the image.
  */
-export function showExternalLayer(header: Partial<MosaicHeader> & { mosaic_id: string }, pngBase64: string): Promise<void> {
+export function showExternalLayer(
+  header: Partial<MosaicHeader> & { mosaic_id: string },
+  pngBase64: string,
+  opts: { fit?: boolean } = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
     let bytes: Uint8Array;
     try {
@@ -833,7 +853,7 @@ export function showExternalLayer(header: Partial<MosaicHeader> & { mosaic_id: s
       if (old) setTimeout(() => URL.revokeObjectURL(old.url), 2000);
       mosaicProbe.set(null);
       mosaicDisplay.update((d) => ({ ...d, visible: true, mosaicView: true }));
-      fitMapToMosaic();
+      if (opts.fit !== false) fitMapToMosaic();
       resolve();
     };
     img.onerror = () => {

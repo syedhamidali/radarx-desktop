@@ -60,8 +60,10 @@
   $: wlayer = overlay === undefined ? $windLayer : null;
   $: mosaicShown = !!layer && layer.visible;
   // The hover probe asks the engine for the mosaic store's grid: only for that layer.
-  $: probing = overlay === undefined && mosaicShown && !!layer?.view;
-  $: showLegend = !!layer && (probing || overlay !== undefined);
+  // A nowcast frame (a FORECAST) has no engine grid behind it: no probe, but its legend is drawn.
+  $: isForecast = !!$mosaicResult?.forecast;
+  $: probing = overlay === undefined && mosaicShown && !!layer?.view && !isForecast;
+  $: showLegend = !!layer && (probing || overlay !== undefined || (isForecast && mosaicShown));
   // Provenance class of the probed map layer: recomputed when the layer changes, not per move.
   $: mapProv = probeTag($layerMap, {
     type: 'map',

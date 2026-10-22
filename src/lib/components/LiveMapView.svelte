@@ -13,12 +13,13 @@
   } from '../stores/live';
   import { liveRadars, liveIntervalMin, setLiveIntervalMin, mapHidden } from '../stores/settings';
   import { BUILTIN_SITES } from '../stores/radarSites';
-  import { RADAR_COLORS, type MosaicLayer, type GeoBounds } from '../stores/mosaic';
+  import { RADAR_COLORS, mosaicLayer, mosaicResult, type MosaicLayer, type GeoBounds } from '../stores/mosaic';
   import { countdownText, hhmmss, radarStatusText, stepFrame, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN } from '../utils/liveLogic';
   import { latLonToPixel } from '../utils/geoProjection';
   import PanZoomMap from './PanZoomMap.svelte';
   import RadarSiteConsent from './RadarSiteConsent.svelte';
   import ProvenanceChip from './ProvenanceChip.svelte';
+  import NowcastOverlay from './NowcastOverlay.svelte';
 
   let { onchoose }: { onchoose: () => void } = $props();
 
@@ -30,7 +31,8 @@
   onMount(() => {
     tick = setInterval(() => (now = Date.now()), 1000);
     // The view opened with radars set but nothing running: start (the consent dialog follows).
-    if (!$liveState.running && $liveRadars.length > 0) startLive();
+    // (not when a nowcast is what was asked for: it only needs the map)
+    if (!$liveState.running && $liveRadars.length > 0 && !$mosaicResult?.forecast) startLive();
   });
   onDestroy(() => {
     if (tick) clearInterval(tick);
@@ -56,7 +58,11 @@
   let anchor = $state<{ lat: number; lon: number } | null>(null);
   $effect(() => { if (!anchor && (frame || radarIds.length)) anchor = centre; });
 
+  // A nowcast made from these frames is drawn here instead of the observed composite, with its own
+  // FORECAST label and lead slider (the observed frame is back with "Observations").
+  const forecastOn = $derived(!!$mosaicResult?.forecast && !!$mosaicLayer?.visible);
   const overlay = $derived.by((): MosaicLayer | null => {
+    if (forecastOn && $mosaicLayer) return $mosaicLayer;
     if (!frame) return null;
     return {
       image: frame.image,
@@ -77,6 +83,18 @@
 
   let fit = $state<GeoBounds | null>(null);
   let fittedOnce = false;
+  // A forecast drawn here (from a gridded file, or for a place the live map is not on) brings its own
+  // map position, and the view fits it once per nowcast.
+  let fittedForecast = '';
+  $effect(() => {
+    const f = $mosaicResult;
+    if (!forecastOn || !f?.forecast) return;
+    if (!anchor) anchor = { lat: (f.grid.north + f.grid.south) / 2, lon: (f.grid.east + f.grid.west) / 2 };
+    if (fittedForecast !== f.forecast.nowcastId) {
+      fittedForecast = f.forecast.nowcastId;
+      fit = { west: f.grid.west, south: f.grid.south, east: f.grid.east, north: f.grid.north };
+    }
+  });
   $effect(() => {
     // Fit the map to the first frame of the session (not on every update: the user may have panned).
     if (frame && !fittedOnce) { fittedOnce = true; fit = frameBounds(frame); }
@@ -202,7 +220,7 @@
         {/snippet}
       </PanZoomMap>
     {/if}
-    {#if !frame}
+    {#if !frame && !forecastOn}
       <div class="live-empty">
         {#if radarIds.length === 0}
           <p>Choose one or several radars; their newest scans are then merged into one picture here.</p>
@@ -213,7 +231,8 @@
         {/if}
       </div>
     {/if}
-    {#if frame}
+    <NowcastOverlay />
+    {#if frame && !forecastOn}
       <div class="live-prov">
         <ProvenanceChip provenance={frame.provenance} />
         <span>Composite (column maximum of {frame.variable}) merged from {frame.radars.length} radar volume{frame.radars.length === 1 ? '' : 's'}, {Math.round(frame.grid.resolution_m / 1000)} km grid. {!isLatest ? 'Recent loop: not the newest frame.' : ''} Not an official product.</span>

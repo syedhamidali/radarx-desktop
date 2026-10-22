@@ -87,14 +87,14 @@ function downloadBlob(filename: string, blob: Blob): void {
 }
 
 /** Save `blob` as `<name>.png`. Toasts the outcome; true when saved, false on cancel or failure. */
-export async function savePng(name: string, blob: Blob): Promise<boolean> {
+export async function savePng(name: string, blob: Blob, title = 'Save cross-section image'): Promise<boolean> {
   const filename = name.endsWith('.png') ? name : `${name}.png`;
   try {
     if (inTauri()) {
       const { save } = await import('@tauri-apps/plugin-dialog');
       const dir = lastDir();
       const path = await save({
-        title: 'Save cross-section image',
+        title,
         defaultPath: dir ? `${dir}/${filename}` : filename,
         filters: [{ name: 'PNG image', extensions: ['png'] }],
       });
