@@ -36,6 +36,7 @@ from typing import Any
 NOT_INTERACTIVE = {
     "login": "The app signs you in: use the account dialog (the terminal shares the account).",
     "logout": "Sign out from the account dialog; here it would also end the app's session.",
+    "serve": "This engine already serves the app: run 'rxd serve' in a terminal where the data is.",
 }
 
 #: Option groups and options that are folded away under "Advanced" in the form.

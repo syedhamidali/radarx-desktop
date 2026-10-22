@@ -6,6 +6,7 @@
   import { connectionStatus } from '../stores/radarData';
   import { engineState, engineStatusMessage } from '../stores/webInfo';
   import { sidecarError } from '../stores/boot';
+  import { remoteEngine } from '../stores/remoteEngine';
   import { wsManager } from '../utils/websocket';
   import { isWebMode } from '../utils/env';
 
@@ -32,12 +33,18 @@
 
   $: web = isWebMode();
   $: phase = $engineState.phase;
+  // A remote engine (rxd serve, through ssh): its own words, and a way back to the built-in engine.
+  $: remote = $remoteEngine.mode === 'remote';
+  $: remoteFault = remote && ['refused', 'ended', 'unreachable', 'busy'].includes($remoteEngine.phase);
   $: fault =
-    phase === 'rejected' || phase === 'unreachable' || phase === 'unconfigured' || !!$sidecarError;
-  $: located = web ? phase !== 'unconfigured' : port !== null;
+    phase === 'rejected' || phase === 'unreachable' || phase === 'unconfigured' || !!$sidecarError || remoteFault;
+  $: located = remote ? true : web ? phase !== 'unconfigured' : port !== null;
   $: linking = $connectionStatus === 'connecting';
-  $: title = fault ? 'ENGINE FAULT' : everConnected ? 'LINK LOST' : 'INITIALISING ENGINE';
+  $: title = remote
+    ? fault ? 'REMOTE ENGINE' : everConnected ? 'LINK LOST' : 'CONNECTING TO REMOTE ENGINE'
+    : fault ? 'ENGINE FAULT' : everConnected ? 'LINK LOST' : 'INITIALISING ENGINE';
   $: detail =
+    (remote ? $remoteEngine.message : null) ??
     $sidecarError ??
     (web ? engineStatusMessage($engineState) : null) ??
     (everConnected ? 'Reconnecting to the analysis engine.' : 'Starting the analysis engine (Python, xradar, xarray).');
@@ -66,10 +73,15 @@
       </li>
     </ul>
 
-    {#if seconds >= 12 && !fault}
+    {#if seconds >= 12 && !fault && !remote}
       <p class="hint">The first start can take up to a minute while the Python runtime loads.</p>
     {/if}
-    {#if fault || seconds >= 30}
+    {#if remote}
+      {#if $remoteEngine.phase !== 'refused'}
+        <button class="primary retry" on:click={() => wsManager.reconnect()}>Retry connection</button>
+      {/if}
+      <button class="retry" on:click={() => void wsManager.useBuiltinEngine()}>Use the built-in engine</button>
+    {:else if fault || seconds >= 30}
       <button class="primary retry" on:click={() => wsManager.reconnect()}>Retry connection</button>
     {/if}
   </div>

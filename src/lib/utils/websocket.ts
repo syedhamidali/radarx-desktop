@@ -24,6 +24,8 @@ import { findRequestForReply, isForOtherFile } from './sweepMatch';
 import { AUTH_DISABLED } from '../auth/config';
 import { tidyServerError } from './errorText';
 import { recordEngineMessage } from './engineLog';
+import { classifyClose, engineAuthFrame, type RemoteAddress } from './remoteEngine';
+import { setRemoteEngine, resetRemoteEngine } from '../stores/remoteEngine';
 
 type MessageHandler = (data: any) => void;
 
@@ -148,6 +150,24 @@ class WebSocketManager {
   /** Messages submitted while the socket is CONNECTING. */
   private sendQueue: Record<string, any>[] = [];
 
+  // ── Remote engine (`rxd serve` on a cluster, through an ssh port forward) ──
+  /** 'remote': the target is a remote engine and the first message is `engine_auth`. */
+  private engineMode: 'local' | 'remote' = 'local';
+  /**
+   * The remote engine's per-run token. MEMORY ONLY: never stored (not in localStorage, not in a store, not
+   * in settings), never put in a URL, never logged. Dropped when the engine says it is wrong, on a return
+   * to the built-in engine, and when the app closes.
+   */
+  private remoteToken: string | null = null;
+  private remoteAddress: RemoteAddress | null = null;
+  /** True between the socket opening and the engine's `engine_auth_ok`: ordinary messages wait. */
+  private awaitingEngineAuth = false;
+  private remoteWasConnected = false;
+  /** Retries since the last success (a failure never loops: see classifyClose). */
+  private remoteAttempt = 0;
+  /** Port of the built-in engine, remembered while a remote one is in use. */
+  private localPort: number | null = null;
+
   // ── Sweep request queue ──
   /** Every outstanding (queued or in-flight) sweep request by `variable:sweep:fileId` (de-duplication). */
   private sweepJobs = new Map<string, SweepJob>();
@@ -172,7 +192,86 @@ class WebSocketManager {
    * Connect to the Python sidecar WebSocket server.
    */
   connect(port: number): void {
+    this.localPort = port;
+    // The shell announces its engine again whenever it restarts it; that must not pull the app away
+    // from the remote engine the user chose.
+    if (this.engineMode === 'remote') return;
     this.connectTo(`ws://localhost:${port}`, false);
+  }
+
+  /**
+   * Use a remote engine (`rxd serve`, reached through `ssh -L`). The token is kept in memory for
+   * reconnects and goes out once per connection as the first message, never in the URL.
+   */
+  connectRemoteEngine(address: RemoteAddress, token: string): void {
+    this.leaveCurrentEngine();
+    this.engineMode = 'remote';
+    this.remoteToken = token;
+    this.remoteAddress = address;
+    this.remoteAttempt = 0;
+    this.remoteWasConnected = false;
+    this.remote = false;
+    setRemoteEngine({ mode: 'remote', hostPort: address.hostPort, phase: 'connecting', message: null });
+    this.target = address.url;
+    this.retryCount = 0;
+    this.doConnect();
+  }
+
+  /** One click back to the engine the app started itself. Forgets the token. */
+  async useBuiltinEngine(): Promise<void> {
+    this.leaveCurrentEngine();
+    this.engineMode = 'local';
+    this.remoteToken = null;
+    this.remoteAddress = null;
+    resetRemoteEngine();
+    let port = this.localPort;
+    if (!port) {
+      const known = (window as any).__XRADAR_PORT__;
+      port = typeof known === 'number' && known > 0 ? known : null;
+    }
+    if (!port) {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const p = await invoke<number>('get_sidecar_port');
+        port = p > 0 ? p : null;
+      } catch {
+        /* not in the desktop app: the polling in autoConnect finds the engine */
+      }
+    }
+    this.target = null; // so connectTo does not think it is already there
+    if (port) this.connect(port);
+  }
+
+  /** Stop talking to the current engine: what it held (open files, caches) is not ours any more. */
+  private leaveCurrentEngine(): void {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (this.ws) {
+      const old = this.ws;
+      old.onopen = null;
+      old.onclose = null;
+      old.onmessage = null;
+      old.onerror = null;
+      try { old.close(); } catch { /* ignore */ }
+      this.ws = null;
+    }
+    this.awaitingEngineAuth = false;
+    this.resetConnectionState();
+    this.engineId = null;
+    connectionStatus.set('disconnected');
+    this.clearEngineState();
+  }
+
+  /** Files, caches and requests belong to one engine: a different engine starts with none. */
+  private clearEngineState(): void {
+    clearAllFiles();
+    clearSweepCache();
+    this.cancelQueuedSweeps(() => true);
+    for (const id of this.failedSweepOps.values()) dismissOp(id);
+    this.failedSweepOps.clear();
+    processingProgress.set(null);
   }
 
   /**
@@ -208,6 +307,7 @@ class WebSocketManager {
     if (this.target == null) return;
     if (this.ws?.readyState === WebSocket.OPEN) return;
     this.retryCount = 0;
+    this.remoteAttempt = 0;
     if (this.retryTimer) {
       clearTimeout(this.retryTimer);
       this.retryTimer = null;
@@ -256,6 +356,15 @@ class WebSocketManager {
       this.ws = null;
     }
     this.resetConnectionState();
+    this.awaitingEngineAuth = false;
+
+    if (this.engineMode === 'remote' && !this.remoteToken) {
+      // The engine refused the token earlier (or the app was told to forget it): ask for it again,
+      // do not connect without one.
+      connectionStatus.set('disconnected');
+      setRemoteEngine({ phase: 'refused', message: 'Enter the token printed by rxd serve to connect.' });
+      return;
+    }
 
     connectionStatus.set('connecting');
     if (this.remote && get(engineState).phase === 'idle') setEngineState({ phase: 'connecting' });
@@ -275,6 +384,17 @@ class WebSocketManager {
     ws.onopen = () => {
       if (this.ws !== ws) return;
       console.log(`[WS] Connected to ${url}`);
+      if (this.engineMode === 'remote') {
+        // The token is the first message, before anything else: the engine closes the socket (1008)
+        // without looking at any other message if this is not it. Connected only once it says so.
+        this.awaitingEngineAuth = true;
+        try {
+          ws.send(engineAuthFrame(this.remoteToken ?? ''));
+        } catch {
+          /* the close handler reports it */
+        }
+        return;
+      }
       connectionStatus.set('connected');
       this.retryCount = 0;
       if (this.remote) {
@@ -301,6 +421,10 @@ class WebSocketManager {
       this.resetConnectionState();
       connectionStatus.set('disconnected');
       for (const h of [...this.disconnectHandlers]) { try { h(); } catch { /* ignore */ } }
+      if (this.engineMode === 'remote') {
+        this.handleRemoteEngineClose(event.code);
+        return;
+      }
       if (this.remote && this.handleRemoteClose(event)) return;
       this.scheduleReconnect();
     };
@@ -318,6 +442,36 @@ class WebSocketManager {
         console.error('[WS] Unhandled error while processing message:', err);
       }
     };
+  }
+
+  /** The remote engine closed (or never answered): say why, and retry only a bounded number of times. */
+  private handleRemoteEngineClose(code: number): void {
+    const verdict = classifyClose(code, this.remoteWasConnected, this.remoteAttempt, this.remoteAddress?.hostPort ?? '');
+    this.awaitingEngineAuth = false;
+    setRemoteEngine({ phase: verdict.phase, message: verdict.message });
+    if (verdict.forgetToken) this.remoteToken = null;
+    if (!verdict.retry) {
+      connectionStatus.set('disconnected');
+      return;
+    }
+    this.remoteAttempt++;
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.doConnect();
+    }, verdict.delayMs);
+  }
+
+  /** `engine_auth_ok`: the engine accepted the token. Now the app is connected. */
+  private onEngineAuthOk(): void {
+    this.awaitingEngineAuth = false;
+    this.remoteWasConnected = true;
+    this.remoteAttempt = 0;
+    this.retryCount = 0;
+    connectionStatus.set('connected');
+    setRemoteEngine({ phase: 'connected', message: null });
+    void this.send({ type: 'ping' });
+    this.flushSendQueue();
   }
 
   private authResolved = false;
@@ -635,6 +789,11 @@ class WebSocketManager {
     const type: string = msg.type;
     if (!type) {
       console.warn('[WS] Message has no type field:', msg);
+      return;
+    }
+
+    if (type === 'engine_auth_ok') {
+      if (this.engineMode === 'remote' && this.awaitingEngineAuth) this.onEngineAuthOk();
       return;
     }
 
@@ -1547,7 +1706,7 @@ class WebSocketManager {
    * Send a JSON message to the server.
    */
   async send(message: Record<string, any>): Promise<void> {
-    if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+    if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.awaitingEngineAuth)) {
       // Not open yet: hold the message and flush it from onopen (bounded queue).
       if (this.sendQueue.length >= MAX_QUEUED_MESSAGES) this.sendQueue.shift();
       this.sendQueue.push(message);
@@ -1566,7 +1725,9 @@ class WebSocketManager {
 
     const payloadMessage = { ...message };
     // Once the token lookup has settled, stay synchronous so messages keep call order.
-    const token = this.authResolved ? this.authToken : await this.getAuthToken();
+    // The built-in engine's handshake token is a secret of this computer: a remote engine never gets it
+    // (it has its own, sent once as engine_auth).
+    const token = this.engineMode === 'remote' ? null : this.authResolved ? this.authToken : await this.getAuthToken();
     if (token) {
       payloadMessage.token = token;
     }

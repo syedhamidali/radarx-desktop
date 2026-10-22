@@ -26,6 +26,11 @@ you choose *Install and restart*; the restart waits while an export, pipeline, m
 file is signed, and the app verifies the signature before installing, so a file that was altered is rejected and nothing
 is installed. The browser version has no update feature.
 
+The **Engine** tab (desktop app) shows which engine the app uses and lets you connect to an engine that runs on a cluster or server
+(`rxd serve` through an SSH port forward): enter the forwarded address (`127.0.0.1` or `localhost` and a port) and the token that `rxd serve` printed.
+The token is kept in memory only, never saved; the status bar says **REMOTE ENGINE** with the address while it is in use, and *Use the built-in engine* returns to the
+engine on your own computer. See {doc}`cluster`.
+
 The **Data** tab also holds the **Radar sites** switch and the place to load your own list of sites (CSV or JSON); see
 {doc}`RADAR_SITES`. Its **Live map** section lists the default radars of the live map in order (choose them on a map
 with **Choose on the map…**) and how often the live map updates (2 to 15 minutes); see {doc}`LIVE`. Its **Movie components** line (desktop app only) shows whether the optional download the Movie

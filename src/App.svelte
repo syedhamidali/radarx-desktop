@@ -26,6 +26,8 @@
   import { SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT, clampSidebarWidth, sidebarWidthAfterKey } from './lib/utils/sidebarResize';
   import { initUpdater } from './lib/utils/updater';
   import { crossSectionStore } from './lib/stores/crossSection';
+  import { usingRemoteEngine } from './lib/stores/remoteEngine';
+  import RemoteEngineBadge from './lib/components/RemoteEngineBadge.svelte';
   import { connectionStatus, radarData, selectedSweep, selectedVariable, processingProgress } from './lib/stores/radarData';
   import { diffMode, toggleDiffMode } from './lib/stores/temporal';
   import { get } from 'svelte/store';
@@ -65,6 +67,8 @@
   const aboutDialog = lazy(() => import('./lib/components/AboutDialog.svelte'));
   const settingsDialog = lazy(() => import('./lib/components/SettingsDialog.svelte'));
   const reportDialog = lazy(() => import('./lib/components/ReportIssueDialog.svelte'));
+  // Opening a file by its path on a remote engine (Settings > Engine).
+  const remoteOpenDialog = lazy(() => import('./lib/components/RemoteOpenDialog.svelte'));
   // Command Studio: every rxd command as a form (stores/commandStudio.ts).
   const commandStudio = lazy(() => import('./lib/components/CommandStudio.svelte'));
   // The consent step of environment data (soundings, models, ...): mounted once the browser is idle,
@@ -131,6 +135,7 @@
     isWebMode() && $connectionStatus !== 'connected' ? engineStatusMessage($engineState) : null,
   );
   let demoBannerDismissed = $state(false);
+  let remoteOpenVisible = $state(false);
   let fileInput = $state<HTMLInputElement | null>(null);
 
   // --- Local reactive state ---
@@ -471,6 +476,12 @@
   }
 
   async function openFile() {
+    if (usingRemoteEngine()) {
+      // The system file picker shows this computer's disk; the remote engine needs a path on its own.
+      remoteOpenVisible = true;
+      void remoteOpenDialog.load();
+      return;
+    }
     if (isWebMode() && get(webUi)) {
       // Browser: pick files with a normal <input type=file>; they are uploaded to the engine.
       fileInput?.click();
@@ -640,9 +651,14 @@
   }
 
   /** Open one or more files; the first immediately, the rest one after the other. */
-  function openPaths(paths: string[]) {
+  function openPaths(paths: string[], onRemoteComputer = false) {
     const list = paths.filter(Boolean);
     if (list.length === 0) return;
+    if (usingRemoteEngine() && !onRemoteComputer) {
+      // A path on this computer means nothing to the engine on the cluster.
+      addToast('info', 'You are using a remote engine: open files by their path on that computer (Open file, or Ctrl/Cmd+O).', 8000);
+      return;
+    }
     stopAnimation();
     openQueue = list.slice(1);
     if (!sendOpenFile(list[0])) nextQueued();
@@ -784,7 +800,7 @@
       // new file registers, and that tab would come back blank.
       openRestore = null;
     }
-    pendingRecent = path.includes('://') || get(webUi) ? null : path;
+    pendingRecent = path.includes('://') || get(webUi) || usingRemoteEngine() ? null : path; // a path on the cluster is not a recent file of this computer
     wsManager.openFile(path);
     addToast('info', `Opening ${name}...`);
     return true;
@@ -1191,6 +1207,7 @@
       <span class="led {ledClass}" title={statusText}></span>
       <span class="hud-label sb-key">ENGINE</span>
       <span class="sb-val mono" class:ok={$connectionStatus === 'connected'}>{engineWord}</span>
+      <RemoteEngineBadge />
       {#if progress && progress.percent > 0 && progress.percent < 100}
         <span class="statusbar-divider">/</span>
         <span class="progress-text">{progress.message} ({Math.round(progress.percent)}%)</span>
@@ -1266,6 +1283,7 @@
   {#if crossDialog.component}<crossDialog.component />{/if}
   {#if envDialog.component}<envDialog.component />{/if}
   {#if shareHost.component}<shareHost.component />{/if}
+  {#if remoteOpenVisible && remoteOpenDialog.component}<remoteOpenDialog.component onopen={(p: string) => openPaths([p], true)} onclose={() => (remoteOpenVisible = false)} />{/if}
   {#if $reportIssueOpen && reportDialog.component}<reportDialog.component onclose={closeReportIssue} />{/if}
   {#if $commandStudioOpen && commandStudio.component}<commandStudio.component onopen={openPaths} />{/if}
   {#if settingsOpen && settingsDialog.component}

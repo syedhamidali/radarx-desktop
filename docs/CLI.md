@@ -103,6 +103,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
 | Forecast | `rxd nowcast` | advection nowcast of the next 0 to 2 hours with ensemble, probabilities and a verification against persistence ({doc}`NOWCAST`) |
 | Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
+| Remote | `rxd serve` | run the engine here for the app on your own computer, through an SSH port forward ({doc}`cluster`) |
 | Help | `rxd examples`, `rxd completion` | a tour of commands; shell completion |
 
 ### Look: `info` and `plot`
@@ -423,6 +424,29 @@ rxd export -i KTLX20130520_201643_V06.gz -o qc.nc --pipeline "Reflectivity QC" -
 
 Derived variables only exist inside one run, so `export` can compute them first (`--pipeline RECIPE`,
 `--run MODULE`, repeatable, all sweeps) and write them into the file with `--include-derived`.
+
+### Remote: `serve`
+
+```bash
+rxd serve                                   # a free port, a new token, stops after 120 minutes without use
+rxd serve --port 40123 --idle-minutes 60
+rxd serve --token-file ~/.radarx-token      # for a batch job: the token goes to a private file, not the log
+```
+
+Starts the engine of the app on **this computer** so that the app on another computer can use this computer's data through an SSH port
+forward (`ssh -L PORT:localhost:PORT user@cluster`). It prints the address, a token (shown once, new for every run) and the SSH line,
+and runs until Ctrl+C or the idle limit. Step by step, with the security notes: {doc}`cluster`.
+
+| Option | Meaning |
+|---|---|
+| `--port N` | the port to listen on, 1024 to 65535 (default: a free one is chosen and printed) |
+| `--host ADDR` | `127.0.0.1` or `localhost`; **nothing else is accepted**, the engine never listens on a network address |
+| `--idle-minutes MIN` | stop after this long without a request from the app (default 120; `0` = never) |
+| `--token-file FILE` | write the token to this file (readable only by you) instead of printing it; removed when the engine stops |
+
+* It needs a signed-in account on this computer, like every command (exit code 5 otherwise), and the app presents its own sign-in on the connection.
+* One app can be connected at a time; a connection without the right token is closed at once. `-v` shows who connected and left (never the token).
+* Use it on a login node only for light work; run it inside a batch job for anything heavy.
 
 ### Plan: `budget` (any amount of data)
 

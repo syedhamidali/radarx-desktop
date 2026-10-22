@@ -94,6 +94,7 @@ COMMANDS = (
     "qpe",
     "basin",
     "export",
+    "serve",
     "examples",
     "completion",
 )
@@ -401,6 +402,7 @@ GROUPS = (
                    ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
     ("Forecast", (("nowcast", "advection nowcast (0-2 h) with ensemble, probabilities and verification"),)),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
+    ("Remote", (("serve", "run the engine here for the app on your own computer (through ssh)"),)),
     ("Account", (("login", "sign in with your free radarx account (needed once; most commands require it)"),
                  ("logout", "sign out and remove the saved session"),
                  ("whoami", "who is signed in, and for how long"))),
@@ -810,6 +812,11 @@ def build_parser() -> argparse.ArgumentParser:
     from engine import governor_cli
 
     governor_cli.add_parser(command, _add_input)
+
+    # -- serve (the engine for the app on another computer; engine/serve_cli.py) -----------
+    from engine import serve_cli
+
+    serve_cli.add_parser(command)
 
     # -- auto (Autopilot) ----------------------------------------------------------------
     from engine.autopilot import cli as autopilot_cli

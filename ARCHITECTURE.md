@@ -100,6 +100,16 @@ The list of message types is in `python/server.py`. **Apache Arrow** is optional
 `arrow` extra exist for scripts, but the app sends raw binary chunks, so pyarrow (about 55 MB) is not installed by
 default and is not bundled.
 
+**Remote engine (`rxd serve`, `python/engine/serve.py`).** For data that stays on a cluster the same engine runs there and the
+app reaches it through `ssh -L`. The shell does not start it, and the connection differs in three ways: the socket is bound to
+`127.0.0.1` only (any other host is refused); the first message must be `{type: "engine_auth", token}` with a random per-run token
+(constant-time compare, close code 1008 otherwise, before any other message is read; the token is never in a URL, a log or a
+record); one authenticated client at a time, an idle limit, `Host` and `Origin` checks before the upgrade. After that handshake the
+connection is an ordinary desktop connection (server paths are opened, as in the desktop app) with two differences: the account gate
+checks the app's token as for the web service (unexpired) and the shared session file of the cluster account is never written by it.
+In the app, `utils/websocket.ts` has a `remote` engine mode (token in memory only, never sent to the built-in engine's handshake) and
+`Settings > Engine` drives it (`utils/remoteEngine.ts` holds the pure checks, unit-tested).
+
 ## Technology
 
 | Layer | Technology | Why |

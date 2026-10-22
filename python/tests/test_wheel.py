@@ -53,6 +53,7 @@ def test_wheel_ships_every_module_and_the_command(tmp_path: Path) -> None:
     missing = [n for n in shipped if f"engine/builtin_modules/{n}" not in names]
     assert not missing, missing
     assert "rxd = engine.cli:main" in entry_points
+    assert "server.py" in names, "`rxd serve` imports the engine server, so the wheel must carry it"
     assert not any(n.startswith("modules/") for n in names), (
         "modules must not be a top-level package"
     )
