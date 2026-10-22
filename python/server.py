@@ -45,6 +45,8 @@ if getattr(sys, "frozen", False):
         pass
 
 import websockets
+from websockets.asyncio.server import ServerConnection
+
 from engine import (
     _radarx_import,
     derived,
@@ -98,7 +100,6 @@ from engine.temporal import (
     compute_time_series,
 )
 from engine.volume import extract_cross_section_3d, extract_volume
-from websockets.asyncio.server import ServerConnection
 
 _radarx_import.install()  # radarx must not configure the root logger (issue #91)
 

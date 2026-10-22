@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from engine.nowcast import ws as nowcast_ws
 
+from engine.nowcast import ws as nowcast_ws
 from tests.hydro_synth import make_reader
 
 pytest.importorskip("radarx")

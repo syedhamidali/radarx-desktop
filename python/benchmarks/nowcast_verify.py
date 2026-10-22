@@ -30,14 +30,15 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 
 import numpy as np
+from nowcast_events import EVENTS, is_volume
+from watchdog import peak_rss_gb, start_watchdog
+
 from engine import provenance as prov
 from engine.api_results import jsonable
 from engine.nowcast import ensemble as ens
 from engine.nowcast import frames as nf
 from engine.nowcast import harness
 from engine.nowcast import verify as vf
-from nowcast_events import EVENTS, is_volume
-from watchdog import peak_rss_gb, start_watchdog
 
 LEAD_MIN = 90.0
 STEP_MIN = 5.0
