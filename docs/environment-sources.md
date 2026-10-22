@@ -6,4 +6,10 @@ cannot tell you. They all follow the same rules ({doc}`ENVIRONMENT`): nothing is
 source, the number of files and the exact size and said yes; downloads are kept in a size-limited cache and reused
 offline; every layer says where it came from, which run and valid time it has, and under which licence.
 
+```{toctree}
+:maxdepth: 1
+
+source-hrrr
+```
+
 From the terminal the same sources are reached with `rxd env` ({doc}`ENVIRONMENT`, section "Command line").
