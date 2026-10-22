@@ -19,6 +19,8 @@ export interface DisplaySettings {
   rangeRingColor: string;
   /** Hide the basemap / ground imagery in the 2D and 3D views (a plain background stays). */
   hideMap: boolean;
+  /** Radar network map: 'auto' = the globe where WebGL2 exists and the flat map otherwise; or the user's choice. */
+  networkView: 'auto' | 'globe' | 'flat';
 }
 
 export interface RenderingSettings {
@@ -97,6 +99,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     showCrosshair: false,
     rangeRingColor: '#3a3a5a',
     hideMap: false,
+    networkView: 'auto',
   },
   rendering: {
     antialias: true,
@@ -205,6 +208,7 @@ function loadSettings(): AppSettings {
       merged.theme.fontSize = Math.min(18, Math.max(11, merged.theme.fontSize));
       merged.export_.dpi = Math.min(600, Math.max(72, Math.round(merged.export_.dpi)));
       if (!['dark', 'light', 'auto'].includes(merged.theme.mode)) merged.theme.mode = 'dark';
+      if (!['auto', 'globe', 'flat'].includes(merged.display.networkView)) merged.display.networkView = 'auto';
       if (!/^#[0-9a-f]{6}$/i.test(merged.theme.accentColor)) merged.theme.accentColor = DEFAULT_SETTINGS.theme.accentColor;
       return merged;
     }
@@ -336,4 +340,13 @@ export function setLiveRadars(ids: readonly string[]): void {
 
 export function setLiveIntervalMin(min: number): void {
   settings.updateSetting('live', { intervalMin: clampIntervalMin(min) });
+}
+
+// ─── Radar network map: globe or flat ─────────────────────────────────────────
+
+/** The saved choice of the radar network map view ('auto' until the user picks one). */
+export const networkView = derived(settings, ($s) => $s.display.networkView);
+
+export function setNetworkView(v: 'auto' | 'globe' | 'flat'): void {
+  settings.updateSetting('display', { networkView: v });
 }
