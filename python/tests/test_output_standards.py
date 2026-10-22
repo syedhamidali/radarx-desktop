@@ -512,6 +512,15 @@ class TestCfRadial1:
             assert d.source_files == "KSYN20240501_200000_V06.gz"
             assert "xradar writer" in d.history and d.time_coverage_start == "2024-05-01T20:00:00Z"
 
+    def test_the_generic_source_xradar_gives_odim_files_is_not_kept(self, tmp_path, volume):
+        # xradar >= 0.13 sets source="radar" on ODIM volumes: the file names say more
+        tree = volume.copy(deep=False)
+        tree.attrs = {**volume.attrs, "source": "radar"}
+        path = tmp_path / "odim_like.nc"
+        RadarExporter().export(tree, "netcdf", output_path=str(path))
+        with netCDF4.Dataset(path) as d:
+            assert d.source.startswith("radar observations read from KSYN")
+
     def test_ray_dimension_comes_from_the_time_variable(self, volume):
         # the ray dimension of the first sweep decides how the volume is stacked
         assert cfwrite._ray_dim(volume["sweep_0"].to_dataset()) == "azimuth"

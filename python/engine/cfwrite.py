@@ -514,7 +514,12 @@ def radar_global_attrs(
     refs = provenance.clean_text(src.get("references"))
     if REFERENCES not in refs:
         refs = f"{refs}; {REFERENCES}" if refs else REFERENCES
-    src_text = provenance.clean_text(src.get("source")) or (
+    src_text = provenance.clean_text(src.get("source"))
+    if (
+        src_text.lower() == "radar"
+    ):  # xradar >= 0.13 fills the ODIM reader's default, no information
+        src_text = ""
+    src_text = src_text or (
         f"radar observations read from {', '.join(names)}" if names else "radar observations"
     )
     if kind == "cfradial1":
