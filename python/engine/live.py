@@ -1,9 +1,15 @@
-"""The live map: the newest NEXRAD Level II volume of a few radars, merged into one composite.
+"""The live map: the newest volume of a few radars, merged into one composite.
+
+Two networks are live: **NEXRAD** (Level II from the public Unidata bucket) and **DWD** (the German
+Weather Service's Open Data volumes, through :mod:`engine.radar_networks`). A radar is named by one
+unambiguous id: a NEXRAD station is its bare four-letter id (``KTLX``, the form older settings
+already use), a DWD radar is ``dwd:ess``. Nothing else is claimed to work (see docs/LIVE.md).
 
 Two steps, so the app can ask the user before anything is downloaded:
 
-1. :func:`check` lists the newest volume of every station (one S3 listing each, metadata only,
-   through :func:`engine.cloud.latest_scan_info`) and says which of them the cache already holds.
+1. :func:`check` lists the newest volume of every radar (one listing each, metadata only: an S3
+   listing for NEXRAD, the two folder indexes for DWD) and says which of them the cache already
+   holds.
 2. :func:`update` downloads the volumes the app names (and only those), keeps **one volume per
    station** in a :class:`LiveCache` (older volumes of a station are dropped, the whole cache is
    bounded by a station count and a byte cap), and builds the composite with
@@ -31,6 +37,7 @@ import contextlib
 import logging
 import math
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -175,16 +182,39 @@ class HeldVolume:
     opened_at: float = field(default_factory=time.time)
     #: The downloaded file kept on disk (None when the opener did not keep one).
     local_path: str | None = None
+    #: The network the volume came from ("nexrad" or "dwd").
+    provider: str = "nexrad"
+
+    @property
+    def on_disk(self) -> bool:
+        return bool(self.local_path and Path(self.local_path).is_file())
+
+    @property
+    def openable(self) -> bool:
+        """True when the volume can be handed to a normal open without a new download: its file is
+        still on disk (NEXRAD), or it was assembled from several files and is held in memory (DWD),
+        in which case the opened file shares the same data (no copy, no disk)."""
+        if self.on_disk:
+            return True
+        return self.local_path is None and getattr(self.reader, "datatree", None) is not None
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "station": self.station,
+            "provider": self.provider,
             "name": self.name,
             "path": self.path,
             "size": int(self.size),
             "scan_time": self.scan_time,
-            "on_disk": bool(self.local_path and Path(self.local_path).is_file()),
+            "on_disk": self.on_disk,
+            "openable": self.openable,
         }
+
+
+def site_key(station: str) -> str:
+    """The key of a radar id: a bare NEXRAD id is upper case, ``dwd:ess`` is lower case."""
+    s = str(station).strip()
+    return s.lower() if ":" in s else s.upper()
 
 
 class LiveCache:
@@ -205,7 +235,7 @@ class LiveCache:
 
     def get(self, station: str) -> HeldVolume | None:
         with self._lock:
-            return self._held.get(station.upper())
+            return self._held.get(site_key(station))
 
     def holds(self, station: str, name: str) -> bool:
         h = self.get(station)
@@ -234,7 +264,7 @@ class LiveCache:
 
     def drop(self, station: str) -> None:
         with self._lock:
-            h = self._held.pop(station.upper(), None)
+            h = self._held.pop(site_key(station), None)
         if h is not None:
             _discard(h)
 
@@ -247,7 +277,7 @@ class LiveCache:
 
     def keep_only(self, stations: list[str]) -> list[str]:
         """Drop every station not in *stations*; returns what was dropped."""
-        keep = {s.upper() for s in stations}
+        keep = {site_key(s) for s in stations}
         with self._lock:
             gone = [h for s, h in self._held.items() if s not in keep]
             for h in gone:
@@ -306,16 +336,24 @@ LIVE = LiveCache()
 
 @dataclass
 class PinnedVolume:
-    """A held volume that was handed to a normal open: its own file, released on close."""
+    """A held volume that was handed to a normal open, released when that file is closed.
+
+    A NEXRAD volume owns a file (``path``: a hard link to the held file, or a copy). A DWD volume
+    is assembled in memory from many small files and has no single file: the opened file shares
+    its data (``tree``), which costs no disk.
+    """
 
     station: str
     name: str
-    path: str  # the pinned file (a hard link to the held file, or a copy)
-    source: str  # the s3:// URL it came from (what the opened file reports as its origin)
-    size: int  # bytes on disk while the live cache no longer holds the volume
+    path: str | None  # the pinned file; None for a volume held in memory
+    source: str  # where it came from (what the opened file reports as its origin)
+    size: int  # bytes on disk while the live cache no longer holds the volume (0 for memory)
     copied: bool  # True when the file had to be copied (no hard link possible)
     scan_time: str | None = None
     file_id: str | None = None
+    provider: str = "nexrad"
+    tree: Any = None  # the shared datatree of a volume held in memory
+    volume_size: int = 0  # the size of the volume as listed (what was downloaded)
 
     @property
     def key(self) -> tuple[str, str]:
@@ -324,8 +362,11 @@ class PinnedVolume:
     def as_dict(self) -> dict[str, Any]:
         return {
             "station": self.station,
+            "provider": self.provider,
             "name": self.name,
             "size": int(self.size),
+            "volume_size": int(self.volume_size),
+            "kind": "memory" if self.path is None else "file",
             "scan_time": self.scan_time,
             "file_id": self.file_id,
             "copied": self.copied,
@@ -342,7 +383,7 @@ class PinRegistry:
 
     def get(self, station: str, name: str) -> PinnedVolume | None:
         with self._lock:
-            return self._pins.get((station.upper(), name))
+            return self._pins.get((site_key(station), name))
 
     def add(self, pin: PinnedVolume) -> None:
         with self._lock:
@@ -416,7 +457,7 @@ def pin_volumes(
     made: list[PinnedVolume] = []
     try:
         for raw in stations:
-            st = _normalize_station(str(raw))
+            st, _prov, _site = parse_site_id(str(raw))
             h = cache.get(st)
             if h is None:
                 raise LiveError(
@@ -424,8 +465,26 @@ def pin_volumes(
                     "(a radar without a recent volume has nothing to open)."
                 )
             existing = pins.get(st, h.name)
-            if existing is not None and Path(existing.path).is_file():
+            if existing is not None and (existing.path is None or Path(existing.path).is_file()):
                 out.append(existing)
+                continue
+            if h.local_path is None and getattr(h.reader, "datatree", None) is not None:
+                # held in memory (DWD): the opened file shares the data, no file, no disk
+                pin = PinnedVolume(
+                    station=st,
+                    name=h.name,
+                    path=None,
+                    source=str(getattr(h.reader, "_path", None) or h.path),
+                    size=0,
+                    copied=False,
+                    scan_time=h.scan_time,
+                    provider=h.provider,
+                    tree=h.reader.datatree,
+                    volume_size=int(h.size),
+                )
+                pins.add(pin)
+                made.append(pin)
+                out.append(pin)
                 continue
             src = h.local_path
             if not src or not Path(src).is_file():
@@ -458,6 +517,8 @@ def pin_volumes(
                 size=size,
                 copied=copied,
                 scan_time=h.scan_time,
+                provider=h.provider,
+                volume_size=int(h.size),
             )
             try:
                 pins.add(pin)
@@ -476,13 +537,23 @@ def pin_volumes(
 def open_pinned(pin: PinnedVolume) -> tuple[Any, dict[str, Any]]:
     """Open a pinned volume as an ordinary file: ``(RadarReader, schema)``.
 
-    The reader reports the original ``s3://`` URL as its source (as a file opened from the Cloud
-    data panel does), carries the NEXRAD credit, and remembers its pin so that closing the file
-    releases it (:func:`release_reader`).
+    The reader reports the original source (the ``s3://`` URL, or the DWD volume name) as its
+    origin, as a file opened from the Cloud data panel or the radar map does, carries the credit of
+    its network, and remembers its pin so that closing the file releases it
+    (:func:`release_reader`). A volume held in memory is adopted from the shared datatree.
     """
     from engine.reader import NEXRAD_L2_CREDIT, RadarReader
 
     reader = RadarReader()
+    if pin.path is None:
+        from engine import radar_networks
+
+        schema = reader.adopt_datatree(
+            pin.tree, pin.source, "odim", source_type=f"{pin.provider}_opendata"
+        )
+        reader._source_credit = radar_networks.get_provider(pin.provider).credit()
+        reader._live_pin = pin.key
+        return reader, schema
     schema = reader.open_file(pin.path)
     reader._path = pin.source
     schema["source"] = pin.source
@@ -507,15 +578,47 @@ def release_reader(reader: Any, pins: PinRegistry | None = None) -> bool:
 # ---------------------------------------------------------------------------
 
 
+#: The networks the live map can use. Others are not claimed (docs/LIVE.md says why).
+LIVE_NETWORKS = ("nexrad", "dwd")
+
+
+def parse_site_id(raw: str) -> tuple[str, str, str]:
+    """``(id, network, site)`` of a radar id.
+
+    A bare four-letter id is a NEXRAD station (``ktlx`` -> ``KTLX``: the form saved settings
+    already use, so nothing needs migrating); ``nexrad:KTLX`` is the same radar written out;
+    ``dwd:ess`` is a German radar. Anything else raises ``ValueError`` (a network that is not live
+    is refused by name, never guessed).
+    """
+    s = str(raw).strip()
+    if ":" not in s:
+        st = _normalize_station(s)
+        return st, "nexrad", st
+    network, _, site = s.partition(":")
+    network = network.strip().lower()
+    if network == "nexrad":
+        st = _normalize_station(site)
+        return st, "nexrad", st
+    if network == "dwd":
+        from engine import radar_networks
+
+        code = radar_networks.get_provider("dwd").check_site(site)
+        return f"dwd:{code}", "dwd", code
+    raise ValueError(
+        f"Radar network {network!r} is not available on the live map "
+        f"(live networks: {', '.join(LIVE_NETWORKS)})"
+    )
+
+
 def normalize_stations(stations: Any) -> list[str]:
-    """Upper-case, de-duplicated station ids in the given order; at most MAX_STATIONS."""
+    """Unambiguous radar ids, de-duplicated, in the given order; at most MAX_STATIONS."""
     if not isinstance(stations, list) or not stations:
         raise LiveError("'stations' must be a non-empty list of station ids")
     out: list[str] = []
     for s in stations:
         if not isinstance(s, str):
             raise LiveError("'stations' must be a list of strings")
-        st = _normalize_station(s)  # ValueError for a bad id
+        st = parse_site_id(s)[0]  # ValueError for a bad id
         if st not in out:
             out.append(st)
     if len(out) > MAX_STATIONS:
@@ -523,19 +626,52 @@ def normalize_stations(stations: Any) -> list[str]:
     return out
 
 
-def check(stations: list[str], cache: LiveCache = LIVE) -> list[dict[str, Any]]:
-    """Newest volume of every station (metadata only) and whether the cache already holds it.
+def latest(station_id: str) -> dict[str, Any]:
+    """The newest volume of one radar (a listing, nothing downloaded). Never raises.
 
-    One entry per station, in order, each a :func:`latest_scan_info` result (``status`` ok /
-    not_found / offline / error, ``name``, ``path``, ``size``, ``scan_time``, ``age_s``) plus
-    ``held`` (True when this very volume is already open in the live cache).
+    The same shape for every network: ``station`` (the live id), ``provider``, ``status`` (ok /
+    not_found / offline / error), and on ok ``name``, ``size`` (bytes, as listed), ``scan_time``,
+    ``age_s``, plus ``path`` (the s3:// URL, NEXRAD) or ``key`` (the volume key, DWD).
+    """
+    try:
+        st, network, site = parse_site_id(station_id)
+    except ValueError as exc:
+        return {"status": "error", "station": str(station_id), "message": str(exc)}
+    if network == "nexrad":
+        info = latest_scan_info(site)
+        return {**info, "station": st, "provider": "nexrad"}
+    from engine import radar_networks
+
+    raw = radar_networks.get_provider("dwd").latest_scan_info(site)
+    info = {k: v for k, v in raw.items() if k not in ("files", "site", "slot")}
+    if isinstance(info.get("name"), str):  # the volume name says which radar it is
+        info["name"] = info["name"].replace("DWD ", f"DWD {site.upper()} ", 1)
+    return {**info, "station": st, "provider": "dwd"}
+
+
+def check(stations: list[str], cache: LiveCache = LIVE) -> list[dict[str, Any]]:
+    """Newest volume of every radar (metadata only) and whether the cache already holds it.
+
+    One entry per radar, in order, each a :func:`latest` result plus ``held`` (True when this very
+    volume is already in the live cache).
     """
     out: list[dict[str, Any]] = []
     for st in stations:
-        info = latest_scan_info(st)
+        info = latest(st)
         info["held"] = bool(info.get("status") == "ok" and cache.holds(st, str(info.get("name"))))
         out.append(info)
     return out
+
+
+def credit_of(network: str) -> dict[str, str]:
+    """Source, attribution and licence of a live network (travels into labels and exports)."""
+    if network == "dwd":
+        from engine import radar_networks
+
+        return radar_networks.get_provider("dwd").credit()
+    from engine.reader import NEXRAD_L2_CREDIT
+
+    return dict(NEXRAD_L2_CREDIT)
 
 
 def _open_s3(path: str) -> Any:
@@ -545,6 +681,16 @@ def _open_s3(path: str) -> Any:
     reader = RadarReader()
     result = reader.open_s3_file(path, keep_dir=str(held_dir()))
     reader._live_file = result.get("local_path")
+    return reader
+
+
+def _open_dwd(site: str, key: str) -> Any:
+    """Download one DWD volume (its 20 sweep files) and assemble it; nothing is kept on disk."""
+    from engine import radar_networks
+    from engine.reader import RadarReader
+
+    reader = RadarReader()
+    radar_networks.get_provider("dwd").open(reader, site, key)
     return reader
 
 
@@ -605,13 +751,15 @@ def update(
     floor_dbz: float | None = DEFAULT_FLOOR_DBZ,
     progress: ProgressFn | None = None,
     opener: Callable[[str], Any] = _open_s3,
+    dwd_opener: Callable[[str, str], Any] = _open_dwd,
 ) -> tuple[Any, list[dict[str, Any]]]:
-    """Download what is missing, keep the newest volume per station, build the composite.
+    """Download what is missing, keep the newest volume per radar, build the composite.
 
-    *wanted* is a list of ``{station, path, name, size, scan_time?}``: exactly the files the user
-    agreed to. A station whose volume is already held is not downloaded again. A station whose
-    download fails is reported and left out; the composite is built from the rest (at least one).
-    Returns ``(MosaicRecord, radars)`` where ``radars`` is one status dict per wanted station.
+    *wanted* is a list of ``{station, name, size, scan_time?, path | key}``: exactly the volumes the
+    user agreed to (``path`` is the s3:// URL of a NEXRAD volume, ``key`` the volume key of a DWD
+    one). A radar whose volume is already held is not downloaded again. A radar whose download
+    fails is reported and left out; the composite is built from the rest (at least one).
+    Returns ``(MosaicRecord, radars)`` where ``radars`` is one status dict per wanted radar.
     """
     from engine import mosaic
 
@@ -619,20 +767,30 @@ def update(
     if not isinstance(wanted, list) or not wanted:
         raise LiveError("'files' must be a non-empty list")
     plan: list[tuple[str, dict[str, Any]]] = []
+    networks: dict[str, str] = {}
+    sites: dict[str, str] = {}
     for item in wanted:
         if not isinstance(item, dict):
             raise LiveError("'files' entries must be objects")
         try:
-            st = _normalize_station(str(item.get("station", "")))
+            st, network, site = parse_site_id(str(item.get("station", "")))
         except ValueError as exc:
             raise LiveError(str(exc)) from exc
         path = item.get("path")
         name = item.get("name")
-        if not isinstance(path, str) or not path.startswith("s3://") or not isinstance(name, str):
+        if not isinstance(name, str):
+            raise LiveError(f"{st}: 'name' is required")
+        if network == "nexrad" and not (isinstance(path, str) and path.startswith("s3://")):
             raise LiveError(f"{st}: 'path' (s3://...) and 'name' are required")
+        if network == "dwd" and not (
+            isinstance(item.get("key"), str) and re.fullmatch(r"\d{12}", item["key"])
+        ):
+            raise LiveError(f"{st}: 'key' (the 12-digit volume key) and 'name' are required")
         if any(p[0] == st for p in plan):
             raise LiveError(f"{st} is listed twice")
         plan.append((st, item))
+        networks[st] = network
+        sites[st] = site
     if len(plan) > MAX_STATIONS:
         raise LiveError(f"at most {MAX_STATIONS} radars on the live map")
 
@@ -641,7 +799,12 @@ def update(
     n = len(plan)
     for i, (st, item) in enumerate(plan):
         name = str(item["name"])
-        status: dict[str, Any] = {"station": st, "name": name, "scan_time": item.get("scan_time")}
+        status: dict[str, Any] = {
+            "station": st,
+            "provider": networks[st],
+            "name": name,
+            "scan_time": item.get("scan_time"),
+        }
         if cache.holds(st, name):
             status["status"] = "ok"
             status["downloaded"] = False
@@ -649,7 +812,10 @@ def update(
             continue
         report(int(5 + 60 * i / n), f"Downloading {name} ({i + 1}/{n})")
         try:
-            reader = opener(str(item["path"]))
+            if networks[st] == "dwd":
+                reader = dwd_opener(sites[st], str(item["key"]))
+            else:
+                reader = opener(str(item["path"]))
         except Exception as exc:
             logger.warning("live: %s download failed: %s", st, exc)
             status["status"] = "error"
@@ -662,11 +828,12 @@ def update(
             HeldVolume(
                 station=st,
                 name=name,
-                path=str(item["path"]),
+                path=str(item.get("path") or f"{st}:{item.get('key')}"),
                 size=int(size) if isinstance(size, (int, float)) else 0,
                 scan_time=item.get("scan_time") if isinstance(item.get("scan_time"), str) else None,
                 reader=reader,
                 local_path=getattr(reader, "_live_file", None),
+                provider=networks[st],
             )
         )
         if evicted:
@@ -705,8 +872,24 @@ def update(
         progress=_progress,
         keep_volume=False,
     )
-    finish_record(record, floor_dbz)
+    used = {st: networks[st] for st, _ in pairs}
+    record._live_networks = sorted(set(used.values()))
+    finish_record(record, floor_dbz, [credit_of(nw) for nw in record._live_networks])
+    reach = {st: _range_km(rd) for st, rd in pairs}
+    for r in radars:
+        if reach.get(r["station"]) is not None:
+            r["range_km"] = reach[r["station"]]
     return record, radars
+
+
+def _range_km(reader: Any) -> float | None:
+    """How far the radar's lowest sweep sees (km), capped at the composite's range; for the ring."""
+    try:
+        ds = reader.get_sweep_dataset(0, mask=False)
+        return round(min(float(np.nanmax(np.asarray(ds["range"].values))) / 1000.0, 230.0), 1)
+    except Exception as exc:
+        logger.debug("live: no range for a volume: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -780,18 +963,28 @@ def render_display_png(record: Any, floor_dbz: float | None) -> tuple[bytes, dic
     return png, info
 
 
-def finish_record(record: Any, floor_dbz: float | None = DEFAULT_FLOOR_DBZ) -> None:
-    """Give a live composite its picture and the credit and notes that travel with exports."""
-    from engine.reader import NEXRAD_L2_CREDIT
+def finish_record(
+    record: Any,
+    floor_dbz: float | None = DEFAULT_FLOOR_DBZ,
+    network_credits: list[dict[str, str]] | None = None,
+) -> None:
+    """Give a live composite its picture and the credit and notes that travel with exports.
 
+    *network_credits* is one ``{source, attribution, licence}`` per network in the composite (NEXRAD
+    alone when not given); they are joined into the file attributes, so a composite of NEXRAD and
+    DWD volumes says both, with each licence.
+    """
+    if network_credits is None:
+        network_credits = getattr(record, "_live_credits", None) or [credit_of("nexrad")]
+    record._live_credits = network_credits
     png, info = render_display_png(record, floor_dbz)
     record.png = png
     record.display = info
     res_m = float(record.resolution_m)
     record.extra_attrs = {
-        "data_source": NEXRAD_L2_CREDIT["source"],
-        "data_credit": NEXRAD_L2_CREDIT["attribution"],
-        "data_licence": NEXRAD_L2_CREDIT["licence"],
+        "data_source": "; ".join(c["source"] for c in network_credits),
+        "data_credit": "; ".join(c["attribution"] for c in network_credits),
+        "data_licence": "; ".join(f"{c['source']}: {c['licence']}" for c in network_credits),
         "live_composite": (
             f"Live composite: column maximum of {record.variable} merged from the newest volume "
             f"of each radar on a {res_m:g} m grid. Retrieved product, not an official product."
@@ -814,9 +1007,9 @@ def frame_header(
 ) -> dict[str, Any]:
     """The JSON header of a ``live_frame`` message (without ``type`` / ``request_id``)."""
     from engine import layer_provenance
-    from engine.reader import NEXRAD_L2_CREDIT
 
     h = record.header()
+    network_credits = getattr(record, "_live_credits", None) or [credit_of("nexrad")]
     return {
         **h,
         "provenance": layer_provenance.for_mosaic_header(h),
@@ -824,5 +1017,6 @@ def frame_header(
         "cache": cache.status(),
         "pinned": PINS.status(),
         "display": getattr(record, "display", {}) or {},
-        "credit": dict(NEXRAD_L2_CREDIT),
+        "credit": network_credits[0],
+        "credits": network_credits,
     }

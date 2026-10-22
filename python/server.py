@@ -2061,7 +2061,10 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if existing is not None:
                 # open in the engine but unknown to this page (reloaded): announce it again
                 schema = await loop.run_in_executor(None, existing.get_schema)
-                schema = {**schema, "source": pin.source, "source_type": "nexrad_l2_s3"}
+                source_type = (
+                    "nexrad_l2_s3" if pin.provider == "nexrad" else f"{pin.provider}_opendata"
+                )
+                schema = {**schema, "source": pin.source, "source_type": source_type}
                 prov = await loop.run_in_executor(
                     None, layer_provenance.describe_reader, existing, schema
                 )
