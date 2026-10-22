@@ -2048,10 +2048,32 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             return
         opened: list[dict[str, Any]] = []
         failed: list[str] = []
+        known_ids = msg.get("known_file_ids")
+        client_known = (
+            {k for k in known_ids if isinstance(k, str)} if isinstance(known_ids, list) else set()
+        )
         for i, pin in enumerate(pins):
-            known = pin.file_id if pin.file_id in _readers() else None
-            if known is not None:
-                opened.append({**pin.as_dict(), "file_id": known, "already_open": True})
+            existing = _readers().get(pin.file_id) if pin.file_id else None
+            if existing is not None and pin.file_id in client_known:
+                # open, and the app already has it as a tab: nothing to announce
+                opened.append({**pin.as_dict(), "already_open": True})
+                continue
+            if existing is not None:
+                # open in the engine but unknown to this page (reloaded): announce it again
+                schema = await loop.run_in_executor(None, existing.get_schema)
+                schema = {**schema, "source": pin.source, "source_type": "nexrad_l2_s3"}
+                prov = await loop.run_in_executor(
+                    None, layer_provenance.describe_reader, existing, schema
+                )
+                await self.send(
+                    {
+                        "type": "file_opened",
+                        "data": {k: _serializable(v) for k, v in schema.items()},
+                        "file_id": pin.file_id,
+                        "provenance": prov,
+                    }
+                )
+                opened.append({**pin.as_dict(), "already_open": True})
                 continue
             await self.send_progress(
                 int(100 * i / max(len(pins), 1)), f"Opening {pin.name} ({i + 1}/{len(pins)})"

@@ -307,6 +307,47 @@ class TestServerOpen:
             server._readers().clear()
             live.LIVE.clear()
 
+    def test_a_volume_open_in_the_engine_but_unknown_to_the_page_is_announced_again(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import server
+
+        reg = live.PinRegistry()
+        monkeypatch.setattr(live, "PINS", reg)
+        live.LIVE.clear()
+        live.LIVE.hold(_held_with_file(tmp_path, "KTLX", "a", b"q" * 20))
+
+        def fake_open(pin: live.PinnedVolume):
+            reader = FakeReader(pin.path)
+            reader._live_pin = pin.key
+            reader.get_schema = lambda: {"variables": [], "sweeps": []}
+            return reader, {"variables": [], "sweeps": [], "source": pin.source}
+
+        monkeypatch.setattr(live, "open_pinned", fake_open)
+        monkeypatch.setattr(server.layer_provenance, "describe_reader", lambda *_a, **_k: {})
+        h, sent = _handler()
+        req = {"type": "live_open_volumes", "request_id": 1, "stations": ["KTLX"]}
+        try:
+            asyncio.run(h.handle_message(json.dumps(req)))
+            first = next(m for m in sent if isinstance(m, dict) and m["type"] == "file_opened")
+            fid = first["file_id"]
+            sent.clear()
+            # the page knows the file: nothing is announced again
+            asyncio.run(h.handle_message(json.dumps({**req, "known_file_ids": [fid]})))
+            assert not [m for m in sent if isinstance(m, dict) and m["type"] == "file_opened"]
+            assert sent[-1]["files"][0]["already_open"] is True
+            sent.clear()
+            # the page was reloaded and does not: it is announced with the same id
+            asyncio.run(h.handle_message(json.dumps({**req, "known_file_ids": []})))
+            again = [m for m in sent if isinstance(m, dict) and m["type"] == "file_opened"]
+            assert len(again) == 1 and again[0]["file_id"] == fid
+            assert again[0]["data"]["source"] == "s3://b/a"
+            assert len(reg) == 1  # still one pinned file
+        finally:
+            server._readers().clear()
+            live.LIVE.clear()
+            reg.clear()
+
     def test_open_volumes_without_a_held_volume_is_a_plain_error(self) -> None:
         live.LIVE.clear()
         h, sent = _handler()
