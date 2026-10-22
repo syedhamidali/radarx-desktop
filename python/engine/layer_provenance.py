@@ -12,6 +12,8 @@ into export metadata. The **class** says how far the numbers are from a measurem
                rain rate, multi-Doppler winds, storm cells, a gridded composite)
 ``simulated``  produced by a forward model or a synthetic generator (test data, simulated radar)
 ``stylised``   drawn for looks: shading, clouds, exaggeration; not a data value
+``forecast``   a statement about a future time made from past observations (a nowcast):
+               experimental guidance, never an observation and not an official forecast
 =============  ===============================================================================
 
 Nothing here invents information: a field that is not known stays empty and the UI shows
@@ -29,7 +31,7 @@ from typing import Any
 
 from engine import provenance as _prov
 
-CLASSES: tuple[str, ...] = ("observed", "model", "retrieved", "simulated", "stylised")
+CLASSES: tuple[str, ...] = ("observed", "model", "retrieved", "simulated", "stylised", "forecast")
 
 #: One-sentence definition per class (shown in the UI legend and in docs/SCIENCE.md).
 DEFINITIONS: dict[str, str] = {
@@ -41,6 +43,9 @@ DEFINITIONS: dict[str, str] = {
     "algorithm's assumptions and errors on top of the measurement's.",
     "simulated": "Produced by a forward model or synthetic generator; not a real observation.",
     "stylised": "Drawn for appearance (shading, clouds, exaggeration); not a data value.",
+    "forecast": "A statement about a future time, extrapolated from past observations; "
+    "experimental guidance with a stated lead time and measured skill, not an official "
+    "forecast and never an observation.",
 }
 
 #: Short chip text.
@@ -50,7 +55,11 @@ SHORT: dict[str, str] = {
     "retrieved": "RETR",
     "simulated": "SIM",
     "stylised": "STYLE",
+    "forecast": "FCST",
 }
+
+#: The sentence every forecast layer must carry (docs/SCIENCE.md, class FORECAST).
+FORECAST_GUIDANCE = "Experimental guidance, not an official forecast."
 
 SCHEMA = 1
 
@@ -375,6 +384,48 @@ def sounding(
         attribution=attribution,
         licence=licence,
         references=list(references),
+    )
+
+
+def forecast(
+    *,
+    source: str,
+    run_time: Any,
+    origin_time: Any,
+    valid_end: Any,
+    lead_text: str,
+    method: str,
+    skill: str,
+    params: Mapping[str, Any] | None = None,
+    inputs: Iterable[str] = (),
+    resolution: str = "",
+    references: Iterable[str] = (),
+) -> LayerProvenance:
+    """A nowcast / forecast layer. The class requires four things, and they are all here: the
+    method, the lead time (``lead_text``), a skill statement (``skill``, from the verification)
+    and the guidance sentence :data:`FORECAST_GUIDANCE`."""
+    skill_text = _clean(skill) or "Skill not measured for this case."
+    return LayerProvenance(
+        kind="forecast",
+        source=_clean(source) or "gridded radar frames",
+        title="Nowcast",
+        run_time=run_time,
+        valid_time=origin_time,
+        valid_end=valid_end,
+        resolution=resolution,
+        method=f"{_clean(method)} Lead time: {_clean(lead_text)}.",
+        parameters=dict(params or {}),
+        uncertainty=f"{skill_text} {FORECAST_GUIDANCE} Extrapolation cannot predict "
+        "initiation, growth or decay; skill falls with lead time and depends on the storm mode.",
+        references=list(references)
+        or [
+            "Germann, U., and I. Zawadzki, 2002: Mon. Wea. Rev., 130, 2859-2873 (Lagrangian "
+            "persistence, scale-dependent predictability)",
+            "Bowler, N. E., C. E. Pierce, and A. W. Seed, 2006: Q. J. R. Meteorol. Soc., 132, "
+            "2127-2155 (STEPS: motion perturbations)",
+            "Pulkkinen, S., et al., 2019: Geosci. Model Dev., 12, 4185-4219 (pysteps)",
+        ],
+        inputs=list(inputs),
     )
 
 

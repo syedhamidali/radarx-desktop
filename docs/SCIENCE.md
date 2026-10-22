@@ -16,7 +16,7 @@ pretends to be finished is the kind of claim this page forbids.
 
 ## 1. Provenance classes
 
-Every layer, field, number and file belongs to exactly one of four classes. The class decides what the
+Every layer, field, number and file belongs to exactly one of six classes. The class decides what the
 reader must be told.
 
 | Class | What it is | Examples |
@@ -25,6 +25,7 @@ reader must be told.
 | **MODEL / ANALYSIS** | Output of a numerical model or an analysis that blends observations and a model. | HRRR or ERA5 fields, a sounding-derived freezing level taken from an analysis, a background wind in a multi-Doppler synthesis. |
 | **RETRIEVED** | A quantity inferred from observations by an algorithm with assumptions. | Hydrometeor classification, KDP, rainfall rate (QPE), hail size (MESH), VVP winds, multi-Doppler winds, storm cells, de-aliased velocity. |
 | **SIMULATED / STYLISED** | Something computed or drawn to look like something, not to measure it. | The "Realistic (stylised)" storm look, sun light and shadows, the sound of the storm, simulated test fields, flow-line animation between two scans. |
+| **FORECAST** | A statement about a future time made from past observations: experimental guidance, never an observation and not an official forecast. | The nowcast: reflectivity or rain rate extrapolated 5 to 120 minutes ahead, its ensemble members, probabilities and uncertainty ({doc}`NOWCAST`). |
 
 What each class must show wherever it appears (on screen, in an export, in a file's metadata, in a
 figure caption):
@@ -35,6 +36,7 @@ figure caption):
 | **MODEL / ANALYSIS** | model or analysis name and version | **run (initialisation) time and valid time**, UTC | grid spacing, levels | what was interpolated to what | any regridding or time interpolation | "model field: not an observation"; ensemble spread if used |
 | **RETRIEVED** | the observed fields it was computed from | scan time of the inputs | of the output grid | named algorithm with a reference | every parameter, with the defaults used | known limits and failure modes; a number where one exists |
 | **SIMULATED / STYLISED** | what it is based on, if anything | the time of the data it follows | n/a | what the picture does and does not mean | the style settings | "not a measurement" in plain words |
+| **FORECAST** | the observed frames it was made from | **origin (last observation) and valid time**, UTC, with the **lead time** | of the grid | the named method (motion estimate, extrapolation, ensemble) with references | every parameter, the seed, the error statistics the ensemble uses | a **skill statement** from a verification against persistence, and the words "experimental guidance, not an official forecast" |
 
 "Not given" and "not known" are acceptable answers. A blank is not: the reader must be able to tell *missing
 information* from *nothing to say*.
@@ -47,7 +49,7 @@ information* from *nothing to say*.
 - Stylised looks are labelled on screen and in clips, and never change the data underneath
   ({doc}`REALISTIC_3D`, {doc}`STORM_CLIP`).
 - Imagery and terrain show their attribution while they are on screen.
-- **On screen:** every layer carries a provenance chip (OBS, MODEL, RETR, SIM, STYLE; the app shows
+- **On screen:** every layer carries a provenance chip (OBS, MODEL, RETR, SIM, STYLE, FCST; the app shows
   *simulated* and *stylised* as two chips) and the Layers panel lists each layer with its source, valid
   time and the time offset to the active radar scan; exports carry `data_class`, `data_source`,
   `data_valid_time`, ... ({doc}`ENVIRONMENT`).
@@ -93,7 +95,8 @@ Whenever the app creates values that were not measured at that place or time, it
 - **Temporal interpolation or advection** (morphing or flow animation between two scans, nowcast
   extrapolation): that it is not an observation, the method, the motion field and where it comes from, the
   time between the two real scans. Frames between scans carry a visible "interpolated" mark. Extrapolating
-  beyond the last scan is a forecast and is labelled as one, with its lead time.
+  beyond the last scan is a forecast and is labelled as one (class FORECAST), with its lead time, and its
+  skill is measured against persistence before it is called skill ({doc}`NOWCAST`).
 - **Models** (anything solving or parameterising physics): name, version, domain, resolution, initial and
   boundary data, and whether it was run by the app or downloaded.
 - **Projection and geometry**: the beam model used for height and range (effective earth radius), the map

@@ -1059,6 +1059,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             self._record("winds_run", type=request.get("method"))
         elif kind == "qpe_result" and request.get("type") == "qpe_run":
             self._record("qpe_run")
+        elif kind == "nowcast_result":
+            self._record("nowcast_run")
 
     async def _send_text(self, msg: dict[str, Any]) -> None:
         """Send one JSON message. Caller must hold ``_send_lock``."""
@@ -1311,6 +1313,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "qpe_adjust": self._handle_qpe,
             "qpe_series": self._handle_qpe,
             "qpe_export": self._handle_qpe,
+            "nowcast_run": self._handle_nowcast,
+            "nowcast_cancel": self._handle_nowcast,
+            "nowcast_export": self._handle_nowcast,
             "get_wind_volume": self._handle_get_wind_volume,
             "run_multidoppler": self._handle_run_multidoppler,
             "multidoppler_cancel": self._handle_multidoppler_cancel,
@@ -4536,6 +4541,104 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if kind == "qpe_run":
                 await self.send_progress(100, "Rainfall estimate finished")
 
+    # ------------------------------------------------------------------
+    # Nowcast: advection extrapolation with ensemble (engine/nowcast/ws.py)
+    # ------------------------------------------------------------------
+
+    async def _handle_nowcast(self, msg: dict[str, Any]) -> None:
+        """The ``nowcast_*`` messages (run, cancel, export); the protocol is in
+        ``engine/nowcast/ws.py``. A failure is a ``nowcast_error``; ``nowcast_run`` always closes
+        progress. One heavy run at a time (the mosaic lock: the gridding uses radarx)."""
+        from engine.nowcast import ws as nowcast_ws
+        from engine.nowcast.run import NowcastCancelled, NowcastError
+
+        kind = msg.get("type")
+        request_id = msg.get("request_id")
+        key = request_id if isinstance(request_id, str) and request_id else None
+        if kind == "nowcast_cancel":
+            if key is not None:
+                _nowcast_cancel_event(key).set()
+            return
+        cancel = _nowcast_cancel_event(key)
+        try:
+            loop = asyncio.get_running_loop()
+            if kind == "nowcast_run":
+                file_ids = msg.get("file_ids")
+                if (
+                    not isinstance(file_ids, list)
+                    or not file_ids
+                    or not all(isinstance(f, str) and f for f in file_ids)
+                ):
+                    raise NowcastError(
+                        "nowcast_run: 'file_ids' must be a non-empty list of open files"
+                    )
+                if len(set(file_ids)) != len(file_ids):
+                    raise NowcastError("nowcast_run: 'file_ids' contains duplicates")
+                readers = []
+                for fid in file_ids:
+                    _, reader = _resolve_reader(fid)
+                    if reader.datatree is None:
+                        raise NowcastError(f"File {fid} is not open")
+                    readers.append((str(getattr(reader, "_path", None) or fid), reader))
+                progress_sync = self._progress_callback(loop)
+                await self.send_progress(3, "Nowcast...")
+
+                def _run() -> dict[str, Any]:
+                    if cancel.is_set():
+                        raise NowcastCancelled("cancelled")
+                    return nowcast_ws.run(msg, readers, progress_sync, cancel.is_set)
+
+                try:
+                    out = await _run_holding(_locks.get("mosaic"), _run)
+                except BaseException:
+                    cancel.set()
+                    raise
+                await self.send({"type": "nowcast_result", "request_id": request_id, **out})
+            elif kind == "nowcast_export":
+                if web.is_web_mode():
+                    raise NowcastError("Saving a nowcast to a file is part of the desktop app")
+                path = await loop.run_in_executor(None, nowcast_ws.export, msg)
+                await self.send({"type": "file_saved", "path": str(path)})
+            else:  # pragma: no cover - the dispatch table only routes the types above
+                raise NowcastError(f"unknown nowcast message {kind!r}")
+        except NowcastCancelled:
+            await self.send({"type": "nowcast_cancelled", "request_id": request_id})
+        except (NowcastError, mosaic.MosaicError, UnknownFileError) as exc:
+            logger.warning("Nowcast error: %s", exc)
+            await self.send(
+                {
+                    "type": "nowcast_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": str(exc),
+                }
+            )
+        except ImportError as exc:
+            await self.send(
+                {
+                    "type": "nowcast_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"The nowcast grids the volumes with radarx: {exc} "
+                    "(pip install radarx)",
+                }
+            )
+        except Exception as exc:
+            logger.error("Nowcast failed: %s\n%s", exc, traceback.format_exc())
+            await self.send(
+                {
+                    "type": "nowcast_error",
+                    "request_id": request_id,
+                    "kind": kind,
+                    "message": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        finally:
+            if key is not None:
+                _nowcast_runs().pop(key, None)
+            if kind == "nowcast_run":
+                await self.send_progress(100, "Nowcast finished")
+
     async def _handle_mosaic_probe(self, msg: dict[str, Any]) -> None:
         """``{type: "mosaic_probe", mosaic_id, lon, lat}`` -> ``mosaic_probe_result``."""
         mosaic_id = msg.get("mosaic_id")
@@ -5002,6 +5105,26 @@ def _multidoppler_cancel_event(request_id: str | None) -> threading.Event:
     if request_id is None:
         return threading.Event()
     runs = _mdop_runs()
+    event = runs.get(request_id)
+    if event is None:
+        while len(runs) >= _MULTIDOPPLER_MAX_PENDING:
+            runs.pop(next(iter(runs)))
+        event = runs[request_id] = threading.Event()
+    return event
+
+
+# request_id -> cancel flag of a nowcast run (the same on-demand pattern as multi-Doppler)
+_nowcast_runs_table: dict[str, threading.Event] = {}
+
+
+def _nowcast_runs() -> dict[str, threading.Event]:
+    return _nowcast_runs_table
+
+
+def _nowcast_cancel_event(request_id: str | None) -> threading.Event:
+    if request_id is None:
+        return threading.Event()
+    runs = _nowcast_runs()
     event = runs.get(request_id)
     if event is None:
         while len(runs) >= _MULTIDOPPLER_MAX_PENDING:

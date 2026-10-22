@@ -1,7 +1,7 @@
 # User Guide
 
 This guide shows how to use Radarx: open radar data, look at it in 2D and 3D, clean it, run algorithms, combine
-radars and export the results, in the app and from the command line. Every page says what a tool does, what it
+radars, extrapolate the next hour and export the results, in the app and from the command line. Every page says what a tool does, what it
 needs, what it shows and where its limits are.
 
 Everything on screen or in a file is either observed data, a labelled method applied to it, or a labelled
@@ -45,11 +45,12 @@ CELLS
 
 ```{toctree}
 :maxdepth: 2
-:caption: Mosaics, winds and rainfall
+:caption: Mosaics, winds, rainfall and nowcast
 
 MOSAIC
 MULTIDOPPLER
 HYDROLOGY
+NOWCAST
 ```
 
 ```{toctree}

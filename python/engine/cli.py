@@ -399,6 +399,7 @@ GROUPS = (
                  ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
     ("Hydrology", (("qpe", "rain rate / accumulation with uncertainty, gauges (docs/HYDROLOGY.md)"),
                    ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
+    ("Forecast", (("nowcast", "advection nowcast (0-2 h) with ensemble, probabilities and verification"),)),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
     ("Account", (("login", "sign in with your free radarx account (needed once; most commands require it)"),
                  ("logout", "sign out and remove the saved session"),
@@ -859,6 +860,11 @@ def build_parser() -> argparse.ArgumentParser:
     from engine.hydro.cli import register as register_hydro
 
     register_hydro(command, sys.modules[__name__])
+
+    # -- forecast: nowcast (engine/nowcast/cli.py) ----------------------------------------
+    from engine.nowcast.cli import register as register_nowcast
+
+    register_nowcast(command, sys.modules[__name__])
 
     # -- examples / completion -----------------------------------------------------------
     p = command(
@@ -1991,6 +1997,11 @@ rxd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
 rxd qpe -i 'mayfield/*/*_V06' --relation tropical --composite best -o network.nc
 rxd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked -o adjusted.nc
 rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png""",
+    "forecast": """\
+# FORECAST - advection nowcast: motion from the last frames, extrapolation, ensemble, verification
+rxd nowcast -i 'mayfield/KHPX/*_V06' --lead 60 --step 5 -o nowcast/
+rxd nowcast -i 'mayfield/KHPX/*_V06' --ensemble 20 -o nowcast.nc -p nowcast.png
+rxd nowcast -i 'mayfield/KHPX/*_V06' --verify -o scores.json""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images
 rxd export -i {SAMPLE} -o ktlx.nc
@@ -2019,6 +2030,7 @@ TOPIC_ALIASES = {
     "animate": "animate",
     "qpe": "hydrology",
     "basin": "hydrology",
+    "nowcast": "forecast",
     "export": "save",
     "config": "reproduce",
 }
