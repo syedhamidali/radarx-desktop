@@ -31,7 +31,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "open-radar-data"]
+# eccodes is in dev so the tests of the GRIB2 readers (HRRR, MRMS) run in CI.
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "open-radar-data", "eccodes>=2.38,<3.0"]
+# Decoding GRIB2 messages (environment data from HRRR and MRMS): ecCodes from ECMWF, Apache-2.0, with its
+# compiled library. Downloading and caching those messages needs nothing, only reading them does, so the
+# default install and the installers stay small (engine/environment/gribio.py says how to get it).
+grib = ["eccodes>=2.38,<3.0"]
 # engine/arrow_bridge.py (xarray -> Arrow IPC). The app does not use it (the WebSocket sends raw
 # binary chunks), so pyarrow (~55 MB unpacked) is neither installed by default nor bundled.
 arrow = ["pyarrow>=15.0,<30.0"]

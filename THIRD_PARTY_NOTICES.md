@@ -101,6 +101,7 @@ Wheels such as h5py, netCDF4, pyproj, Pillow, scipy and numpy ship shared librar
 
 | Name | Licence | Where used | Attribution / terms | Link |
 | --- | --- | --- | --- | --- |
+| eccodes (Python interface) 2.50.0, with the ecCodes library (eccodeslib 2.50.0) and eckit (eckitlib 2.5.0) | Apache-2.0 | optional extra `grib`; reads the GRIB2 messages of HRRR and MRMS (engine/environment/gribio.py). Not bundled in the installers. | Copyright ECMWF. LICENSE and NOTICE ship in the wheels. The Python wheels bundle the C libraries ecCodes, eckit and their own dependencies. | https://github.com/ecmwf/eccodes-python |
 | Playwright for Python 1.64.0 (with its Node.js driver) | Apache-2.0 | movie components pack; drives the system Google Chrome that draws the frames of a film and encodes it with its own codecs. No browser is downloaded by the app. | Copyright (c) Microsoft Corporation. LICENSE, NOTICE and ThirdPartyNotices.txt of the driver ship in the pack (licenses/playwright). | https://github.com/microsoft/playwright-python |
 | greenlet 3.5.6, pyee 14.0.0, typing_extensions 4.15.0 | MIT AND PSF-2.0 / MIT / PSF-2.0 | movie components pack; what Playwright needs (greenlet is a compiled extension built for the engine's Python) | Licence files ship in the pack (licenses/greenlet, licenses/pyee, licenses/typing_extensions). | https://github.com/python-greenlet/greenlet |
 
