@@ -3,6 +3,36 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.4.0
+
+- **Nowcast (experimental):** a new **Nowcast** panel and `rxd nowcast` extrapolate radar frames 5 to 120 minutes
+  ahead (dense optical-flow motion, no growth, decay or initiation), with an ensemble from the measured motion error,
+  probabilities of exceeding thresholds and a position uncertainty for every lead. Every frame, picture and file
+  carries the **FCST** chip (a new provenance class, **FORECAST**), the origin and valid time, the lead, a measured
+  skill statement and the words "experimental guidance, not an official forecast". The method was checked on eight
+  public NEXRAD cases that were not used to tune it, against "nothing moves" persistence, with intervals: a small
+  gain out to about 20 minutes, about equal at 30 to 45 minutes, none beyond an hour; rotating and stratiform rain
+  and an almost empty frame are not forecast better than persistence ({doc}`NOWCAST`, {doc}`SCIENCE`).
+- **Live map and default radars:** choose up to eight NEXRAD radars (Settings › Data › Live map, or the new **Live**
+  button) and see their newest volumes merged into one composite that updates every 2 to 15 minutes, with a status line
+  that says each radar's scan time and age or why it did not answer, and a loop of the last 12 composites. Downloads
+  are asked for twice (the listing, then the exact sizes) ({doc}`LIVE`).
+- **Radar network map:** the Cloud data panel's new *Map* tab shows every weather radar in a bundled catalogue of 1005
+  sites, each with the source and licence of its position and what the app can do with its data (loadable, open data,
+  key required, restricted, unknown). *Set as default radar* on a site's card adds it to the live map radars (NEXRAD
+  only). **DWD Open Data** (17 German radars, the last two days) and the **FMI open-data sample** (ten Finnish radars)
+  now load directly, with the licence and credit travelling into every export ({doc}`RADAR_MAP`).
+- **Everything from the terminal, and servers and clusters:** two new pages. {doc}`cli-guide` goes through the whole
+  command line by task, with a table of which app feature has which command and which has none yet. {doc}`cluster`
+  covers installing without a window, putting `rxd` on the path, signing in on a machine with no browser, proxies and
+  firewalls, batch jobs, what needs a display or Chrome, and moving results back. It says plainly that the app cannot
+  yet connect to an engine running on a cluster. {doc}`installation` has a short "Put `rxd` on your PATH" section.
+- **Command line reference:** `rxd check --fix-plan -o recipe.json` is described as it behaves (one recipe file per
+  variable), and the exit-code tables say that an empty file gives 1, not 3 ({doc}`CLI`, {doc}`BULK`).
+- **Memory:** reading many radar volumes in a row levels off at about 1 GB instead of creeping up (the engine hands
+  freed memory back after each frame, about 0.3 GB less on a Mac), and parallel gridding is limited by the memory
+  budget of the computer.
+
 ## 0.3.3
 
 - **Autopilot:** dropping a single folder opens it (also folders made of links), the memory budget says where it comes

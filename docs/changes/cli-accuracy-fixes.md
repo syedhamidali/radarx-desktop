@@ -1,1 +1,0 @@
-- **Command line reference:** `rxd check --fix-plan -o recipe.json` is described as it behaves (one recipe file per variable), and the exit-code tables say that an empty file gives 1, not 3 ({doc}`CLI`, {doc}`BULK`).
