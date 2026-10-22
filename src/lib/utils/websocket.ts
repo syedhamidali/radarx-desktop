@@ -20,6 +20,7 @@ import { isWebMode, engineUrl, basename } from './env';
 import { collectDownloads, triggerDownloads } from './download';
 import { webInfo, parseWebInfo, setEngineState, engineState } from '../stores/webInfo';
 import { trackEngine } from './engineIdentity';
+import { Heartbeat } from './heartbeat';
 import { findRequestForReply, isForOtherFile } from './sweepMatch';
 import { AUTH_DISABLED } from '../auth/config';
 import { tidyServerError } from './errorText';
@@ -132,6 +133,9 @@ class WebSocketManager {
   private everConnected = false;
   /** `engine_id` of the engine process we last talked to (changes when the sidecar restarts). */
   private engineId: string | null = null;
+  /** Pings the engine while connected (desktop and remote engine) and tells the user if it goes silent. */
+  private heartbeat = new Heartbeat();
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private firstFailureAt = 0;
   private disconnectHandlers = new Set<() => void>();
   private retryCount = 0;
@@ -338,6 +342,27 @@ class WebSocketManager {
     // Nothing sent on the old connection will be answered any more.
     this.failAllSweepJobs('Connection lost');
     this.orphans.clear();
+    this.stopHeartbeat();
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeat.reset();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.ws?.readyState === WebSocket.OPEN) void this.send({ type: 'ping' });
+      if (this.heartbeat.tick() === 'silent') {
+        addToast(
+          'warning',
+          'The analysis engine has stopped answering. If it does not recover it restarts by itself within a minute (your open files will then need to be opened again).',
+          15000,
+        );
+      }
+    }, 10_000);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 
   private doConnect(): void {
@@ -410,6 +435,7 @@ class WebSocketManager {
         // Desktop: ask which engine process this is. A different one than before means the
         // sidecar was restarted (it crashed or was killed) and everything it held is gone.
         void this.send({ type: 'ping' });
+        this.startHeartbeat();
       }
       this.flushSendQueue();
     };
@@ -471,6 +497,7 @@ class WebSocketManager {
     connectionStatus.set('connected');
     setRemoteEngine({ phase: 'connected', message: null });
     void this.send({ type: 'ping' });
+    this.startHeartbeat();
     this.flushSendQueue();
   }
 
@@ -923,6 +950,10 @@ class WebSocketManager {
         }
         break;
 
+      case 'export_cancelled':
+        addToast('info', 'Export cancelled. No half-written file was left behind.', 5000);
+        break;
+
       case 'export_complete':
         this.showExportNotification(this.exportText(msg, msg.path ?? 'Export complete'));
         break;
@@ -1015,6 +1046,9 @@ class WebSocketManager {
         const seen = trackEngine(this.engineId, msg.engine_id);
         this.engineId = seen.engineId;
         if (seen.restarted) this.handleEngineRestarted();
+        if (this.heartbeat.pong() === 'recovered') {
+          addToast('info', 'The analysis engine is answering again.', 5000);
+        }
         break;
       }
 
