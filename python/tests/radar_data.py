@@ -81,3 +81,15 @@ def katx() -> Path | None:
     if env and Path(env).is_file():
         return Path(env)
     return get(KATX)
+
+
+#: the 2021-12-11 Kentucky/Tennessee tornado-outbreak volumes of the tutorial (optional, local only)
+EVENT_DIR = Path(
+    os.environ.get("XRADAR_TEST_EVENT_DIR", "~/Downloads/radarx_movie_tutorial/data/nexrad")
+).expanduser()
+
+
+def event_volume(radar: str, stamp: str) -> Path | None:
+    """``<radar>20211211_<stamp>_V06`` from the tutorial folder (``$XRADAR_TEST_EVENT_DIR``)."""
+    path = EVENT_DIR / radar / f"{radar}20211211_{stamp}_V06"
+    return path if path.is_file() else None
