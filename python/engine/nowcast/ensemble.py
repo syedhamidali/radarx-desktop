@@ -68,11 +68,28 @@ class MotionErrorStats:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def sigma(self, lead_min: float) -> tuple[float, float]:
+        """The two standard deviations at ``lead_min``, such that the position uncertainty
+        ``lead x sigma`` never shrinks with lead: where the table falls faster than 1/lead (the
+        error measured over a short lead is one noisy frame-pair estimate, over a long lead the
+        mean of many), the position uncertainty reached earlier is carried forward."""
         if not self.leads_min:
             return 0.0, 0.0
-        sp = float(np.interp(lead_min, self.leads_min, self.parallel))
-        sq = float(np.interp(lead_min, self.leads_min, self.perpendicular))
-        return sp, sq
+        leads = np.asarray(self.leads_min, dtype=np.float64)
+        out = []
+        for comp in (self.parallel, self.perpendicular):
+            pos = np.maximum.accumulate(leads * np.asarray(comp, dtype=np.float64))
+            if lead_min <= 0:
+                out.append(float(comp[0]))
+            elif lead_min >= leads[-1]:
+                out.append(float(pos[-1] / leads[-1]))  # the last value is held
+            else:
+                p = float(
+                    np.interp(
+                        lead_min, np.concatenate(([0.0], leads)), np.concatenate(([0.0], pos))
+                    )
+                )
+                out.append(p / lead_min)
+        return out[0], out[1]
 
     def to_dict(self) -> dict[str, Any]:
         return {
