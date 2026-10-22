@@ -151,9 +151,9 @@ export class GlobeRenderer {
       if (this.disposed) return;
       this.prog = null;
       this.tex = null;
-      this.setupGl();
-      this.uploadTexture();
       this._lost = false;
+      this.setupGl();
+      this.uploadTexture(); // the source canvas is still ours: rebuild the surface from it
       this.hooks.onRestored?.();
     };
     canvas.addEventListener('webglcontextlost', this.onLostEv, false);

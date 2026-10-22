@@ -434,7 +434,7 @@
           <ul class="results" aria-label="Search results">
             {#each results as s (s.id)}
               <li>
-                <button type="button" class="res" class:sel={s.id === selectedId} onclick={() => select(s)}>
+                <button type="button" class="res" class:picked={s.id === selectedId} onclick={() => select(s)}>
                   <span class="glyph" aria-hidden="true">{ACCESS_INFO[s.data_access].glyph}</span>
                   <span class="mono id">{s.id}</span>
                   <span class="nm">{s.name}, {s.country}</span>
@@ -451,7 +451,7 @@
             <ul class="results">
               {#each nearList as s (s.id)}
                 <li>
-                  <button type="button" class="res" class:sel={s.id === selectedId} onclick={() => select(s)}>
+                  <button type="button" class="res" class:picked={s.id === selectedId} onclick={() => select(s)}>
                     <span class="glyph" aria-hidden="true">{ACCESS_INFO[s.data_access].glyph}</span>
                     <span class="mono id">{s.id}</span>
                     <span class="nm">{s.name}, {s.country}</span>
@@ -470,7 +470,7 @@
           <div class="lg">A number in a marker is a group of radars; click to zoom in.</div>
         </section>
         {#if viewMode === 'globe'}
-          <p class="fine perf" data-testid="rnm-perf">{globePerf ? `${globePerf.markers} markers (${globePerf.facing} radars facing you) drawn in ${globePerf.frameMs.toFixed(1)} ms${globePerf.fps ? `, ${globePerf.fps.toFixed(0)} frames per second while turning` : ''}.` : 'Globe: drawing.'}</p>
+          <p class="fine perf" data-testid="rnm-perf">{globePerf ? `${globePerf.markers} markers (${globePerf.inView} radars in view) drawn in ${globePerf.frameMs.toFixed(1)} ms${globePerf.fps ? `, ${globePerf.fps.toFixed(0)} frames per second while turning` : ''}.` : 'Globe: drawing.'}</p>
         {:else}
           <p class="fine perf" data-testid="rnm-perf">{markerCount} markers drawn in {frameMs.toFixed(1)} ms, zoom {zoom.toFixed(1)}.</p>
         {/if}
@@ -555,10 +555,11 @@
   .glyph { display: inline-block; width: 14px; text-align: center; color: var(--c-text-dim); }
   .chk[data-access='open-loadable'] .glyph, .res .glyph { color: var(--c-accent); }
   .results { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; border: 1px solid var(--c-border); border-radius: var(--radius-sm); }
-  .res { display: flex; gap: var(--space-2); align-items: center; width: 100%; height: auto; padding: 3px 6px; text-align: left; background: transparent; border: 0; border-radius: 0; }
-  .res:hover, .res.sel { background: rgba(var(--c-accent-rgb), 0.12); }
-  .res .id { min-width: 44px; }
-  .res .nm { color: var(--c-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res { display: flex; gap: var(--space-2); align-items: center; justify-content: flex-start; width: 100%; height: auto; padding: 3px 6px; text-align: left; background: transparent; border: 0; border-radius: 0; }
+  .res:hover, .res.picked { background: rgba(var(--c-accent-rgb), 0.12); }
+  .res .id { min-width: 44px; max-width: 120px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .res .nm { flex: 1; min-width: 0; color: var(--c-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .near { display: flex; flex-direction: column; gap: 3px; }
   .legend { display: flex; flex-direction: column; gap: 2px; margin-top: auto; padding-top: var(--space-2); border-top: 1px solid var(--c-border); color: var(--c-text-dim); font-size: var(--fs-2xs); }
   .lg b { color: var(--c-text); }
   .fine { margin: 0; color: var(--c-muted); font-size: var(--fs-2xs); }

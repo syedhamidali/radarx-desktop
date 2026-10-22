@@ -8,7 +8,7 @@ export interface GlobeFocus {
 }
 export interface GlobePerf {
   markers: number;
-  facing: number;
+  inView: number;
   frameMs: number;
   fps: number;
 }
@@ -100,7 +100,7 @@ export interface GlobePerf {
   let scale = 1;
   let renderer: GlobeRenderer | null = null;
   let surface_: GlobeSurface | null = null;
-  let geo: GlobeGeo | null = null;
+  let geo = $state.raw<GlobeGeo | null>(null);
   let lines: GlobeLines | null = null;
   let raf = 0;
   let disposed = false;
@@ -163,7 +163,7 @@ export interface GlobePerf {
       scale = Math.exp(Math.log(fly.from.scale) + (Math.log(fly.to.scale) - Math.log(fly.from.scale)) * e);
       if (t >= 1) { view.roll = fly.to.roll; fly = null; } else active = true;
     } else if (inertia) {
-      const k = Math.exp(-dt / 0.45);
+      const k = Math.exp(-dt / 0.2);
       view = { ...view, lon: wrapLon(view.lon + inertia.vlon * dt), lat: Math.max(-MAX_CENTRE_LAT, Math.min(MAX_CENTRE_LAT, view.lat + inertia.vlat * dt)) };
       inertia = { vlon: inertia.vlon * k, vlat: inertia.vlat * k };
       if (Math.hypot(inertia.vlon, inertia.vlat) < 2 || Math.abs(view.lat) >= MAX_CENTRE_LAT) inertia = null; else active = true;
@@ -179,17 +179,18 @@ export interface GlobePerf {
     if (raf || disposed) return;
     raf = requestAnimationFrame(frame);
   }
-  /** The view changed by an interaction: draw and tell the page once it settles. */
+  /** The view changed by an interaction: draw now, and tell the page once it has been still for a moment. */
   function touched() {
     request();
     if (settleTimer) clearTimeout(settleTimer);
-    settleTimer = setTimeout(() => {
-      settleTimer = null;
-      scaleUi = scale;
-      rollUi = view.roll;
-      onsettle?.({ lon: view.lon, lat: view.lat, scale, roll: view.roll });
-      status = describe();
-    }, 250);
+    settleTimer = setTimeout(doSettle, 250);
+  }
+  function doSettle() {
+    settleTimer = null;
+    scaleUi = scale;
+    rollUi = view.roll;
+    onsettle?.({ lon: view.lon, lat: view.lat, scale, roll: view.roll });
+    status = describe();
   }
 
   function frame(now: number) {
@@ -203,8 +204,8 @@ export interface GlobePerf {
       while (frameTimes.length > 90) frameTimes.shift();
       scaleUi = scale;
       rollUi = view.roll;
-      if (settleTimer) clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => { settleTimer = null; touched(); }, 250);
+      // keep the page informed about every quarter second while something keeps moving
+      if (!settleTimer) settleTimer = setTimeout(doSettle, 250);
       request();
     } else {
       frameTimes.length = 0;
@@ -218,7 +219,7 @@ export interface GlobePerf {
       perfTimer = null;
       let fps = 0;
       if (frameTimes.length > 5) fps = (1000 * (frameTimes.length - 1)) / (frameTimes[frameTimes.length - 1] - frameTimes[0]);
-      onperf?.({ markers: lastMarkers, facing: lastFacing, frameMs: lastFrameMs, fps });
+      onperf?.({ markers: lastMarkers, inView: lastFacing, frameMs: lastFrameMs, fps });
     }, 250);
   }
 
@@ -424,7 +425,7 @@ export interface GlobePerf {
       if (dt > 0.02) {
         const vlon = wrapLon(last.lon - first.lon) / dt;
         const vlat = (last.lat - first.lat) / dt;
-        if (Math.hypot(vlon, vlat) > 12) inertia = { vlon: Math.max(-240, Math.min(240, vlon)), vlat: Math.max(-240, Math.min(240, vlat)) };
+        if (Math.hypot(vlon, vlat) > 12) inertia = { vlon: Math.max(-120, Math.min(120, vlon)), vlat: Math.max(-80, Math.min(80, vlat)) };
       }
     }
     touched();
@@ -458,14 +459,17 @@ export interface GlobePerf {
   }
 
   // ── Keyboard and buttons ─────────────────────────────────────────────────────────────────────
-  /** Move the centre towards a screen direction (+1 right / up) by `deg` degrees, in the screen frame. */
+  /**
+   * Move the centre by `deg` degrees of arc towards a screen direction (dx right, dy up). With north up this is
+   * east/west along the parallel (longitude steps widen towards the poles) and north/south along the meridian.
+   */
   function turn(dx: number, dy: number, deg: number) {
-    const a = Math.sin(deg * DEG);
-    const R = radius();
-    const g = unproject(view, width / 2 + dx * a * R, height / 2 - dy * a * R, R, width / 2, height / 2);
-    if (!g) return;
-    const next = dragView(view, g[0], g[1], 0, 0);
-    flyTo({ lon: next.lon, lat: next.lat, roll: next.roll }, 180);
+    const th = view.roll * DEG;
+    const east = dx * Math.cos(th) - dy * Math.sin(th);
+    const north = dx * Math.sin(th) + dy * Math.cos(th);
+    const lat = Math.max(-MAX_CENTRE_LAT, Math.min(MAX_CENTRE_LAT, view.lat + north * deg));
+    const lon = view.lon + (east * deg) / Math.max(0.2, Math.cos(view.lat * DEG));
+    flyTo({ lon: wrapLon(lon), lat }, 180);
   }
   function zoomBy(f: number) {
     flyTo({ scale: scale * f }, 220);
@@ -515,14 +519,14 @@ export interface GlobePerf {
     return `${Math.abs(lat).toFixed(1)}°${lat >= 0 ? 'N' : 'S'}, ${Math.abs(wrapLon(lon)).toFixed(1)}°${wrapLon(lon) >= 0 ? 'E' : 'W'}`;
   }
   function describe(): string {
-    return `Globe centred near ${fmtPos(view.lon, view.lat)}, zoom ${scale.toFixed(1)} times; ${lastFacing} of ${sites.length} radars are on the visible side.`;
+    return `Globe centred near ${fmtPos(view.lon, view.lat)}, zoom ${scale.toFixed(1)} times; ${lastFacing} of ${sites.length} radars are in view.`;
   }
 
   // ── Wiring ───────────────────────────────────────────────────────────────────────────────────
   $effect(() => {
     // Anything that changes what is drawn.
     void sites; void selected; void $themeRevision;
-    request();
+    touched();
   });
   $effect(() => {
     void basemap; void $themeRevision; void geo;
@@ -583,7 +587,7 @@ export interface GlobePerf {
       request();
     });
     ro.observe(el);
-    status = describe();
+    touched(); // sets the spoken status once the first frame has counted the radars
     request();
   });
 

@@ -6,7 +6,7 @@
  *
  * Pure decoding and a 2D-canvas painter for the plain land texture; no DOM unless a canvas is passed in.
  */
-import { polylineVectors, graticuleLines } from './globeMath';
+import { polylineVectors, graticuleLines } from './globeMath.ts';
 
 export interface GlobeGeoDoc {
   v: number;
