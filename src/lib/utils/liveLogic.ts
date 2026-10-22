@@ -14,16 +14,69 @@ import { formatAge, formatBytes, AWS_HOST, type ConsentText } from './radarSites
 
 /** Most radars the live map merges at once (the engine enforces the same bound). */
 export const MAX_LIVE_RADARS = 8;
-const ID_RE = /^[A-Z0-9]{4}$/;
 
-/** Upper-cased, validated, de-duplicated ids in the given order; at most MAX_LIVE_RADARS. */
+/**
+ * A live radar is named by one id that is unambiguous across networks: a NEXRAD radar is its bare
+ * four-letter id ("KTLX", the form older saved settings already use, so nothing is migrated) and a
+ * DWD radar is "dwd:ess". The networks that are live are exactly these two (docs: Live map).
+ */
+export type LiveNetwork = 'nexrad' | 'dwd';
+const NEXRAD_ID = /^[A-Z0-9]{4}$/;
+const DWD_ID = /^dwd:[a-z]{3}$/;
+
+/** The canonical form of an id ("ktlx" -> "KTLX", "DWD:ESS" -> "dwd:ess"), or null when it is none. */
+export function canonicalRadarId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const t = raw.trim();
+  if (t.includes(':')) {
+    const [net, site] = [t.slice(0, t.indexOf(':')).toLowerCase(), t.slice(t.indexOf(':') + 1)];
+    if (net === 'nexrad') return NEXRAD_ID.test(site.toUpperCase()) ? site.toUpperCase() : null;
+    const id = `${net}:${site.toLowerCase()}`;
+    return DWD_ID.test(id) ? id : null;
+  }
+  return NEXRAD_ID.test(t.toUpperCase()) ? t.toUpperCase() : null;
+}
+
+export function liveNetworkOf(id: string): LiveNetwork {
+  return id.startsWith('dwd:') ? 'dwd' : 'nexrad';
+}
+
+/** The site code inside an id ("dwd:ess" -> "ess", "KTLX" -> "KTLX"). */
+export function liveSiteCode(id: string): string {
+  return id.includes(':') ? id.slice(id.indexOf(':') + 1) : id;
+}
+
+/**
+ * The live id of a radar-catalogue site, or null when the live map cannot use it. Fetched live:
+ * NEXRAD, DWD, and the TDWR airport radars, whose Level II volumes are in the same public bucket as
+ * NEXRAD's and are found and opened by the same code (their id is their own four-letter id, so the
+ * catalogue's "open link" class for them only records that nobody had tested the app's path).
+ * Other networks are listed on the map but not claimed to work.
+ */
+export function liveIdOf(site: { provider?: string; provider_site?: string; data_access?: string; id?: string; network?: string }): string | null {
+  if (site.provider === 'nexrad' && site.data_access === 'open-loadable') return canonicalRadarId(site.provider_site ?? site.id);
+  if (site.provider === 'dwd' && site.data_access === 'open-loadable' && site.provider_site) return canonicalRadarId(`dwd:${site.provider_site}`);
+  if ((site.network ?? '').split('/')[0] === 'TDWR' && !site.provider) return canonicalRadarId(site.id);
+  return null;
+}
+
+/** Why a catalogue site cannot be a live radar (for the tooltip of a disabled button); '' when it can. */
+export function liveUnavailableReason(site: { provider?: string; data_access?: string; network?: string }): string {
+  if (liveIdOf(site as any)) return '';
+  if (site.provider === 'fmi') return 'Finland: the open FMI bucket is a fixed two-day sample from 2023, not a live feed.';
+  const net = (site.network ?? '').split('/')[0] || 'this network';
+  if (site.data_access === 'open-link') return `The live map cannot fetch ${net} volumes yet: open data exist, but the app has no loader for them.`;
+  if (site.data_access === 'key-required') return `${net} volumes need a key or registration; the live map does not use them.`;
+  return `No open volume feed is known for ${net} radars, so the live map cannot show this radar. Live networks: NEXRAD and TDWR (USA) and DWD (Germany).`;
+}
+
+/** Valid, canonical, de-duplicated ids in the given order; at most MAX_LIVE_RADARS. */
 export function normalizeRadarIds(ids: unknown): string[] {
   if (!Array.isArray(ids)) return [];
   const out: string[] = [];
   for (const raw of ids) {
-    if (typeof raw !== 'string') continue;
-    const id = raw.trim().toUpperCase();
-    if (!ID_RE.test(id) || out.includes(id)) continue;
+    const id = canonicalRadarId(raw);
+    if (!id || out.includes(id)) continue;
     out.push(id);
     if (out.length >= MAX_LIVE_RADARS) break;
   }
@@ -32,7 +85,7 @@ export function normalizeRadarIds(ids: unknown): string[] {
 
 /** Add the id when absent, remove it when present; a full list is left unchanged. */
 export function toggleRadarId(ids: readonly string[], id: string): string[] {
-  const key = id.trim().toUpperCase();
+  const key = canonicalRadarId(id) ?? id.trim().toUpperCase();
   if (ids.includes(key)) return ids.filter((x) => x !== key);
   if (ids.length >= MAX_LIVE_RADARS) return [...ids];
   return normalizeRadarIds([...ids, key]);
@@ -86,6 +139,9 @@ export function countdownText(dueAt: number | null, nowMs: number): string {
 /** One entry of a `live_check_result` (an engine `latest_scan_info` plus `held`). */
 export interface LiveCheckEntry {
   station: string;
+  provider?: LiveNetwork;
+  /** The volume key of a DWD volume. */
+  key?: string;
   status: 'ok' | 'not_found' | 'offline' | 'error';
   name?: string;
   path?: string;
@@ -98,7 +154,11 @@ export interface LiveCheckEntry {
 
 export interface LiveFileRequest {
   station: string;
-  path: string;
+  provider?: LiveNetwork;
+  /** The s3:// URL of a NEXRAD volume. */
+  path?: string;
+  /** The volume key of a DWD volume. */
+  key?: string;
   name: string;
   size: number;
   scan_time?: string;
@@ -120,10 +180,12 @@ export function planDownloads(entries: readonly LiveCheckEntry[]): DownloadPlan 
   const toDownload: LiveFileRequest[] = [];
   const failed: DownloadPlan['failed'] = [];
   for (const e of entries) {
-    if (e.status === 'ok' && e.path && e.name) {
+    if (e.status === 'ok' && (e.path || e.key) && e.name) {
       const f: LiveFileRequest = {
         station: e.station,
-        path: e.path,
+        ...(e.provider ? { provider: e.provider } : {}),
+        ...(e.path ? { path: e.path } : {}),
+        ...(e.key ? { key: e.key } : {}),
         name: e.name,
         size: typeof e.size === 'number' && Number.isFinite(e.size) ? e.size : 0,
         ...(e.scan_time ? { scan_time: e.scan_time } : {}),
@@ -151,34 +213,80 @@ function utcDay(d: Date): string {
   return `${d.getUTCFullYear()}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-/** The first dialog of a live start: the listings (metadata only). */
-export function describeLiveListing(stations: readonly string[], now: Date): ConsentText {
+/** What the engine says about a network's server (from `list_network_providers`; no network call). */
+export interface LiveProviderInfo {
+  name?: string;
+  host: string;
+  listing_text: string;
+  listing_bytes: number;
+  attribution: string;
+  licence: string;
+}
+
+/** Used only when the engine could not be asked; the same words as the engine's DWD provider. */
+const DWD_FALLBACK: LiveProviderInfo = {
+  name: 'DWD Open Data',
+  host: 'opendata.dwd.de (anonymous, read-only)',
+  listing_text: 'Two folder indexes (reflectivity and radial velocity sweeps of the last two days): file names, times and sizes only. No radar data.',
+  listing_bytes: 2_200_000,
+  attribution: 'Source: Deutscher Wetterdienst (DWD), Open Data radar volume sweeps',
+  licence: 'CC BY 4.0 with the source acknowledged (DWD legal notice)',
+};
+
+function split(stations: readonly string[]): { nexrad: string[]; dwd: string[] } {
+  return { nexrad: stations.filter((s) => liveNetworkOf(s) === 'nexrad'), dwd: stations.filter((s) => liveNetworkOf(s) === 'dwd') };
+}
+
+/** The first dialog of a live start: the listings (metadata only), per network with its own server and size. */
+export function describeLiveListing(stations: readonly string[], now: Date, info: { dwd?: LiveProviderInfo } = {}): ConsentText {
   const today = utcDay(now);
   const n = stations.length;
+  const { nexrad, dwd } = split(stations);
+  const dwdInfo = info.dwd ?? DWD_FALLBACK;
+  const lines: string[] = [];
+  if (nexrad.length) {
+    const lead = dwd.length ? 'NEXRAD: a listing' : 'A listing';
+    lines.push(`${lead} of today's folder ${today}/<SITE>/ (and yesterday's if today has none) for ${nexrad.join(', ')}: file names, sizes and times. No radar data yet.`);
+  }
+  if (dwd.length) {
+    lines.push(`DWD (${dwd.map(liveSiteCode).join(', ')}): ${dwdInfo.listing_text} About ${formatBytes(dwdInfo.listing_bytes)} per radar.`);
+  }
+  lines.push(
+    'Then the newest volume of each radar is offered for download with its exact size, in a second dialog.',
+    'While the live map runs, the same listing is repeated at every update.',
+  );
+  const hosts = [...(nexrad.length ? [AWS_HOST] : []), ...(dwd.length ? [dwdInfo.host] : [])];
+  const bytes = nexrad.length * 100_000 + dwd.length * dwdInfo.listing_bytes;
+  const parts = [nexrad.length ? `${nexrad.length} NEXRAD at about 0.1 MB` : '', `${dwd.length} DWD at about ${formatBytes(dwdInfo.listing_bytes)}`].filter(Boolean);
+  const size = dwd.length
+    ? `About ${formatBytes(bytes)} per update in all (${parts.join(', ')}).`
+    : `About ${(0.1 * n).toFixed(1)} MB at most per update (one entry of a few hundred bytes per volume, roughly 290 volumes a day per radar).`;
   return {
     title: `Start the live map (${n} radar${n === 1 ? '' : 's'})`,
-    lines: [
-      `A listing of today's folder ${today}/<SITE>/ (and yesterday's if today has none) for ${stations.join(', ')}: file names, sizes and times. No radar data yet.`,
-      'Then the newest volume of each radar is offered for download with its exact size, in a second dialog.',
-      'While the live map runs, the same listing is repeated at every update.',
-    ],
-    host: AWS_HOST,
-    size: `About ${(0.1 * n).toFixed(1)} MB at most per update (one entry of a few hundred bytes per volume, roughly 290 volumes a day per radar).`,
+    lines,
+    host: hosts.join(' and '),
+    size,
   };
 }
 
-/** The second dialog: the volumes to download now, with their exact total size. */
-export function describeLiveDownload(plan: DownloadPlan, intervalMin: number): ConsentText {
+/** The second dialog: the volumes to download now, with their exact total size and the credit of the data. */
+export function describeLiveDownload(plan: DownloadPlan, intervalMin: number, info: { dwd?: LiveProviderInfo } = {}): ConsentText {
   const n = plan.toDownload.length;
+  const { nexrad, dwd } = split(plan.toDownload.map((f) => f.station));
+  const dwdInfo = info.dwd ?? DWD_FALLBACK;
   const lines = plan.toDownload.map((f) => `${f.station}: ${f.name} (${formatBytes(f.size)})`);
   if (plan.failed.length) lines.push(`Not available now: ${plan.failed.map((f) => `${f.station} (${f.message})`).join('; ')}.`);
+  if (dwd.length) {
+    lines.push(`DWD data: ${dwdInfo.attribution}. Licence: ${dwdInfo.licence}. A DWD volume is assembled from 20 small files (ten sweeps, reflectivity and radial velocity); the size above is their sum.`);
+  }
   lines.push(
     `"Allow while the app is open" keeps updating every ${clampIntervalMin(intervalMin)} min: each update downloads only a radar's new volume (about this size each time a radar has one). "Allow once" updates one time, then pauses.`,
   );
+  const hosts = [...(nexrad.length ? [AWS_HOST] : []), ...(dwd.length ? [dwdInfo.host] : [])];
   return {
-    title: `Download ${n} Level II volume${n === 1 ? '' : 's'} for the live map`,
+    title: dwd.length ? `Download ${n} volume${n === 1 ? '' : 's'} for the live map` : `Download ${n} Level II volume${n === 1 ? '' : 's'} for the live map`,
     lines,
-    host: AWS_HOST,
+    host: hosts.join(' and ') || AWS_HOST,
     size: `${formatBytes(plan.bytes)} now (the exact sizes from the listing).`,
   };
 }

@@ -4,11 +4,13 @@
    * picker itself is the LiveRadarChooser dialog, opened from here through the app shell.
    */
   import { liveRadars, liveIntervalMin, setLiveRadars, setLiveIntervalMin, liveFloorDbz, setLiveFloorDbz, liveRings, setLiveRings } from '../stores/settings';
-  import { BUILTIN_SITES } from '../stores/radarSites';
+  import { liveSites, ensureLiveSites, siteLabel } from '../stores/liveSites';
+  import { onMount } from 'svelte';
   import { moveRadarId, MAX_LIVE_RADARS, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN } from '../utils/liveLogic';
   import { FLOOR_CHOICES, DEFAULT_FLOOR_DBZ } from '../utils/liveDisplay';
 
-  const byId = new Map(BUILTIN_SITES.map((s) => [s.id.toUpperCase(), s]));
+  const byId = $derived($liveSites);
+  onMount(() => { void ensureLiveSites(); });
   const ids = $derived($liveRadars);
 
   function choose() {
@@ -21,7 +23,7 @@
 
 <h3>Live map</h3>
 <p class="hint">
-  The radars whose newest scans the live map merges, in this order (up to {MAX_LIVE_RADARS}, NEXRAD only). Nothing is
+  The radars whose newest scans the live map merges, in this order (up to {MAX_LIVE_RADARS}; NEXRAD radars in the USA and DWD radars in Germany). Nothing is
   downloaded until you start the live map and allow it.
 </p>
 {#if ids.length === 0}
@@ -32,7 +34,7 @@
       <li class="ls-row">
         <span class="ls-idx">{i + 1}</span>
         <b class="mono">{id}</b>
-        <span class="ls-name">{byId.get(id)?.name ?? ''}{byId.get(id)?.state ? `, ${byId.get(id)?.state}` : ''}</span>
+        <span class="ls-name">{byId.get(id) ? siteLabel(byId.get(id), id) : ''}</span>
         <button type="button" class="icon-btn-sm" aria-label="Move {id} up" title="Move up" disabled={i === 0} onclick={() => setLiveRadars(moveRadarId(ids, id, -1))}>&uarr;</button>
         <button type="button" class="icon-btn-sm" aria-label="Move {id} down" title="Move down" disabled={i === ids.length - 1} onclick={() => setLiveRadars(moveRadarId(ids, id, 1))}>&darr;</button>
         <button type="button" class="icon-btn-sm" aria-label="Remove {id}" title="Remove" onclick={() => setLiveRadars(ids.filter((x) => x !== id))}>&times;</button>
@@ -46,7 +48,7 @@
 <div class="form-row">
   <label class="form-label" for="st-live-interval">Update every</label>
   <input id="st-live-interval" type="number" min={MIN_INTERVAL_MIN} max={MAX_INTERVAL_MIN} step="1" value={$liveIntervalMin} onchange={onInterval} style="width: 70px" />
-  <span class="text-muted">minutes ({MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN}; a NEXRAD volume takes 4–10 min)</span>
+  <span class="text-muted">minutes ({MIN_INTERVAL_MIN}–{MAX_INTERVAL_MIN}; a NEXRAD volume takes 4–10 min, a DWD volume is made every 5 min)</span>
 </div>
 
 <div class="form-row">

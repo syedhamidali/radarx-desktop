@@ -16,7 +16,11 @@ import {
   openedText,
   multiDopplerBlocked,
   liveLayerLine,
+  mapCentre,
+  anchorStale,
+  distanceKm,
 } from './liveDisplay.ts';
+import { latLonToDataSpace } from './geoProjection.ts';
 
 test('the default floor is the NWS 5 dBZ and the setting is clamped', () => {
   assert.equal(DEFAULT_FLOOR_DBZ, 5);
@@ -86,6 +90,44 @@ test('footprintBounds covers every range disc and handles none', () => {
   assert.ok(polar.north <= 85 && polar.west >= -180 && polar.east <= 180);
 });
 
+test('mapCentre: the frame, else the radars, never a default place', () => {
+  assert.deepEqual(mapCentre({ west: 4, south: 50, east: 10, north: 54 }, []), { lat: 52, lon: 7 });
+  const c = mapCentre(null, [{ lat: 51.405, lon: 6.967 }, { lat: 51.311, lon: 8.802 }]);
+  assert.ok(Math.abs(c.lat - 51.358) < 1e-3 && Math.abs(c.lon - 7.885) < 0.01);
+  assert.equal(mapCentre(null, []), null);
+  // radars either side of the date line average to the date line, not to the far side of the world
+  const dl = mapCentre(null, [{ lat: 52, lon: 179 }, { lat: 52, lon: -179 }]);
+  assert.ok(Math.abs(Math.abs(dl.lon) - 180) < 0.01);
+});
+
+test('anchorStale: a missing or distant projection centre is moved, a near one is kept', () => {
+  const de = { lat: 51.36, lon: 7.88 };
+  assert.equal(anchorStale(null, de), true);
+  assert.equal(anchorStale(de, null), false);
+  assert.equal(anchorStale({ lat: 51.9, lon: 8.5 }, de), false); // about 70 km: kept
+  assert.equal(anchorStale({ lat: 39, lon: -97 }, de), true); // the USA while showing Germany
+  assert.ok(distanceKm({ lat: 39, lon: -97 }, de) > 7000);
+});
+
+// The defect this guards: the map is an azimuthal projection, exact at its centre. Centred on a
+// default over the USA, Germany 8000 km away came out rotated by about 90 degrees, so every place
+// name read sideways. The direction of "north" at Essen on screen shows it.
+test('north at Essen points up when the projection is centred near Germany, and sideways when it is centred on the USA', () => {
+  const essen = [51.405, 6.967];
+  const northOf = (centre) => {
+    const a = latLonToDataSpace(essen[0], essen[1], centre.lat, centre.lon);
+    const b = latLonToDataSpace(essen[0] + 0.9, essen[1], centre.lat, centre.lon);
+    return Math.abs((Math.atan2(b[0] - a[0], b[1] - a[1]) * 180) / Math.PI); // 0 = straight up the screen
+  };
+  const good = mapCentre(null, [{ lat: 51.405, lon: 6.967 }, { lat: 51.311, lon: 8.802 }]);
+  assert.ok(northOf(good) < 3, `centred on the radars: ${northOf(good)}`);
+  assert.ok(northOf({ lat: 39, lon: -97 }) > 45, `centred on the USA: ${northOf({ lat: 39, lon: -97 })}`);
+  // and for a US radar seen from a US centre it stays upright (nothing changed for NEXRAD)
+  const tlx = latLonToDataSpace(35.333, -97.278, 39, -97);
+  const tlxN = latLonToDataSpace(36.233, -97.278, 39, -97);
+  assert.ok(Math.abs((Math.atan2(tlxN[0] - tlx[0], tlxN[1] - tlx[1]) * 180) / Math.PI) < 3);
+});
+
 test('openableStations keeps the radar order and only radars that hold a volume', () => {
   const radars = [{ station: 'KTLX', status: 'ok' }, { station: 'KINX', status: 'error' }, { station: 'KVNX', status: 'ok' }];
   assert.deepEqual(openableStations(radars, ['KVNX', 'KTLX', 'KINX']), ['KTLX', 'KVNX']);
@@ -106,6 +148,19 @@ test('the wording after opening says what, the disk used, and what failed', () =
   assert.doesNotMatch(again, /on disk/);
   assert.match(openedText(files, 1, ['KINX (boom)']), /Could not open: KINX \(boom\)/);
   assert.match(openedText([files[0]], 5), /Opened 1 volume \(KTLX\)/);
+});
+
+test('a DWD volume is said to use memory, not disk', () => {
+  const mixed = [
+    { station: 'KTLX', name: 'a', size: 1, file_id: '1', kind: 'file' },
+    { station: 'dwd:ess', name: 'b', size: 0, file_id: '2', kind: 'memory' },
+  ];
+  const t = openedText(mixed, 10 * 1024 * 1024);
+  assert.match(t, /The NEXRAD files use 10\.0 MB on disk/);
+  assert.match(t, /The DWD volumes are kept in memory and use no disk \(dwd:ess\)/);
+  const onlyDwd = openedText([mixed[1]], 0);
+  assert.match(onlyDwd, /They are kept in memory and use no disk/);
+  assert.doesNotMatch(onlyDwd, /on disk/);
 });
 
 test('multi-Doppler needs two radars and says why not', () => {

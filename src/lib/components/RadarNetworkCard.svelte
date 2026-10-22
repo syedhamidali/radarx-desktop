@@ -26,7 +26,7 @@
   } from '../stores/radarNetworks';
   import { addToast } from '../stores/toasts';
   import { liveRadars, setLiveRadars } from '../stores/settings';
-  import { toggleRadarId, MAX_LIVE_RADARS } from '../utils/liveLogic';
+  import { toggleRadarId, liveIdOf, liveUnavailableReason, MAX_LIVE_RADARS } from '../utils/liveLogic';
 
   let { site, catalogue, now, onclose }: { site: CatalogueSite; catalogue: RadarCatalogue; now: number; onclose: () => void } = $props();
 
@@ -89,22 +89,33 @@
     }
   }
 
-  /** The live map composites NEXRAD scans only; other networks can be opened from the map but not made a live default yet. */
-  const liveCapable = $derived(site.network.split('/')[0] === 'NEXRAD');
-  const isDefault = $derived($liveRadars.includes(site.id.toUpperCase()));
+  /**
+   * The live map fetches two networks, NEXRAD and DWD. The live id of this site ("KTLX" or
+   * "dwd:ess") is null for every other radar, and the button says why instead of pretending.
+   */
+  const liveId = $derived(liveIdOf(site));
+  const liveCapable = $derived(liveId !== null);
+  const isDefault = $derived(liveId !== null && $liveRadars.includes(liveId));
+  const defaultTitle = $derived(
+    liveId === null
+      ? liveUnavailableReason(site)
+      : isDefault
+        ? 'Removes this radar from the live map default radars'
+        : `Adds this radar to the live map default radars (${liveId.startsWith('dwd:') ? 'DWD Open Data, CC BY 4.0' : site.network.split('/')[0] === 'TDWR' ? 'TDWR Level II, the same bucket as NEXRAD' : 'NEXRAD Level II'}); the live map asks before it lists or downloads anything`,
+  );
 
   function setDefault() {
-    if (!liveCapable) {
-      addToast('info', `${site.id} is not a NEXRAD radar. The live map shows NEXRAD scans only for now, so it cannot be a default radar yet.`);
+    if (liveId === null) {
+      addToast('info', `${site.id} cannot be a default radar yet. ${liveUnavailableReason(site)}`);
       return;
     }
-    const next = toggleRadarId($liveRadars, site.id);
+    const next = toggleRadarId($liveRadars, liveId);
     if (next.length === $liveRadars.length && !isDefault) {
       addToast('info', `The live map keeps at most ${MAX_LIVE_RADARS} default radars. Remove one first (Live map: choose the default radars).`);
       return;
     }
     setLiveRadars(next);
-    addToast('success', isDefault ? `${site.id} removed from your default radars.` : `${site.id} added to your default radars (${next.length}).`);
+    addToast('success', isDefault ? `${site.name} removed from your default radars.` : `${site.name} (${liveId}) added to your default radars (${next.length}).`);
   }
 
   function onKey(e: KeyboardEvent) {
@@ -211,7 +222,7 @@
     {:else if provider?.homepage}
       <button type="button" onclick={() => openLink(provider!.homepage)}>Open the provider's page</button>
     {/if}
-    <button type="button" onclick={setDefault} disabled={!liveCapable} title={liveCapable ? 'Adds or removes this radar in the live map default radars' : 'The live map shows NEXRAD radars only for now'}>{isDefault ? 'Remove from default radars' : 'Set as default radar'}</button>
+    <button type="button" onclick={setDefault} disabled={!liveCapable} title={defaultTitle}>{isDefault ? 'Remove from default radars' : 'Set as default radar'}</button>
   </div>
 
   {#if archiveOpen && loadable && !isNexrad}

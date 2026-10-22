@@ -518,11 +518,12 @@
     c.lineJoin = 'round';
     for (const r of lyr.radars) {
       // Range ring (great-circle distance from the site)
-      if (lyr.ringKm > 0 && lyr.ringStyle !== 'off') {
+      const ringKm = r.ringKm ?? lyr.ringKm;
+      if (ringKm > 0 && lyr.ringStyle !== 'off') {
         const subtle = lyr.ringStyle === 'subtle';
         c.beginPath();
         for (let i = 0; i <= 120; i++) {
-          const [la, lo] = radarToLatLon(lyr.ringKm * 1000, (i * 360) / 120, r.latitude, r.longitude);
+          const [la, lo] = radarToLatLon(ringKm * 1000, (i * 360) / 120, r.latitude, r.longitude);
           const [x, y] = project(la, lo);
           if (i === 0) c.moveTo(x, y);
           else c.lineTo(x, y);
