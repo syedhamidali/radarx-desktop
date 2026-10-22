@@ -126,6 +126,8 @@ attributes, the `history` and the comment of the derived variable; for pipelines
 the script the app can write ({doc}`PIPELINES`, {doc}`OUTPUT_STANDARDS`); for the command line it is the
 command line itself ({doc}`CLI`). A result that cannot be explained by its record is a bug.
 
+Numerical precision is part of the record too: moments are decoded to `float64` unless the opt-in `XRADAR_FLOAT32=1` is set, in which case the written file says so (`numeric_precision`) and the values stay within 6e-8 of their size.
+
 Randomness is seeded, and the seed is part of the record. Results do not depend on the machine's locale,
 time zone (all times are UTC) or window size.
 

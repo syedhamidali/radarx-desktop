@@ -123,6 +123,81 @@ Each item was found in a profile first.
 Already lazy before this work and left that way: matplotlib (first export), radarx (first module
 or mosaic), xradar and the palette library (preloaded in a thread after `READY`).
 
+## Engine start-up (issue #97)
+
+`python -X importtime` of `import server` (which the shell waits for before the app can talk to
+the engine) showed where the rest of the time goes: `xarray` with `pandas` about 300 of 490 ms,
+`h5netcdf`/`h5py`/`netCDF4` about 140 ms (imported by the HDF5 guard only to learn which classes
+to watch), `numpy` 37 ms, `asyncio` 33 ms, Pillow about 25 ms (imported by the picture code).
+Two of these did not need to be paid before `READY`:
+
+1. **The HDF5 guard recognises its file openers by name** (`netCDF4.Dataset`, `h5netcdf.File`)
+   instead of importing the libraries, so installing it no longer loads them.
+2. **Pillow is imported when the first picture is drawn** (`engine/renderer.py`, the same
+   `LazyModule` as for scipy).
+
+Both are imported again by the background pre-import that already follows `READY`
+(`server._preload_heavy_imports`), so the first open and the first picture pay nothing extra.
+
+Measured back to back on the same machine, `origin/main` against this change
+(`python scripts/perf/engine_startup.py`, 7 starts, medians; Apple M1 Pro, Python 3.14.2, a
+loaded machine, so look at the ratios):
+
+| | before | after |
+|---|---:|---:|
+| `import server`, CPU time (9 runs) | 599 to 622 ms | 418 ms |
+| process start to the `READY` line | 723 ms | 517 ms |
+| native libraries mapped at `READY` | 192 | 118 |
+| resident memory at `READY` | 165 MB | 145 MB |
+| libraries / memory 3 s later (after the pre-import) | 276 / 242 MB | 275 / 240 MB |
+
+Not changed, and why: `xarray` imports `pandas` itself (a hard dependency of both), and the
+engine uses xarray in nearly every module, so about 300 ms remain in `import server`. Where
+`pyarrow` is installed, pandas loads it as well (about 55 ms); the installers do not ship it.
+The 154 libraries counted in `docs/PACKAGING_AUDIT.md` were 192 here with `pyarrow` and the full
+development environment; the count after the pre-import is unchanged because the libraries are
+still needed once the first file is opened.
+
+## float32 decoding (opt-in)
+
+`XRADAR_FLOAT32=1` keeps integer-encoded moments (Level II style: `value = offset + code * scale`)
+as `float32` once they are decoded. The no-echo and range-folded codes are found on the exact
+`float64` values first and only then is the result rounded, so the same gates are masked.
+Measured on 6 synthetic Level-II-sized moments (720 x 1832 gates):
+
+| | float64 (default) | float32 |
+|---|---:|---:|
+| resident decoded data | 63.3 MB | 31.7 MB |
+| peak while decoding | 66.0 MB | 39.6 MB |
+| time to decode and mask | 28 ms | 23 ms |
+
+So a volume needs about half the memory for its decoded moments and decoding is about 15 %
+faster. The end-to-end stages of `bench_engine.py` (PNG render, 3D volume, cross-section) are not
+measurably faster (differences within the run-to-run noise), which is why it is not the default.
+
+**Precision effect.** A float32 value differs from the float64 one by at most 6e-8 of its size:
+below 5e-6 dB or m/s for any real moment, far below the 0.5 steps the radar stores (for steps of
+0.5 or 0.25 the values are exactly the same). A gate lying exactly on a threshold of a module
+can fall on the other side of it when its float64 value was a rounding error away from the
+threshold. Sums over many gates are done by NumPy with pairwise summation (relative error about
+1e-7); histograms and statistics convert to `float64` first. Outputs written while the option is
+on carry `numeric_precision` in the file (and in the JSON of recipes and records) so a result
+can be reproduced with the same setting. Tests: `python/tests/test_startup_and_float32.py`.
+
+## Benchmark check in CI
+
+`python scripts/perf/bench_check.py` runs about a minute on synthetic volumes (no data, no
+network, no account): the median of three engine starts (time to `READY`, libraries mapped) and
+the process CPU time of four engine stages. It compares them with
+`python/benchmarks/ci_baseline.json` after dividing out the speed of the machine (a fixed
+NumPy calibration run by the same interpreter), and fails only when something is more than 2.5
+times its calibrated baseline (1.3 times for the library count): it catches "several times
+slower", not noise. `--update` rewrites the baseline; do that in the change that upgrades Python
+or a library. The optional workflow `.github/workflows/bench.yml` runs it on a pull request that
+carries the `bench` label or by hand, allowed to fail, never required. The reference numbers
+come from the machine above (Python 3.14, xradar 0.12) while CI uses Python 3.12, so a first CI
+run may need a baseline refresh; the factor is deliberately wide for that reason.
+
 ## Measured and left alone
 
 | What | Measurement | Why not changed |
@@ -137,7 +212,7 @@ or mosaic), xradar and the palette library (preloaded in a thread after `READY`)
 | QC `despeckle` | 125 ms | scipy rank filter + distance transform |
 | `mask_variable` arithmetic | 3.1 ms per sweep | best alternative measured 2.5 ms: not worth the risk |
 | `engine/arrow_bridge.py` | 6 to 40 ms | not used by the server (sweeps go over the binary wire format) |
-| float32 for decoded moments | 330 MB resident per volume | xradar decodes to float64; float32 would change values at the 1e-7 level, so it needs an xradar-side option |
+| float32 for decoded moments | 330 MB resident per volume | now an opt-in engine setting (`XRADAR_FLOAT32=1`, see above); not the default because it changes values at the 1e-7 level and the speed gain is not visible end to end. An xradar-side option would additionally save the temporary float64 array while decoding |
 | NetCDF peak 3.8 GB | | CfRadial1 pads every sweep to one rectangular (time x range) float64 grid (1 GB) and xarray's outer join holds a few copies |
 
 ## Checking outputs
