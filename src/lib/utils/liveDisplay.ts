@@ -141,6 +141,8 @@ export interface OpenedVolume {
   size: number;
   file_id: string;
   already_open?: boolean;
+  /** 'file': a pinned file on disk (NEXRAD); 'memory': the data are shared with the live map (DWD), no disk. */
+  kind?: 'file' | 'memory';
 }
 
 /** The radars that have a volume the engine holds right now, in the order of the radar list. */
@@ -158,9 +160,13 @@ export function openedText(files: readonly OpenedVolume[], pinnedBytes: number, 
     fresh.length === 0
       ? `${n === 1 ? 'This volume is' : 'These volumes are'} already open (${names}).`
       : `Opened ${n} volume${n === 1 ? '' : 's'} (${names}) as normal files; the next live update does not replace them.`;
-  const disk = fresh.length === 0 ? '' : `They use ${formatBytes(pinnedBytes)} on disk until you close them.`;
+  const memory = fresh.filter((f) => f.kind === 'memory');
+  const onDisk = fresh.filter((f) => f.kind !== 'memory');
+  const parts: string[] = [];
+  if (onDisk.length) parts.push(`${onDisk.length === fresh.length ? 'They use' : 'The NEXRAD files use'} ${formatBytes(pinnedBytes)} on disk until you close them.`);
+  if (memory.length) parts.push(`${memory.length === fresh.length ? 'They are' : 'The DWD volumes are'} kept in memory and use no disk (${memory.map((f) => f.station).join(', ')}), until you close them.`);
   const fail = failed.length ? ` Could not open: ${failed.join('; ')}.` : '';
-  return `${head} ${disk}${fail}`.replace(/\s+/g, ' ').trim();
+  return `${head} ${parts.join(' ')}${fail}`.replace(/\s+/g, ' ').trim();
 }
 
 /** Why Multi-Doppler cannot start from the live map right now (null = it can). */

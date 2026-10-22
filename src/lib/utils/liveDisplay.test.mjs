@@ -108,6 +108,19 @@ test('the wording after opening says what, the disk used, and what failed', () =
   assert.match(openedText([files[0]], 5), /Opened 1 volume \(KTLX\)/);
 });
 
+test('a DWD volume is said to use memory, not disk', () => {
+  const mixed = [
+    { station: 'KTLX', name: 'a', size: 1, file_id: '1', kind: 'file' },
+    { station: 'dwd:ess', name: 'b', size: 0, file_id: '2', kind: 'memory' },
+  ];
+  const t = openedText(mixed, 10 * 1024 * 1024);
+  assert.match(t, /The NEXRAD files use 10\.0 MB on disk/);
+  assert.match(t, /The DWD volumes are kept in memory and use no disk \(dwd:ess\)/);
+  const onlyDwd = openedText([mixed[1]], 0);
+  assert.match(onlyDwd, /They are kept in memory and use no disk/);
+  assert.doesNotMatch(onlyDwd, /on disk/);
+});
+
 test('multi-Doppler needs two radars and says why not', () => {
   assert.match(multiDopplerBlocked(['KTLX']), /at least two radars/);
   assert.match(multiDopplerBlocked([]), /at least two radars/);
