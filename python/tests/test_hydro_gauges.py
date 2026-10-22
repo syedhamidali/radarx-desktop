@@ -539,4 +539,7 @@ class TestBasinSeries:
         assert "provenance_type: RETRIEVED" in text
         assert "accumulation_mean_mm" in text
         series = products.basin_series_csv(res, 0)
-        assert series.splitlines()[1].startswith("time,mean_rate_mm_h")
+        lines = series.splitlines()
+        assert any(ln.startswith("# columns:") and "cumulative_mm [mm]" in ln for ln in lines)
+        data = [ln for ln in lines if not ln.startswith("#")]
+        assert data[0].startswith("time,mean_rate_mm_h")
