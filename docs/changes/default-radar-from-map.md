@@ -1,1 +1,0 @@
-- **Default radars from the radar map:** *Set as default radar* on a site card of the radar network map now adds the radar to (or removes it from) the live map default radars, up to eight. The live map shows NEXRAD scans only, so the button is disabled for other networks, with the reason in its tooltip ({doc}`LIVE`, {doc}`RADAR_MAP`).
