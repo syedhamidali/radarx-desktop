@@ -142,7 +142,7 @@
     <!-- ── Files ─────────────────────────────────────────────────────────── -->
     <section class="block">
       <div class="block-head">
-        <h4>Radars</h4>
+        <h3>Radars</h3>
         {#if rows.length > 1}
           <span class="spacer"></span>
           <button type="button" class="mini-btn" onclick={() => selectAllMosaicFiles(true)}>All</button>
@@ -185,7 +185,7 @@
 
     <!-- ── Product / grid ────────────────────────────────────────────────── -->
     <section class="block">
-      <h4>Product</h4>
+      <h3>Product</h3>
       <div class="grid2">
         <label class="field">
           <span>Variable</span>
@@ -262,7 +262,7 @@
     <!-- ── Merge ─────────────────────────────────────────────────────────── -->
     <section class="block">
       <div class="block-head">
-        <h4>Merge</h4>
+        <h3>Merge</h3>
         <span class="spacer"></span>
         {#if single}<span class="chip">single radar</span>{/if}
       </div>
@@ -404,7 +404,7 @@
     {#if res && !res.forecast}
       <section class="block result" aria-label="Mosaic result">
         <div class="block-head">
-          <h4>{productLabel(res)}</h4>
+          <h3>{productLabel(res)}</h3>
           <span class="spacer"></span>
           <span class="mono muted">{res.elapsed_ms >= 1000 ? (res.elapsed_ms / 1000).toFixed(1) + ' s' : Math.round(res.elapsed_ms) + ' ms'}</span>
         </div>
@@ -548,7 +548,7 @@
     gap: var(--spacing-xs, 4px);
   }
 
-  h4 {
+  h3 {
     margin: 0;
     font-size: 10px;
     font-weight: 700;
@@ -557,7 +557,7 @@
     color: var(--text-muted);
   }
 
-  .result h4 {
+  .result h3 {
     text-transform: none;
     letter-spacing: 0;
     font-size: 12px;

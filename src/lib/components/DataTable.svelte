@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { focusTrap } from '../utils/focusTrap';
   import { onMount, onDestroy, untrack } from 'svelte';
   import { wsManager } from '../utils/websocket';
   import { portal } from '../utils/portal';
@@ -484,7 +485,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="data-table-overlay" use:portal on:click|self={close}>
-  <div class="data-table-panel" role="dialog" aria-modal="true" aria-label="Data table">
+  <div class="data-table-panel" role="dialog" aria-modal="true" aria-label="Data table" use:focusTrap>
     <div class="dt-header">
       <div class="dt-title">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

@@ -204,7 +204,7 @@
     <!-- Data -->
     <section class="block">
       <div class="block-head">
-        <h4>Radar volumes</h4>
+        <h3>Radar volumes</h3>
         <span class="spacer"></span>
         {#if rows.length > 1}
           <button type="button" class="mini" onclick={() => selectAllMosaicFiles(true)}>All</button>
@@ -235,7 +235,7 @@
 
     <!-- Estimate -->
     <section class="block">
-      <h4>Estimate</h4>
+      <h3>Estimate</h3>
       <div class="grid2">
         <label class="field">
           <span>Method</span>
@@ -337,7 +337,7 @@
 
     <!-- Gauges -->
     <section class="block">
-      <h4>Rain gauges <span class="dim">(optional, local file)</span></h4>
+      <h3>Rain gauges <span class="dim">(optional, local file)</span></h3>
       <div class="pathrow">
         <input type="text" placeholder="gauges.csv / .json / NOAA / METAR" value={s.gaugePath} onchange={(e) => updateQpeSettings({ gaugePath: e.currentTarget.value })} aria-label="Gauge file" />
         <button type="button" class="mini" disabled={!desktop} onclick={() => browse('gaugePath', 'Gauge records', ['csv', 'json', 'geojson', 'txt'])} title={desktop ? 'Choose the gauge file' : 'File dialogs need the desktop app: type the path'}>Browse</button>
@@ -381,7 +381,7 @@
 
     <!-- Basins -->
     <section class="block">
-      <h4>Basins <span class="dim">(optional, local file)</span></h4>
+      <h3>Basins <span class="dim">(optional, local file)</span></h3>
       <div class="pathrow">
         <input type="text" placeholder="basins.geojson / .shp / .gpkg" value={s.basinPath} onchange={(e) => updateQpeSettings({ basinPath: e.currentTarget.value })} aria-label="Basin file" />
         <button type="button" class="mini" disabled={!desktop} onclick={() => browse('basinPath', 'Basin polygons', ['geojson', 'json', 'shp', 'gpkg'])} title={desktop ? 'Choose the basin file' : 'File dialogs need the desktop app: type the path'}>Browse</button>
@@ -434,7 +434,7 @@
     {#if st && summary}
       <section class="block result" aria-label="Rainfall result">
         <div class="block-head">
-          <h4>{instant ? 'Rain rate' : 'Accumulation'}</h4>
+          <h3>{instant ? 'Rain rate' : 'Accumulation'}</h3>
           <span class="spacer"></span>
           <span class="chip" class:adj={adjusted} title="An estimate from radar{adjusted ? ' merged with rain gauges' : ''}; not an observation">{provenanceLabel(summary.provenance.type)}</span>
         </div>
@@ -521,7 +521,7 @@
       {#if validation}
         <section class="block result" aria-label="Gauge validation">
           <div class="block-head">
-            <h4>Gauge comparison</h4>
+            <h3>Gauge comparison</h3>
             <span class="spacer"></span>
             <span class="chip adj">{summary.adjustment?.method}</span>
           </div>
@@ -590,7 +590,7 @@
       {#if summary.basins?.length}
         <section class="block result" aria-label="Basin rainfall">
           <div class="block-head">
-            <h4>Basins</h4>
+            <h3>Basins</h3>
             <span class="spacer"></span>
             <span class="chip" class:adj={adjusted}>{adjusted ? 'ADJUSTED' : 'RETRIEVED'}</span>
           </div>
@@ -649,9 +649,9 @@
   .root { display: flex; flex-direction: column; gap: var(--space-3); }
   .block { display: flex; flex-direction: column; gap: var(--space-2); }
   .block-head { display: flex; align-items: center; gap: var(--space-1); }
-  h4 { margin: 0; font-size: var(--fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-muted); }
+  h3 { margin: 0; font-size: var(--fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-muted); }
   .result { padding-top: var(--space-2); border-top: 1px solid var(--c-border); }
-  .result h4 { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); color: var(--c-text); }
+  .result h3 { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); color: var(--c-text); }
   .spacer { flex: 1; }
   .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .dim { color: var(--c-muted); font-weight: 400; }

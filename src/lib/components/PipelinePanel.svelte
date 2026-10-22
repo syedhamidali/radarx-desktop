@@ -209,7 +209,7 @@
 
       {#if $previewResult}
         <section class="result">
-          <h4>Preview, sweep {$previewResult.sweep}</h4>
+          <h3>Preview, sweep {$previewResult.sweep}</h3>
           <div class="inline views" role="group" aria-label="Show on the map">
             {#each VIEWS as v}
               <button type="button" class:active={$pipelineView === v.id} onclick={() => showPreviewView(v.id)}>{v.label}</button>
@@ -228,7 +228,7 @@
 
       {#if $runResult}
         <section class="result">
-          <h4>Result: {$runResult.name ?? $runResult.recipe}</h4>
+          <h3>Result: {$runResult.name ?? $runResult.recipe}</h3>
           <p class="help">
             Stored as one variable on {$runResult.sweeps.length} sweep{$runResult.sweeps.length === 1 ? '' : 's'} in
             {($runResult.elapsed_ms / 1000).toFixed(1)} s. Pick it in the variable list; to use it in a
@@ -442,7 +442,7 @@
     padding: 4px 8px 8px;
     border-top: 1px solid var(--border-color);
   }
-  .result h4 {
+  .result h3 {
     margin: 4px 0;
     font-size: 12px;
   }
