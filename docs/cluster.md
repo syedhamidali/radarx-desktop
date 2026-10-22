@@ -7,7 +7,7 @@ task, are on {doc}`cli-guide`; every option is on {doc}`CLI`.
 
 ```{note}
 **What was tested.** The commands that run `rxd` were run for real on a Mac. Installing, the `PATH` steps, sign-in on a
-machine without a browser, SLURM and Windows were **not tested on a cluster or on Windows**, and each such place below
+machine without a browser, SLURM, `rxd serve` on a real cluster and Windows were **not tested on a cluster or on Windows**, and each such place below
 says "not tested". Where a statement comes from how `rxd` is built rather than from a test, the page says so.
 ```
 
@@ -19,7 +19,7 @@ says "not tested". Where a statement comes from how `rxd` is built rather than f
 | Export NetCDF, CfRadial2, Zarr, CSV and picture files | **Yes** |
 | "I have a pile of data, decide what to do" | **Yes**, `rxd auto` |
 | Movies and storm clips | Only the **plan** (`--no-render`); drawing the film needs Google Chrome: see [below](#what-needs-a-display-or-chrome) |
-| The app's windows (2D, 3D, panels) on data that stays on the cluster | **Not supported yet**: see [the last section](#using-the-apps-screen-with-data-on-a-cluster) |
+| The app's windows (2D, 3D, panels) on data that stays on the cluster | **Yes**, with `rxd serve` and an SSH port forward: see [the last section](#using-the-apps-screen-with-data-on-a-cluster) |
 
 ## Install without a window
 
@@ -340,19 +340,124 @@ and 24 MB as Zarr here. All formats carry the software version, input file names
 
 ## Using the app's screen with data on a cluster
 
-**This does not work yet.** Said plainly:
+`rxd serve` starts, on the cluster, the same engine the app runs on your own computer. The app on your computer then uses it
+through an **SSH port forward**: the data stays on the cluster, and only what the app needs to draw travels over the link.
+Nothing is opened to the network: the engine listens on the cluster computer itself, and the only way in is your SSH connection.
 
-* The desktop app today connects **only to the engine that it starts itself**, on your own computer.
-* Pointing the app at an engine running on a cluster, for example through an SSH tunnel (port forwarding), is **not supported**. There is no
-  setting for it and no command that starts a remote engine. It is planned; it is not available in any release.
-* So there is no way to look at cluster data in the app's windows while the data stays on the cluster.
+**You need:** `rxd` installed and signed in on the cluster (`rxd login`, see above; `rxd serve` stops with exit code 5 without a
+sign-in, like every command), the Radarx app on your own computer (signed in as usual), and SSH access to the cluster.
 
-What to do until then:
+### Step by step
 
-1. **Work on the cluster with `rxd`**, as on this page and on {doc}`cli-guide`: check, clean, analyse, make pictures and tables.
-2. **Copy the results** (the table in the previous section shows which formats open where) **or a small part of the data** (a few volumes, a cropped area) to a computer that has the
-   app, and open them there.
-3. For a whole event, run `rxd auto ... --plan-only` on the cluster first to see which analyses fit, and copy only what you want to look at.
+**1. On the cluster**, start the engine:
 
-The desktop app and `rxd` are the same engine with the same results, so a command that you try in the app's Command Studio ({doc}`command-studio`) and then copy
-to a job runs the same on the cluster.
+```bash
+rxd serve
+```
+
+It prints the address, a token and the exact SSH line for your computer. This is what it printed on the Mac used for this page
+(the token is hidden here; yours is different on every run):
+
+```text
+Radarx engine is running. Keep this window open; press Ctrl+C to stop it.
+
+  Address   127.0.0.1:18765
+  Token     (43 random characters)
+            (shown once, valid for this run only; treat it like a password)
+
+On your own computer open a terminal and run (use the host name you log in with):
+
+  ssh -L 18765:localhost:18765 user@login01
+
+Then, in the app: Settings > Engine > Connect to a remote engine (address and token).
+The engine stops by itself after 120 minutes without use.
+```
+
+The port is chosen for you; `--port 40123` picks one (1024 to 65535). The host name in the line is the name the computer calls
+itself: use the name you normally log in with.
+
+**2. On your own computer**, open a terminal and run the `ssh` line. Keep that window open for as long as you work.
+
+| Your computer | Where | What to type |
+|---|---|---|
+| Linux, macOS | Terminal | `ssh -L 18765:localhost:18765 user@cluster.example.org` |
+| Windows 10 and 11 | PowerShell or Windows Terminal (the `ssh` program that comes with Windows) | the same line |
+| PuTTY on Windows | *Connection > SSH > Tunnels*: source port `18765`, destination `localhost:18765`, *Add*, then open the session | |
+
+Add `-N` if you only want the tunnel and no shell. If a batch job runs the engine on a compute node that you cannot reach directly, go through the
+login node: `ssh -J user@login.example.org -L 18765:localhost:18765 user@node042`. When `rxd serve` finds it runs inside a batch job it prints this
+form as well.
+
+**3. In the app**, open *Settings > Engine*, enter `127.0.0.1:18765` (the forwarded port on your own computer) and the token, and
+choose *Connect*. The status bar now says **REMOTE ENGINE 127.0.0.1:18765** in amber for as long as the app uses the cluster's engine.
+*Open file* (or Ctrl/Cmd+O) now asks for the **path of the file on the cluster**, because your computer's file picker cannot see it.
+
+**4. To go back**, choose *Use the built-in engine* in *Settings > Engine* (or on the connection screen if the link broke). Your open files are
+closed, because they belonged to the cluster's engine. Closing the app forgets the token: next time you enter the token of the engine
+you started.
+
+### On a login node or in a batch job
+
+* **A login node is for light work.** Opening a file and looking at a few sweeps is fine. Mosaics, winds, rainfall or long series use
+  a lot of memory and many cores that other users share, and many sites stop long-running programs on login nodes. For heavy work run the
+  engine **inside a batch job** and connect to the compute node as above.
+* **A job that starts the engine** (SLURM here; not tested on SLURM). Put the token in a private file, not in the job's log:
+
+  ```bash
+  #!/bin/bash
+  #SBATCH --job-name=radarx-serve
+  #SBATCH --cpus-per-task=4
+  #SBATCH --mem=16G
+  #SBATCH --time=04:00:00
+  #SBATCH --output=logs/%x_%j.out
+
+  export PATH="$HOME/.local/bin:$PATH"        # or: source ~/radarx-env/bin/activate
+  rxd serve --port 40123 --idle-minutes 60 --token-file "$HOME/.radarx-token" --budget-gb 12
+  ```
+
+  After the job starts, the log shows the address and the SSH line (with the node's name); the token is in `~/.radarx-token`, which only you can
+  read (`cat ~/.radarx-token`) and which `rxd serve` removes when it stops. Choose a port of your own: if it is taken on that node the engine says so and stops.
+* **Firewalls.** Nothing needs to be opened: the app never connects to the cluster directly. If you can use `ssh` to the cluster, the
+  rest works. If the cluster only allows SSH from certain networks, connect from there.
+
+### What is slow over a link
+
+Everything the engine computes happens on the cluster; what crosses the link is the result. Opening a file and moving between sweeps send
+whole sweeps (numbers for every gate), and the 3D view, mosaics and winds send large blocks, so a slow or unstable link is felt there first. A wired or fast
+network is better than a weak one, and `ssh -C` compresses the traffic, which helps on slow links and costs a little CPU. The sizes and times over a real link were **not measured**.
+If the link drops, the app keeps trying for about a minute and then says so; the engine and your open files stay on the cluster, and *Retry connection*
+picks up again (a dropped link can take up to half a minute to clear on the cluster side before the engine accepts the app again).
+
+Things that are different on a remote engine:
+
+* **Files are opened by their path on the cluster** (the app asks for it). Dropping a file from your computer onto the window is refused with a note.
+* **The engine writes on the cluster.** An export or a saved picture is written by the engine, so a folder you pick with your computer's save dialog
+  is a path on the cluster, where it may not exist. For results, use `rxd export` and the other commands on the cluster and copy the files back
+  ([Moving results back](#moving-results-back)). This was **not tested** in the app.
+* **Movies and storm clips** need Chrome on the computer that draws them: see [What needs a display or Chrome](#what-needs-a-display-or-chrome).
+
+### Security
+
+* **The engine listens on the cluster computer itself (`127.0.0.1`) and nowhere else.** There is no option to change that. Other computers cannot reach it;
+  other people would have to be logged in to the same machine, and even then they need the token.
+* **The token is new for every run**, 43 random characters, printed once at start and never written to a log, a record or an error message. A connection that does not
+  start with the right token is closed at once, before anything it asks is looked at, and every wrong attempt is slowed down. The token is compared in a way that
+  does not leak how much of it was right. Only **one app** can be connected at a time; a second one is refused.
+* **Keep the token to yourself.** Do not put it in a shared folder, a chat, a ticket or a job log that others can read (use `--token-file` for jobs). The app keeps
+  it in memory only: it is not saved in the settings or anywhere on your computer.
+* **What the token lets a person do.** The engine runs as you, so whoever connects with the token can do what the app does with *your* files: open anything you can open,
+  write anything you can write, and run your own algorithm plug-ins. It gives no command prompt and it cannot do more than your account can do on the cluster (the operating system
+  enforces that), but treat it like a password to your account. The rules of the public web service (no files from the server's disks) do not apply here, because the files are
+  yours.
+* **It stops by itself** after `--idle-minutes` of no use (120 by default; `0` means never) and on Ctrl+C. Requests such as a ping or a sign-in renewal do not count as use.
+* **Your account is still checked, twice.** `rxd serve` needs your sign-in on the cluster, and the app hands its own sign-in to the engine as it does for its built-in
+  engine. The sign-in on the cluster is never replaced by the app's: signing out in the app does not sign you out on the cluster.
+  The app's sign-in must be current (it renews itself when your computer is online).
+* **Connection problems** show in *Settings > Engine*: "refused" means the token is wrong or belongs to an earlier run (a wrong token is not retried: enter the current one),
+  "busy" means another app is connected, "unreachable" means the `ssh` line is closed or `rxd serve` stopped.
+
+### What was and was not tested
+
+The command, the connection, the token checks (missing, wrong and right token, a second app, the idle limit, Ctrl+C) and the Settings > Engine page with its status mark were tested for real on a
+Mac, with the engine and the app's page talking over a local connection, in the dark and the light theme. **Not tested:** a real cluster, SLURM, SSH from Windows or PuTTY, a slow link, the
+whole app window with a remote engine (the window itself was not started; the Engine page and the status mark were run in a browser page), and exports from the app to a remote engine.

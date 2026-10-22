@@ -520,6 +520,7 @@ in fact finished within the same 4 GB budget, so treat a "will not run" as a war
 | Autopilot | `rxd auto` | |
 | Memory budget | `rxd budget`, `--budget-gb` | |
 | Account | `rxd login`, `rxd logout`, `rxd whoami` | |
+| The app's windows on data that stays on a cluster | `rxd serve` | run it on the cluster, connect the app through `ssh -L` (Settings > Engine); see {doc}`cluster` |
 | Command Studio | the commands themselves | a form for `rxd`, nothing extra |
 | RHI viewer | `rxd plot` draws RHI files as a figure | not run here |
 | 2D probe, measuring, zoom, 3D volume view | **no command yet** | interactive |
