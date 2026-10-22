@@ -263,7 +263,7 @@ class TestReliability:
         truth = np.clip(truth, 2.0, None)
         rng = np.random.default_rng(11)
         true_model = he.ErrorModel(0.35, (0.0, 0.8, 0.2), 8.0, False)
-        e = he.generate_members(np.ones((ny, nx), np.float32), CELL, true_model, 1, seed=123)[0]
+        e = he.generate_members(np.ones((ny, nx), np.float32), CELL, true_model, 2, seed=123)[0]
         # the error field of this one realisation is E; the radar sees truth / E
         radar = (truth / e).astype(np.float32)
         res = _result(radar)
@@ -299,3 +299,59 @@ class TestReliability:
         )
         out = he.verify_with_gauges(ens, res, p)
         assert out["validated"] is False and "NOT validated" in out["note"]
+
+
+class TestRadarxParity:
+    """The algorithms live in radarx; the built-in copies are a transitional fallback.
+
+    Each test runs the call with radarx and with the fallback and compares. Skipped when the
+    installed radarx lacks the function.
+    """
+
+    @staticmethod
+    def _need(name):
+        if he._radarx(name) is None:
+            pytest.skip(f"the installed radarx has no {name} yet")
+
+    def test_members_agree(self, monkeypatch):
+        self._need("qpe_error_ensemble")
+        base = np.random.default_rng(0).gamma(2.0, 6.0, (24, 24)).astype(np.float32)
+        w = np.random.default_rng(1).uniform(0.5, 2.0, (24, 24)).astype(np.float32)
+        a = he.generate_members(base, CELL, MODEL, 8, seed=11, weights=w)
+        monkeypatch.setattr(he, "_radarx", lambda name: None)
+        b = he.generate_members(base, CELL, MODEL, 8, seed=11, weights=w)
+        assert np.allclose(a, b, rtol=2e-4, atol=1e-4)
+
+    def test_error_model_agrees(self, monkeypatch):
+        self._need("qpe_error_model")
+        res = _result(np.full((10, 10), 20.0))
+        pairs = TestGaugeModel._pairs(300, 0.3, bias=1.2, seed=4)
+        a = he.model_from_gauges(res, pairs)
+        monkeypatch.setattr(he, "_radarx", lambda name: None)
+        b = he.model_from_gauges(res, pairs)
+        assert a.sigma_ln == pytest.approx(b.sigma_ln, rel=1e-5)
+        assert a.shares[0] == pytest.approx(b.shares[0], rel=1e-4)
+        assert sum(a.shares) == pytest.approx(1.0, abs=1e-5)
+
+    def test_probabilities_and_reliability_agree(self, monkeypatch):
+        self._need("exceedance_probability")
+        self._need("reliability")
+        self._need("brier_score")
+        members = np.random.default_rng(2).gamma(3.0, 5.0, (40, 6, 7)).astype(np.float32)
+        members[:, 0, 0] = np.nan
+        pa = he._exceedance(members, 15.0)
+        rng = np.random.default_rng(3)
+        p = rng.uniform(0, 1, 5000)
+        ev = (rng.uniform(0, 1, p.size) < p).astype(float)
+        ra = he.reliability(p, ev)
+        monkeypatch.setattr(he, "_radarx", lambda name: None)
+        pb = he._exceedance(members, 15.0)
+        rb = he.reliability(p, ev)
+        assert np.allclose(pa, pb, equal_nan=True)
+        assert ra["brier_score"] == pytest.approx(rb["brier_score"], rel=1e-6)
+        assert ra["reliability_slope"] == pytest.approx(rb["reliability_slope"], rel=1e-4)
+        assert [b["n"] for b in ra["bins"]] == [b["n"] for b in rb["bins"]]
+
+    def test_uses_radarx_says_which(self):
+        u = he.uses_radarx()
+        assert "qpe_error_ensemble" in u and all(isinstance(v, bool) for v in u.values())

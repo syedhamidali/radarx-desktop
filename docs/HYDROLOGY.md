@@ -334,6 +334,9 @@ map layers have the same names (`--field prob_ge_25mm`, or the layer list of the
 5th and 95th percentile) and the probability that the basin mean reaches each depth. The Monte Carlo noise of a probability
 is about 0.5/√N at p = 0.5 (0.09 for 30 members): use 100 or more members for a map you want to read to the nearest 10 %.
 
+The ensemble, the error model from gauges, the probabilities and the reliability tables are functions of the radarx library; the
+program uses them when the installed radarx has them and otherwise computes the same thing itself.
+
 **Not done yet:** perturbing the physical inputs (calibration offset, ZDR bias, attenuation, vertical profile) through the
 radarx ensemble tools and re-running the retrieval (the error model here acts on the finished accumulation); feeding the
 members to a runoff model (that model does not exist yet); an interactive reliability diagram.

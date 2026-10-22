@@ -323,6 +323,8 @@ def _collect(args: argparse.Namespace, cl: Any) -> dict[str, Any]:
 
 def _ensemble_kwargs(args: argparse.Namespace, cl: Any) -> dict[str, Any] | None:
     """The ``ensemble`` argument of :func:`engine.api.qpe` from the command line (None = off)."""
+    if not hasattr(args, "ensemble"):  # a command without the ensemble options (indicators)
+        return None
     given = (args.exceed, args.error_sigma_ln, args.error_corr_km, args.error_shares)
     if not args.ensemble:
         if any(v is not None for v in given):

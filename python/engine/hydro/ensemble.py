@@ -78,6 +78,35 @@ import numpy as np
 from engine import provenance as prov
 from engine.hydro.qpe import QpeError
 
+
+def _radarx(name: str) -> Any:
+    """A function of ``radarx.retrieve`` when the installed radarx has it, else None.
+
+    The algorithms live in radarx (``qpe_error_ensemble``, ``qpe_error_model``,
+    ``exceedance_probability``, ``reliability``, ``brier_score``); this module wraps them with the
+    app's own parts (what comes from gauges and what is assumed, the labels, the run record). The
+    built-in copies are a **transitional fallback** for radarx versions that do not have the
+    functions yet; they are tested to agree and go when the minimum radarx version has them.
+    """
+    try:
+        import radarx.retrieve as rt
+    except ImportError:
+        return None
+    return getattr(rt, name, None)
+
+
+def uses_radarx() -> dict[str, bool]:
+    """Which radarx functions are in use (the others run the built-in fallback)."""
+    names = (
+        "qpe_error_ensemble",
+        "qpe_error_model",
+        "exceedance_probability",
+        "reliability",
+        "brier_score",
+    )
+    return {n: _radarx(n) is not None for n in names}
+
+
 #: assumed (not measured, not from the literature) when there are no gauges
 DEFAULT_CORR_LENGTH_KM = 25.0
 DEFAULT_SHARES = (0.3, 0.5, 0.2)  # common to the domain, spatially correlated, cell-to-cell
@@ -321,6 +350,12 @@ def model_from_gauges(
         "in_sample_note": "estimated from the same gauges the probabilities can be checked "
         "against; use independent gauges for the reliability check",
     }
+    fit = None
+    fit_fn = _radarx("qpe_error_model")
+    if fit_fn is not None:
+        fit = fit_fn(
+            r[ok], g[ok], x=np.asarray(pairs.x)[ok], y=np.asarray(pairs.y)[ok], min_value=min_amount
+        )
     sources = dict(base.sources)
     sh, length = base.shares, base.corr_length_km
     if sigma_ln is None:
@@ -332,20 +367,25 @@ def model_from_gauges(
         common = mu**2 / (var + mu**2) if (var + mu**2) > 0 else 0.0
         rest = 1.0 - common
         if n >= MIN_GAUGES_VARIOGRAM:
-            res = e - mu
-            x, y = np.asarray(pairs.x)[ok], np.asarray(pairs.y)[ok]
-            d = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :]) / 1000.0
-            iu = np.triu_indices(n, 1)
-            h, sv = d[iu], 0.5 * (res[:, None] - res[None, :])[iu] ** 2
-            c0, c, a = _fit_exponential(h, sv, max(var, 1e-6))
-            nug = c0 / (c0 + c)
-            sh = (common, rest * (1 - nug), rest * nug)
-            stats["variogram"] = {
-                "model": "exponential",
-                "nugget": c0,
-                "partial_sill": c,
-                "range_km": a,
-            }
+            if fit is not None and math.isfinite(float(fit.correlation_length)):
+                a = float(fit.correlation_length) / 1000.0
+                sh = (float(fit.share_common), float(fit.share_spatial), float(fit.share_nugget))
+                stats["variogram"] = {"model": "exponential", "range_km": a, "fitted_by": "radarx"}
+            else:
+                res = e - mu
+                x, y = np.asarray(pairs.x)[ok], np.asarray(pairs.y)[ok]
+                d = np.hypot(x[:, None] - x[None, :], y[:, None] - y[None, :]) / 1000.0
+                iu = np.triu_indices(n, 1)
+                h, sv = d[iu], 0.5 * (res[:, None] - res[None, :])[iu] ** 2
+                c0, c, a = _fit_exponential(h, sv, max(var, 1e-6))
+                nug = c0 / (c0 + c)
+                sh = (common, rest * (1 - nug), rest * nug)
+                stats["variogram"] = {
+                    "model": "exponential",
+                    "nugget": c0,
+                    "partial_sill": c,
+                    "range_km": a,
+                }
             sources["shares"] = (
                 f"gauges: bias share from the mean ln ratio, the rest split by an exponential "
                 f"variogram of the deviations ({n} pairs)"
@@ -531,6 +571,27 @@ def generate_members(
             f"{n_members} members of {ny} x {nx} cells need {need / 2**20:.0f} MB (limit "
             f"{MAX_MEMBER_BYTES // 2**20} MB): use fewer members or a coarser grid"
         )
+    fn = _radarx("qpe_error_ensemble")
+    if fn is not None:
+        import xarray as xr
+
+        da = xr.DataArray(
+            base,
+            dims=("y", "x"),
+            coords={"y": np.arange(ny) * cell_m, "x": np.arange(nx) * cell_m},
+            attrs={"units": "mm"},
+        )
+        scale = None if np.ndim(weights) == 0 else np.asarray(weights, dtype=np.float32)
+        out = fn(
+            da,
+            sigma_ln=model.sigma_ln,
+            correlation_length=model.corr_length_km * 1000.0,
+            shares=model.shares,
+            members=n_members,
+            seed=int(seed),
+            scale=scale,
+        )
+        return out.values
     c, s, n = (math.sqrt(v) for v in model.shares)
     gen = CorrelatedField((ny, nx), model.corr_length_km * 1000.0 / cell_m) if s > 0 else None
     sig = np.float32(model.sigma_ln) * np.asarray(weights, dtype=np.float32)
@@ -546,6 +607,19 @@ def generate_members(
             z = z + np.float32(n) * rng.standard_normal((ny, nx)).astype(np.float32)
         out[k] = base * np.exp(sig * z - half)
     return out
+
+
+def _exceedance(members: np.ndarray, t: float) -> np.ndarray:
+    """Share of the members at or above ``t`` (radarx ``exceedance_probability`` when available)."""
+    fn = _radarx("exceedance_probability")
+    if fn is not None:
+        import xarray as xr
+
+        return fn(xr.DataArray(members, dims=("member", "y", "x")), t).values.astype(np.float64)
+    valid = np.isfinite(members)
+    count = valid.sum(axis=0)
+    hits = ((members >= t) & valid).sum(axis=0)
+    return np.where(count > 0, hits / np.maximum(count, 1), np.nan)
 
 
 def _basin_ensembles(
@@ -628,7 +702,7 @@ def generate(
     for q, arr in zip(qs, qv, strict=True):
         arrays[EnsembleResult.quantile_name(q)] = np.where(valid, arr, np.nan).astype(np.float32)
     for t in th:
-        p = (members >= t).mean(axis=0)
+        p = _exceedance(members, t)
         arrays[EnsembleResult.prob_name(t)] = np.where(valid, p, np.nan).astype(np.float32)
     basin_rows: list[dict[str, Any]] = []
     if result.basin_series is not None:
@@ -711,22 +785,45 @@ def reliability(
     if n == 0:
         raise EnsembleError("no cases for a reliability diagram")
     base = float(o.mean())
-    brier = float(np.mean((p - o) ** 2))
     ref = base * (1 - base)
     edges = np.linspace(0, 1, n_bins + 1)
-    idx = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
+    rel_fn, bs_fn = _radarx("reliability"), _radarx("brier_score")
     bins = []
-    for b in range(n_bins):
-        m = idx == b
-        bins.append(
-            {
-                "lo": float(edges[b]),
-                "hi": float(edges[b + 1]),
-                "n": int(m.sum()),
-                "mean_probability": float(p[m].mean()) if m.any() else None,
-                "observed_frequency": float(o[m].mean()) if m.any() else None,
-            }
-        )
+    if rel_fn is not None and bs_fn is not None:
+        import xarray as xr
+
+        pa, oa = xr.DataArray(p), xr.DataArray(o)
+        tab = rel_fn(pa, oa, bins=n_bins)
+        brier = float(bs_fn(pa, oa))
+        for b in range(n_bins):
+            cnt = int(tab["count"].values[b])
+            mp, of = (
+                float(tab["forecast_probability"].values[b]),
+                float(tab["observed_frequency"].values[b]),
+            )
+            bins.append(
+                {
+                    "lo": float(edges[b]),
+                    "hi": float(edges[b + 1]),
+                    "n": cnt,
+                    "mean_probability": mp if cnt else None,
+                    "observed_frequency": of if cnt else None,
+                }
+            )
+    else:
+        brier = float(np.mean((p - o) ** 2))
+        idx = np.clip(np.digitize(p, edges[1:-1]), 0, n_bins - 1)
+        for b in range(n_bins):
+            m = idx == b
+            bins.append(
+                {
+                    "lo": float(edges[b]),
+                    "hi": float(edges[b + 1]),
+                    "n": int(m.sum()),
+                    "mean_probability": float(p[m].mean()) if m.any() else None,
+                    "observed_frequency": float(o[m].mean()) if m.any() else None,
+                }
+            )
     use = [b for b in bins if b["n"] >= min_per_bin]
     slope = None
     if len(use) >= 3:
