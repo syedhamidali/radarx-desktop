@@ -5577,7 +5577,7 @@ async def _handle_connection(
         return
 
     logger.info("Client connected from %s", remote)
-    handler = ConnectionHandler(ws, remote_engine=remote_engine)
+    handler = ConnectionHandler(ws, remote_engine=True) if remote_engine else ConnectionHandler(ws)
     # Each message runs as its own task so one slow request (export, QC, cloud open)
     # never blocks pings or other requests. Binary responses stay contiguous thanks
     # to the handler's send lock.
