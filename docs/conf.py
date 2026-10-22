@@ -40,6 +40,11 @@ if not release:
 
     release = json.loads((ROOT / "package.json").read_text())["version"]
 version = ".".join(release.lstrip("v").split(".")[:2])
+# The archived copy of the documentation (scripts/release/build_docs_deposit.py) names no software version
+# anywhere it controls: not on the PDF title page, not on the home page, not in the metadata or file names.
+DEPOSIT = bool(os.environ.get("RADARX_DEPOSIT"))
+if DEPOSIT:
+    release, version = "", ""
 
 # -- extensions ---------------------------------------------------------------------------------
 extensions = [
@@ -53,6 +58,7 @@ myst_heading_anchors = 3
 source_suffix = {".rst": "restructuredtext", ".md": "myst-nb", ".ipynb": "myst-nb", ".myst": "myst-nb"}
 myst_substitutions = {
     "release": release,
+    "release_line": "" if DEPOSIT else f"**Release:** {release}",
     "today": NOW.strftime("%Y-%m-%d"),
 }
 
@@ -152,7 +158,7 @@ def _write_citation_and_credits() -> None:
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod  # dataclasses look the module up while the class is made
     spec.loader.exec_module(mod)
-    mod.write_generated(HERE / "generated", HERE, set(INTERNAL_PAGES), release.lstrip("v"))
+    mod.write_generated(HERE / "generated", HERE, set(INTERNAL_PAGES))
 
 
 _write_citation_and_credits()
@@ -171,7 +177,7 @@ latex_elements = {
     "papersize": "a4paper",
     "pointsize": "10pt",
     "extraclassoptions": "openany,oneside",
-    "releasename": "Version",
+    "releasename": " " if DEPOSIT else "Release",
     "printindex": "",
     "fvset": r"\fvset{fontsize=\footnotesize}",
     "sphinxsetup": "verbatimwrapslines=true, verbatimforcewraps=true, verbatimmaxunderfull=2, TitleColor={rgb}{0.05,0.2,0.35}",

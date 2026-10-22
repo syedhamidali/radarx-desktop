@@ -3,9 +3,9 @@
 
 Writes into ``--out``:
 
-    radarx-desktop-documentation-<version>.pdf            the manual (Sphinx LaTeX, XeLaTeX)
-    radarx-desktop-documentation-<version>-html.zip       the web pages, built from the same sources
-    zenodo_metadata.json                                  the record metadata (version and date filled in)
+    radarx-desktop-documentation.pdf                      the manual (Sphinx LaTeX, XeLaTeX)
+    radarx-desktop-documentation-html.zip                 the web pages, built from the same sources
+    zenodo_metadata.json                                  the record metadata (date filled in; no version)
     SHA256SUMS                                            checksums of the files above
 
 Both builds use SOURCE_DATE_EPOCH = the time of the current commit, so the dates printed in the documentation
@@ -99,10 +99,10 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     check_disk(out, args.min_free_gb, "start")
 
-    version = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
     epoch = commit_epoch()
     date = datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%d")
-    env = {**os.environ, "SOURCE_DATE_EPOCH": str(epoch)}
+    # RADARX_DEPOSIT: the PDF title page and the web pages carry no software version (docs/conf.py)
+    env = {**os.environ, "SOURCE_DATE_EPOCH": str(epoch), "RADARX_DEPOSIT": "1"}
     for key in ("READTHEDOCS", "READTHEDOCS_VERSION_TYPE", "READTHEDOCS_GIT_IDENTIFIER"):
         env.pop(key, None)  # the version comes from package.json, as in a local build
     sphinx = [sys.executable, "-m", "sphinx", "-q", "-E"]
@@ -112,8 +112,8 @@ def main() -> None:
         # HTML: the web pages, zipped
         run([*sphinx, "-b", "html", str(DOCS), str(build / "html")], env)
         check_disk(out, args.min_free_gb, "zip")
-        zipped = out / f"{NAME}-{version}-html.zip"
-        zip_html(build / "html", zipped, f"{NAME}-{version}")
+        zipped = out / f"{NAME}-html.zip"
+        zip_html(build / "html", zipped, NAME)
         produced.append(zipped)
 
         # PDF: Sphinx LaTeX, then latexmk with XeLaTeX (latex_engine in docs/conf.py)
@@ -122,16 +122,16 @@ def main() -> None:
             latex = build / "latex"
             run([*sphinx, "-b", "latex", str(DOCS), str(latex)], env)
             run(["latexmk", "-xelatex", "-interaction=nonstopmode", "-halt-on-error", f"{NAME}.tex"], env, cwd=latex)
-            pdf = out / f"{NAME}-{version}.pdf"
+            pdf = out / f"{NAME}.pdf"
             shutil.copyfile(latex / f"{NAME}.pdf", pdf)
             produced.append(pdf)
     finally:
         if not args.keep_build:
             shutil.rmtree(build, ignore_errors=True)
 
-    # Record metadata: version and publication date from the sources; DOIs are assigned by Zenodo, never here
+    # Record metadata: the publication date from the sources, no version; DOIs are assigned by Zenodo, never here
     meta = json.loads((DOCS / "zenodo" / "zenodo_metadata.json").read_text(encoding="utf-8"))
-    meta["metadata"]["version"] = version
+    meta["metadata"].pop("version", None)
     meta["metadata"]["publication_date"] = date
     meta_path = out / "zenodo_metadata.json"
     meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -143,7 +143,7 @@ def main() -> None:
     total = sum(p.stat().st_size for p in produced) / 1e6
     for p in produced:
         print(f"[deposit] {p.name}: {p.stat().st_size / 1e6:.1f} MB")
-    print(f"[deposit] total {total:.1f} MB, version {version}, date {date}")
+    print(f"[deposit] total {total:.1f} MB, date {date}")
     if total > args.max_mb:
         sys.exit(f"[deposit] the deposit is {total:.1f} MB, more than {args.max_mb} MB")
 

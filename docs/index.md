@@ -11,7 +11,8 @@ html_theme.sidebar_secondary.remove: true
 
 # Radarx Desktop
 
-**Release:** {{release}}\
+{{release_line}}
+
 **Date:** {{today}}
 
 A desktop app (and web app) for weather radar data, built on [xradar](https://docs.openradarscience.org/projects/xradar/en/stable/),

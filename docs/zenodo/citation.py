@@ -32,19 +32,13 @@ DOI_PLACEHOLDER = "10.5281/zenodo.XXXXXXX"
 class Citation:
     title: str
     creator: str
-    version: str
     year: str
     concept_doi: str = ""
-    version_doi: str = ""
-    versions: dict[str, str] = field(default_factory=dict)
 
     @property
     def concept(self) -> str:
+        """The one DOI of the documentation (the record's concept DOI: it names no version)."""
         return self.concept_doi or DOI_PLACEHOLDER
-
-    @property
-    def this_version(self) -> str:
-        return self.version_doi or self.versions.get(self.version, "") or DOI_PLACEHOLDER
 
 
 def build_year() -> str:
@@ -58,19 +52,17 @@ def build_year() -> str:
     return str(now.year)
 
 
-def load(version: str | None = None, folder: Path = HERE) -> Citation:
+def load(folder: Path = HERE) -> Citation:
     meta = json.loads((folder / "zenodo_metadata.json").read_text(encoding="utf-8"))["metadata"]
     dois = json.loads((folder / "doi.json").read_text(encoding="utf-8"))
-    for value in [dois.get("concept_doi", ""), *dois.get("versions", {}).values()]:
-        if value and not re.fullmatch(r"10\.\d{4,9}/\S+", value):
-            raise ValueError(f"doi.json: {value!r} is not a DOI (10.xxxx/...)")
+    value = dois.get("concept_doi", "")
+    if value and not re.fullmatch(r"10\.\d{4,9}/\S+", value):
+        raise ValueError(f"doi.json: {value!r} is not a DOI (10.xxxx/...)")
     return Citation(
         title=meta["title"],
         creator=meta["creators"][0]["name"],
-        version=version or meta.get("version", ""),
         year=build_year(),
-        concept_doi=dois.get("concept_doi", ""),
-        versions=dict(dois.get("versions", {})),
+        concept_doi=value,
     )
 
 
@@ -78,39 +70,27 @@ def _doi_url(doi: str) -> str:
     return f"https://doi.org/{doi}"
 
 
-def apa(c: Citation, *, specific: bool = False) -> str:
-    """APA 7 style. The concept citation names no version (it always resolves to the latest)."""
-    if specific:
-        return (
-            f"{c.creator}. ({c.year}). *{c.title}* (Version {c.version}) [Software documentation]. "
-            f"{PUBLISHER}. {_doi_url(c.this_version)}"
-        )
+def apa(c: Citation) -> str:
+    """APA 7 style. No version is named: the DOI always leads to the current documentation."""
     return f"{c.creator}. ({c.year}). *{c.title}* [Software documentation]. {PUBLISHER}. {_doi_url(c.concept)}"
 
 
-def bibtex(c: Citation, *, specific: bool = False) -> str:
-    doi = c.this_version if specific else c.concept
-    key = "radarx_desktop_docs" + (f"_{re.sub(r'[^0-9A-Za-z]+', '_', c.version)}" if specific else "")
+def bibtex(c: Citation) -> str:
     lines = [
-        f"@manual{{{key},",
+        "@manual{radarx_desktop_docs,",
         f"  author       = {{{{{c.creator}}}}},",  # double braces: an organisation, not a person
         f"  title        = {{{{{c.title}}}}},",
         f"  year         = {{{c.year}}},",
         f"  publisher    = {{{PUBLISHER}}},",
-    ]
-    if specific:
-        lines.append(f"  version      = {{{c.version}}},")
-    lines += [
-        f"  doi          = {{{doi}}},",
-        f"  url          = {{{_doi_url(doi)}}},",
+        f"  doi          = {{{c.concept}}},",
+        f"  url          = {{{_doi_url(c.concept)}}},",
         "  note         = {Software documentation}",
         "}",
     ]
     return "\n".join(lines)
 
 
-def ris(c: Citation, *, specific: bool = False) -> str:
-    doi = c.this_version if specific else c.concept
+def ris(c: Citation) -> str:
     lines = [
         "TY  - GEN",
         f"AU  - {c.creator}",
@@ -118,10 +98,11 @@ def ris(c: Citation, *, specific: bool = False) -> str:
         f"PY  - {c.year}",
         f"PB  - {PUBLISHER}",
         "M3  - Software documentation",
+        f"DO  - {c.concept}",
+        f"UR  - {_doi_url(c.concept)}",
+        "LA  - en",
+        "ER  - ",
     ]
-    if specific:
-        lines.append(f"ET  - {c.version}")
-    lines += [f"DO  - {doi}", f"UR  - {_doi_url(doi)}", "LA  - en", "ER  - "]
     return "\n".join(lines)
 
 
@@ -135,11 +116,9 @@ def citation_markdown(c: Citation) -> str:
             "the real DOI once the documentation is deposited.\n:::\n"
         )
     )
-    known = sorted(c.versions.items(), key=lambda kv: [int(p) if p.isdigit() else p for p in re.split(r"[.-]", kv[0])])
-    version_rows = "\n".join(f"| {v} | [{d}]({_doi_url(d)}) |" for v, d in known) or "| (none yet) | |"
     return f"""## Recommended citation
 
-DOI: **{c.concept}** (the concept DOI: always the latest version)
+DOI: **{c.concept}** (one DOI for the documentation; it always leads to the current text)
 {status}
 {apa(c)}
 
@@ -154,25 +133,6 @@ DOI: **{c.concept}** (the concept DOI: always the latest version)
 ```text
 {ris(c)}
 ```
-
-## Citing a specific version
-
-Each release of the documentation is a new version of the same record, with a DOI of its own. To cite the
-exact text you read (version {c.version} here), use that version's DOI:
-
-{apa(c, specific=True)}
-
-```bibtex
-{bibtex(c, specific=True)}
-```
-
-```text
-{ris(c, specific=True)}
-```
-
-| Version | DOI |
-| --- | --- |
-{version_rows}
 """
 
 
@@ -252,8 +212,8 @@ def credits_markdown(docs: Path, internal: set[str], folder: Path = HERE) -> str
     return "\n".join(lines)
 
 
-def write_generated(out: Path, docs: Path, internal: set[str], version: str) -> None:
+def write_generated(out: Path, docs: Path, internal: set[str]) -> None:
     """Write the fragments the published pages include (``generated/`` is not committed)."""
     out.mkdir(parents=True, exist_ok=True)
-    (out / "cite-formats.md").write_text(citation_markdown(load(version)), encoding="utf-8")
+    (out / "cite-formats.md").write_text(citation_markdown(load()), encoding="utf-8")
     (out / "image-credits-table.md").write_text(credits_markdown(docs, internal), encoding="utf-8")

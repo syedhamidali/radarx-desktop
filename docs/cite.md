@@ -6,8 +6,7 @@ can cite it.
 
 - **The DOI archives the documentation only**: the user manual you are reading, not the software and not its
   source code.
-- **One DOI for all versions.** The *concept DOI* below always leads to the latest version. Each release of the
-  documentation is added to the same record as a new version, which also gets a DOI of its own.
+- **One DOI.** It always leads to the current documentation, so the citation below names no version.
 - The citations on this page are generated from the same record information as the archive, so the formats
   always agree.
 
@@ -19,7 +18,7 @@ can cite it.
 The DOI above is for the documentation. If you used Radarx Desktop itself to make a figure or a result, say so in
 your methods and name the version you used (shown in the app under *About*, and by `rxd --version`), for example:
 
-> Radar data were processed with Radarx Desktop, version {{release}} (Radarx Desktop by LabShope Technologies,
+> Radar data were processed with Radarx Desktop, version X.Y.Z (Radarx Desktop by LabShope Technologies,
 > <https://radarx.labshope.com>).
 
 The software is a separate work from this documentation and has its own licence (see {doc}`LICENSES`). Methods
