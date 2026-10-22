@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import sys
 import time
@@ -157,6 +158,9 @@ def main() -> int:
     ap.add_argument("--skip-tuning", action="store_true", help="use the shipped statistics")
     ap.add_argument("--frames-only", action="store_true", help="grid (and cache) the frames, stop")
     ap.add_argument(
+        "--replot", action="store_true", help="figures and tables from the saved record only"
+    )
+    ap.add_argument(
         "--delete-volumes",
         action="store_true",
         help="remove the Level II files once an event's frames are cached (disk)",
@@ -166,6 +170,8 @@ def main() -> int:
     root = Path(args.dir).expanduser()
     out = Path(args.out).expanduser()
     out.mkdir(parents=True, exist_ok=True)
+    if args.replot:
+        return replot(out)
     only = {s.strip() for s in args.only.split(",") if s.strip()}
     events = [e for e in EVENTS if not only or e["id"] in only]
     t_start = time.perf_counter()
@@ -275,7 +281,47 @@ def main() -> int:
     record["per_event"] = per_event
     record["elapsed_s"] = round(time.perf_counter() - t_start, 1)
     record["peak_rss_gb"] = round(peak_rss_gb(), 2)
-    (out / "verification_record.json").write_text(json.dumps(jsonable(record), indent=2) + "\n")
+    with gzip.open(out / RECORD_NAME, "wt", encoding="utf-8") as fh:  # ~6 MB as text
+        fh.write(json.dumps(jsonable(record), indent=1) + "\n")
+    write_tables_and_figures(summary, per_event, record, out)
+    log(f"done in {record['elapsed_s']} s -> {out}")
+    return 0
+
+
+RECORD_NAME = "verification_record.json.gz"
+
+
+def _numeric_keys(obj: Any) -> Any:
+    """JSON turned the lead, threshold and scale keys into strings; back to numbers."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            try:
+                kk: Any = float(k)
+            except (TypeError, ValueError):
+                kk = k
+            out[kk] = _numeric_keys(v)
+        return out
+    if isinstance(obj, list):
+        return [_numeric_keys(v) for v in obj]
+    return obj
+
+
+def replot(out: Path) -> int:
+    """Figures and tables again from the saved record (no scoring)."""
+    with gzip.open(out / RECORD_NAME, "rt", encoding="utf-8") as fh:
+        record = json.load(fh)
+    summary = _numeric_keys(record["summary"])
+    per_event = {k: _numeric_keys(v) for k, v in record["per_event"].items()}
+    write_tables_and_figures(summary, per_event, record, out)
+    log(f"figures and tables rebuilt from {out / RECORD_NAME}")
+    return 0
+
+
+def write_tables_and_figures(
+    summary: dict[str, Any], per_event: dict[str, Any], record: dict[str, Any], out: Path
+) -> None:
+    thresholds = summary["thresholds"]
 
     # flat tables --------------------------------------------------------------------------
     rows = []
@@ -322,7 +368,7 @@ def main() -> int:
     for e, s in per_event.items():
         for m, by_lead in s["by_model_lead"].items():
             for ld, sc in by_lead.items():
-                c = sc["categorical"].get(THRESHOLDS[0], {})
+                c = sc["categorical"].get(thresholds[0], {})
                 rows.append(
                     {
                         "event": e,
@@ -332,18 +378,16 @@ def main() -> int:
                         "csi_20": c.get("csi"),
                         "pod_20": c.get("pod"),
                         "far_20": c.get("far"),
-                        "csi_35": sc["categorical"].get(THRESHOLDS[1], {}).get("csi"),
-                        "fss_20_9km": sc["fss"].get(THRESHOLDS[0], {}).get(9),
+                        "csi_35": sc["categorical"].get(thresholds[1], {}).get("csi"),
+                        "fss_20_9km": sc["fss"].get(thresholds[0], {}).get(9),
                         "mae_mm_h": sc["continuous"]["mae"],
-                        "brier_20": sc["prob"].get(THRESHOLDS[0], {}).get("brier"),
+                        "brier_20": sc["prob"].get(thresholds[0], {}).get("brier"),
                         "crps": sc.get("crps"),
                     }
                 )
     write_csv(out / "scores_per_event.csv", rows)
     make_figures(summary, per_event, record, out)
     (out / "verification_tables.txt").write_text(markdown_tables(summary, per_event, record))
-    log(f"done in {record['elapsed_s']} s -> {out}")
-    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -632,8 +676,8 @@ def make_figures(
         ax.set_ylabel("difference")
     axes[0].legend(fontsize=7, frameon=False)
     fig.suptitle(
-        "Skill relative to Eulerian persistence; bands: 95 % paired block bootstrap over events "
-        "(positive CSI difference and negative MAE difference = the nowcast is better)",
+        "Skill relative to Eulerian persistence (95 % paired block bootstrap over events; "
+        "CSI above zero and MAE below zero: the nowcast is better)",
         fontsize=7.5,
         x=0.01,
         ha="left",
@@ -641,16 +685,25 @@ def make_figures(
     fig.savefig(out / "skill_vs_persistence.png")
     plt.close(fig)
 
-    # 3. per-event CSI at 30 min: storm mode effect
+    # 3. per-event CSI at (about) 30 min: storm mode effect. An event whose scan cadence has no
+    # observation within half a step of 30 min is shown at its nearest scored lead (labelled).
     ev_ids = list(per_event)
     ld30 = min(leads, key=lambda v: abs(v - 30.0))
-    fig, ax = plt.subplots(figsize=(8, 3.2), constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(8.5, 3.4), constrained_layout=True)
     width = 0.27
+    ev_lead = {}
+    for e in ev_ids:
+        scored = [
+            ld
+            for ld in leads
+            if per_event[e]["by_model_lead"].get("eulerian", {}).get(ld, {}).get("categorical")
+        ]
+        ev_lead[e] = min(scored, key=lambda v: abs(v - 30.0)) if scored else ld30
     for i, m in enumerate(models):
         vals = [
             per_event[e]["by_model_lead"]
             .get(m, {})
-            .get(ld30, {})
+            .get(ev_lead[e], {})
             .get("categorical", {})
             .get(thr[0], {})
             .get("csi")
@@ -666,15 +719,16 @@ def make_figures(
     ax.set_xticks(np.arange(len(ev_ids)))
     ax.set_xticklabels(
         [
-            f"{e}\n{record['events'][e]['radar']}\n{record['events'][e]['mode'][:22]}"
+            f"{e} {record['events'][e]['radar']}, +{ev_lead[e]:g} min\n"
+            + _wrap(record["events"][e]["mode"], 16)
             for e in ev_ids
         ],
-        fontsize=6.5,
+        fontsize=6,
     )
-    ax.set_ylabel(f"CSI (>= {thr[0]:g} dBZ) at +{ld30:g} min [1]")
+    ax.set_ylabel(f"CSI (>= {thr[0]:g} dBZ) [1]")
     ax.set_ylim(0, 1)
     ax.legend(fontsize=7, frameon=False)
-    ax.set_title("Skill by event (storm mode) at 30 min lead", loc="left")
+    ax.set_title("Skill by event (storm mode) at the scored lead nearest 30 min", loc="left")
     fig.savefig(out / "skill_by_event.png")
     plt.close(fig)
 
@@ -762,6 +816,15 @@ def make_figures(
     )
     fig.savefig(out / "probabilistic.png")
     plt.close(fig)
+
+
+def _wrap(text: str, width: int, max_lines: int = 3) -> str:
+    import textwrap
+
+    lines = textwrap.wrap(text, width)
+    if len(lines) > max_lines:
+        lines = [*lines[: max_lines - 1], lines[max_lines - 1][: width - 1] + "…"]
+    return "\n".join(lines)
 
 
 def _roc_points(
