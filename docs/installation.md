@@ -127,6 +127,20 @@ Radarx app (0.3.0 or later) provides. (In the installed app itself Playwright is
 *movie components* download that the Movie Studio offers, about 42 MB; see {doc}`ANIMATE`.) To update, run the same `pip install` with the new version number; to check the file,
 compare it with the line for the wheel in the release's `SHA256SUMS` (see above).
 
+### Put `rxd` on your PATH
+
+If `rxd --version` says "command not found", the program is installed but its folder is not on your `PATH`. Either call it by its
+full path (`~/radarx-env/bin/rxd`, or `$HOME\radarx-env\Scripts\rxd` on Windows), or add the folder:
+
+* **macOS and Linux:** `pipx ensurepath` does it for pipx; otherwise add the folder that holds `rxd` (for a user install it is usually
+  `~/.local/bin`) to your shell start-up file, for example `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc` (`~/.zshrc` for zsh),
+  and open a new terminal.
+* **Windows:** add the `Scripts` folder of your environment to your user `PATH`: *Settings → System → About → Advanced system settings →
+  Environment Variables → Path → Edit → New*, then open a new PowerShell window.
+
+The steps for servers and clusters without a screen (the three ways to install, signing in without a browser, batch jobs) are on
+{doc}`cluster`; what you can do with the command, task by task, is on {doc}`cli-guide`.
+
 Tab completion: `source <(rxd completion zsh)`, or
 `rxd completion bash > ~/.local/share/bash-completion/completions/rxd`. Every command, with examples and the exit
 codes, is in {doc}`CLI`. It needs a signed-in account like the app ({doc}`ACCOUNTS`).
