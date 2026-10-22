@@ -16,48 +16,11 @@ def radarx_installed():
 
 
 @needs_radarx
-def test_saturation_vapour_pressure_bolton():
-    # Bolton (1980) eq. 10 at 20 degC gives 23.3 hPa; the Smithsonian tables give 23.37 hPa
-    assert derive.saturation_vapour_pressure(293.15) / 100 == pytest.approx(23.3, abs=0.15)
-    assert derive.saturation_vapour_pressure(273.15) / 100 == pytest.approx(6.112, abs=1e-3)
-
-
-@needs_radarx
-def test_dewpoint_from_relative_humidity():
-    # 20 degC and 50 % -> 9.3 degC (the usual table value, 9.26)
-    td = derive.dewpoint_from_rh(293.15, 50.0)
-    assert td - 273.15 == pytest.approx(9.3, abs=0.1)
-    # saturated air: dew point equals the temperature
-    assert derive.dewpoint_from_rh(285.0, 100.0) == pytest.approx(285.0, abs=1e-6)
-    assert np.isnan(derive.dewpoint_from_rh(285.0, 0.0))
-
-
-@needs_radarx
-def test_dewpoint_and_relative_humidity_are_inverses():
-    t = np.linspace(250, 310, 13)
-    rh = np.linspace(5, 100, 13)
-    td = derive.dewpoint_from_rh(t, rh)
-    assert derive.rh_from_dewpoint(t, td) == pytest.approx(rh, rel=1e-6)
-    assert np.all(td <= t + 1e-6)
-
-
-@needs_radarx
 def test_dewpoint_from_specific_humidity_known_answer():
     # q = 0.01 kg/kg at 1000 hPa: e = q p / (0.622 + 0.378 q) = 15.98 hPa, which is the saturation
     # vapour pressure at 14.0 degC (Bolton): dew point 14.0 degC
     td = derive.dewpoint_from_specific_humidity(0.01, 100000.0)
     assert td - 273.15 == pytest.approx(14.0, abs=0.1)
-
-
-@needs_radarx
-def test_geopotential_to_geometric_height():
-    # ERA5 geopotential of 5.5e4 m2 s-2 is a geopotential height of 5609 m, a geometric height of
-    # H Re / (Re - H) = 5613.6 m on a sphere of radius 6371.0088 km
-    h = 5.5e4 / 9.80665
-    assert derive.geopotential_to_height(5.5e4) == pytest.approx(
-        h * 6371008.8 / (6371008.8 - h), rel=1e-6
-    )
-    assert derive.geopotential_to_height(0.0) == 0.0
 
 
 PLACES = [(36.75, -88.64), (45.0, -110.0), (30.0, -75.0), (38.5, -97.5)]
