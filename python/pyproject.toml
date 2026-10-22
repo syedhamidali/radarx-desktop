@@ -1,6 +1,6 @@
 [project]
 name = "radarx-desktop-engine"
-version = "0.4.1"
+version = "0.4.2"
 description = "Python sidecar engine for radarx-desktop"
 requires-python = ">=3.12"
 license = { text = "PolyForm-Noncommercial-1.0.0" }

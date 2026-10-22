@@ -3,6 +3,21 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.4.2
+
+- **Python 3.12 or newer is now required for the command-line package** (`rxd`): it uses the radar-reading library
+  xradar 0.13, which needs Python 3.12. The installers are not affected (they carry their own Python). The new
+  library reads some files more completely and more correctly, so exported files can differ from earlier ones in the
+  data, not in layout or units: a NEXRAD sweep that lost radials is whole (720 instead of 718 rays in our example),
+  ODIM total power is `DBTH` in dBZ instead of an unlabelled `TH`, IRIS gates without data are empty instead of
+  values such as -32 dBZ, HPL lidar sweeps keep their last ray, and a CfRadial1 export keeps rays that share a time
+  stamp ({doc}`OUTPUT_STANDARDS`).
+- **CfRadial1 export is faster and lighter:** a 19-sweep NEXRAD volume exports with about 3 GB of memory instead of
+  4.5 GB, and a CfRadial1 file made by the app always goes through the app's clean-up (units, fill values, time axis,
+  standard names).
+- **Everything in 0.4.1** (the radar globe, the live map's open, view and save actions, German and airport radars on
+  the live map, `rxd serve`): 0.4.1 was built but not made available, so 0.4.2 is the next version to download.
+
 ## 0.4.1
 
 - **The radar network map is a globe:** it opens as a globe you can turn with the mouse, a finger or the keyboard
