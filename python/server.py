@@ -873,10 +873,20 @@ def _export_inputs(
 class ConnectionHandler(EnvironmentMessages, AnimateMessages):
     """Manages message routing for a single WebSocket connection, using shared state."""
 
-    def __init__(self, ws: ServerConnection, session: web.SessionContext | None = None) -> None:
+    def __init__(
+        self,
+        ws: ServerConnection,
+        session: web.SessionContext | None = None,
+        *,
+        remote_engine: bool = False,
+    ) -> None:
         self.ws = ws
         #: Web mode: this connection's private session (None = desktop mode).
         self.session = session
+        #: ``rxd serve`` (engine/serve.py): the desktop engine of a cluster account, used by an app
+        #: on another computer through an SSH tunnel. The shared session file there is the cluster
+        #: user's own ``rxd login``: the app's token is checked but never written over it.
+        self.remote_engine = remote_engine
         # Header + binary chunks of one response must reach the client contiguously
         # (it has a single "pending binary header" slot), so all sends share a lock.
         self._send_lock = asyncio.Lock()
@@ -910,11 +920,11 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         if account.bypassed:
             return True
         if (
-            self.session is not None
-            and account_core.now() > account.expires_at + account_config.LEEWAY_S
-        ):
+            self.session is not None or self.remote_engine
+        ) and account_core.now() > account.expires_at + account_config.LEEWAY_S:
             # the web service is always online: an access token past its expiry is not enough; the
-            # browser renews it (Supabase) and presents the new one with auth_session
+            # browser renews it (Supabase) and presents the new one with auth_session. A remote
+            # engine works the same way: the app that talks to it has its network
             self._why_refused = "expired"
             return False
         # The offline rule (docs/ACCOUNTS.md): 30 days from when the server last vouched.
@@ -954,7 +964,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             if self.account is not None and not self.account.bypassed:
                 self._record("sign_out")
                 await loop.run_in_executor(_activity_pool(), account_activity.flush, 2.0)
-            if self.session is None and self._gate_active():
+            if self.session is None and not self.remote_engine and self._gate_active():
                 # the app signed out: the shared file goes whether or not this connection was ever
                 # authorised (a sign-out must not depend on the engine having accepted the account)
                 await loop.run_in_executor(None, account_core.end_presented_session)
@@ -972,7 +982,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         try:
             if not isinstance(token, str):
                 raise AccountRequired("invalid")
-            persist = self.session is None  # the desktop engine has one user; the web service many
+            # the desktop engine has one user; the web service many; a remote engine's file is the
+            # cluster account's own `rxd login`, which the app must not overwrite
+            persist = self.session is None and not self.remote_engine
             account = await loop.run_in_executor(
                 None,
                 functools.partial(account_core.verify_presented_token, token, persist=persist),
@@ -987,7 +999,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         self._access_token = token
         self._why_refused = "no_session"
         device = msg.get("device_id")
-        if self.session is None and isinstance(device, str):
+        if self.session is None and not self.remote_engine and isinstance(device, str):
             from engine.account import store as account_store
 
             await loop.run_in_executor(None, account_store.set_device_id, device)
@@ -5544,7 +5556,14 @@ async def _handle_web_connection(ws: ServerConnection) -> None:
         logger.info("Web session %s from %s closed and cleaned up", ctx.id, remote)
 
 
-async def _handle_connection(ws: ServerConnection) -> None:
+async def _handle_connection(
+    ws: ServerConnection, *, tracker: Any = None, remote_engine: bool = False
+) -> None:
+    """Serve one desktop-style client until it disconnects.
+
+    ``rxd serve`` (engine/serve.py) passes ``remote_engine=True`` after its own token handshake, and
+    a ``tracker`` (``touch(message_type, tasks)``) that it uses for the idle timeout.
+    """
     if web.is_web_mode():
         await _handle_web_connection(ws)
         return
@@ -5558,7 +5577,7 @@ async def _handle_connection(ws: ServerConnection) -> None:
         return
 
     logger.info("Client connected from %s", remote)
-    handler = ConnectionHandler(ws)
+    handler = ConnectionHandler(ws, remote_engine=remote_engine)
     # Each message runs as its own task so one slow request (export, QC, cloud open)
     # never blocks pings or other requests. Binary responses stay contiguous thanks
     # to the handler's send lock.
@@ -5569,7 +5588,10 @@ async def _handle_connection(ws: ServerConnection) -> None:
 
     try:
         async for raw_message in ws:
-            admitted = _always_admitted(_web_message_type(raw_message))
+            message_type = _web_message_type(raw_message)
+            if tracker is not None:
+                tracker.touch(message_type, tasks)
+            admitted = _always_admitted(message_type)
             if not admitted and len(counted) >= DESKTOP_MAX_INFLIGHT:
                 await handler.send(dict(BUSY_REPLY))
                 continue
@@ -5604,7 +5626,21 @@ def _preload_heavy_imports() -> None:
         logger.debug("scipy preload failed: %s", exc)
 
 
-async def _run_server(port: int, host: str | None = None) -> None:
+async def _run_server(
+    port: int,
+    host: str | None = None,
+    *,
+    handler: Callable[[ServerConnection], Any] | None = None,
+    on_ready: Callable[[int], None] | None = None,
+    stop_event: asyncio.Event | None = None,
+    serve_options: dict[str, Any] | None = None,
+) -> None:
+    """Run the WebSocket server until SIGINT / SIGTERM (or ``stop_event``).
+
+    ``rxd serve`` supplies its own ``handler`` (the token handshake), ``on_ready`` (it prints the
+    address instead of ``READY:``), ``stop_event`` (the idle timeout) and ``serve_options``; port 0
+    picks a free port and ``on_ready`` receives the real one.
+    """
     web_mode = web.is_web_mode()
     if web_mode:
         web.apply_web_defaults(
@@ -5618,7 +5654,7 @@ async def _run_server(port: int, host: str | None = None) -> None:
         plugins.discover_modules()
     except Exception:
         logger.exception("Module discovery failed (continuing without plugins)")
-    stop_event = asyncio.Event()
+    stop_event = stop_event or asyncio.Event()
     loop = asyncio.get_running_loop()
 
     def _signal_handler() -> None:
@@ -5643,10 +5679,17 @@ async def _run_server(port: int, host: str | None = None) -> None:
             server_header=None,
             max_queue=8,
         )
+    serve_kwargs.update(serve_options or {})
     bind_host = host or ("127.0.0.1" if web_mode else "localhost")
-    async with websockets.serve(_handle_connection, bind_host, port, **serve_kwargs):
-        logger.info("radarx-desktop engine listening on ws://%s:%d", bind_host, port)
-        print(f"READY:{port}", flush=True)
+    async with websockets.serve(
+        handler or _handle_connection, bind_host, port, **serve_kwargs
+    ) as listener:
+        bound = listener.sockets[0].getsockname()[1] if port == 0 else port
+        logger.info("radarx-desktop engine listening on ws://%s:%d", bind_host, bound)
+        if on_ready is not None:
+            on_ready(bound)
+        else:
+            print(f"READY:{bound}", flush=True)
         # Import xradar while the user picks a file, so the first open does not pay for it.
         threading.Thread(target=_preload_heavy_imports, name="preload", daemon=True).start()
         await stop_event.wait()
