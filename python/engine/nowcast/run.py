@@ -101,7 +101,11 @@ class Nowcast:
 
     @property
     def n_members(self) -> int:
-        return 0 if self.members_rate is None else int(self.members_rate.shape[0])
+        # the members of a run that did not keep them (``keep_members=False``, as the app does)
+        # were still run: the configuration says how many
+        if self.members_rate is not None:
+            return int(self.members_rate.shape[0])
+        return max(0, int(self.config.get("n_members", 0) or 0))
 
     @property
     def field(self) -> str:
