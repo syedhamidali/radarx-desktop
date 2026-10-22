@@ -72,25 +72,36 @@ def _relative(values: np.ndarray) -> np.ndarray:
     return 0.2 + 0.8 * (v - lo) / (hi - lo)
 
 
+def offsets_to_seconds(off: np.ndarray, base: datetime) -> np.ndarray:
+    """Seconds from ``base`` of GLM time offsets, whether xarray left them as seconds or decoded them.
+
+    xarray decodes "seconds since <time>" offsets to absolute times (datetime64) or to durations
+    (timedelta64); a file read without decoding keeps plain seconds.
+    """
+    if np.issubdtype(off.dtype, np.datetime64):
+        base64 = np.datetime64(base.astimezone(UTC).replace(tzinfo=None), "ns")
+        return (off.astype("datetime64[ns]") - base64) / np.timedelta64(1, "s")
+    if np.issubdtype(off.dtype, np.timedelta64):
+        return off.astype("timedelta64[ns]").astype("int64") / 1e9
+    return off.astype(float)
+
+
+def glm_product_time(ds) -> datetime:
+    """Product (granule start) time of an opened GLM file: ``product_time`` or ``time_coverage_start``."""
+    if "product_time" in ds:
+        return _to_utc(np.asarray(ds["product_time"].values).ravel()[0])
+    if "time_coverage_start" in ds.attrs:
+        return _to_utc(ds.attrs["time_coverage_start"])
+    raise ValueError("GLM file without product_time / time_coverage_start")
+
+
 def flashes_from_glm_dataset(ds) -> list[ObservedFlash]:
     """Flashes of one opened GLM L2 LCFA dataset (an ``xarray.Dataset``)."""
     lat = np.asarray(ds["flash_lat"].values, dtype=float)
     lon = np.asarray(ds["flash_lon"].values, dtype=float)
     off = np.asarray(ds["flash_time_offset_of_first_event"].values)
-    if "product_time" in ds:
-        base = _to_utc(np.asarray(ds["product_time"].values).ravel()[0])
-    elif "time_coverage_start" in ds.attrs:
-        base = _to_utc(ds.attrs["time_coverage_start"])
-    else:
-        raise ValueError("GLM file without product_time / time_coverage_start")
-    if np.issubdtype(off.dtype, np.datetime64):
-        # xarray decodes "seconds since <time>" offsets to absolute times: back to seconds from the product time
-        base64 = np.datetime64(base.astimezone(UTC).replace(tzinfo=None), "ns")
-        off_s = (off.astype("datetime64[ns]") - base64) / np.timedelta64(1, "s")
-    elif np.issubdtype(off.dtype, np.timedelta64):
-        off_s = off.astype("timedelta64[ns]").astype("int64") / 1e9
-    else:
-        off_s = off.astype(float)
+    base = glm_product_time(ds)
+    off_s = offsets_to_seconds(off, base)
     energy = (
         np.asarray(ds["flash_energy"].values, dtype=float)
         if "flash_energy" in ds
