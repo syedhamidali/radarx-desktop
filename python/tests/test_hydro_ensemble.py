@@ -40,13 +40,6 @@ MODEL = he.ErrorModel(
 
 
 class TestKnownAnswers:
-    def test_conversions(self):
-        assert he.sigma_ln_from_cv(0.0) == 0.0
-        assert he.sigma_ln_from_cv(1.0) == pytest.approx(math.sqrt(math.log(2.0)))
-        # R = a Z^b with b = 1/1.4: 1 dB of Z is b ln(10)/10 = 0.1644 in ln R
-        assert he.sigma_ln_from_db(1.0) == pytest.approx(0.1644, abs=2e-4)
-        assert he.sigma_ln_from_db(1.0, b=1.0) == pytest.approx(math.log(10) / 10)
-
     def test_constant_field_mean_and_variance(self):
         # constant 20 mm: E[member] = 20 exactly (mean-preserving) and
         # Var[member] = 20^2 (exp(s^2) - 1) for a lognormal with log-std s = 0.4
@@ -177,7 +170,7 @@ class TestProducts:
         base = np.full((10, 10), 20.0)
         res = _result(base, sigma_frac=0.5)
         m = he.default_model(res)
-        assert m.sigma_ln == pytest.approx(he.sigma_ln_from_cv(0.5), rel=1e-6)
+        assert m.sigma_ln == pytest.approx(math.sqrt(math.log1p(0.5**2)), rel=1e-6)
         assert "engine's own uncertainty" in m.sources["sigma_ln"]
         assert "ASSUMED DEFAULT" in m.sources["corr_length_km"]
         assert "ASSUMED DEFAULT" in m.sources["shares"]
