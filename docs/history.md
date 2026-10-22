@@ -3,7 +3,7 @@
 ```{include} changes/unreleased.md
 ```
 
-## 0.4.2
+## 0.5.0
 
 - **Python 3.12 or newer is now required for the command-line package** (`rxd`): it uses the radar-reading library
   xradar 0.13, which needs Python 3.12. The installers are not affected (they carry their own Python). The new
@@ -16,7 +16,7 @@
   4.5 GB, and a CfRadial1 file made by the app always goes through the app's clean-up (units, fill values, time axis,
   standard names).
 - **Everything in 0.4.1** (the radar globe, the live map's open, view and save actions, German and airport radars on
-  the live map, `rxd serve`): 0.4.1 was built but not made available, so 0.4.2 is the next version to download.
+  the live map, `rxd serve`): 0.4.1 was built but not made available, so 0.5.0 is the next version to download.
 
 ## 0.4.1
 
