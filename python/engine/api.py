@@ -2150,6 +2150,7 @@ def qpe(
     gauge_options: Mapping[str, Any] | None = None,
     basin_options: Mapping[str, Any] | None = None,
     adjust_options: Mapping[str, Any] | None = None,
+    ensemble: Mapping[str, Any] | int | None = None,
     out: str | os.PathLike[str] | Sequence[str | os.PathLike[str]] | None = None,
     plot: str | os.PathLike[str] | None = None,
     field: str | None = None,
@@ -2181,6 +2182,13 @@ def qpe(
     basins : path or BasinSet, optional
         GeoJSON / shapefile / GeoPackage polygons: area-weighted statistics and rainfall series in
         ``result.basin_series``; ``frequency`` adds the return period of the basin-mean depth.
+    ensemble : int or dict, optional
+        Number of members, or ``{"n_members": 30, "seed": 0, "thresholds": [10, 25, 50],
+        "sigma_ln": ..., "corr_length_km": ..., "shares": (common, spatial, cell)}``: an ensemble of
+        the accumulation under an *assumed* multiplicative lognormal error model with spatial
+        correlation (parameters from the gauges when there are some, else from the engine's own
+        uncertainty and marked defaults); gives ``result.ensemble`` with mean, spread, percentiles
+        and exceedance probabilities. Seeded, with a run record. See ``docs/HYDROLOGY.md``.
     out, plot : path(s)
         ``.nc`` / ``.png`` (+ ``.pgw``, ``.prj``) / ``.json`` / ``.csv`` and a figure.
     **options
@@ -2228,6 +2236,7 @@ def qpe(
         adjust=adjust or ("mfb" if gauges is not None else None),
         adjust_options=adjust_options,
         dem=dem,
+        ensemble={"n_members": int(ensemble)} if isinstance(ensemble, int) else ensemble,
         progress=progress,
         resolution_m=resolution_m,
         max_range_km=max_range_km,

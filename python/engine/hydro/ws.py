@@ -101,9 +101,10 @@ def layer_payload(result: Any, field: str, vmin: Any = None, vmax: Any = None) -
     """The map layer of one field; registers its float grid in the mosaic cache for the probe."""
     from engine import mosaic
 
-    if field not in products.FIELDS:
+    if not products.is_known_field(field):
         raise hqpe.QpeError(
-            f"qpe: unknown field {field!r}; choose one of {', '.join(products.FIELDS)}"
+            f"qpe: unknown field {field!r}; choose one of {', '.join(products.FIELDS)} "
+            "or an ensemble field (ens_mean, ens_std, ens_p05, prob_ge_<mm>mm)"
         )
     products.field_array(result, field)  # clear error when the result lacks it
     kw: dict[str, Any] = {}
@@ -116,8 +117,9 @@ def layer_payload(result: Any, field: str, vmin: Any = None, vmax: Any = None) -
     head = rec.header()
     head.update(
         field=field,
-        label=products.FIELDS[field][0],
+        label=products.field_spec(field)[0],
         provenance_type="ADJUSTED" if field.endswith("adjusted") else "RETRIEVED",
+        class_label=products.kind_label(field),
         png_b64=base64.b64encode(rec.png).decode("ascii"),
         png_bytes=len(rec.png),
     )
@@ -126,7 +128,11 @@ def layer_payload(result: Any, field: str, vmin: Any = None, vmax: Any = None) -
 
 def _fields_available(result: Any) -> list[dict[str, str]]:
     out = []
-    for name, (label, units, _, _, _) in products.FIELDS.items():
+    names = list(products.FIELDS)
+    if getattr(result, "ensemble", None) is not None:
+        names += sorted(result.ensemble.arrays)
+    for name in names:
+        label, units = products.field_spec(name)[:2]
         try:
             products.field_array(result, name)
         except hqpe.QpeError:
@@ -192,6 +198,7 @@ def run(
         adjust=gauges.get("adjust") or None,
         adjust_options=adjust_options,
         dem=_obj(msg, "terrain").get("path") or None,
+        ensemble=_obj(msg, "ensemble") or None,
         progress=progress,
         cancel=cancel,
         **acc_opts,

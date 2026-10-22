@@ -238,3 +238,44 @@ async def test_unknown_result_id_and_web_mode(monkeypatch):
     monkeypatch.setattr(server.web, "is_web_mode", lambda: True)
     sent = await _send(handler, {"type": "qpe_run", "request_id": "w", "file_ids": ["a"]})
     assert "desktop app" in _last(sent, "qpe_error")["message"]
+
+
+@pytest.mark.asyncio
+async def test_ensemble_run_lists_probability_fields_and_serves_them_as_layers():
+    ids = _open(["2024-05-01T20:00:00", "2024-05-01T20:10:00", "2024-05-01T20:20:00"])
+    handler, _ = _make_handler()
+    sent = await _send(
+        handler,
+        {
+            "type": "qpe_run",
+            "request_id": "e1",
+            "file_ids": ids,
+            **RUN,
+            "ensemble": {"n_members": 12, "seed": 5, "thresholds": [2, 5]},
+        },
+    )
+    res = _last(sent, "qpe_result")
+    names = {f["name"] for f in res["summary"]["fields"]}
+    assert {"ens_mean", "ens_std", "ens_p50", "prob_ge_2mm", "prob_ge_5mm"} <= names
+    e = res["summary"]["ensemble"]
+    assert e["n_members"] == 12 and e["seed"] == 5 and "ASSUMED" in e["disclaimer"]
+    assert e["record"]["type"] == "qpe_ensemble"
+    qid = res["qpe_id"]
+    sent = await _send(
+        handler,
+        {"type": "qpe_layer", "request_id": "e2", "qpe_id": qid, "field": "prob_ge_2mm"},
+    )
+    lay = _last(sent, "qpe_layer_result")["layer"]
+    assert lay["field"] == "prob_ge_2mm" and lay["units"] == "1"
+    assert "assumed error model" in lay["variable"] and lay["class_label"].startswith(
+        "RETRIEVED ens"
+    )
+    # without an ensemble the field does not exist
+    ids2 = _open(["2024-05-01T21:00:00", "2024-05-01T21:10:00"])
+    sent = await _send(handler, {"type": "qpe_run", "request_id": "e3", "file_ids": ids2, **RUN})
+    qid2 = _last(sent, "qpe_result")["qpe_id"]
+    sent = await _send(
+        handler, {"type": "qpe_layer", "request_id": "e4", "qpe_id": qid2, "field": "prob_ge_2mm"}
+    )
+    err = _last(sent, "qpe_error")
+    assert "no ensemble" in err["message"]
