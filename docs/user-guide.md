@@ -67,6 +67,8 @@ export
 :caption: Command line
 
 CLI
+cli-guide
 BULK
+cluster
 command-studio
 ```
