@@ -7,7 +7,7 @@ Nothing is listed or downloaded before you agree, and a line above the map alway
 when it was measured and which radar did not answer.
 
 The live map is a feature of the desktop app and works with **two radar networks**: **NEXRAD** (the American
-WSR-88D radars, read from the public `unidata-nexrad-level2` bucket) and **DWD** (the 17 radars of the German
+WSR-88D radars and the TDWR airport radars, read from the public `unidata-nexrad-level2` bucket) and **DWD** (the 17 radars of the German
 Weather Service, read from its Open Data server). You can mix them, but a picture is only useful when the
 radars are near each other, so choose radars of one region. No other network is live yet; the section
 *Which radars are live* says which ones and why. See {doc}`opening-data` for the other ways to fetch radar data.
@@ -38,6 +38,7 @@ The choice is saved with the other settings on this computer.
 | Network | Live? | Where the volumes come from | Licence and credit |
 |---|---|---|---|
 | NEXRAD (USA) | yes | the public `unidata-nexrad-level2` bucket on AWS, anonymous | US government data; NOAA asks for credit |
+| TDWR (USA, 47 airport radars) | yes | the same bucket and the same loader as NEXRAD; their id is their own four letters (for example `TDEN`). Tested with one real lookup and one real composite (Denver). They are found by search in the chooser and can be set as default radars from the radar network map | as NEXRAD |
 | DWD (Germany, 17 radars) | yes | `opendata.dwd.de`, anonymous, the last two days; a volume is ten sweeps of reflectivity and radial velocity in 20 small files, one every 5 minutes | CC BY 4.0, source acknowledged (Deutscher Wetterdienst) |
 | EUMETNET OPERA (European volumes) | no | EUMETNET's Open Radar Data offers volumes for the last 24 hours; it is reported to need a registration and to have its own terms of use, which were **not verified here**, so the app does not use it | not checked |
 | FMI (Finland), KNMI (Netherlands), DMI (Denmark), SMHI (Sweden), Météo-France | no | **not verified**. The Finnish open bucket is a fixed two-day sample from 2023 (you can open it from the radar network map), not a live feed | not checked |

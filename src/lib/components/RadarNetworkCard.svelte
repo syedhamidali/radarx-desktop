@@ -101,7 +101,7 @@
       ? liveUnavailableReason(site)
       : isDefault
         ? 'Removes this radar from the live map default radars'
-        : `Adds this radar to the live map default radars (${liveId.startsWith('dwd:') ? 'DWD Open Data, CC BY 4.0' : 'NEXRAD Level II'}); the live map asks before it lists or downloads anything`,
+        : `Adds this radar to the live map default radars (${liveId.startsWith('dwd:') ? 'DWD Open Data, CC BY 4.0' : site.network.split('/')[0] === 'TDWR' ? 'TDWR Level II, the same bucket as NEXRAD' : 'NEXRAD Level II'}); the live map asks before it lists or downloads anything`,
   );
 
   function setDefault() {

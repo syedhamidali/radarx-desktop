@@ -131,7 +131,7 @@
   <div class="lrc brackets-4" role="dialog" aria-modal="true" aria-labelledby="lrc-title" use:focusTrap={{ initial: '#lrc-search' }}>
     <header class="lrc-head">
       <h3 id="lrc-title">Default radars for the live map</h3>
-      <p class="lrc-sub">Click radars on the map or search below. Up to {MAX_LIVE_RADARS}; the order is the order on the status line. The live map can fetch two networks: NEXRAD (USA) and DWD (Germany). Radars of other networks are on the radar network map but have no open live feed the app can use.</p>
+      <p class="lrc-sub">Click radars on the map or search below. Up to {MAX_LIVE_RADARS}; the order is the order on the status line. The live map can fetch NEXRAD and TDWR radars (USA) and DWD radars (Germany); the TDWR airport radars are found by search. Radars of other networks are on the radar network map but have no open live feed the app can use.</p>
       <div class="lrc-nets" role="group" aria-label="Network of the map">
         <button type="button" class="lrc-net" class:on={network === 'nexrad'} aria-pressed={network === 'nexrad'} onclick={() => showNetwork('nexrad')} data-testid="lrc-net-nexrad">NEXRAD (USA)</button>
         <button type="button" class="lrc-net" class:on={network === 'dwd'} aria-pressed={network === 'dwd'} onclick={() => showNetwork('dwd')} data-testid="lrc-net-dwd">DWD (Germany)</button>

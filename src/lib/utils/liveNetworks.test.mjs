@@ -42,6 +42,10 @@ test('a catalogue site is a live radar only for NEXRAD and DWD', () => {
   assert.equal(liveIdOf({ id: 'KTLX', provider: 'nexrad', provider_site: 'KTLX', data_access: 'open-loadable' }), 'KTLX');
   assert.equal(liveIdOf({ id: 'deess', provider: 'dwd', provider_site: 'ess', data_access: 'open-loadable' }), 'dwd:ess');
   assert.equal(liveIdOf({ id: 'fi', provider: 'fmi', provider_site: 'vimpeli', data_access: 'open-loadable' }), null);
+  // TDWR airport radars share NEXRAD's bucket and code: their own four-letter id is the live id
+  assert.equal(liveIdOf({ id: 'TADW', network: 'TDWR', data_access: 'open-link' }), 'TADW');
+  assert.equal(liveIdOf({ id: 'TDEN', network: 'TDWR', data_access: 'open-link' }), 'TDEN');
+  assert.equal(liveIdOf({ id: 'TOOLONG', network: 'TDWR', data_access: 'open-link' }), null);
   assert.equal(liveIdOf({ id: 'za', data_access: 'unknown' }), null);
   assert.equal(liveIdOf({ id: 'x', provider: 'dwd', provider_site: 'ess', data_access: 'open-link' }), null);
 });
@@ -52,7 +56,7 @@ test('the reason a radar cannot be live says what is true, never invents a feed'
   assert.match(liveUnavailableReason({ network: 'OSCAR', data_access: 'unknown' }), /No open volume feed is known for OSCAR/);
   assert.match(liveUnavailableReason({ network: 'OPERA', data_access: 'open-link' }), /no loader/);
   assert.match(liveUnavailableReason({ network: 'OPERA', data_access: 'key-required' }), /key or registration/);
-  assert.match(liveUnavailableReason({ network: 'OSCAR', data_access: 'unknown' }), /NEXRAD \(USA\) and DWD \(Germany\)/);
+  assert.match(liveUnavailableReason({ network: 'OSCAR', data_access: 'unknown' }), /NEXRAD and TDWR \(USA\) and DWD \(Germany\)/);
 });
 
 const CHECK = [

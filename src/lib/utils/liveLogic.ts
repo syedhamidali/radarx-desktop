@@ -47,13 +47,16 @@ export function liveSiteCode(id: string): string {
 }
 
 /**
- * The live id of a radar-catalogue site, or null when the live map cannot use it (only NEXRAD and
- * DWD volumes are fetched live; other networks are listed on the map but not claimed to work).
+ * The live id of a radar-catalogue site, or null when the live map cannot use it. Fetched live:
+ * NEXRAD, DWD, and the TDWR airport radars, whose Level II volumes are in the same public bucket as
+ * NEXRAD's and are found and opened by the same code (their id is their own four-letter id, so the
+ * catalogue's "open link" class for them only records that nobody had tested the app's path).
+ * Other networks are listed on the map but not claimed to work.
  */
-export function liveIdOf(site: { provider?: string; provider_site?: string; data_access?: string; id?: string }): string | null {
-  if (site.data_access !== 'open-loadable') return null;
-  if (site.provider === 'nexrad') return canonicalRadarId(site.provider_site ?? site.id);
-  if (site.provider === 'dwd' && site.provider_site) return canonicalRadarId(`dwd:${site.provider_site}`);
+export function liveIdOf(site: { provider?: string; provider_site?: string; data_access?: string; id?: string; network?: string }): string | null {
+  if (site.provider === 'nexrad' && site.data_access === 'open-loadable') return canonicalRadarId(site.provider_site ?? site.id);
+  if (site.provider === 'dwd' && site.data_access === 'open-loadable' && site.provider_site) return canonicalRadarId(`dwd:${site.provider_site}`);
+  if ((site.network ?? '').split('/')[0] === 'TDWR' && !site.provider) return canonicalRadarId(site.id);
   return null;
 }
 
@@ -64,7 +67,7 @@ export function liveUnavailableReason(site: { provider?: string; data_access?: s
   const net = (site.network ?? '').split('/')[0] || 'this network';
   if (site.data_access === 'open-link') return `The live map cannot fetch ${net} volumes yet: open data exist, but the app has no loader for them.`;
   if (site.data_access === 'key-required') return `${net} volumes need a key or registration; the live map does not use them.`;
-  return `No open volume feed is known for ${net} radars, so the live map cannot show this radar. Live networks: NEXRAD (USA) and DWD (Germany).`;
+  return `No open volume feed is known for ${net} radars, so the live map cannot show this radar. Live networks: NEXRAD and TDWR (USA) and DWD (Germany).`;
 }
 
 /** Valid, canonical, de-duplicated ids in the given order; at most MAX_LIVE_RADARS. */

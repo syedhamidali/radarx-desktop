@@ -8,7 +8,7 @@
 import { writable, get } from 'svelte/store';
 import { BUILTIN_SITES } from './radarSites';
 import { loadCatalogue } from '../utils/radarCatalogue';
-import { liveIdOf, type LiveNetwork } from '../utils/liveLogic';
+import { liveIdOf, liveNetworkOf, type LiveNetwork } from '../utils/liveLogic';
 
 export interface LiveSite {
   /** The live id: "KTLX" or "dwd:ess". */
@@ -39,7 +39,7 @@ export function ensureLiveSites(): Promise<void> {
         const next = new Map(get(liveSites));
         for (const s of cat.sites) {
           const id = liveIdOf(s);
-          if (id && !next.has(id)) next.set(id, { id, network: 'dwd', name: s.name, region: s.country, lat: s.lat, lon: s.lon });
+          if (id && !next.has(id)) next.set(id, { id, network: liveNetworkOf(id), name: s.name, region: liveNetworkOf(id) === 'dwd' ? s.country : s.region, lat: s.lat, lon: s.lon });
         }
         liveSites.set(next);
       })
