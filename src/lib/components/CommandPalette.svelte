@@ -214,6 +214,20 @@
       action: () => dispatch('action', { type: 'live-map' }),
     });
     actions.push({
+      id: 'nowcast',
+      label: 'Nowcast: forecast the next hour of the open radar files (experimental guidance)...',
+      category: 'Tools',
+      icon: '\u23F1',
+      action: () => dispatch('action', { type: 'nowcast', value: 'files' }),
+    });
+    actions.push({
+      id: 'nowcast-live',
+      label: 'Nowcast: forecast from the live map\u2019s recent loop (experimental guidance)...',
+      category: 'Tools',
+      icon: '\u23F1',
+      action: () => dispatch('action', { type: 'nowcast', value: 'live' }),
+    });
+    actions.push({
       id: 'live-radars',
       label: 'Live map: choose the default radars...',
       category: 'View',
