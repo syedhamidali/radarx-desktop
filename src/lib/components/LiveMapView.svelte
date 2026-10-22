@@ -21,7 +21,7 @@
   import { RADAR_COLORS, mosaicLayer, mosaicResult, type MosaicLayer, type GeoBounds } from '../stores/mosaic';
   import { countdownText, hhmmss, radarStatusText, stepFrame, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN } from '../utils/liveLogic';
   import {
-    FLOOR_CHOICES, footprintBounds, compositeLabel, legendAtFloor, floorText, multiDopplerBlocked, engineFloor,
+    FLOOR_CHOICES, footprintBounds, mapCentre, anchorStale, compositeLabel, legendAtFloor, floorText, multiDopplerBlocked, engineFloor,
   } from '../utils/liveDisplay';
   import { latLonToPixel } from '../utils/geoProjection';
   import PanZoomMap from './PanZoomMap.svelte';
@@ -57,16 +57,18 @@
   const byId = $derived($liveSites);
   const radarSites = $derived(radarIds.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x));
 
-  // Map centre: the frame's grid centre, else the centroid of the default radars, else the US.
-  const centre = $derived.by(() => {
-    if (frame) return { lat: (frame.grid.north + frame.grid.south) / 2, lon: (frame.grid.east + frame.grid.west) / 2 };
-    const sites = radarIds.map((id) => byId.get(id)).filter((x): x is NonNullable<typeof x> => !!x);
-    if (sites.length) return { lat: sites.reduce((a, x) => a + x.lat, 0) / sites.length, lon: sites.reduce((a, x) => a + x.lon, 0) / sites.length };
-    return { lat: 39, lon: -97 };
-  });
-  // The projection is anchored once per session on the first centre so panning stays consistent.
+  // Map centre: the middle of the composite, else of the radars; null while that is not known (the
+  // positions of the DWD radars come from the catalogue a moment after the view opens). Never a
+  // default place: the projection is only right near its centre (see mapCentre).
+  const centre = $derived(mapCentre(frame ? frameBounds(frame) : null, radarSites));
+  // The projection is centred once and kept (so panning stays consistent), and moved only when what
+  // is shown is no longer near it (another set of radars, a first frame far from the guess).
   let anchor = $state<{ lat: number; lon: number } | null>(null);
-  $effect(() => { if (!anchor && (frame || radarIds.length)) anchor = centre; });
+  $effect(() => {
+    const c = centre;
+    if (forecastOn || !c) return;
+    if (anchorStale(anchor, c)) anchor = c;
+  });
 
   // A nowcast made from these frames is drawn here instead of the observed composite, with its own
   // FORECAST label and lead slider (the observed frame is back with "Observations").
@@ -103,7 +105,6 @@
   });
 
   let fit = $state<GeoBounds | null>(null);
-  let fittedOnce = false;
   // A forecast drawn here (from a gridded file, or for a place the live map is not on) brings its own
   // map position, and the view fits it once per nowcast.
   let fittedForecast = '';
@@ -118,26 +119,21 @@
   });
   // Position the map on the radars' footprint (their range discs) as soon as the radars are known,
   // and on the composite's own box once the first frame of the session exists (not on every update:
-  // the user may have panned). A different set of radars starts again, with a new map centre.
-  let fitKey = '';
+  // the user may have panned). A different set of radars, or a moved projection centre, starts again.
+  let fitState = { key: '', anchor: '', stage: '' };
   const sessionKey = $derived((s.running ? s.stations : $liveRadars).join(','));
   $effect(() => {
     const key = sessionKey;
-    if (forecastOn || !key) return;
+    const a = anchor;
     const f = frame;
-    if (!fitKey.startsWith(`${key}|`)) {
-      fitKey = `${key}|sites`;
-      fittedOnce = false;
-      if (anchor) anchor = centre;
-    }
-    if (f && !fittedOnce) {
-      fittedOnce = true;
-      fitKey = `${key}|frame`;
-      fit = frameBounds(f);
-    } else if (!f && !fittedOnce && fitKey === `${key}|sites`) {
-      const b = footprintBounds(radarSites, LIVE_RING_KM);
-      if (b) fit = b;
-    }
+    if (forecastOn || !key || !a) return;
+    const aKey = `${a.lat.toFixed(2)},${a.lon.toFixed(2)}`;
+    const stage = f ? 'frame' : 'sites';
+    const same = fitState.key === key && fitState.anchor === aKey;
+    if (same && (fitState.stage === 'frame' || fitState.stage === stage)) return;
+    fitState = { key, anchor: aKey, stage };
+    const bounds = f ? frameBounds(f) : footprintBounds(radarSites, LIVE_RING_KM);
+    if (bounds) fit = bounds;
   });
   function frameBounds(f: LiveFrame): GeoBounds {
     return { west: f.grid.west, south: f.grid.south, east: f.grid.east, north: f.grid.north };

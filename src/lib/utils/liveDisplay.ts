@@ -132,6 +132,47 @@ export function footprintBounds(sites: readonly { lat: number; lon: number }[], 
   };
 }
 
+// ── What the map is centred on ─────────────────────────────────────────────────────────────
+
+export interface LatLon {
+  lat: number;
+  lon: number;
+}
+
+/**
+ * The point the map's projection is centred on: the middle of the composite's box once there is a
+ * frame, else the middle of the radars (longitudes averaged on the circle, so radars either side of
+ * the date line do not land on the far side of the world), and null while nothing is known.
+ *
+ * It is never a default place: the map is an azimuthal projection, which is exact at its centre and
+ * turns and stretches everything far from it. Centred on a default over the USA, a view of Germany
+ * 8000 km away is rotated by about 90 degrees and its place names read sideways.
+ */
+export function mapCentre(frame: Bounds | null, sites: readonly LatLon[]): LatLon | null {
+  if (frame) return { lat: (frame.north + frame.south) / 2, lon: (frame.east + frame.west) / 2 };
+  if (sites.length === 0) return null;
+  const lat = sites.reduce((n, s) => n + s.lat, 0) / sites.length;
+  const x = sites.reduce((n, s) => n + Math.cos((s.lon * Math.PI) / 180), 0);
+  const y = sites.reduce((n, s) => n + Math.sin((s.lon * Math.PI) / 180), 0);
+  return { lat, lon: (Math.atan2(y, x) * 180) / Math.PI };
+}
+
+/** Great-circle distance in km. */
+export function distanceKm(a: LatLon, b: LatLon): number {
+  const r = Math.PI / 180;
+  const h = Math.sin(((b.lat - a.lat) * r) / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(((b.lon - a.lon) * r) / 2) ** 2;
+  return 2 * 6371.0088 * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+/** How far the projection's centre may be from what is shown before it is moved (km). */
+export const MAX_ANCHOR_OFFSET_KM = 600;
+
+/** True when the projection's centre has to be moved to `centre` (nothing is anchored yet, or it is too far). */
+export function anchorStale(anchor: LatLon | null, centre: LatLon | null): boolean {
+  if (!centre) return false;
+  return anchor === null || distanceKm(anchor, centre) > MAX_ANCHOR_OFFSET_KM;
+}
+
 // ── Opening the held volumes ────────────────────────────────────────────────────────────────
 
 /** One volume of a `live_volumes_opened` reply. */
