@@ -41,6 +41,7 @@ RADAR_MAP
 RHI
 CROSSSECTION
 CELLS
+LIGHTNING
 ```
 
 ```{toctree}

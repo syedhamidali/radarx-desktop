@@ -6,7 +6,7 @@
 
 Request: ``{type: "lightning_open", request_id, paths: [absolute paths], box?: [south, west, north, east],
 t0?, t1? (ISO UTC), parallax_to_km? (GLM), good_only? (GLM), max_chi2?, min_stations?, link?: {distance_m,
-time_s, min_points, max_duration_s, metric} (LMA)}``. The answer carries the columns as base64 float32
+time_s, min_points, max_duration_s} (LMA)}``. The answer carries the columns as base64 float32
 (see :func:`engine.lightning_layer.to_wire`) and the provenance of the layer (class OBSERVED).
 
 Files are read from the engine's disk only, nothing is downloaded. Not available in web mode (a public
@@ -24,7 +24,7 @@ from typing import Any
 
 logger = logging.getLogger("xradar-server.lightning")
 
-_LINK_KEYS = {"distance_m", "time_s", "min_points", "max_duration_s", "metric"}
+_LINK_KEYS = {"distance_m", "time_s", "min_points", "max_duration_s"}
 
 
 def _number(v: Any) -> bool:
@@ -85,8 +85,6 @@ def parse_request(msg: dict[str, Any]) -> tuple[list[Path], dict[str, Any]]:
         mp = link.get("min_points", 1)
         if not (isinstance(mp, int) and not isinstance(mp, bool) and 1 <= mp <= 1000):
             raise ValueError("link.min_points must be a whole number from 1 to 1000")
-        if link.get("metric", "ellipsoid") not in ("ellipsoid", "box"):
-            raise ValueError("link.metric must be 'ellipsoid' or 'box'")
         mdur = link.get("max_duration_s")
         if mdur is not None and not (_number(mdur) and 0 < mdur <= 3600):
             raise ValueError("link.max_duration_s must be a positive number of seconds (or null)")

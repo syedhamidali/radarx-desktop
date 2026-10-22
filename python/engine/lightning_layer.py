@@ -17,16 +17,15 @@ reported. Two kinds of local files are read, **from disk only** (nothing is down
 
 Flash clustering (LMA)
 ----------------------
-Two sources are linked when their straight-line (Earth-centred Cartesian, WGS84) separation ``dx`` and
-time difference ``dt`` satisfy ``(dx / D)**2 + (dt / tau)**2 <= 1`` (``metric="ellipsoid"``); a flash is a
-connected group of linked sources (single linkage). This is the metric of Fuchs et al. (2016), who ran
-DBSCAN (Ester et al. 1996) on the same normalised space-time coordinates with ``eps = 1``; the defaults
-``D = 3 km`` and ``tau = 0.15 s`` are the values they used for the sensitive Colorado network (they used
-6 km for the less sensitive Alabama and D.C. networks), ``min_points`` is the ``min_samples`` of DBSCAN
-(they used 2 and 10). ``metric="box"`` requires ``dx <= D`` and ``|dt| <= tau`` separately, the older
-windowed linking. ``max_duration`` cuts a longer flash in time order (Fuchs et al. use 3 s). All of these
-are parameters shown next to the result. Where the paper is not followed (the cut in time order is this
-implementation's own; the buffer boundaries of the paper are not reproduced) the docs say so.
+The algorithm is ``radarx.retrieve.cluster_flashes`` (the optional radarx library, which also reads the
+files): two sources are linked when their straight-line (Earth-centred, WGS84) separation ``dx`` and time
+difference ``dt`` satisfy ``(dx / D)**2 + (dt / T)**2 <= 1`` and a flash is a connected group of linked
+sources (single linkage), the space-time metric of Fuchs et al. (2016), who ran DBSCAN (Ester et al.
+1996) on the same normalised coordinates. The defaults ``D = 3 km``, ``T = 0.15 s`` are the values they used
+for the sensitive Colorado network (6 km for the less sensitive Alabama and D.C. networks);
+``min_points`` is the ``min_samples`` of DBSCAN; ``max_duration`` cuts a longer flash in time order
+(radarx's own rule, the buffers of the paper are not reproduced). This module only chooses the sources
+(quality filter, box, window) and passes the thresholds, which the panel shows next to the result.
 
     Fuchs, B. R., E. C. Bruning, S. A. Rutledge, L. D. Carey, P. R. Krehbiel, W. Rison, 2016:
     Climatological analyses of LMA data with an open-source lightning flash-clustering algorithm.
@@ -43,7 +42,8 @@ navigates events to a "lightning ellipsoid" above the Earth's surface; **the fil
 height of that surface**, so the height the product refers to (``GLM_PRODUCT_HEIGHT_KM``) is an ASSUMPTION
 of this program (12 km, within the 6 to 16 km range that NOAA describes for the lightning ellipsoid; check
 it against the GOES-R product guide before relying on it). :func:`glm_parallax_shift` moves a position along
-the line of sight to the satellite from one assumed height to another. The layer either leaves the positions
+the line of sight to the satellite from one assumed height to another. The geometry is ``radarx.retrieve.glm_parallax`` (radarx 0.5.4 and later; a local fallback is used with older
+versions). The layer either leaves the positions
 as the product gives them and shows the parallax as an uncertainty (the shift for 5 km of cloud-top height
 error at the centre of the data), or, when the user asks, moves them to a chosen cloud-top height.
 Earth model: WGS84; the satellite at the nominal subpoint of the file at ``nominal_satellite_height``.
@@ -75,7 +75,6 @@ DEFAULT_LINK = {
     "time_s": 0.15,
     "min_points": 1,
     "max_duration_s": 3.0,
-    "metric": "ellipsoid",
 }
 #: LMA quality filter of Fuchs et al. (2016), p. 8628: chi-square at most 1, at least six stations
 DEFAULT_LMA_QC = {"max_chi2": 1.0, "min_stations": 6}
@@ -145,7 +144,25 @@ def glm_parallax_shift(
     sub-satellite point; a lower one moves it away. ``h_to_km == h_from_km`` returns the input, and a
     point under the satellite does not move. The crossing is found by bisection on the geodetic height
     along the ray (to a millimetre).
+
+    The same maths is ``radarx.retrieve.glm_parallax`` (radarx 0.5.4 and later); when the installed radarx
+    has it, that function does the work and this one only converts kilometres to metres. The code below
+    is the fallback for older radarx versions (tested against the same known answers).
     """
+    try:
+        from radarx.retrieve import glm_parallax as _glm_parallax
+    except ImportError:
+        _glm_parallax = None
+    if _glm_parallax is not None:
+        return _glm_parallax(
+            lat,
+            lon,
+            satellite_longitude=sat_lon_deg,
+            satellite_latitude=sat_lat_deg,
+            satellite_height=sat_height_km * 1000.0,
+            height_from=h_from_km * 1000.0,
+            height_to=h_to_km * 1000.0,
+        )
     lat = np.asarray(lat, dtype=float)
     lon = np.asarray(lon, dtype=float)
     shape = np.broadcast(lat, lon).shape
@@ -181,111 +198,6 @@ def distance_km(lat1, lon1, lat2, lon2) -> np.ndarray:
     dl = np.radians(np.asarray(lon2, dtype=float) - np.asarray(lon1, dtype=float))
     a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
     return 2 * 6371.0 * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
-
-
-# ── Flash clustering ────────────────────────────────────────────────────────
-
-
-def link_points(
-    t_s,
-    x_m,
-    y_m,
-    z_m,
-    *,
-    distance_m: float = DEFAULT_LINK["distance_m"],
-    time_s: float = DEFAULT_LINK["time_s"],
-    min_points: int = 1,
-    max_duration_s: float | None = None,
-    metric: str = "ellipsoid",
-    noise: str = "flash",
-) -> np.ndarray:
-    """Flash number of every point, by space-time linking (see the module text for the method and sources).
-
-    ``t_s`` seconds, ``x_m, y_m, z_m`` metres in any Cartesian frame (use ECEF). Returns an int array
-    with the flash numbers 0, 1, 2 ... in the order of the first point of each flash by time; points
-    are NOT reordered (the result matches the input order). ``min_points`` above 1 is DBSCAN's
-    ``min_samples`` (the point itself counted): a point with fewer neighbours than that is not a core
-    point; it joins the flash of a core point within the linking distance (the earliest by time) or is
-    noise, which ``noise="flash"`` makes a flash of its own and ``noise="drop"`` marks ``-1``.
-    """
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
-    from scipy.spatial import cKDTree
-
-    if metric not in ("ellipsoid", "box"):
-        raise ValueError("metric must be 'ellipsoid' or 'box'")
-    if noise not in ("flash", "drop"):
-        raise ValueError("noise must be 'flash' or 'drop'")
-    if not (distance_m > 0 and time_s > 0):
-        raise ValueError("distance and time scale must be positive")
-    t = np.asarray(t_s, dtype=float)
-    n = t.size
-    if n == 0:
-        return np.zeros(0, dtype=np.int64)
-    order = np.argsort(t, kind="stable")
-    ts = t[order]
-    xyz = np.stack([np.asarray(a, dtype=float)[order] for a in (x_m, y_m, z_m)], axis=1)
-    scaled = np.column_stack([xyz / distance_m, ts[:, None] / time_s])
-    tree = cKDTree(scaled)
-    if metric == "ellipsoid":
-        pairs = tree.query_pairs(1.0, output_type="ndarray")
-    else:
-        # a cube in space and time first (Chebyshev distance), then the ball in space
-        pairs = tree.query_pairs(1.0, p=np.inf, output_type="ndarray")
-        if len(pairs):
-            sep = np.linalg.norm(xyz[pairs[:, 0]] - xyz[pairs[:, 1]], axis=1)
-            pairs = pairs[sep <= distance_m]
-    counts = np.ones(n, dtype=np.int64)  # the point itself
-    if len(pairs):
-        np.add.at(counts, pairs[:, 0], 1)
-        np.add.at(counts, pairs[:, 1], 1)
-    core = counts >= max(1, int(min_points))
-    cc = pairs[core[pairs[:, 0]] & core[pairs[:, 1]]] if len(pairs) else pairs
-    graph = coo_matrix((np.ones(len(cc), dtype=np.int8), (cc[:, 0], cc[:, 1])), shape=(n, n))
-    _, label = connected_components(graph, directed=False)
-    label = label.astype(np.int64)
-    if min_points > 1:
-        # a point that is not a core point joins the earliest core point within reach, else it is noise
-        best = np.full(n, n, dtype=np.int64)
-        if len(pairs):
-            for src, dst in ((pairs[:, 0], pairs[:, 1]), (pairs[:, 1], pairs[:, 0])):
-                m = ~core[src] & core[dst]
-                np.minimum.at(best, src[m], dst[m])
-        joins = ~core & (best < n)
-        label[joins] = label[best[joins]]
-        if noise == "drop":
-            label[~core & (best >= n)] = -1
-
-    def renumber(lab: np.ndarray) -> np.ndarray:
-        """Flash numbers 0, 1, 2 ... in the order of each flash's first point (the points are in time order)."""
-        out = np.full(lab.shape, -1, dtype=np.int64)
-        ok = lab >= 0
-        if ok.any():
-            _, first, inverse = np.unique(lab[ok], return_index=True, return_inverse=True)
-            rank = np.empty(first.size, dtype=np.int64)
-            rank[np.argsort(first, kind="stable")] = np.arange(first.size)
-            out[ok] = rank[inverse]
-        return out
-
-    cur = renumber(label)
-    if max_duration_s and max_duration_s > 0:
-        next_id = int(cur.max()) + 1 if cur.size else 0
-        for fid in range(next_id):
-            idx = np.nonzero(cur == fid)[0]
-            if idx.size < 2 or ts[idx[-1]] - ts[idx[0]] <= max_duration_s:
-                continue
-            start = ts[idx[0]]
-            piece = fid
-            for i in idx:
-                if ts[i] - start > max_duration_s:
-                    piece = next_id
-                    next_id += 1
-                    start = ts[i]
-                cur[i] = piece
-        cur = renumber(cur)
-    res = np.empty(n, dtype=np.int64)
-    res[order] = cur
-    return res
 
 
 # ── Data model ──────────────────────────────────────────────────────────────
@@ -865,12 +777,20 @@ def lma_set_from_dataset(
     t_abs = sec[idx]
     t_ref = datetime.fromtimestamp(float(np.floor(t_abs[0])), UTC)
     tr = t_ref.timestamp()
-    xyz = geodetic_to_ecef(lat[idx], lon[idx], np.nan_to_num(alt[idx], nan=0.0))
-    flash = link_points(
-        t_abs - tr, xyz[:, 0], xyz[:, 1], xyz[:, 2],
-        distance_m=float(prm["distance_m"]), time_s=float(prm["time_s"]), min_points=int(prm["min_points"]),
-        max_duration_s=float(prm["max_duration_s"]) if prm.get("max_duration_s") else None, metric=str(prm["metric"]),
-    )  # fmt: skip
+    try:
+        from radarx.retrieve import cluster_flashes
+    except ImportError as exc:  # pragma: no cover - depends on the install
+        raise ImportError("Clustering LMA sources into flashes needs the radarx library.") from exc
+    # the flash algorithm lives in radarx (Fuchs et al. 2016); the sources are already in time order
+    clustered = cluster_flashes(
+        ds.isel(number_of_events=idx),
+        distance=float(prm["distance_m"]),
+        time=float(prm["time_s"]),
+        min_points=int(prm["min_points"]),
+        max_duration=float(prm["max_duration_s"]) if prm.get("max_duration_s") else None,
+        noise="flash",
+    )
+    flash = np.asarray(clustered["event_parent_flash_id"].values).astype(np.int64)
     nf = int(flash.max()) + 1 if flash.size else 0
     first = np.full(nf, -1, dtype=np.int64)
     last = np.full(nf, -1, dtype=np.int64)

@@ -24,151 +24,82 @@ import xarray as xr
 from engine import lightning_layer as ll
 from engine.lightning_obs import offsets_to_seconds
 
-# ── clustering ──────────────────────────────────────────────────────────────
+# ── clustering (the algorithm is radarx's; these are the desktop's known answers through the wrapper) ──
+
+LAT0, LON0 = 36.5, -89.0
+M_PER_DEG_LON = 111_320.0 * np.cos(np.radians(LAT0))  # metres per degree of longitude at LAT0
 
 
-def flat(t, x, y, z=None):
-    """Arguments of link_points for points given in metres in a flat frame."""
+def lma_dataset(t, x, alt=8000.0):
+    """Sources along a line east of the network centre: times in s, positions in metres east, height in m."""
     t = np.asarray(t, dtype=float)
-    return (
-        t,
-        np.asarray(x, dtype=float),
-        np.asarray(y, dtype=float),
-        np.zeros_like(t) if z is None else np.asarray(z, dtype=float),
+    x = np.asarray(x, dtype=float)
+    base = np.datetime64("2021-12-11T02:00:00", "ns")
+    return xr.Dataset(
+        {
+            "event_latitude": ("number_of_events", np.full(t.size, LAT0)),
+            "event_longitude": ("number_of_events", LON0 + x / M_PER_DEG_LON),
+            "event_altitude": ("number_of_events", np.full(t.size, alt)),
+            "event_power": ("number_of_events", np.full(t.size, 10.0)),
+            "event_stations": ("number_of_events", np.full(t.size, 7)),
+        },
+        coords={"event_time": ("number_of_events", base + (t * 1e9).astype("timedelta64[ns]"))},
     )
 
 
-def groups(labels):
-    """The partition as a set of frozensets of point indices (label names do not matter)."""
-    out: dict[int, set[int]] = {}
-    for i, lab in enumerate(labels):
-        out.setdefault(int(lab), set()).add(i)
-    return {frozenset(v) for v in out.values()}
+def flashes_of(t, x, **link):
+    pytest.importorskip("radarx")
+    s = ll.lma_set_from_dataset(lma_dataset(t, x), ["x.dat"], link=link or None)
+    order = np.argsort(
+        np.asarray(t, dtype=float), kind="stable"
+    )  # the set holds the sources in time order
+    groups: dict[int, set[int]] = {}
+    for i, f in enumerate(s.p_flash):
+        groups.setdefault(int(f), set()).add(int(order[i]))
+    return s, {frozenset(v) for v in groups.values()}
 
 
 def test_three_known_flashes():
-    # A: 10 sources within 1 km in 0.09 s; B: same place, 1 s later; C: 50 km away at the same time as A
+    # A: 10 sources within 1 km in 0.09 s; B: the same place 1 s later; C: 50 km away at the time of A
     ta = np.linspace(0.0, 0.09, 10)
     xa = np.arange(10) * 100.0
     t = np.concatenate([ta, ta + 1.0, ta + 0.05])
     x = np.concatenate([xa, xa, xa + 50_000.0])
-    y = np.zeros_like(x)
-    lab = ll.link_points(*flat(t, x, y))
-    assert groups(lab) == {
-        frozenset(range(0, 10)),
-        frozenset(range(10, 20)),
-        frozenset(range(20, 30)),
-    }
-    # numbered in the order of the first source by time: A (t=0) is 0, C (t=0.05) is 1, B (t=1.0) is 2
-    assert (lab[:10] == 0).all() and (lab[20:] == 1).all() and (lab[10:20] == 2).all()
+    s, groups = flashes_of(t, x)
+    assert groups == {frozenset(range(0, 10)), frozenset(range(10, 20)), frozenset(range(20, 30))}
+    assert s.n_flashes == 3 and s.f_n_points.tolist() == [10, 10, 10]
 
 
-def test_boundary_of_the_linking_ellipsoid():
-    # dx = D exactly at dt = 0 links (<= 1); a metre more does not
-    assert len(groups(ll.link_points(*flat([0, 0], [0, 3000.0], [0, 0])))) == 1
-    assert len(groups(ll.link_points(*flat([0, 0], [0, 3001.0], [0, 0])))) == 2
-    # dt = tau at dx = 0 links; a millisecond more does not
-    assert len(groups(ll.link_points(*flat([0, 0.15], [0, 0], [0, 0])))) == 1
-    assert len(groups(ll.link_points(*flat([0, 0.151], [0, 0], [0, 0])))) == 2
-
-
-def test_metrics_differ_where_expected():
-    # a chain with 0.1 s and a step of 2 km: (2/3)^2 + (0.1/0.15)^2 = 0.89 <= 1, linked in the ellipsoid;
-    # with a step of 2.5 km: 0.694 + 0.444 = 1.14 > 1, not linked in the ellipsoid but linked in the box
-    # (2.5 km <= 3 km and 0.1 s <= 0.15 s)
+def test_the_linking_ellipsoid_around_its_boundary():
+    # (dx / 3 km)^2 + (dt / 0.15 s)^2 <= 1: 2.9 km at the same time links, 3.1 km does not;
+    # 0.14 s at the same place links, 0.16 s does not (a few metres of the longitude conversion are no issue)
+    assert len(flashes_of([0, 0], [0, 2900.0])[1]) == 1
+    assert len(flashes_of([0, 0], [0, 3100.0])[1]) == 2
+    assert len(flashes_of([0, 0.14], [0, 0])[1]) == 1
+    assert len(flashes_of([0, 0.16], [0, 0])[1]) == 2
+    # a chain with 0.1 s and a step of 2 km: 0.44 + 0.44 <= 1 links; 2.5 km: 0.69 + 0.44 > 1 does not
     t = np.arange(6) * 0.1
-    for step, ell, box in ((2000.0, 1, 1), (2500.0, 6, 1)):
-        x = np.arange(6) * step
-        assert len(groups(ll.link_points(*flat(t, x, 0 * x), metric="ellipsoid"))) == ell
-        assert len(groups(ll.link_points(*flat(t, x, 0 * x), metric="box"))) == box
+    assert len(flashes_of(t, np.arange(6) * 2000.0)[1]) == 1
+    assert len(flashes_of(t, np.arange(6) * 2500.0)[1]) == 6
 
 
-def test_the_result_does_not_depend_on_the_order_of_the_input():
-    rng = np.random.default_rng(3)
-    t = np.concatenate([rng.uniform(0, 0.4, 40), rng.uniform(5, 5.4, 40)])
-    x = np.concatenate([rng.normal(0, 800, 40), rng.normal(20_000, 800, 40)])
-    y = rng.normal(0, 800, 80)
-    base = ll.link_points(*flat(t, x, y))
-    perm = rng.permutation(80)
-    shuffled = ll.link_points(*flat(t[perm], x[perm], y[perm]))
-    assert groups(base) == {
-        frozenset(int(perm_i) for perm_i in perm[list(g)]) for g in groups(shuffled)
-    }
-
-
-def test_min_points_border_and_noise():
-    # a dense core of 10 sources, a border source 2.9 km from the nearest core source (it has only 2 points
-    # in reach, itself and one core point) and a lone source far away
-    core_x = np.arange(10) * 50.0
-    x = np.concatenate([core_x, [core_x[-1] + 2900.0], [200_000.0]])
-    t = np.zeros_like(x)
-    y = np.zeros_like(x)
-    plain = ll.link_points(*flat(t, x, y), min_points=1)
-    assert groups(plain) == {frozenset(range(11)), frozenset({11})}
-    lab = ll.link_points(*flat(t, x, y), min_points=5)  # the border source joins the core's flash
-    assert groups(lab) == {frozenset(range(11)), frozenset({11})}
-    # the same with the far source as noise: it is its own flash, or -1 when noise is dropped
-    dropped = ll.link_points(*flat(t, x, y), min_points=5, noise="drop")
-    assert dropped[11] == -1 and (dropped[:11] == dropped[0]).all() and dropped[0] == 0
-    # a border source that is NOT near a core point is noise even if it is near another noise source
-    x2 = np.concatenate([core_x, [100_000.0, 100_500.0]])
-    lab2 = ll.link_points(*flat(np.zeros_like(x2), x2, 0 * x2), min_points=5, noise="drop")
-    assert (lab2[10:] == -1).all() and (lab2[:10] == 0).all()
+def test_the_thresholds_are_parameters_and_are_reported():
+    t = np.arange(6) * 0.1
+    x = np.arange(6) * 2500.0
+    s, groups = flashes_of(
+        t, x, distance_m=6000.0
+    )  # the Alabama / D.C. value of Fuchs et al.: now it links
+    assert len(groups) == 1 and s.meta["link"]["distance_m"] == 6000.0
+    assert s.meta["link"]["time_s"] == 0.15 and s.meta["link"]["max_duration_s"] == 3.0
 
 
 def test_max_duration_cuts_a_long_flash_in_time_order():
     t = np.arange(57) * 0.125  # 0 to 7.0 s, exact in binary floating point
     x = np.zeros_like(t)
-    assert len(groups(ll.link_points(*flat(t, x, x)))) == 1
-    lab = ll.link_points(*flat(t, x, x), max_duration_s=3.0)
+    assert flashes_of(t, x, max_duration_s=None)[0].n_flashes == 1
+    s, _ = flashes_of(t, x, max_duration_s=3.0)
     # a piece lasts until the first source later than 3 s after its start: 0..3.0 (25), 3.125..6.125 (25), 6.25..7.0 (7)
-    assert [int((lab == k).sum()) for k in range(3)] == [25, 25, 7]
-    assert lab.max() == 2
-
-
-def test_empty_and_single_point():
-    assert ll.link_points([], [], [], []).size == 0
-    assert ll.link_points(*flat([5.0], [1.0], [2.0])).tolist() == [0]
-    with pytest.raises(ValueError):
-        ll.link_points(*flat([0, 1], [0, 0], [0, 0]), metric="nope")
-    with pytest.raises(ValueError):
-        ll.link_points(*flat([0, 1], [0, 0], [0, 0]), distance_m=0)
-
-
-def test_matches_radarx_cluster_flashes_when_installed():
-    radarx = pytest.importorskip("radarx")
-    from radarx.retrieve import cluster_flashes
-
-    rng = np.random.default_rng(11)
-    lats, lons, alts, times = [], [], [], []
-    base = np.datetime64("2021-12-11T02:00:00", "ns")
-    for _k in range(
-        25
-    ):  # 25 random-walk flashes, 10 to 60 sources each, scattered in time and space
-        n = int(rng.integers(10, 60))
-        lat0, lon0 = 36.5 + rng.uniform(-1.5, 1.5), -89.0 + rng.uniform(-1.5, 1.5)
-        t0 = rng.uniform(0, 300)
-        step = np.cumsum(rng.normal(0, 700, (n, 3)), axis=0)
-        lats.append(lat0 + step[:, 0] / 111_000.0)
-        lons.append(lon0 + step[:, 1] / 89_000.0)
-        alts.append(8000 + step[:, 2] / 3)
-        times.append(t0 + np.sort(rng.uniform(0, 0.6, n)))
-    lat, lon, alt, tt = (np.concatenate(a) for a in (lats, lons, alts, times))
-    order = np.argsort(tt)
-    lat, lon, alt, tt = lat[order], lon[order], alt[order], tt[order]
-    ds = xr.Dataset(
-        {
-            "event_latitude": ("number_of_events", lat),
-            "event_longitude": ("number_of_events", lon),
-            "event_altitude": ("number_of_events", alt),
-        },
-        coords={"event_time": ("number_of_events", base + (tt * 1e9).astype("timedelta64[ns]"))},
-    )
-    ref = cluster_flashes(ds, distance=3000.0, time=0.15)["event_parent_flash_id"].values
-    xyz = ll.geodetic_to_ecef(lat, lon, alt)
-    mine = ll.link_points(tt, xyz[:, 0], xyz[:, 1], xyz[:, 2], distance_m=3000.0, time_s=0.15)
-    assert radarx is not None
-    assert groups(mine) == groups(ref)
+    assert s.f_n_points.tolist() == [25, 25, 7]
 
 
 # ── geodesy and parallax ────────────────────────────────────────────────────
@@ -597,12 +528,51 @@ def test_lightning_open_message(glm_file: Path):
 def test_lightning_open_is_refused_in_web_mode(glm_file: Path):
     async def run():
         h = make_handler()
-        h.session = SimpleNamespace(dir=Path('/nonexistent/session'), real_dir='/nonexistent/session')  # a web session
+        h.session = SimpleNamespace(
+            dir=Path("/nonexistent/session"), real_dir="/nonexistent/session"
+        )  # a web session
         await h._handle_lightning_open({"request_id": "w", "paths": [str(glm_file)]})
         err = h._sent[-1]
         assert err["type"] == "lightning_error" and "desktop" in err["message"]
 
     asyncio.run(run())
+
+
+def test_rxd_lightning_text_csv_and_json(glm_file: Path, tmp_path: Path, capsys):
+    from engine import cli
+
+    box = ["--box", "30", "-95", "40", "-85"]
+    code = cli.main(
+        [
+            "lightning",
+            "-i",
+            str(glm_file),
+            *box,
+            "-o",
+            str(tmp_path / "flashes.csv"),
+            "-o",
+            str(tmp_path / "rates.csv"),
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0 and "1 flashes, 3 groups" in out and "OBSERVED" in out and "parallax:" in out
+    lines = [
+        ln for ln in (tmp_path / "flashes.csv").read_text().splitlines() if not ln.startswith("#")
+    ]
+    assert lines[0].startswith("start_utc,latitude") and len(lines) == 2
+    assert lines[1].startswith("2021-12-11T02:48:21")
+    rates = [
+        ln for ln in (tmp_path / "rates.csv").read_text().splitlines() if not ln.startswith("#")
+    ]
+    assert rates[0] == "bin_start_utc,flashes,flashes_per_minute"
+    # --json carries the provenance and no column dump
+    code = cli.main(["lightning", "-i", str(glm_file), *box, "--json", "--parallax-km", "9"])
+    doc = json.loads(capsys.readouterr().out)
+    assert code == 0 and doc["n_flashes"] == 1 and doc["meta"]["parallax"]["applied_to_km"] == 9.0
+    assert "points" not in doc and doc["provenance"]["kind"] == "observed"
+    # a file that does not exist is an input error with the "nothing is downloaded" words
+    code = cli.main(["lightning", "-i", str(tmp_path / "missing.nc")])
+    assert code != 0
 
 
 def test_a_flood_of_groups_is_cut_by_whole_flashes_and_said(glm_file: Path, monkeypatch):
