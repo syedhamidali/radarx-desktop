@@ -400,7 +400,8 @@
     </section>
 
     <!-- ── Result ────────────────────────────────────────────────────────── -->
-    {#if res}
+    <!-- a nowcast frame (a forecast) is shown by the Nowcast panel, not as a mosaic -->
+    {#if res && !res.forecast}
       <section class="block result" aria-label="Mosaic result">
         <div class="block-head">
           <h4>{productLabel(res)}</h4>

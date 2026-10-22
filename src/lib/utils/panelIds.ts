@@ -8,6 +8,7 @@ export const PANEL_IDS = [
   'cloud',
   'mosaic',
   'qpe',
+  'nowcast',
   'wind',
   'volume',
   'timeseries',

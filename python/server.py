@@ -1315,6 +1315,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "qpe_export": self._handle_qpe,
             "nowcast_run": self._handle_nowcast,
             "nowcast_cancel": self._handle_nowcast,
+            "nowcast_layers": self._handle_nowcast,
             "nowcast_export": self._handle_nowcast,
             "get_wind_volume": self._handle_get_wind_volume,
             "run_multidoppler": self._handle_run_multidoppler,
@@ -4563,30 +4564,51 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         try:
             loop = asyncio.get_running_loop()
             if kind == "nowcast_run":
+                readers: list[tuple[str, Any]] = []
+                records: list[Any] = []
                 file_ids = msg.get("file_ids")
-                if (
-                    not isinstance(file_ids, list)
-                    or not file_ids
-                    or not all(isinstance(f, str) and f for f in file_ids)
-                ):
+                mosaic_ids = msg.get("mosaic_ids")
+                frames_path = msg.get("frames_path")
+                if sum(x is not None for x in (file_ids, mosaic_ids, frames_path)) != 1:
                     raise NowcastError(
-                        "nowcast_run: 'file_ids' must be a non-empty list of open files"
+                        "nowcast_run: give exactly one of 'file_ids', 'mosaic_ids' or 'frames_path'"
                     )
-                if len(set(file_ids)) != len(file_ids):
-                    raise NowcastError("nowcast_run: 'file_ids' contains duplicates")
-                readers = []
-                for fid in file_ids:
-                    _, reader = _resolve_reader(fid)
-                    if reader.datatree is None:
-                        raise NowcastError(f"File {fid} is not open")
-                    readers.append((str(getattr(reader, "_path", None) or fid), reader))
+                if file_ids is not None:
+                    if (
+                        not isinstance(file_ids, list)
+                        or not file_ids
+                        or not all(isinstance(f, str) and f for f in file_ids)
+                    ):
+                        raise NowcastError(
+                            "nowcast_run: 'file_ids' must be a non-empty list of open files"
+                        )
+                    if len(set(file_ids)) != len(file_ids):
+                        raise NowcastError("nowcast_run: 'file_ids' contains duplicates")
+                    for fid in file_ids:
+                        _, reader = _resolve_reader(fid)
+                        if reader.datatree is None:
+                            raise NowcastError(f"File {fid} is not open")
+                        readers.append((str(getattr(reader, "_path", None) or fid), reader))
+                elif mosaic_ids is not None:
+                    if (
+                        not isinstance(mosaic_ids, list)
+                        or not mosaic_ids
+                        or not all(isinstance(f, str) and f for f in mosaic_ids)
+                        or len(set(mosaic_ids)) != len(mosaic_ids)
+                    ):
+                        raise NowcastError(
+                            "nowcast_run: 'mosaic_ids' must be a non-empty list of distinct ids"
+                        )
+                    records = [mosaic.MOSAICS.get(mid) for mid in mosaic_ids]
+                elif web.is_web_mode():
+                    raise NowcastError("A gridded frames file is read in the desktop app")
                 progress_sync = self._progress_callback(loop)
                 await self.send_progress(3, "Nowcast...")
 
                 def _run() -> dict[str, Any]:
                     if cancel.is_set():
                         raise NowcastCancelled("cancelled")
-                    return nowcast_ws.run(msg, readers, progress_sync, cancel.is_set)
+                    return nowcast_ws.run(msg, readers, progress_sync, cancel.is_set, records)
 
                 try:
                     out = await _run_holding(_locks.get("mosaic"), _run)
@@ -4594,6 +4616,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
                     cancel.set()
                     raise
                 await self.send({"type": "nowcast_result", "request_id": request_id, **out})
+            elif kind == "nowcast_layers":
+                out = await loop.run_in_executor(None, nowcast_ws.layers, msg)
+                await self.send({"type": "nowcast_layers_result", "request_id": request_id, **out})
             elif kind == "nowcast_export":
                 if web.is_web_mode():
                     raise NowcastError("Saving a nowcast to a file is part of the desktop app")

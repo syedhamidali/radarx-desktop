@@ -227,7 +227,8 @@
   /** Panels (e.g. a module's "View in 3D") ask for a view through a window event. */
   function handleSetViewMode(e: Event) {
     const mode = (e as CustomEvent<{ mode?: string }>).detail?.mode;
-    if (mode === '2d' || mode === '3d' || mode === 'dualpol') {
+    // 'live' comes from a nowcast made from the live map's frames, which it draws on that map
+    if (mode === '2d' || mode === '3d' || mode === 'dualpol' || mode === 'live') {
       viewMode = mode;
       syncWorkspace();
     }
@@ -588,6 +589,13 @@
     await liveView.load();
     const live = await import('./lib/stores/live');
     live.startLive();
+  }
+
+  /** Command palette: open the Nowcast panel with the frames to start from (open files, or the live loop). */
+  async function openNowcast(source: string) {
+    const nowcast = await import('./lib/stores/nowcast');
+    nowcast.requestNowcastSource(source === 'live' ? 'live' : 'files');
+    await showPanel('nowcast');
   }
 
   /** Settings > Data > "Choose on the map…" and the live view's "Radars…" button. */
@@ -1244,6 +1252,7 @@
     else if (type === 'radar-map') openRadarMap();
     else if (type === 'live-map') void openLive();
     else if (type === 'live-radars') onLiveChooser();
+    else if (type === 'nowcast') void openNowcast(value);
   }} />
   {/if}
   {#if radarMapOpen && radarMap.component}<radarMap.component initialSiteId={radarMapSite} onclose={() => (radarMapOpen = false)} />{/if}
