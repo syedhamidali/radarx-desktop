@@ -53,7 +53,7 @@ The exit code says what went wrong, so a script can react to it.
 | 0 | success | continue |
 | 1 | the algorithm could not run on this data | log the file, continue |
 | 2 | the command was used wrongly | fix the script, stop |
-| 3 | the input file is missing or unreadable | log the file, continue |
+| 3 | the input file is missing or unreadable (an empty, 0-byte file currently gives 1) | log the file, continue |
 | 4 | an optional Python package is missing | install it, stop |
 
 ```bash
