@@ -165,7 +165,7 @@ class TestQcAlwaysOn:
     def test_issue_152_case_warns_and_records(self) -> None:
         truth = uniform_wind(25.0, 70.0)
         with pytest.warns(RuntimeWarning, match="fold check FAILED"):
-            out = qc.velocity_dealiasing(as_da(fold(truth)), NYQ)
+            out = qc.velocity_dealiasing(as_da(fold(truth)), NYQ, engine="builtin")
         assert out.attrs["qc_fold_check"].startswith("whole_field_offset")
         # the check reports, it does not change the data: still off by exactly one interval
         assert np.allclose(np.abs(out.values - truth), 2 * NYQ)
@@ -318,7 +318,7 @@ def test_real_sweep_region_unfolding_passes_and_a_planted_offset_is_found(
     da = xr.DataArray(vel, dims=("azimuth", "range"), coords={"azimuth": az, "range": rng})
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        out = qc.velocity_dealiasing(da, nyq).values
+        out = qc.velocity_dealiasing(da, nyq, engine="builtin").values
     assert fold_check(out, az, nyq, rng)["status"] == "consistent"
     planted = fold_check(out + 2.0 * nyq, az, nyq, rng)
     assert planted["status"] == verdict
@@ -352,3 +352,47 @@ def test_real_case_radarx_region_sweep_with_a_wrong_interval_is_flagged() -> Non
     check = fold_check(out.transpose("azimuth", "range").values, az, nyq, rng)
     assert check["status"] in ("inconsistent", "whole_field_offset")
     assert check["off_share"] > 0.5
+
+
+# ---------------------------------------------------------------------------
+# The unfolding engine: radarx when installed, the built-in method otherwise
+# ---------------------------------------------------------------------------
+
+
+class TestEngine:
+    @needs_radarx
+    def test_radarx_gets_the_issue_152_case_right(self) -> None:
+        """25 m/s with Vn 10 over a full circle: radarx anchors the absolute fold at zero mean and
+        returns the truth, where the built-in method is a whole interval off."""
+        truth = uniform_wind(25.0, 70.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            out = qc.velocity_dealiasing(as_da(fold(truth)), NYQ)  # engine auto
+        np.testing.assert_allclose(out.values, truth, atol=1e-9)
+        assert "radarx region method" in out.attrs["qc_dealiased"]
+        assert out.attrs["qc_fold_check"].startswith("consistent")
+
+    @needs_radarx
+    def test_engine_radarx_and_builtin_are_selectable(self) -> None:
+        da = as_da(fold(uniform_wind(8.0, 200.0)))
+        a = qc.velocity_dealiasing(da, NYQ, engine="radarx")
+        b = qc.velocity_dealiasing(da, NYQ, engine="builtin")
+        assert "radarx" in a.attrs["qc_dealiased"] and "built-in" in b.attrs["qc_dealiased"]
+
+    def test_without_radarx_auto_falls_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        monkeypatch.setitem(sys.modules, "radarx", None)
+        monkeypatch.setitem(sys.modules, "radarx.retrieve", None)
+        out = qc.velocity_dealiasing(as_da(fold(uniform_wind(8.0, 200.0))), NYQ)
+        assert "built-in" in out.attrs["qc_dealiased"]
+        with pytest.raises(ValueError, match="needs radarx"):
+            qc.velocity_dealiasing(as_da(fold(uniform_wind(8.0, 200.0))), NYQ, engine="radarx")
+
+    def test_bad_engine(self) -> None:
+        with pytest.raises(ValueError, match="engine must be"):
+            qc.velocity_dealiasing(as_da(np.zeros((360, 5))), NYQ, engine="magic")
+
+    def test_registry_offers_the_option(self) -> None:
+        p = qc.QC_REGISTRY["velocity_dealiasing"]["params"]["engine"]
+        assert p["default"] == "auto" and p["options"] == ["auto", "builtin", "radarx"]
