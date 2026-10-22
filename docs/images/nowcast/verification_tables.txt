@@ -13,7 +13,7 @@
 
 **Reflectivity >= 20 dBZ, pooled over the verification events** (CSI; FSS at 9 km; the nowcast's CSI minus persistence's with its 95 % block-bootstrap interval over events):
 
-| lead | CSI nowcast | CSI one-vector | CSI persistence | FSS 9 km nowcast | FSS 9 km persistence | CSI nowcast - persistence [95 % CI] |
+| lead | CSI nowcast | CSI one-vector | CSI persistence | FSS 9 km nowcast | FSS 9 km persistence | CSI nowcast - persistence [95 % interval] |
 |---|---|---|---|---|---|---|
 | +5 min | 0.85 | 0.84 | 0.81 | 0.99 | 0.97 | +0.04 [+0.04, +0.06] |
 | +10 min | 0.79 | 0.78 | 0.76 | 0.96 | 0.95 | +0.03 [+0.02, +0.06] |
@@ -26,7 +26,7 @@
 
 **Reflectivity >= 35 dBZ, pooled over the verification events** (CSI; FSS at 9 km; the nowcast's CSI minus persistence's with its 95 % block-bootstrap interval over events):
 
-| lead | CSI nowcast | CSI one-vector | CSI persistence | FSS 9 km nowcast | FSS 9 km persistence | CSI nowcast - persistence [95 % CI] |
+| lead | CSI nowcast | CSI one-vector | CSI persistence | FSS 9 km nowcast | FSS 9 km persistence | CSI nowcast - persistence [95 % interval] |
 |---|---|---|---|---|---|---|
 | +5 min | 0.63 | 0.60 | 0.51 | 0.95 | 0.90 | +0.12 [+0.10, +0.14] |
 | +10 min | 0.55 | 0.50 | 0.43 | 0.90 | 0.81 | +0.12 [+0.11, +0.15] |
@@ -39,7 +39,7 @@
 
 **Reflectivity >= 45 dBZ, pooled over the verification events** (CSI; FSS at 9 km; the nowcast's CSI minus persistence's with its 95 % block-bootstrap interval over events):
 
-| lead | CSI nowcast | CSI one-vector | CSI persistence | FSS 9 km nowcast | FSS 9 km persistence | CSI nowcast - persistence [95 % CI] |
+| lead | CSI nowcast | CSI one-vector | CSI persistence | FSS 9 km nowcast | FSS 9 km persistence | CSI nowcast - persistence [95 % interval] |
 |---|---|---|---|---|---|---|
 | +5 min | 0.60 | 0.56 | 0.43 | 0.95 | 0.86 | +0.17 [+0.14, +0.19] |
 | +10 min | 0.50 | 0.44 | 0.33 | 0.89 | 0.74 | +0.17 [+0.15, +0.23] |
@@ -52,7 +52,7 @@
 
 **Rain rate (mm/h, WSR-88D Z-R) and the ensemble**, pooled:
 
-| lead | MAE nowcast | MAE persistence | MAE difference [95 % CI] | CRPS ensemble | spread | Brier >= 20 dBZ nowcast | Brier persistence (0/1) | BSS vs climatology | ROC area |
+| lead | MAE nowcast | MAE persistence | MAE difference [95 % interval] | CRPS ensemble | spread | Brier >= 20 dBZ nowcast | Brier persistence (0/1) | BSS vs climatology | ROC area |
 |---|---|---|---|---|---|---|---|---|---|
 | +5 min | 2.450 | 3.874 | -1.424 [-2.114, -0.795] | 1.955 | 1.079 | 0.0733 | 0.1434 | 0.68 | 0.95 |
 | +10 min | 3.305 | 5.011 | -1.706 [-3.003, -0.646] | 2.468 | 1.832 | 0.1023 | 0.1864 | 0.55 | 0.92 |

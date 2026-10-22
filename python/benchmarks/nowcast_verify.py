@@ -482,7 +482,7 @@ def markdown_tables(
                     "CSI persistence",
                     "FSS 9 km nowcast",
                     "FSS 9 km persistence",
-                    "CSI nowcast - persistence [95 % CI]",
+                    "CSI nowcast - persistence [95 % interval]",
                 ]
             ),
             "|---|---|---|---|---|---|---|",
@@ -514,7 +514,7 @@ def markdown_tables(
                 "lead",
                 "MAE nowcast",
                 "MAE persistence",
-                "MAE difference [95 % CI]",
+                "MAE difference [95 % interval]",
                 "CRPS ensemble",
                 "spread",
                 "Brier >= 20 dBZ nowcast",

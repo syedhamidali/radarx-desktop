@@ -16,7 +16,7 @@ pretends to be finished is the kind of claim this page forbids.
 
 ## 1. Provenance classes
 
-Every layer, field, number and file belongs to exactly one of five classes. The class decides what the
+Every layer, field, number and file belongs to exactly one of six classes. The class decides what the
 reader must be told.
 
 | Class | What it is | Examples |
