@@ -102,6 +102,7 @@ html_theme_options = {
 # measurements, design notes, running it as a service. They stay in the source tree (scripts/check_links.py
 # reads this list) and are not part of the published documentation.
 INTERNAL_PAGES = [
+    "ACCESSIBILITY",
     "API",
     "BUNDLING",
     "DESIGN",
