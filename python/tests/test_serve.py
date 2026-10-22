@@ -183,11 +183,30 @@ def test_the_token_file_is_never_written_through_a_symbolic_link(tmp_path):
     assert target.read_text() == "keep"
 
 
+def test_a_port_that_is_taken_is_explained_and_nothing_is_left_behind(capsys, tmp_path):
+    import socket
+
+    taken = socket.socket()
+    taken.bind(("127.0.0.1", 0))
+    taken.listen(1)
+    try:
+        token_file = tmp_path / "token"
+        code = cli.main(
+            ["serve", "--port", str(taken.getsockname()[1]), "--token-file", str(token_file)]
+        )
+    finally:
+        taken.close()
+    err = capsys.readouterr()
+    assert code == cli.EXIT_FAILED and "cannot listen" in err.err and "--port" in err.err
+    assert "Traceback" not in err.err
+    assert not token_file.exists()  # removed again: no token is left on disk after a failed start
+
+
 def test_command_studio_cannot_start_a_second_server():
     from engine import cli_schema
 
     result = cli_schema.run_command(["serve"])
-    assert result["code"] == cli.EXIT_USAGE and "already serving" in result["message"]
+    assert result["code"] == cli.EXIT_USAGE and "already serves" in result["message"]
     assert result["stdout"] == ""  # nothing was started, so there is no banner and no token
 
 
