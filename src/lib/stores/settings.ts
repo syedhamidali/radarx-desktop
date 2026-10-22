@@ -1,6 +1,7 @@
 import { writable, derived, get } from 'svelte/store';
 import { basename } from '../utils/env';
 import { normalizeRadarIds, clampIntervalMin } from '../utils/liveLogic';
+import { clampFloorDbz, DEFAULT_FLOOR_DBZ } from '../utils/liveDisplay';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -64,6 +65,10 @@ export interface LiveSettings {
   radars: string[];
   /** Minutes between two updates of the live map (2..15). */
   intervalMin: number;
+  /** "Hide echo below N dBZ": reflectivity below this is not drawn (display only; default 5). */
+  floorDbz: number;
+  /** Draw each radar's range ring (subtle) on the live map. */
+  rings: boolean;
 }
 
 export interface AppSettings {
@@ -126,6 +131,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   live: {
     radars: [],
     intervalMin: 5,
+    floorDbz: DEFAULT_FLOOR_DBZ,
+    rings: true,
   },
   shortcuts: {
     'open-file': { key: 'mod+o' },
@@ -202,6 +209,8 @@ function loadSettings(): AppSettings {
       }
       merged.live.radars = normalizeRadarIds(merged.live.radars);
       merged.live.intervalMin = clampIntervalMin(merged.live.intervalMin);
+      merged.live.floorDbz = clampFloorDbz(merged.live.floorDbz);
+      merged.live.rings = merged.live.rings !== false;
       merged.theme.fontSize = Math.min(18, Math.max(11, merged.theme.fontSize));
       merged.export_.dpi = Math.min(600, Math.max(72, Math.round(merged.export_.dpi)));
       if (!['dark', 'light', 'auto'].includes(merged.theme.mode)) merged.theme.mode = 'dark';
@@ -329,6 +338,8 @@ export const accentColor = derived(settings, ($s) => $s.theme.accentColor);
 /** The default radars of the live map (ordered NEXRAD ids; empty until the user chose some). */
 export const liveRadars = derived(settings, ($s) => $s.live.radars);
 export const liveIntervalMin = derived(settings, ($s) => $s.live.intervalMin);
+export const liveFloorDbz = derived(settings, ($s) => $s.live.floorDbz);
+export const liveRings = derived(settings, ($s) => $s.live.rings);
 
 export function setLiveRadars(ids: readonly string[]): void {
   settings.updateSetting('live', { radars: normalizeRadarIds(ids) });
@@ -336,4 +347,12 @@ export function setLiveRadars(ids: readonly string[]): void {
 
 export function setLiveIntervalMin(min: number): void {
   settings.updateSetting('live', { intervalMin: clampIntervalMin(min) });
+}
+
+export function setLiveFloorDbz(dbz: number): void {
+  settings.updateSetting('live', { floorDbz: clampFloorDbz(dbz) });
+}
+
+export function setLiveRings(on: boolean): void {
+  settings.updateSetting('live', { rings: !!on });
 }
