@@ -151,6 +151,15 @@ loaded machine, so look at the ratios):
 | resident memory at `READY` | 165 MB | 145 MB |
 | libraries / memory 3 s later (after the pre-import) | 276 / 242 MB | 275 / 240 MB |
 
+**What radarx costs (optional extra).** radarx is never imported at start-up (checked by
+`test_importing_the_server_does_not_load_the_hdf5_libraries_or_pillow`). When the extra is
+installed, the first `import radarx` takes about 790 ms of CPU (885 ms wall; radarx 0.5.1, same
+machine), more than the whole engine start-up: `radarx.grid` (630 ms, mostly `scipy.interpolate`
+and `scipy.optimize`) and `radarx.retrieve` (270 ms). That cost lands on the first radarx module,
+mosaic or wind run of a session, and stays out of the way until then. Importing it in the
+background after `READY` would hide it, at the price of CPU and memory for people who never run
+a radarx module; not done.
+
 Not changed, and why: `xarray` imports `pandas` itself (a hard dependency of both), and the
 engine uses xarray in nearly every module, so about 300 ms remain in `import server`. Where
 `pyarrow` is installed, pandas loads it as well (about 55 ms); the installers do not ship it.
