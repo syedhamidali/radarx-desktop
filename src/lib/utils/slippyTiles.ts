@@ -8,7 +8,7 @@
  * a texture; the tile hosts the app uses (OpenStreetMap, OpenTopoMap) allow that. Attribution stays the
  * caller's duty: whoever draws tiles must keep the provider's attribution on screen.
  */
-import { basemapTileUrl, type BasemapProvider } from './basemaps';
+import { basemapTileUrl, type BasemapProvider } from './basemaps.ts';
 
 export interface TileWant {
   z: number;

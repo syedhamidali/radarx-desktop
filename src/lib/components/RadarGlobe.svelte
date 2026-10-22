@@ -224,7 +224,8 @@ export interface GlobePerf {
   }
 
   // ── Colours (tokens; recomputed when the theme changes) ──────────────────────────────────────
-  let cols = { ink: '#fff', dim: '#aaa', muted: '#888', accent: '#0cf', bg: '#000', line: '', lineFaint: '', rim: '' };
+  // Filled from the theme tokens by readColours() before the first frame.
+  let cols = { ink: '', dim: '', muted: '', accent: '', bg: '', line: '', lineFaint: '', rim: '' };
   function readColours() {
     cols = {
       ink: text(), dim: textDim(), muted: muted(), accent: accent(), bg: surface(1),
