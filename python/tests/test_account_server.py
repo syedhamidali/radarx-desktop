@@ -76,7 +76,6 @@ REQUESTS = [
     {"type": "list_recipes"},
     {"type": "list_nexrad_stations"},
     {"type": "save_text_file", "path": "x.txt", "content": "x"},
-    {"type": "definitely_not_a_message"},
 ]
 
 
@@ -90,6 +89,32 @@ async def test_nothing_works_before_an_account_is_presented(gate_on, tmp_path):
         assert replies[0]["request_type"] == msg["type"]
         assert "not signed in" in replies[0]["message"]
     assert server._file_readers == {}  # the file was never opened: no processing happened
+
+
+@pytest.mark.parametrize(
+    "bad_type", ["definitely_not_a_message", "open_fil", "Render", 5, 1.5, [1]]
+)
+async def test_an_unknown_message_type_is_not_called_a_sign_in_problem(gate_on, bad_type):
+    client = Client()
+    replies = await client.call({"type": bad_type})
+    assert [r["type"] for r in replies] == ["error"], replies
+    assert "type" in replies[0]["message"]  # "Unknown message type ..." / "'type' must be a string"
+    assert "sign" not in replies[0]["message"].lower()
+    await client.call(session_msg(gate_on, device_id="abcdef1234567890"))
+    signed_in = await client.call({"type": bad_type})  # the same answer once signed in
+    assert [r["type"] for r in signed_in] == ["error"]
+    assert signed_in[0]["message"] == replies[0]["message"]
+
+
+@pytest.mark.parametrize("bad_type", ["definitely_not_a_message", "open_fil", "Render"])
+async def test_a_mistyped_message_type_is_named_unknown(gate_on, bad_type):
+    reply = (await Client().call({"type": bad_type}))[0]
+    assert reply["type"] == "error" and reply["message"] == f"Unknown message type: {bad_type}"
+
+
+async def test_an_unknown_message_type_is_not_echoed_back_at_any_length(gate_on):
+    reply = (await Client().call({"type": "x" * 100_000}))[0]
+    assert reply["type"] == "error" and len(reply["message"]) < 200
 
 
 async def test_request_ids_are_echoed_so_the_ui_can_fail_the_right_request(gate_on):

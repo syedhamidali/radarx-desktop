@@ -295,6 +295,78 @@ published curves depend on region, duration and return period (e.g. the US Weath
 curves, Svensson and Jones 2010 for the UK), so you choose the one that fits your region and cite it. The factor used and the
 point-equivalent depth are reported next to the return period.
 
+## Probabilistic rainfall: an ensemble of the estimate
+
+One accumulation is one number per cell. Hydrologists also need "how likely is at least 50 mm here?". `--ensemble N`
+(`rxd qpe`, `rxd basin`, `api.qpe(ensemble=N)`, and *Probabilistic rainfall* in the Rainfall panel) builds **N equally
+likely possible truths** around the estimate and derives from them the **mean, the spread, percentiles (5, 50, 95 %)
+and the probability of reaching chosen depths**, per cell and per basin.
+
+```{admonition} The ensemble is the error model you assumed
+:class: warning
+The members come from an error model, not from the physics of the rain. The probabilities are conditional on that model, contain
+only the errors it lists, and are **not calibrated** unless the result says they were checked against gauges (and then
+only for those gauges). An output without gauges says so: "the probabilities are NOT validated against observations".
+It is labelled `RETRIEVED` with the extra words "ensemble, assumed error model"; it is not a forecast.
+```
+
+**The model.** Multiplicative, lognormal, spatially correlated, in the logarithm of the rain (the idea of the radar ensemble
+generator of Germann et al. 2009, which describes the radar error as the log ratio of gauge to radar and its spatial structure
+with an exponential semivariogram; the construction here is simpler and our own):
+
+    member = estimate × exp( s · w(x) · z(x) − s² w(x)² / 2 )
+
+* *s* is the standard deviation of ln(truth / estimate); the last term makes the factor average to 1, so the **ensemble
+  mean is the estimate** (depths in mm are averaged as they are, never as decibels; a rain rate or depth ensemble mean of
+  10 and 40 mm is 25 mm, the geometric mean 20 mm would be lower by exp(−s²/2)),
+* *z* is a unit-variance Gaussian field made of three independent parts: **one number for the whole domain** (a calibration
+  or Z–R bias is the same in every cell), a **spatially correlated field** with correlation exp(−*h*/*L*), and
+  **cell-to-cell noise**; the *shares* of the variance are given for each,
+* *w(x)* scales the error cell by cell with the estimate's own uncertainty field (larger at long range, in hail, behind attenuation).
+
+A cell with 0 mm stays 0 mm in every member (rain is never created where the radar saw none) and cells without an estimate
+stay empty. Member *k* is drawn from `SeedSequence(seed).spawn(N)[k]`: the same seed and options give the same members, and
+adding members does not change the first ones. The seed and the whole model are in the run record that every output carries
+(NetCDF attribute `ensemble_record`, `-o x.json`).
+
+**Where the numbers come from** (each is reported with its source, in the output and in the panel):
+
+| | With gauges (`--gauges`) | Without gauges |
+|---|---|---|
+| *s* | root mean square of ln(gauge/radar) over the gauges with at least 1 mm on both sides, so a bias between them is part of the error (5 gauges needed) | the engine's own uncertainty model: median relative 1σ of the accumulation where it is at least 0.5 mm, as a log standard deviation (not fitted) |
+| shares | the bias share from the mean ln ratio, the rest split by an exponential variogram of the deviations (8 gauges needed, else an assumed 70 / 30 split, said so) | **assumed default** 0.3 common / 0.5 spatial / 0.2 cell to cell: not measured, not a literature value |
+| *L* | the variogram range (8 gauges), a rough number with so few points | **assumed default** 25 km: not measured, not a literature value |
+
+Change any of them (`--error-sigma-ln`, `--error-corr-km`, `--error-shares`) and see how the probabilities move: with
+assumed defaults, that sensitivity *is* the honest statement. The model is built around the radar-only estimate; if you also
+adjust to gauges, the ensemble is centred on the adjusted field and keeps the (conservative) spread of the radar-only
+errors. If the gauges are on average more than 10 % from the radar the output says so.
+
+**Reliability.** With at least 30 gauges the exceedance probabilities are checked at the gauges: for each depth, the share of
+members at least that deep is the probability and "the gauge total is at least that deep" is the event. The output gives the
+Brier skill against the climatological frequency of the same sample and the **reliability slope** (observed frequency against
+forecast probability; 1 is perfect, below 1 overconfident). When the error model was fitted to the same gauges the check is
+optimistic, and says so. With fewer than 30 gauges it says the probabilities are not validated.
+
+On a **synthetic case where the truth is known** (a smooth 25 ± 20 mm field, radar = truth divided by a spatially correlated
+lognormal error with σ = 0.35 and correlation length 8 km, 600 gauges that read the truth), the model fitted from the gauges
+(σ 0.31, correlation length 5.4 km) gives a Brier skill of 0.51 and a reliability slope of 0.93, and the same ensemble with half
+the spread is overconfident (slope 0.79). That shows the check can tell a right spread from a too-narrow one, **not** that the
+ensemble is right for real rain: real radar errors (vertical profile, bright band, overshoot) are not in the model.
+
+**Outputs.** `-o x.nc` adds `ens_mean`, `ens_std`, `ens_p05`, `ens_p50`, `ens_p95` and `prob_ge_<mm>mm` with their labels; the
+map layers have the same names (`--field prob_ge_25mm`, or the layer list of the panel). `--exceed 5,10,25` chooses the depths
+(default 5, 10, 25, 50, 100 mm). With basins, each basin gets the area-weighted basin-mean depth over the members (mean,
+5th and 95th percentile) and the probability that the basin mean reaches each depth. The Monte Carlo noise of a probability
+is about 0.5/√N at p = 0.5 (0.09 for 30 members): use 100 or more members for a map you want to read to the nearest 10 %.
+
+The ensemble, the error model from gauges, the probabilities and the reliability tables are functions of the radarx library; the
+program uses them when the installed radarx has them and otherwise computes the same thing itself.
+
+**Not done yet:** perturbing the physical inputs (calibration offset, ZDR bias, attenuation, vertical profile) through the
+radarx ensemble tools and re-running the retrieval (the error model here acts on the finished accumulation); feeding the
+members to a runoff model (that model does not exist yet); an interactive reliability diagram.
+
 ## Accuracy against a known truth
 
 These numbers come from the validation runs of the method; the DSD runs use the radarx forward
@@ -404,6 +476,10 @@ same image while it is on the map.
 * Fulton, R. A., et al., 1998: The WSR-88D rainfall algorithm. *Wea. Forecasting*, **13**, 377–395.
 * Gal-Chen, T., 1982: Errors in fixed and moving frame of references: Applications for conventional and
   Doppler radar analysis. *J. Atmos. Sci.*, **39**, 2279–2300.
+* Dietrich, C. R., and G. N. Newsam, 1997: Fast and exact simulation of stationary Gaussian processes through
+  circulant embedding of the covariance matrix. *SIAM J. Sci. Comput.*, **18**, 1088–1107.
+* Germann, U., M. Berenguer, D. Sempere-Torres, and M. Zappa, 2009: REAL: ensemble radar precipitation estimation for
+  hydrology in a mountainous region. *Quart. J. Roy. Meteor. Soc.*, **135**, 445–456.
 * Giangrande, S. E., and A. V. Ryzhkov, 2008: Estimation of rainfall based on the results of polarimetric echo
   classification. *J. Appl. Meteor. Climatol.*, **47**, 2445–2462.
 * Goudenhoofd, E., and L. Delobbe, 2009: Evaluation of radar-gauge merging methods for quantitative

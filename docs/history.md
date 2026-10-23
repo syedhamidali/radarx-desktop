@@ -3,6 +3,25 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.5.0
+
+- **Python 3.12 or newer is now required for the command-line package** (`rxd`): it uses the radar-reading library
+  xradar 0.13, which needs Python 3.12. The installers are not affected (they carry their own Python). The new
+  library reads some files more completely and more correctly, so exported files can differ from earlier ones in the
+  data, not in layout or units: a NEXRAD sweep that lost radials is whole (720 instead of 718 rays in our example),
+  ODIM total power is `DBTH` in dBZ instead of an unlabelled `TH`, IRIS gates without data are empty instead of
+  values such as -32 dBZ, HPL lidar sweeps keep their last ray, and a CfRadial1 export keeps rays that share a time
+  stamp ({doc}`OUTPUT_STANDARDS`).
+- **CfRadial1 export is faster and lighter:** a 19-sweep NEXRAD volume exports with about 3 GB of memory instead of
+  4.5 GB, and a CfRadial1 file made by the app always goes through the app's clean-up (units, fill values, time axis,
+  standard names).
+- **Cite and repeat.** The Export panel can copy a methods text for what you did in a session (one paragraph per step, every parameter, software and library versions, radarx named with its version where radarx computed the step), save the run record as JSON, and save and open project files (the open files, what each shows, the pipeline; no data is copied, and a moved or changed file is reported, never replaced). `rxd methods` and `rxd project` do the same from the command line. The pipeline editor has Undo and Redo.
+- **Basins on the map, with exports you can keep.** The Rainfall panel draws the basins you load as outlines on the map, filled with the basin-mean rainfall on the colour scale of the layer; hover for area, mean, maximum, uncertainty and coverage, click a basin to open its series. New exports: basin outlines with their statistics as GeoJSON for a GIS (`-o basins.geojson`), the series figure as PNG, a map with each basin filled by its mean (`rxd basin --map map.png`), and CSV files whose first lines give the units, method, uncertainty and sources. Return periods can use an areal reduction factor that you supply in the frequency table. Also corrected: without a factor, comparing a basin mean with point depths understates the return period (the earlier text called it an upper bound), and the output now says so. See {doc}`HYDROLOGY`.
+- **Closing a file frees its disk copy at once:** a compressed (.gz) radar file is unpacked to a temporary copy while it is open; closing the file now deletes that copy immediately instead of whenever the system next tidies memory, so repeated opening and closing no longer piles up copies on macOS and Windows.
+- **`rxd pipeline` works after `pip install`:** the command-line package failed with a file-not-found error on its first `rxd pipeline` run because it looked for its built-in helper files in the wrong folder. Found by a Windows test of the installed build.
+- **Everything in 0.4.1** (the radar globe, the live map's open, view and save actions, German and airport radars on
+  the live map, `rxd serve`): 0.4.1 was built but not made available, so 0.5.0 is the next version to download.
+
 ## 0.4.1
 
 - **The radar network map is a globe:** it opens as a globe you can turn with the mouse, a finger or the keyboard
