@@ -374,6 +374,7 @@ class QpeResult:
     source_files: list[str] = field(default_factory=list)
     exceedance: list[dict[str, Any]] | None = None  # basins.exceedance(...) when a table was given
     validation: dict[str, Any] | None = None  # gauges.adjust(...) report when gauges were given
+    ensemble: Any = None  # engine.hydro.ensemble.EnsembleResult when an ensemble was requested
 
     # -- basic numbers ---------------------------------------------------------------------
     @property
@@ -468,6 +469,8 @@ class QpeResult:
             d["basins"] = self.basin_series.summary()
         if self.exceedance is not None:
             d["exceedance"] = self.exceedance
+        if self.ensemble is not None:
+            d["ensemble"] = {**self.ensemble.summary(), "record": self.ensemble.record()}
         if self.validation is not None:
             d["gauge_validation"] = {k: v for k, v in self.validation.items() if k != "adjustment"}
         return d
