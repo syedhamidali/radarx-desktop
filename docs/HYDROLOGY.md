@@ -263,11 +263,37 @@ the polygon (reported; ≤ 0.02 % in the tests). Per basin you get the basin-mea
 cell rate, the cumulative mean depth, the hyetograph in any bin (`--bin-minutes`), and, after a gauge
 adjustment, the same series re-derived with the adjustment (exactly, from the kept per-cell rates).
 
+**On the map** the basins are drawn as outlines over the rainfall layer (checkbox *On map* in the Basins block).
+While the layer is an accumulation each basin is filled with its **basin mean** on the same colour scale as the
+layer, labelled with its id and mean, and a note at the bottom says so and that the numbers are estimates. Hover for the
+area, mean, maximum, 1σ and coverage; click a basin (or its row in the table) to open its series. The outlines are
+simplified for drawing (a few metres at most; coarser only for very detailed polygons); every number comes from the
+exact polygon. The 2D viewer shows the overlay; it is not draped on the 3D terrain yet.
+
+**Series and tables you can keep.** `-o table.csv` writes the table and one `table_<id>_series.csv` per basin; both start
+with `#` lines (readable with `pandas.read_csv(..., comment="#")`) that give the title, software versions, source
+file names, period, units of every column, the method, the averaging rule, the basin area (grid and geodesic) and the
+uncertainty statement. The series has the area-weighted mean rate (mm h⁻¹), the largest cell rate, the coverage and the
+cumulative basin-mean depth (mm). The 1σ of the accumulation is one number per basin (it is a property of the whole
+period, with errors fully correlated in time), given in the header and the table, not a band per time step.
+`-o basins.geojson` writes the outlines with the statistics as properties (WGS 84) for a GIS; `-p series.png` the series
+figure and `--map map.png` the accumulation with every basin filled by its mean depth. The same exports are in the app
+(CSV, GeoJSON, *Series PNG*).
+
 **Return period**: give a precipitation-frequency table you obtained yourself (e.g. NOAA Atlas 14 point
 depths) as JSON, `{"duration_hours": 6, "depth_mm": {"2": 50, "10": 72, "100": 108}}` (or a `"basins"` map
 with a table per basin id); the largest basin-mean depth over any window of that duration is interpolated
-log–log (`<2` / `>100` are flagged, never extrapolated). Those tables are *point* depths and no areal
-reduction factor is applied, so the return period of a large basin is an **upper bound**.
+log–log (`<2` / `>100` are flagged, never extrapolated).
+
+*Areal reduction.* Those tables are **point** depths, and an area mean of the same depth is rarer than a point value
+(rain is not equally heavy over the whole basin). Without a factor the area-mean depth is compared with the point depths
+directly, so the return period found is **understated** (a lower bound, more so the larger the basin): the output says so.
+Give your own areal reduction factor (point depth to area mean, between 0 and 1) in the table and the area mean is
+divided by it before the lookup (`"areal_reduction": 0.92`, or `"areal_reduction": {"area_km2": [10, 100, 1000],
+"factor": [0.99, 0.95, 0.88]}`, linear in the logarithm of the basin area, held at the ends). **No factors are supplied**:
+published curves depend on region, duration and return period (e.g. the US Weather Bureau TP-29 and Bell 1976
+curves, Svensson and Jones 2010 for the UK), so you choose the one that fits your region and cite it. The factor used and the
+point-equivalent depth are reported next to the return period.
 
 ## Flash-flood indicators
 
@@ -410,7 +436,7 @@ open volumes. Peak memory is one decoded volume plus the working set, about 1–
   advected only when you give a period with several volumes.
 * **Gauges** are point values with their own errors; a mean-field bias hides a spatial bias; KED needs
   at least 8 gauges with rain and is only as good as the variogram that 8–40 points allow.
-* **Basins**: the return period compares an area mean with point depths.
+* **Basins**: the return period compares an area mean with point depths: without an areal reduction factor it is a lower bound.
 * **Snow**: the Z-S relations are uncertain by a factor of two or more and gauges under-catch snow.
 
 ## Command line and app reference

@@ -21,6 +21,7 @@ import { connectionStatus, selectedSweep } from './radarData';
 import { activeFileId, getActiveFile } from './fileManager';
 import { addToast } from './toasts';
 import { registerJobSource } from './jobSources';
+import { History } from '../utils/history';
 import {
   moduleResults,
   showFieldOnPpi,
@@ -132,6 +133,44 @@ function blankRecipe(): Recipe {
 /** The recipe being edited (the panel's working copy). */
 export const draft = writable<Recipe>(blankRecipe());
 
+const history = new History<Recipe>();
+/** Whether Undo / Redo of the recipe editing have anything to do (for the buttons). */
+export const canUndo = writable(false);
+export const canRedo = writable(false);
+function syncHistory(): void {
+  canUndo.set(history.canUndo);
+  canRedo.set(history.canRedo);
+}
+
+/** Change the draft by a function; the old value goes on the undo stack (`key` joins a gesture). */
+function edit(fn: (d: Recipe) => Recipe, key: string | null = null): void {
+  const prev = get(draft);
+  const next = fn(prev);
+  if (next === prev) return;
+  history.push(prev, key);
+  draft.set(next);
+  syncHistory();
+}
+
+/** Replace the draft wholesale (new / loaded recipe): a fresh start, nothing to undo. */
+function replaceDraft(next: Recipe): void {
+  history.clear();
+  draft.set(next);
+  syncHistory();
+}
+
+export function undoDraft(): void {
+  const back = history.undo(get(draft));
+  if (back !== undefined) draft.set(back);
+  syncHistory();
+}
+
+export function redoDraft(): void {
+  const fwd = history.redo(get(draft));
+  if (fwd !== undefined) draft.set(fwd);
+  syncHistory();
+}
+
 export const catalogById = derived(stepCatalog, ($c) => new Map($c.map((s) => [s.id, s])));
 
 // ── Editing ────────────────────────────────────────────────────────────────
@@ -147,13 +186,13 @@ function withUids(r: Recipe): Recipe {
 }
 
 export function newRecipe(target = 'VRADH'): void {
-  draft.set({ ...blankRecipe(), target });
+  replaceDraft({ ...blankRecipe(), target });
   resetViews();
 }
 
 export function loadRecipe(r: Recipe): void {
   const spec = get(catalogById);
-  draft.set(
+  replaceDraft(
     withUids({
       ...r,
       steps: r.steps.map((s) => ({
@@ -169,24 +208,24 @@ export function setDraftField<K extends 'name' | 'description' | 'target' | 'app
   key: K,
   value: Recipe[K],
 ): void {
-  draft.update((d) => ({ ...d, [key]: value }));
+  edit((d) => ({ ...d, [key]: value }), `field:${String(key)}`);
 }
 
 export function addStep(stepId: string): void {
   const spec = get(catalogById).get(stepId);
   if (!spec) return;
-  draft.update((d) => ({
+  edit((d) => ({
     ...d,
     steps: [...d.steps, { step_id: stepId, params: defaultsFor(spec), enabled: true, uid: nextUid() }],
   }));
 }
 
 export function removeStep(uid: string): void {
-  draft.update((d) => ({ ...d, steps: d.steps.filter((s) => s.uid !== uid) }));
+  edit((d) => ({ ...d, steps: d.steps.filter((s) => s.uid !== uid) }));
 }
 
 export function moveStep(uid: string, delta: -1 | 1): void {
-  draft.update((d) => {
+  edit((d) => {
     const i = d.steps.findIndex((s) => s.uid === uid);
     const j = i + delta;
     if (i < 0 || j < 0 || j >= d.steps.length) return d;
@@ -197,19 +236,22 @@ export function moveStep(uid: string, delta: -1 | 1): void {
 }
 
 export function toggleStep(uid: string, enabled: boolean): void {
-  draft.update((d) => ({ ...d, steps: d.steps.map((s) => (s.uid === uid ? { ...s, enabled } : s)) }));
+  edit((d) => ({ ...d, steps: d.steps.map((s) => (s.uid === uid ? { ...s, enabled } : s)) }));
 }
 
 export function setStepParam(uid: string, name: string, value: any): void {
-  draft.update((d) => ({
-    ...d,
-    steps: d.steps.map((s) => (s.uid === uid ? { ...s, params: { ...s.params, [name]: value } } : s)),
-  }));
+  edit(
+    (d) => ({
+      ...d,
+      steps: d.steps.map((s) => (s.uid === uid ? { ...s, params: { ...s.params, [name]: value } } : s)),
+    }),
+    `param:${uid}:${name}`,
+  );
 }
 
 export function resetStepParams(uid: string): void {
   const cat = get(catalogById);
-  draft.update((d) => ({
+  edit((d) => ({
     ...d,
     steps: d.steps.map((s) => (s.uid === uid ? { ...s, params: defaultsFor(cat.get(s.step_id)) } : s)),
   }));

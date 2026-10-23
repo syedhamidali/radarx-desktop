@@ -57,3 +57,25 @@ def test_wheel_ships_every_module_and_the_command(tmp_path: Path) -> None:
     assert not any(n.startswith("modules/") for n in names), (
         "modules must not be a top-level package"
     )
+
+
+def test_pipeline_helpers_are_found_in_both_layouts(tmp_path: Path) -> None:
+    """`rxd pipeline` failed after `pip install`: its helpers were looked up in modules/ only."""
+    from engine import pipeline_steps
+
+    checkout = tmp_path / "checkout"
+    (checkout / "engine").mkdir(parents=True)
+    (checkout / "modules").mkdir()
+    assert (
+        pipeline_steps._helper_path("_gapfill.py", checkout / "engine")
+        == checkout / "modules" / "_gapfill.py"
+    )
+
+    wheel = tmp_path / "site-packages"
+    (wheel / "engine" / "builtin_modules").mkdir(parents=True)
+    assert (
+        pipeline_steps._helper_path("_gapfill.py", wheel / "engine")
+        == wheel / "engine" / "builtin_modules" / "_gapfill.py"
+    )
+    # and the real ones load in this checkout
+    assert pipeline_steps._helper_path("_radarx_adapter.py").is_file()
