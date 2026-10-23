@@ -124,6 +124,11 @@ async def test_layer_switch_series_and_export(tmp_path):
     res = _last(sent, "qpe_result")
     qid = res["qpe_id"]
     assert res["summary"]["basins"][0]["id"] == "H1"
+    fc = res["summary"]["basin_geojson"]
+    assert fc["features"][0]["properties"]["id"] == "H1" and fc["provenance_type"] == "RETRIEVED"
+    assert fc["features"][0]["properties"]["accumulation_mean_mm"] == pytest.approx(
+        10 * 600 / 3600, rel=0.03
+    )
     sent = await _send(
         handler,
         {"type": "qpe_layer", "request_id": "b", "qpe_id": qid, "field": "accumulation_sigma"},

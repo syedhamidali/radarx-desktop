@@ -688,6 +688,21 @@ def figure(
 # ---------------------------------------------------------------------------
 
 
+def _unit_of(key: str) -> str:
+    """The unit of a basin statistic from its name (names carry the unit by convention)."""
+    for suffix, unit in (
+        ("_mm_h", "mm h-1"),
+        ("_mm", "mm"),
+        ("_km2", "km2"),
+        ("_s", "s"),
+    ):
+        if key.endswith(suffix) or f"{suffix}_" in key:
+            return unit
+    if key in ("coverage", "mean_valid_fraction"):
+        return "1"
+    return ""
+
+
 def basin_table_csv(result: QpeResult) -> str:
     """CSV of the basin statistics (one row per basin) with a provenance comment block."""
     bs = result.basin_series
@@ -705,9 +720,18 @@ def basin_table_csv(result: QpeResult) -> str:
             title="Basin rainfall statistics ("
             + ("ADJUSTED to gauges" if bs.adjusted else "RETRIEVED radar estimate")
             + ")",
+            columns={k: _unit_of(k) for k in keys},
             source_files=result.source_files,
             params={"period": f"{prov.iso_utc(result.start)}/{prov.iso_utc(result.end)}"},
-            extra={"provenance_type": "ADJUSTED" if bs.adjusted else "RETRIEVED"},
+            extra={
+                "provenance_type": "ADJUSTED" if bs.adjusted else "RETRIEVED",
+                "quantity": "liquid-water equivalent precipitation, area-weighted over each basin "
+                "(true cell area x exact share of the cell inside the polygon)",
+                "uncertainty": "accumulation_sigma_mm is the 1-sigma of the radar accumulation "
+                "(mean over the basin), errors fully correlated in time; it does not include the "
+                "vertical profile, bright band, overshoot or advection error",
+                "method": result.config.get("method_text") or result.config.get("method"),
+            },
         )
     )
     buf.write(",".join(keys) + "\n")
@@ -724,17 +748,49 @@ def basin_table_csv(result: QpeResult) -> str:
     return buf.getvalue()
 
 
+SERIES_COLUMNS = {
+    "time": "",
+    "mean_rate_mm_h": "mm h-1",
+    "peak_cell_rate_mm_h": "mm h-1",
+    "coverage": "1",
+    "cumulative_mm": "mm",
+}
+
+
 def basin_series_csv(result: QpeResult, basin_index: int = 0) -> str:
+    """The time series of one basin: area-weighted mean rate, maximum cell rate, coverage and the
+    cumulative basin-mean depth, with the provenance, units and uncertainty in a comment block."""
     bs = result.basin_series
     if bs is None:
         raise hqpe.QpeError("no basins were given")
     rows = bs.rows(basin_index)
+    bw, st = bs.weights[basin_index], bs.stats[basin_index]
+    sigma = st.get("accumulation_sigma_mm")
     buf = io.StringIO()
     buf.write(
-        f"# basin: {bs.weights[basin_index].basin.id}; provenance: "
-        f"{'ADJUSTED' if bs.adjusted else 'RETRIEVED'}\n"
+        prov.csv_comment_block(
+            title=f"Basin-average rainfall series: {bw.basin.id} ("
+            + ("ADJUSTED to gauges" if bs.adjusted else "RETRIEVED radar estimate")
+            + ")",
+            columns=SERIES_COLUMNS,
+            source_files=result.source_files,
+            params={"period": f"{prov.iso_utc(result.start)}/{prov.iso_utc(result.end)}"},
+            extra={
+                "basin": f"{bw.basin.id} ({bw.basin.name})" if bw.basin.name else bw.basin.id,
+                "basin_area_km2": f"{bw.area_total_km2:.2f} (grid, true cell area; geodesic "
+                f"{bw.geodesic_area_km2:.2f})",
+                "provenance_type": "ADJUSTED" if bs.adjusted else "RETRIEVED",
+                "averaging": "area-weighted over the basin on the true grid, cells without an "
+                "estimate left out (coverage says how much of the basin that is)",
+                "accumulation_1sigma_mm": None
+                if sigma is None
+                else f"{sigma:.3g} (basin mean of the cell accumulation sigma, fully correlated in "
+                "time; the series has no per-time sigma)",
+                "method": result.config.get("method_text") or result.config.get("method"),
+            },
+        )
     )
-    buf.write("time,mean_rate_mm_h,peak_cell_rate_mm_h,coverage,cumulative_mm\n")
+    buf.write(",".join(SERIES_COLUMNS) + "\n")
     for r in rows:
         mean, peak, cum = r["mean_rate_mm_h"], r["peak_cell_rate_mm_h"], r["cumulative_mm"]
         buf.write(
@@ -743,6 +799,25 @@ def basin_series_csv(result: QpeResult, basin_index: int = 0) -> str:
             f"{r['coverage']:.3f},{'' if cum is None else format(cum, '.4f')}\n"
         )
     return buf.getvalue()
+
+
+def basin_geojson(result: QpeResult, *, max_vertices: int = 1500) -> dict[str, Any]:
+    """The basins with their statistics as a GeoJSON FeatureCollection (WGS 84)."""
+    from engine.hydro import basins as hb
+
+    bs = result.basin_series
+    if bs is None:
+        raise hqpe.QpeError("no basins were given")
+    return hb.feature_collection(
+        bs,
+        max_vertices=max_vertices,
+        meta={
+            "title": "Basin rainfall (" + ("ADJUSTED" if bs.adjusted else "RETRIEVED") + ")",
+            "period": [prov.iso_utc(result.start), prov.iso_utc(result.end)],
+            "software": prov.software_string(),
+            "label": "an estimate, not an observation",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -790,6 +865,13 @@ def save(result: QpeResult, out: Any, *, field: str | None = None) -> list[Path]
                 sp = path.with_name(f"{path.stem}_{_slug(bw.basin.id)}_series.csv")
                 sp.write_text(basin_series_csv(result, k), encoding="utf-8")
                 written.append(sp)
+        elif ext == ".geojson":
+            if result.basin_series is None:
+                raise hqpe.QpeError("-o *.geojson writes the basins: give a basin file")
+            path.write_text(
+                json.dumps(_jsonable(basin_geojson(result)), indent=1), encoding="utf-8"
+            )
+            written.append(path)
         elif ext in (".pdf", ".svg"):
             import matplotlib.pyplot as plt
 
@@ -800,7 +882,7 @@ def save(result: QpeResult, out: Any, *, field: str | None = None) -> list[Path]
         else:
             raise hqpe.QpeError(
                 f"cannot write {path.name}: use .nc (NetCDF), .png (image + world file), "
-                ".json (summary), .csv (basin table) or .pdf/.svg (figure)"
+                ".json (summary), .csv (basin table), .geojson (basins) or .pdf/.svg (figure)"
             )
     return written
 
@@ -882,4 +964,94 @@ def series_figure(result: QpeResult, bin_minutes: float = 60.0, max_basins: int 
     axes[-1, 0].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
     axes[-1, 0].set_xlabel("time (UTC)")
     fig.tight_layout()
+    return fig
+
+
+def basin_map_figure(result: QpeResult, *, dpi: int = 150):
+    """The accumulation with each basin filled by its area-weighted mean depth (km from the grid
+    origin). The title carries the provenance label; the colour of a basin is the basin mean, not a
+    cell value, and the legend text says so."""
+    import matplotlib
+
+    matplotlib.use("Agg", force=False)
+    import matplotlib.patheffects as pe
+    import matplotlib.pyplot as plt
+    import pyproj
+    from matplotlib.patches import PathPatch
+    from matplotlib.path import Path as MPath
+
+    bs = result.basin_series
+    if bs is None:
+        raise hqpe.QpeError("no basins were given")
+    name = default_field(result)
+    g = result.grid
+    arr = _hide_dry(field_array(result, name), name)
+    lo, hi = default_range(result, name)
+    means = [
+        st.get("accumulation_adjusted_mean_mm")
+        if bs.adjusted and st.get("accumulation_adjusted_mean_mm") is not None
+        else st.get("accumulation_mean_mm")
+        for st in bs.stats
+    ]
+    fin = [m for m in means if m is not None]
+    if fin:
+        hi = max(hi, max(fin))
+    ext = [
+        (g.x[0] - g.cell_m / 2) / 1e3,
+        (g.x[-1] + g.cell_m / 2) / 1e3,
+        (g.y[0] - g.cell_m / 2) / 1e3,
+        (g.y[-1] + g.cell_m / 2) / 1e3,
+    ]
+    fig, ax = plt.subplots(figsize=(7.2, 6.4), constrained_layout=True)
+    cmap = plt.get_cmap(FIELDS[name][3]).copy()
+    cmap.set_bad("#eef0f2")
+    norm = matplotlib.colors.Normalize(vmin=lo, vmax=hi)
+    ax.imshow(
+        np.ma.masked_invalid(arr),
+        origin="lower",
+        extent=ext,
+        cmap=cmap,
+        norm=norm,
+        interpolation="nearest",
+        alpha=0.45,
+    )
+    tr = pyproj.Transformer.from_crs("EPSG:4326", g.proj4(), always_xy=True)
+    for bw, mean in zip(bs.weights, means, strict=True):
+        verts, codes = [], []
+        for poly in bw.basin.polygons:
+            for ring in poly:
+                x, y = tr.transform(ring[:, 0], ring[:, 1])
+                pts = np.column_stack([np.asarray(x) / 1e3, np.asarray(y) / 1e3])
+                verts.append(pts)
+                codes.append([MPath.MOVETO] + [MPath.LINETO] * (len(pts) - 2) + [MPath.CLOSEPOLY])
+        if not verts:
+            continue
+        face = cmap(norm(mean)) if mean is not None else (0.85, 0.85, 0.85, 1.0)
+        ax.add_patch(
+            PathPatch(
+                MPath(np.vstack(verts), np.concatenate(codes)),
+                facecolor=face,
+                edgecolor="#1b1b1b",
+                lw=1.1,
+                alpha=0.9,
+            )
+        )
+        c = np.vstack(verts).mean(axis=0)
+        label = f"{bw.basin.id}\n" + ("-" if mean is None else f"{mean:.1f} mm")
+        txt = ax.annotate(label, c, ha="center", va="center", fontsize=7, color="white")
+        txt.set_path_effects([pe.withStroke(linewidth=2.2, foreground="#111")])
+    sm = matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cb = fig.colorbar(sm, ax=ax, shrink=0.85, pad=0.02)
+    cb.set_label("basin-mean accumulation [mm]  (background: cell accumulation)")
+    ax.set_xlim(ext[0], ext[1])
+    ax.set_ylim(ext[2], ext[3])
+    ax.set_aspect("equal")
+    ax.set_xlabel("km east of the grid origin")
+    ax.set_ylabel("km north of the grid origin")
+    kind = "ADJUSTED" if bs.adjusted else "RETRIEVED"
+    ax.set_title(
+        f"Basin-mean rainfall {prov.iso_utc(result.start)} to {prov.iso_utc(result.end)}   "
+        f"[{kind}: an estimate, not an observation]",
+        fontsize=9,
+    )
     return fig

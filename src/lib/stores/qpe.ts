@@ -21,6 +21,7 @@ import { connectionStatus } from './radarData';
 import { mosaicSelectedIds, showExternalLayer, inTauri } from './mosaic';
 import { addToast } from './toasts';
 import { binMinutesFor } from '../utils/qpeView';
+import type { BasinCollection } from '../utils/basinMap';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -139,6 +140,8 @@ export interface QpeSummary {
   };
   adjustment?: Record<string, any>;
   basins?: Record<string, any>[];
+  /** the basins as GeoJSON (WGS 84, simplified for drawing) with their statistics in the properties */
+  basin_geojson?: BasinCollection;
   exceedance?: Record<string, any>[];
   /** ensemble under an ASSUMED error model: error model with where each number came from, run record, reliability */
   ensemble?: Record<string, any>;
@@ -210,6 +213,8 @@ export const qpeInfo = writable<QpeInfo | null>(null);
 export const qpeRun = writable<QpeRun>({ running: false, requestId: null, percent: 0, message: '', error: null });
 export const qpeState = writable<QpeState | null>(null);
 export const qpeSeries = writable<Record<string, any> | null>(null);
+/** Draw the basin outlines (and the basin-mean fill) on the map. */
+export const basinOverlayOn = writable<boolean>(true);
 export const qpeBusy = writable<string | null>(null); // 'layer' | 'adjust' | 'series' | 'export'
 
 export function updateQpeSettings(patch: Partial<QpeSettings>): void {
@@ -387,7 +392,8 @@ export async function pickFile(title: string, extensions: string[]): Promise<str
   }
 }
 
-export async function exportQpe(format: 'nc' | 'png' | 'json' | 'csv'): Promise<boolean> {
+/** 'series' is the basin hyetograph figure (a PNG); 'geojson' the basin outlines with their statistics. */
+export async function exportQpe(format: 'nc' | 'png' | 'json' | 'csv' | 'geojson' | 'series'): Promise<boolean> {
   const st = get(qpeState);
   if (!st) return false;
   if (!inTauri()) {
@@ -398,10 +404,11 @@ export async function exportQpe(format: 'nc' | 'png' | 'json' | 'csv'): Promise<
   try {
     const { save } = await import('@tauri-apps/plugin-dialog');
     const start = st.summary.start.replace(/[^0-9T]/g, '').slice(0, 13);
+    const ext = format === 'series' ? 'png' : format;
     const path = await save({
-      title: `Save rainfall as ${format.toUpperCase()}`,
-      defaultPath: `qpe_${start}.${format}`,
-      filters: [{ name: format.toUpperCase(), extensions: [format] }],
+      title: format === 'series' ? 'Save the basin rainfall series as PNG' : `Save rainfall as ${format.toUpperCase()}`,
+      defaultPath: `${format === 'series' ? 'basin_series' : 'qpe'}_${start}.${ext}`,
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }],
     });
     if (!path) return false;
     const saved = await new Promise<string>((resolve, reject) => {
@@ -421,6 +428,7 @@ export async function exportQpe(format: 'nc' | 'png' | 'json' | 'csv'): Promise<
         format,
         path,
         field: st.layer.field,
+        bin_minutes: binMinutesFor(st.summary.duration_s),
         overwrite: true,
       });
     });

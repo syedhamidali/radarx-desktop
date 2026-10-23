@@ -25,6 +25,7 @@
     qpeState,
     qpeSeries,
     qpeBusy,
+    basinOverlayOn,
     updateQpeSettings,
     resetQpeSettings,
     runQpe,
@@ -534,7 +535,8 @@
             <button type="button" class="mini" disabled={!desktop || $qpeBusy === 'export'} onclick={() => exportQpe(f as 'nc' | 'png' | 'json')} title={desktop ? `Save as ${f.toUpperCase()}` : 'Exporting needs the desktop app'}>{f === 'nc' ? 'NetCDF' : f.toUpperCase()}</button>
           {/each}
           {#if summary.basins}
-            <button type="button" class="mini" disabled={!desktop || $qpeBusy === 'export'} onclick={() => exportQpe('csv')} title="Basin table and series">CSV</button>
+            <button type="button" class="mini" disabled={!desktop || $qpeBusy === 'export'} onclick={() => exportQpe('csv')} title="Basin table and the series of every basin, with units and provenance in the header">CSV</button>
+            <button type="button" class="mini" disabled={!desktop || $qpeBusy === 'export'} onclick={() => exportQpe('geojson')} title="Basin outlines with their statistics, for a GIS">GeoJSON</button>
           {/if}
           <button type="button" class="mini danger" onclick={() => { clearQpe(); clearMosaic(); }}>Clear</button>
         </div>
@@ -667,6 +669,7 @@
           <div class="block-head">
             <h4>Basins</h4>
             <span class="spacer"></span>
+            <label class="check inline" title="Draw the basin outlines, filled by the basin-mean accumulation, on the map"><input type="checkbox" bind:checked={$basinOverlayOn} /><span>On map</span></label>
             <span class="chip" class:adj={adjusted}>{adjusted ? 'ADJUSTED' : 'RETRIEVED'}</span>
           </div>
           <div class="table-wrap">
@@ -699,6 +702,14 @@
               <text x="256" y="62" class="axis" transform="rotate(90 256 62)">mm</text>
             </svg>
             <p class="legend-line"><span class="swatch bar"></span> hyetograph <span class="swatch rate"></span> mean rate <span class="swatch cum"></span> cumulative depth <span class="dim">· {series.basin}, {provenanceLabel(series.provenance_type)}{series.exact_adjustment === false ? ', hyetograph shape approximate' : ''}</span></p>
+            {#if series.stats?.accumulation_sigma_mm != null}
+              <p class="help">
+                Basin-mean accumulation {formatNumber(series.stats.accumulation_mean_mm)} mm, 1σ ±{formatNumber(series.stats.accumulation_sigma_mm)} mm
+                (relation scatter and calibration, errors fully correlated in time; vertical profile, bright band and advection are not included).
+                {formatPercent(series.stats.coverage)} of the basin area has an estimate; the mean is over that part.
+                <button type="button" class="mini" disabled={!desktop || $qpeBusy === 'export'} onclick={() => exportQpe('series')} title="Save the series of the basins as a PNG figure">Series PNG</button>
+              </p>
+            {/if}
             {#if series.stats}
               <p class="help mono">
                 {#each Object.keys(series.stats).filter((k) => k.startsWith('area_acc_ge_')) as k}
@@ -710,7 +721,11 @@
               <p class="help">
                 Return period of the largest {series.exceedance.duration_h} h basin-mean depth ({formatNumber(series.exceedance.max_depth_mm)} mm):
                 <strong>{series.exceedance.return_period_years === null ? '–' : `${series.exceedance.flag.startsWith('below') ? '<' : series.exceedance.flag.startsWith('above') ? '>' : ''}${formatNumber(series.exceedance.return_period_years)} yr`}</strong>.
-                The table holds point depths; no areal reduction is applied, so this is an upper bound for large basins.
+                {#if series.exceedance.areal_reduction_factor}
+                  The table holds point depths: the area mean was divided by your areal reduction factor {formatNumber(series.exceedance.areal_reduction_factor)} (point equivalent {formatNumber(series.exceedance.point_equivalent_depth_mm)} mm).
+                {:else}
+                  The table holds point depths and no areal reduction is applied, so for a large basin the return period is understated (a lower bound).
+                {/if}
               </p>
             {/if}
           {/if}

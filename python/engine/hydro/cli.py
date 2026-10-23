@@ -37,8 +37,9 @@ EXAMPLES_BASIN = (
     "\n"
     "Area-weighted rainfall over each basin: the cell fractions inside the polygon are computed\n"
     "exactly (not by counting pixels) and weighted with the true cell area. Output: the basin\n"
-    "table (-o .csv/.json; the series of every basin goes to <name>_<id>_series.csv) and a figure\n"
-    "with the hyetograph and the cumulative depth (-p). --frequency FILE adds the return period\n"
+    "table (-o .csv/.json; the series of every basin goes to <name>_<id>_series.csv), the basins\n"
+    "with their statistics for a GIS (-o .geojson) and a figure with the hyetograph and the\n"
+    "cumulative depth (-p). --frequency FILE adds the return period\n"
     "of the basin mean depth from a precipitation-frequency table you supply (never downloaded)."
 )
 
@@ -51,7 +52,7 @@ def register(command: Any, cli: Any) -> None:
         EXAMPLES_QPE,
     )
     cli._add_input(p, "radar volumes (several in time = accumulation)")
-    cli._add_output(p, "result: .nc / .png / .json / .csv (repeatable)")
+    cli._add_output(p, "result: .nc / .png / .json / .csv / .geojson (repeatable)")
     cli._add_plot(p, "also write a map figure (.png/.pdf/.svg)")
     cli._add_param(p, "any QPE option KEY=VALUE (repeatable), e.g. -P zr_a=200 -P zr_b=1.6")
     _estimator_options(p)
@@ -75,7 +76,7 @@ def register(command: Any, cli: Any) -> None:
         EXAMPLES_BASIN,
     )
     cli._add_input(p, "radar volumes (several in time)")
-    cli._add_output(p, "basin table .csv / .json / .nc (repeatable)")
+    cli._add_output(p, "basin table .csv / .json / .nc, outlines .geojson (repeatable)")
     cli._add_plot(p, "also write the rainfall series figure (.png/.pdf/.svg)")
     cli._add_param(p, "any QPE option KEY=VALUE (repeatable)")
     _estimator_options(p)
@@ -85,6 +86,11 @@ def register(command: Any, cli: Any) -> None:
     _ensemble_options(p)
     p.add_argument(
         "--bin-minutes", type=float, default=60.0, help="hyetograph bin in minutes (default 60)"
+    )
+    p.add_argument(
+        "--map",
+        metavar="FILE",
+        help="also write a map with every basin filled by its mean depth (.png/.pdf/.svg)",
     )
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.set_defaults(func=cmd_basin)
@@ -364,7 +370,11 @@ def _run(args: argparse.Namespace, out: Any, cl: Any, basin_mode: bool) -> int:
     files = cl._inputs(args)
     for target in args.output:
         ext = Path(target).suffix.lower()
-        allowed = (".csv", ".json", ".nc") if basin_mode else (".nc", ".png", ".json", ".csv")
+        allowed = (
+            (".csv", ".json", ".nc", ".geojson")
+            if basin_mode
+            else (".nc", ".png", ".json", ".csv", ".geojson")
+        )
         if ext not in allowed:
             raise cl.UsageError(f"-o {target!r}: use {', '.join(allowed)}")
     kw = _collect(args, cl)
@@ -399,14 +409,18 @@ def _run(args: argparse.Namespace, out: Any, cl: Any, basin_mode: bool) -> int:
     field = getattr(args, "field", None)
     for target in outputs:
         ext = Path(target).suffix.lower()
-        if ext == ".csv" and res.basin_series is None:
-            raise cl.UsageError("-o *.csv writes the basin table: give --basins FILE")
+        if ext in (".csv", ".geojson") and res.basin_series is None:
+            raise cl.UsageError(f"-o *{ext} writes the basins: give --basins FILE")
         out.wrote(*res.save(target, field=field))
     if plot:
         from engine.api_results import save_figure
 
         fig = products.series_figure(res, args.bin_minutes) if basin_mode else res.plot(field)
         out.wrote(save_figure(fig, plot, args.dpi))
+    if getattr(args, "map", None):
+        from engine.api_results import save_figure
+
+        out.wrote(save_figure(products.basin_map_figure(res), args.map, args.dpi))
     if out.json:
         payload = products._jsonable(res.to_dict())
         payload["files"] = out.files
