@@ -65,6 +65,14 @@ export
 
 ```{toctree}
 :maxdepth: 2
+:caption: Environment data and diagnostics
+
+ENVIRONMENT
+source-diagnostics
+```
+
+```{toctree}
+:maxdepth: 2
 :caption: Command line
 
 CLI
