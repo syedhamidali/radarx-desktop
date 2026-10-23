@@ -309,7 +309,12 @@ def test_report_from_volumes_and_again_from_its_record(capsys, volumes, tmp_path
 
     code, _, _ = run(capsys, "report", "--from-record", "rec.json", "-o", "r2.html", "-q")
     assert code == 0
-    assert normalise(Path("r2.html").read_text(encoding="utf-8")) == normalise(html)
+    again = normalise(Path("r2.html").read_text(encoding="utf-8"))
+    first = normalise(html)
+    if again != first:
+        a, b = first.splitlines(), again.splitlines()
+        diff = [(i, x[:120], y[:120]) for i, (x, y) in enumerate(zip(a, b, strict=False)) if x != y]
+        raise AssertionError(f"{len(a)} vs {len(b)} lines; first differences: {diff[:3]}")
 
 
 def test_report_without_basins_or_figures(capsys, volumes):
