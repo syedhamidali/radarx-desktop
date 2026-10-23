@@ -49,8 +49,8 @@ store covers 1940 to a few days ago (the newest months are preliminary "ERA5T");
 ## On the command line
 
 ```console
-$ rxd env estimate era5 --product single --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V t2m -V cape
-$ rxd env show era5 --product pressure --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V t -V u -V v -P 'levels=[850,500]' -o upper.nc
+$ rxd env estimate era5 --product single --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V t2m -V cape
+$ rxd env show era5 --product pressure --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V t -V u -V v -P 'levels=[850,500]' -o upper.nc
 $ rxd env profile era5 --product profile --time 2021-12-11T03:00Z -P lat=36.74 -P lon=-88.64 --lat 36.74 --lon -88.64
 ```
 
