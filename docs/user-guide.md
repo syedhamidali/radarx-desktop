@@ -69,6 +69,7 @@ export
 :caption: Environment data and diagnostics
 
 ENVIRONMENT
+source-hrrr
 source-diagnostics
 ```
 
