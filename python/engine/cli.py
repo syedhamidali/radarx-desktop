@@ -94,6 +94,8 @@ COMMANDS = (
     "qpe",
     "basin",
     "export",
+    "methods",
+    "project",
     "serve",
     "examples",
     "completion",
@@ -401,7 +403,9 @@ GROUPS = (
     ("Hydrology", (("qpe", "rain rate / accumulation with uncertainty, gauges (docs/HYDROLOGY.md)"),
                    ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
     ("Forecast", (("nowcast", "advection nowcast (0-2 h) with ensemble, probabilities and verification"),)),
-    ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),)),
+    ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),
+              ("methods", "the methods text (every step, parameter, version) of a run record"),
+              ("project", "show or check a project file (files, recipe, run record)"))),
     ("Remote", (("serve", "run the engine here for the app on your own computer (through ssh)"),)),
     ("Account", (("login", "sign in with your free radarx account (needed once; most commands require it)"),
                  ("logout", "sign out and remove the saved session"),
@@ -817,6 +821,11 @@ def build_parser() -> argparse.ArgumentParser:
     from engine import serve_cli
 
     serve_cli.add_parser(command)
+
+    # -- methods, project (engine/project_cli.py) --------------------------------------------
+    from engine import project_cli
+
+    project_cli.add_parser(command)
 
     # -- auto (Autopilot) ----------------------------------------------------------------
     from engine.autopilot import cli as autopilot_cli

@@ -487,7 +487,7 @@ class BasinSet:
         poly = [_close(np.asarray(lonlat, dtype=float))] + [
             _close(np.asarray(h, dtype=float)) for h in holes
         ]
-        return cls([Basin(id, id, [poly])], source="polygon")
+        return cls([Basin(basin_id, basin_id, [poly])], source="polygon")
 
     def weights(self, grid: QpeGrid) -> list[BasinWeights]:
         return [basin_weights(b, grid) for b in self.basins]
@@ -902,6 +902,31 @@ def _cum_mean(rates: np.ndarray, w: np.ndarray, dt: np.ndarray, _unused: Any) ->
 # ---------------------------------------------------------------------------
 
 
+def _parse_arf(spec: Any) -> tuple[np.ndarray, np.ndarray] | None:
+    if spec is None:
+        return None
+    try:
+        if isinstance(spec, (int, float)):
+            areas, factors = np.array([1.0]), np.array([float(spec)])
+        else:
+            areas = np.asarray(spec["area_km2"], dtype=float)
+            factors = np.asarray(spec["factor"], dtype=float)
+            if areas.shape != factors.shape or areas.ndim != 1 or areas.size == 0:
+                raise ValueError("area_km2 and factor must be lists of the same length")
+            o = np.argsort(areas)
+            areas, factors = areas[o], factors[o]
+            if np.any(areas <= 0) or np.any(np.diff(areas) <= 0):
+                raise ValueError("area_km2 must be positive and increasing")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise BasinError(
+            "areal_reduction is a number (0.92) or {'area_km2': [10, 1000], 'factor': [0.99, 0.9]}"
+            f": {exc}"
+        ) from exc
+    if np.any(~np.isfinite(factors)) or np.any(factors <= 0) or np.any(factors > 1):
+        raise BasinError("areal reduction factors must be in (0, 1]: a point depth is the larger")
+    return areas, factors
+
+
 @dataclass
 class FrequencyTable:
     """Point precipitation-frequency depths of one duration: ``depth_mm`` at ``periods`` (years)."""
@@ -910,10 +935,27 @@ class FrequencyTable:
     periods: np.ndarray
     depth_mm: np.ndarray
     source: str = ""
+    #: areal reduction factor supplied by the user: ``(area_km2, factor)`` pairs, or ``None``
+    arf: tuple[np.ndarray, np.ndarray] | None = None
+
+    def arf_for(self, area_km2: float) -> float | None:
+        """The areal reduction factor of a basin of ``area_km2`` (linear in log area), or None."""
+        if self.arf is None:
+            return None
+        areas, factors = self.arf
+        if areas.size == 1:
+            return float(factors[0])
+        return float(np.interp(math.log(max(area_km2, 1e-9)), np.log(areas), factors))
 
     @classmethod
     def from_json(cls, path: str | Path, basin_id: str | None = None) -> FrequencyTable:
-        """``{"duration_hours": 6, "depth_mm": {"2": 50, "10": 72}}`` or a ``basins`` map."""
+        """``{"duration_hours": 6, "depth_mm": {"2": 50, "10": 72}}`` or a ``basins`` map.
+
+        Optional ``"areal_reduction"``: one number (``0.92``) or ``{"area_km2": [10, 100, 1000],
+        "factor": [0.99, 0.95, 0.88]}`` (point depth to area-mean depth, 0 < factor <= 1). The
+        factors are yours: no curve is shipped, because published ones depend on region and
+        duration.
+        """
         try:
             doc = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -931,7 +973,13 @@ class FrequencyTable:
             raise BasinError(
                 "a frequency table is {'duration_hours': 6, 'depth_mm': {'2': 50.0, '10': 72.0}}"
             ) from exc
-        return cls(dur, np.array([i[0] for i in items]), np.array([i[1] for i in items]), str(path))
+        return cls(
+            dur,
+            np.array([i[0] for i in items]),
+            np.array([i[1] for i in items]),
+            str(path),
+            _parse_arf(sub.get("areal_reduction")),
+        )
 
     def return_period(self, depth_mm: float) -> dict[str, Any]:
         """Return period (years) of a depth by log-log interpolation; out-of-range is flagged."""
@@ -956,9 +1004,12 @@ def exceedance(series: BasinSeries, table: FrequencyTable | str | Path) -> list[
     """Return period of the maximum ``duration_h`` basin-mean depth of each basin.
 
     The depth is the largest basin-mean accumulation in any window of ``table.duration_h`` hours
-    inside the period. Precipitation-frequency grids are *point* depths: an area-mean depth is
-    compared with them without an areal reduction factor, which makes the return period an
-    **upper** bound of the true areal return period for large basins (documented).
+    inside the period. Precipitation-frequency grids are *point* depths. Without an areal reduction
+    factor an area-mean depth is compared with them directly. An area mean is rarer than a point
+    value of the same depth, so the return period found is a **lower** bound of the areal one
+    (the exceedance probability an upper bound), more so the larger the basin. With a factor
+    (supplied by the user in the table, see :meth:`FrequencyTable.from_json`) the area-mean depth
+    is divided by it, giving the point depth that has the same areal mean, which is looked up.
     """
     t = np.array(series.times, dtype="datetime64[ns]")
     sec = (t - t[0]).astype("int64") / 1e9
@@ -977,14 +1028,145 @@ def exceedance(series: BasinSeries, table: FrequencyTable | str | Path) -> list[
             depth, note = float(cf[-1] - cf[0]), f"period shorter than {tab.duration_h:g} h"
         else:
             depth, note = float(np.max(cf[w:] - cf[:-w])), ""
-        rp = tab.return_period(depth)
+        arf = tab.arf_for(series.weights[k].area_total_km2)
+        # with a factor the area mean is turned back into the point depth the table describes
+        point = depth / arf if arf else depth
+        rp = tab.return_period(point)
         out.append(
             {
                 "id": series.weights[k].basin.id,
                 "duration_h": tab.duration_h,
                 "max_depth_mm": depth,
+                "areal_reduction_factor": arf,
+                "point_equivalent_depth_mm": point,
                 **rp,
-                "note": note,
+                "note": note
+                if arf
+                else (note + "; " if note else "")
+                + "no areal reduction applied: understated for an area mean (a lower bound)",
             }
         )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Map outlines (display only) and the GeoJSON of the results
+# ---------------------------------------------------------------------------
+
+
+def simplify_ring(ring: Ring, tolerance_deg: float) -> Ring:
+    """Douglas-Peucker simplification of a closed ring (planar, in degrees; for drawing only)."""
+    pts = np.asarray(ring, dtype=float)
+    if len(pts) <= 5 or tolerance_deg <= 0:
+        return pts
+    open_ = pts[:-1] if np.allclose(pts[0], pts[-1]) else pts
+    n = len(open_)
+    # a ring has no end points: split it at the point farthest from the first one
+    far = int(np.argmax(np.hypot(*(open_ - open_[0]).T)))
+    if far == 0:
+        return pts
+    keep = np.zeros(n, dtype=bool)
+    keep[0] = keep[far] = True
+    stack = [(0, far), (far, n)]
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        a = open_[i]
+        b = open_[j] if j < n else open_[0]
+        seg = open_[i + 1 : j]
+        d = b - a
+        norm = math.hypot(d[0], d[1])
+        if norm == 0:
+            dist = np.hypot(*(seg - a).T)
+        else:
+            dist = np.abs(d[0] * (seg[:, 1] - a[1]) - d[1] * (seg[:, 0] - a[0])) / norm
+        m = int(np.argmax(dist))
+        if dist[m] > tolerance_deg:
+            k = i + 1 + m
+            keep[k] = True
+            stack += [(i, k), (k, j)]
+    out = open_[keep]
+    if len(out) < 4:
+        return pts
+    return np.vstack([out, out[:1]])
+
+
+def outline_geometry(basin: Basin, max_vertices: int = 1500) -> tuple[dict[str, Any], float, int]:
+    """GeoJSON geometry of a basin simplified for drawing: ``(geometry, tolerance_deg, vertices)``.
+
+    The tolerance doubles from 5e-5 degrees (about 5 m) until the basin fits ``max_vertices``.
+    Statistics never use this geometry.
+    """
+    tol = 5e-5
+    while True:
+        polys = [[simplify_ring(r, tol) for r in poly] for poly in basin.polygons]
+        n = sum(len(r) for poly in polys for r in poly)
+        if n <= max_vertices or tol > 0.5:
+            break
+        tol *= 2.0
+    coords = [
+        [[[round(float(x), 5), round(float(y), 5)] for x, y in r] for r in poly] for poly in polys
+    ]
+    geom = (
+        {"type": "Polygon", "coordinates": coords[0]}
+        if len(coords) == 1
+        else {"type": "MultiPolygon", "coordinates": coords}
+    )
+    return geom, tol, n
+
+
+#: statistic keys of a basin copied into the properties of its GeoJSON feature
+FEATURE_STATS = (
+    "area_km2",
+    "coverage",
+    "accumulation_mean_mm",
+    "accumulation_max_mm",
+    "accumulation_p90_mm",
+    "accumulation_sigma_mm",
+    "accumulation_adjusted_mean_mm",
+    "max_cell_rate_mm_h",
+    "peak_mean_rate_mm_h",
+    "peak_mean_rate_time",
+    "mean_valid_fraction",
+)
+
+
+def feature_collection(
+    series: BasinSeries, *, max_vertices: int = 1500, meta: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The basins as a GeoJSON FeatureCollection (WGS 84) carrying their rainfall statistics.
+
+    Geometries are simplified for drawing (``geometry_tolerance_deg`` says how much); areas and
+    statistics come from the exact polygons. Units are in the property names (mm, mm_h, km2) and in
+    ``units``. ``meta`` is copied into the collection (provenance, period).
+    """
+    feats = []
+    for bw, st in zip(series.weights, series.stats, strict=True):
+        geom, tol, n = outline_geometry(bw.basin, max_vertices)
+        props: dict[str, Any] = {"id": bw.basin.id, "name": bw.basin.name}
+        for k in FEATURE_STATS:
+            if k in st:
+                v = st[k]
+                props[k] = None if isinstance(v, float) and not math.isfinite(v) else v
+        for k, v in st.items():
+            if k.startswith(("area_acc_ge_", "area_adj_acc_ge_")):
+                props[k] = v
+        props["geometry_tolerance_deg"] = tol
+        props["geometry_vertices"] = n
+        feats.append({"type": "Feature", "geometry": geom, "properties": props})
+    out: dict[str, Any] = {
+        "type": "FeatureCollection",
+        "crs_note": "WGS 84 longitude/latitude (EPSG:4326)",
+        "provenance_type": "ADJUSTED" if series.adjusted else "RETRIEVED",
+        "units": {
+            "accumulation_*_mm": "mm (liquid-water equivalent)",
+            "*_mm_h": "mm h-1",
+            "area_*_km2": "km2",
+            "coverage": "1 (share of the basin area with an estimate)",
+        },
+        "features": feats,
+    }
+    if meta:
+        out.update(meta)
     return out

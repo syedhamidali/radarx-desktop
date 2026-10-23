@@ -140,6 +140,9 @@ def summary(result: Any, qid: str) -> dict[str, Any]:
     d["qpe_id"] = qid
     d["fields"] = _fields_available(result)
     d["default_field"] = products.default_field(result)
+    if result.basin_series is not None:
+        # outlines for the map (simplified for drawing) with the statistics the map colours by
+        d["basin_geojson"] = products.basin_geojson(result)
     return d
 
 
@@ -311,5 +314,15 @@ def export(msg: dict[str, Any]) -> Path:
     target = Path(path).expanduser()
     if target.exists() and not msg.get("overwrite"):
         raise hqpe.QpeError(f"{target.name} already exists")
+    if msg.get("format") == "series":
+        # the basin rainfall series as a figure (hyetograph, mean rate, cumulative depth)
+        from engine.api_results import save_figure
+
+        if result.basin_series is None:
+            raise hqpe.QpeError("This result has no basins: give a basin file and run again")
+        if target.suffix.lower() not in (".png", ".pdf", ".svg"):
+            raise hqpe.QpeError("the basin series figure is a .png, .pdf or .svg")
+        fig = products.series_figure(result, float(msg.get("bin_minutes") or 60.0))
+        return save_figure(fig, target)
     written = result.save(target, field=msg.get("field"))
     return written[0]
