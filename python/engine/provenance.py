@@ -298,6 +298,18 @@ def append_history(existing: Any, line: str) -> str:
     return f"{prior}\n{line}" if prior else line
 
 
+def numeric_precision_note() -> str | None:
+    """Words for the record when the opt-in float32 decoding is on, else None."""
+    flag = os.environ.get("XRADAR_FLOAT32", "").strip().lower()
+    on = flag in ("1", "true", "yes", "on")
+    return (
+        "integer-encoded moments were decoded to float32 (XRADAR_FLOAT32=1): values differ from "
+        "the default float64 decoding by at most 6e-8 of their size"
+        if on
+        else None
+    )
+
+
 def standard_global_attrs(
     *,
     title: str,
@@ -342,6 +354,9 @@ def standard_global_attrs(
     attrs["software"] = software_string()
     attrs["libraries"] = libraries_string()
     attrs["provenance_schema"] = PROVENANCE_SCHEMA
+    precision = numeric_precision_note()
+    if precision:
+        attrs["numeric_precision"] = precision
     if names:
         attrs["source_files"] = ", ".join(names)
     if layer:
@@ -456,6 +471,9 @@ def json_provenance(
         "created": utc_stamp(),
         "action": action,
     }
+    precision = numeric_precision_note()
+    if precision:
+        out["numeric_precision"] = precision
     if params:
         out["parameters"] = {k: v for k, v in params.items() if v is not None}
     names = source_names(source_files)
