@@ -20,6 +20,7 @@
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import { webUi } from '../stores/webInfo';
   import { inTauri } from '../utils/env';
+  import { copyMethodsText, saveRunRecord, saveProject, openProject } from '../utils/projectClient';
 
   // --- Where the file goes -------------------------------------------------
   // The desktop app asks (native Save / Choose-folder dialog, starting in the folder used last).
@@ -591,6 +592,19 @@
         </svg>
         Export GIF ({animSweepEnd - animSweepStart + 1} frames)
       </button>
+    </div>
+
+    <div class="export-section" role="group" aria-labelledby="rec-title">
+      <div id="rec-title" class="section-header">Cite and repeat</div>
+      <p class="section-desc">What you did in this session, with every parameter and version.</p>
+      <div class="format-buttons">
+        <button type="button" class="fmt-btn" on:click={copyMethodsText} title="Copy a methods paragraph for every step you ran">Copy methods text</button>
+        <button type="button" class="fmt-btn" on:click={saveRunRecord} title="Save the run record as a JSON file">Save run record</button>
+      </div>
+      <div class="format-buttons">
+        <button type="button" class="fmt-btn" on:click={saveProject} title="Save the open files, what is on screen and the pipeline (no data is copied)">Save project</button>
+        <button type="button" class="fmt-btn" on:click={openProject} title="Open a project file and its files">Open project</button>
+      </div>
     </div>
   {:else}
     <p class="no-data-msg">Load a file to enable export</p>
