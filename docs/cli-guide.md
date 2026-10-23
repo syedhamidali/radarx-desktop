@@ -325,7 +325,8 @@ wrote basin.png
 
 * **You get:** the area-weighted rain over each polygon you supply (`.geojson`, `.shp` or `.gpkg`): a table, one time-series file per
   basin and a hyetograph picture. `--frequency table.json` adds a return period from a table you supply (never downloaded).
-* **In the app:** the Rainfall panel; the basin table is in the Command Studio only ({doc}`command-studio`).
+  `-o basins.geojson` writes the outlines with their statistics for a GIS, `--map map.png` a map with each basin filled by its mean depth.
+* **In the app:** the Rainfall panel (the basins are outlined on the map and a click opens a basin's series); the basin table is in the Command Studio too ({doc}`command-studio`).
 
 ## Environment data
 
