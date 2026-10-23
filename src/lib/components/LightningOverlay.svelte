@@ -11,7 +11,8 @@
    * Same projection as the PPI and the map (latLonToDataSpace + the view transform of StormOverlay).
    */
   import { lightning, lightningSettings, lightningWindow, placedFor, visibleNow } from '../stores/lightning';
-  import { channelsOf, flashesText, windowCoverageText } from '../utils/lightningLayer';
+  import { flashesText, windowCoverageText } from '../utils/lightningLayer';
+  import { drawLightningBatched } from '../utils/lightningDraw';
   import { formatUtc } from '../utils/provenance';
   import ProvenanceChip from './ProvenanceChip.svelte';
 
@@ -74,40 +75,18 @@
     const px = (i: number) => (((placed.x[i] + translateX) * sx + 1) / 2) * w;
     const py = (i: number) => ((1 - (placed.y[i] + translateY) * sy) / 2) * h;
 
-    ctx.lineJoin = 'round';
-    ctx.lineCap = 'round';
-    const bOf = new Map<number, number>();
-    vis.idx.forEach((i, k) => bOf.set(i, vis.b[k]));
-    // channels: the points of a flash in time order
-    for (const list of channelsOf(data, vis.idx).values()) {
-      if (list.length < 2) continue;
-      const bMax = Math.max(...list.map((i) => bOf.get(i) ?? 0));
-      ctx.beginPath();
-      ctx.moveTo(px(list[0]), py(list[0]));
-      for (let k = 1; k < list.length; k++) ctx.lineTo(px(list[k]), py(list[k]));
-      ctx.strokeStyle = `rgba(14,18,34,${(0.55 * bMax).toFixed(3)})`;
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.strokeStyle = `rgba(255,236,150,${(0.85 * bMax).toFixed(3)})`;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-    }
-    // points: pale dot, dark outline; radius and opacity follow the faded brightness
-    for (let k = 0; k < vis.idx.length; k++) {
+    // pixel positions of the visible points, then one batched draw (a few dozen canvas calls, not three per point)
+    const n = vis.idx.length;
+    const xs = new Float32Array(n);
+    const ys = new Float32Array(n);
+    const fl = new Int32Array(n);
+    for (let k = 0; k < n; k++) {
       const i = vis.idx[k];
-      const b = vis.b[k];
-      const x = px(i);
-      const y = py(i);
-      if (x < -10 || y < -10 || x > w + 10 || y > h + 10) continue;
-      const r = 1.6 + 2.6 * b;
-      ctx.beginPath();
-      ctx.arc(x, y, r, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(255,244,176,${Math.min(1, 0.25 + 0.75 * b).toFixed(3)})`;
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = `rgba(14,18,34,${Math.min(0.9, 0.2 + 0.7 * b).toFixed(3)})`;
-      ctx.stroke();
+      xs[k] = px(i);
+      ys[k] = py(i);
+      fl[k] = data.flash[i];
     }
+    drawLightningBatched(ctx, n, xs, ys, vis.b, fl, w, h);
   }
 
   $effect(() => {

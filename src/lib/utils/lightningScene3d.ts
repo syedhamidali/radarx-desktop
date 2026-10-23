@@ -8,6 +8,7 @@
  */
 import { project, type Cam } from './scene3d';
 import type { ScenePoint } from './lightningLayer';
+import { drawLightningBatched } from './lightningDraw';
 
 /** At most this many points are drawn in one frame (a dense LMA window); the panel says when more exist. */
 export const MAX_DRAWN = 40000;
@@ -27,59 +28,21 @@ export function drawLightningLabel(ctx: CanvasRenderingContext2D, text: string, 
   ctx.restore();
 }
 
-export function drawLightning(ctx: CanvasRenderingContext2D, cam: Cam, pts: ScenePoint[], vexag: number): number {
-  if (!pts.length) return 0;
+export function drawLightning(ctx: CanvasRenderingContext2D, cam: Cam, pts: ScenePoint[], vexag: number, width: number, height: number): number {
   const n = Math.min(pts.length, MAX_DRAWN);
-  const byFlash = new Map<number, number[]>();
-  const sp: ([number, number, number] | null)[] = new Array(n);
+  if (!n) return 0;
+  const xs = new Float32Array(n);
+  const ys = new Float32Array(n);
+  const bs = new Float32Array(n);
+  const fl = new Int32Array(n);
   for (let i = 0; i < n; i++) {
     const p = pts[i];
-    sp[i] = project(cam, [p.x, p.y, p.z * vexag]);
-    const l = byFlash.get(p.flash);
-    if (l) l.push(i);
-    else byFlash.set(p.flash, [i]);
+    const s = project(cam, [p.x, p.y, p.z * vexag]);
+    xs[i] = s ? s[0] : NaN;
+    ys[i] = s ? s[1] : NaN;
+    bs[i] = p.b;
+    fl[i] = p.flash;
   }
-  ctx.save();
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-  for (const list of byFlash.values()) {
-    if (list.length < 2) continue;
-    let bMax = 0;
-    for (const i of list) bMax = Math.max(bMax, pts[i].b);
-    ctx.beginPath();
-    let started = false;
-    for (const i of list) {
-      const s = sp[i];
-      if (!s) {
-        started = false;
-        continue;
-      }
-      if (!started) {
-        ctx.moveTo(s[0], s[1]);
-        started = true;
-      } else ctx.lineTo(s[0], s[1]);
-    }
-    ctx.strokeStyle = `rgba(10,14,30,${(0.5 * bMax).toFixed(3)})`;
-    ctx.lineWidth = 2.6;
-    ctx.stroke();
-    ctx.strokeStyle = `rgba(255,236,150,${(0.85 * bMax).toFixed(3)})`;
-    ctx.lineWidth = 1.1;
-    ctx.stroke();
-  }
-  for (let i = 0; i < n; i++) {
-    const s = sp[i];
-    if (!s) continue;
-    const b = pts[i].b;
-    // a little smaller with distance so near sources read as nearer
-    const r = Math.max(1, (1.4 + 2.4 * b) * Math.min(1.6, Math.max(0.5, 60 / Math.max(10, s[2]))));
-    ctx.beginPath();
-    ctx.arc(s[0], s[1], r, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255,244,176,${Math.min(1, 0.3 + 0.7 * b).toFixed(3)})`;
-    ctx.fill();
-    ctx.lineWidth = 0.9;
-    ctx.strokeStyle = `rgba(10,14,30,${Math.min(0.85, 0.2 + 0.65 * b).toFixed(3)})`;
-    ctx.stroke();
-  }
-  ctx.restore();
+  drawLightningBatched(ctx, n, xs, ys, bs, fl, width, height);
   return n;
 }
