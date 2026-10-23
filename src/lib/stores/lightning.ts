@@ -18,11 +18,13 @@ import {
   DEFAULT_WINDOW,
   buildOpenRequest,
   decodeLightning,
+  decodeStats,
   placeAll,
   scenePoints,
   visiblePoints,
   windowSeconds,
   type LightningData,
+  type LightningStats,
   type OpenParams,
   type Placed,
   type ScenePoint,
@@ -39,6 +41,9 @@ export interface LightningState {
 }
 
 export const lightning = writable<LightningState>({ data: null, loading: false, error: null, requestId: null, paths: [] });
+
+/** Height distribution and lightning jumps of an LMA set (radarx, computed in the engine). */
+export const lightningStats = writable<{ stats: LightningStats | null; loading: boolean; error: string | null }>({ stats: null, loading: false, error: null });
 
 export interface LightningSettings {
   show2d: boolean;
@@ -146,7 +151,14 @@ export function rereadLightning(): void {
 }
 
 export function clearLightning(): void {
+  lightningStats.set({ stats: null, loading: false, error: null });
   lightning.set({ data: null, loading: false, error: null, requestId: null, paths: [] });
+}
+
+/** Ask the engine for the height distribution and lightning jumps of the LMA set it holds. */
+export function requestLightningStats(zStepM = 500): void {
+  lightningStats.set({ stats: null, loading: true, error: null });
+  void wsManager.send({ type: 'lightning_stats', request_id: nextId(), z_step_m: zStepM, bin_s: 60 });
 }
 
 export function initLightning(): void {
@@ -155,9 +167,21 @@ export function initLightning(): void {
     try {
       const data = decodeLightning(msg);
       lightning.update((s) => ({ ...s, data, loading: false, error: null, requestId: null }));
+      lightningStats.set({ stats: null, loading: false, error: null });
+      if (data.kind === 'lma' && data.n > 0) requestLightningStats();
     } catch (e) {
       lightning.update((s) => ({ ...s, loading: false, error: e instanceof Error ? e.message : String(e), requestId: null }));
     }
+  });
+  wsManager.onMessage('lightning_stats_result', (msg) => {
+    try {
+      lightningStats.set({ stats: decodeStats(msg), loading: false, error: null });
+    } catch (e) {
+      lightningStats.set({ stats: null, loading: false, error: e instanceof Error ? e.message : String(e) });
+    }
+  });
+  wsManager.onMessage('lightning_stats_error', (msg) => {
+    lightningStats.set({ stats: null, loading: false, error: String(msg.message ?? 'The statistics could not be computed.') });
   });
   wsManager.onMessage('lightning_error', (msg) => {
     if (msg.request_id && msg.request_id !== get(lightning).requestId) return;
@@ -209,3 +233,4 @@ declare global {
 }
 // A hook for screenshots and scripts in a development build (no file dialog in a plain browser).
 if (typeof window !== 'undefined' && import.meta.env?.DEV) window.__radarxLightning = { open: openLightningFiles };
+

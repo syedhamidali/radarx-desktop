@@ -471,6 +471,105 @@ def test_empty_window_is_an_empty_set_not_an_invention(lma_file: Path):
     assert ll.to_wire(ls)["points"]["n"] == 0
 
 
+# ── LMA statistics (radarx: vertical_source_distribution, lightning_jump) ──
+
+
+def stats_set(t, x, alt):
+    pytest.importorskip("radarx")
+    base = np.datetime64("2021-12-11T02:00:00", "ns")
+    t = np.asarray(t, dtype=float)
+    ds = xr.Dataset(
+        {
+            "event_latitude": ("number_of_events", np.full(t.size, LAT0)),
+            "event_longitude": (
+                "number_of_events",
+                LON0 + np.asarray(x, dtype=float) / M_PER_DEG_LON,
+            ),
+            "event_altitude": ("number_of_events", np.asarray(alt, dtype=float)),
+            "event_power": ("number_of_events", np.full(t.size, 10.0)),
+            "event_stations": ("number_of_events", np.full(t.size, 7)),
+        },
+        coords={"event_time": ("number_of_events", base + (t * 1e9).astype("timedelta64[ns]"))},
+    )
+    return ll.lma_set_from_dataset(ds, ["x.dat"])
+
+
+def test_height_distribution_known_counts():
+    from engine import lightning_stats
+
+    # flash A: 12 sources rising from 7.11 to 8.98 km over 0.33 s; flash B: 10 sources at 9.2 km, 40 km away, 1 s later
+    # (flash initiations are counted for flashes of at least 10 sources, the radarx default)
+    alt_a = 7110.0 + 170.0 * np.arange(12)
+    t = np.concatenate([np.arange(12) * 0.03, 1.0 + np.arange(10) * 0.02])
+    x = np.concatenate([np.arange(12) * 100.0, 40_000.0 + np.arange(10) * 100.0])
+    alt = np.concatenate([alt_a, np.full(10, 9200.0)])
+    st = lightning_stats.lma_stats(stats_set(t, x, alt), z_step_m=500.0)
+    h = st["height"]
+    # 500 m bins starting at 7 km: three of A's sources in each of the first four bins, B's ten in the fifth
+    assert h["sources"][:5] == [3, 3, 3, 3, 10] and sum(h["sources"][5:]) == 0
+    # flash initiations: A starts at 7.11 km (first bin), B at 9.2 km (fifth bin)
+    assert h["initiations"][:5] == [1, 0, 0, 0, 1] and sum(h["initiations"]) == 2
+    assert h["z_km"][0] == pytest.approx(7.25) and h["reference"].endswith("mean sea level")
+    assert any("Charge layers are not inferred" in n for n in st["notes"])
+    assert st["jump"]["available"] is False and "14 minutes" in st["jump"]["reason"]
+
+
+def flash_times(per_minute):
+    """One-source flashes: ``per_minute[m]`` of them, evenly spread in minute m."""
+    out = []
+    for m, n in enumerate(per_minute):
+        out += list(m * 60.0 + np.arange(n) * (60.0 / n))
+    return np.asarray(out)
+
+
+def test_lightning_jump_found_where_the_flash_rate_jumps():
+    from engine import lightning_stats
+
+    # 12 and 14 flashes per minute in alternating 2-minute periods for 16 minutes (changes of the 2-minute
+    # rate of +-1 per minute squared, so a standard deviation of about 1.1), then 45 per minute: a change of
+    # (45 - 14) / 2 = 15.5, about 14 sigma, at a rate above 10 per minute
+    jumping = [12 if (m // 2) % 2 == 0 else 14 for m in range(16)] + [45] * 6
+    t = flash_times(jumping)
+    j = lightning_stats.lma_stats(stats_set(t, np.zeros_like(t), np.full(t.size, 8000.0)))["jump"]
+    assert j["available"] is True and j["sigma"] == 2.0 and j["min_rate_per_min"] == 10.0
+    assert j["start_s"], "a jump must be found"
+    assert 16 <= j["start_s"][0] / 60.0 <= 18.5, (
+        f"the jump starts at minute {j['start_s'][0] / 60.0}"
+    )
+    assert j["level"][0] > 2
+    # the same alternation without the jump has none
+    steady = flash_times([12 if (m // 2) % 2 == 0 else 14 for m in range(22)])
+    j2 = lightning_stats.lma_stats(
+        stats_set(steady, np.zeros_like(steady), np.full(steady.size, 8000.0))
+    )["jump"]
+    assert j2["available"] is True and j2["start_s"] == []
+
+
+def test_statistics_need_lma_sources(glm_file: Path):
+    from engine import lightning_stats
+
+    with pytest.raises(ValueError, match="LMA"):
+        lightning_stats.lma_stats(ll.read_glm([glm_file], good_only=False))
+
+
+def test_lightning_stats_message(lma_file: Path):
+    pytest.importorskip("radarx")
+
+    async def run():
+        h = make_handler()
+        await h._handle_lightning_stats({"request_id": "s0"})  # nothing open yet
+        assert h._sent[-1]["type"] == "lightning_stats_error"
+        (ok,) = await ask(h, type="lightning_open", request_id="o1", paths=[str(lma_file)])
+        assert ok["type"] == "lightning_result" and ok["kind"] == "lma"
+        (st,) = await ask(h, type="lightning_stats", request_id="s1", z_step_m=1000)
+        assert st["type"] == "lightning_stats_result" and st["request_id"] == "s1"
+        assert sum(st["height"]["sources"]) == 10 and st["height"]["z_step_m"] == 1000
+        (bad,) = await ask(h, type="lightning_stats", request_id="s2", z_step_m=5)
+        assert bad["type"] == "lightning_stats_error"
+
+    asyncio.run(run())
+
+
 # ── the message ─────────────────────────────────────────────────────────────
 
 

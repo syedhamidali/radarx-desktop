@@ -357,6 +357,69 @@ export function scenePoints(d: LightningData, vis: Visible, placed: Placed, rada
   return out;
 }
 
+// ── LMA statistics (height distribution, lightning jumps) ───────────────────
+
+export interface LightningStats {
+  height: { zKm: number[]; zStepM: number; sources: number[]; initiations: number[]; reference: string };
+  rate: { binS: number; edgesS: number[]; perMin: (number | null)[] };
+  jump: { available: boolean; reason: string; startS: number[]; level: number[]; sigma?: number; minRatePerMin?: number; gapsSetToZero?: number };
+  notes: string[];
+  references: string[];
+}
+
+/** The answer of `lightning_stats` (computed by radarx in the engine). */
+export function decodeStats(msg: any): LightningStats {
+  if (!msg?.height || !Array.isArray(msg.height.z_km) || !msg.jump) throw new Error('The engine sent lightning statistics in a form this version does not know.');
+  const h = msg.height;
+  return {
+    height: { zKm: h.z_km.map(Number), zStepM: Number(h.z_step_m), sources: h.sources.map(Number), initiations: h.initiations.map(Number), reference: String(h.reference ?? '') },
+    rate: { binS: Number(msg.rate?.bin_s ?? 60), edgesS: (msg.rate?.edges_s ?? []).map(Number), perMin: msg.rate?.per_min ?? [] },
+    jump: {
+      available: !!msg.jump.available,
+      reason: String(msg.jump.reason ?? ''),
+      startS: (msg.jump.start_s ?? []).map(Number),
+      level: (msg.jump.level ?? []).map(Number),
+      sigma: msg.jump.sigma,
+      minRatePerMin: msg.jump.min_rate_per_min,
+      gapsSetToZero: msg.jump.gaps_set_to_zero,
+    },
+    notes: Array.isArray(msg.notes) ? msg.notes.map(String) : [],
+    references: Array.isArray(msg.references) ? msg.references.map(String) : [],
+  };
+}
+
+/**
+ * The height (km) below which a share `p` (0..1) of the counts lies, by linear interpolation inside the bin
+ * that crosses it. `zKm` are bin centres, ascending, evenly spaced by `stepKm`. NaN when there are no counts.
+ */
+export function heightPercentile(zKm: number[], counts: number[], p: number, stepKm: number): number {
+  const total = counts.reduce((a, c) => a + c, 0);
+  if (!(total > 0)) return NaN;
+  const target = p * total;
+  let acc = 0;
+  for (let i = 0; i < counts.length; i++) {
+    if (acc + counts[i] >= target && counts[i] > 0) {
+      const frac = (target - acc) / counts[i];
+      return zKm[i] - stepKm / 2 + frac * stepKm;
+    }
+    acc += counts[i];
+  }
+  return zKm[zKm.length - 1] + stepKm / 2;
+}
+
+/** Centre of the bin with the most counts (km); NaN without counts. */
+export function modeHeight(zKm: number[], counts: number[]): number {
+  let best = -1;
+  let at = NaN;
+  for (let i = 0; i < counts.length; i++) {
+    if (counts[i] > best) {
+      best = counts[i];
+      at = zKm[i];
+    }
+  }
+  return best > 0 ? at : NaN;
+}
+
 // ── The request ─────────────────────────────────────────────────────────────
 
 /** [south, west, north, east] degrees of a square `rangeKm` around a point (longitudes wrapped into -180..180). */

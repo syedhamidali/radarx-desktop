@@ -96,7 +96,10 @@ class LightningMessages:
     """Mixin for ``ConnectionHandler`` (uses ``self.send``, ``self.session``)."""
 
     def _lightning_handlers(self) -> dict[str, Callable[[dict[str, Any]], Awaitable[None]]]:
-        return {"lightning_open": self._handle_lightning_open}
+        return {
+            "lightning_open": self._handle_lightning_open,
+            "lightning_stats": self._handle_lightning_stats,
+        }
 
     async def _handle_lightning_open(self, msg: dict[str, Any]) -> None:
         rid = msg.get("request_id")
@@ -111,14 +114,16 @@ class LightningMessages:
             return
         loop = asyncio.get_running_loop()
 
-        def run() -> dict[str, Any]:
+        def run() -> tuple[Any, dict[str, Any]]:
             from engine import lightning_layer
 
             files, kw = parse_request(msg)
-            return lightning_layer.to_wire(lightning_layer.read_lightning(files, **kw))
+            ls = lightning_layer.read_lightning(files, **kw)
+            return ls, lightning_layer.to_wire(ls)
 
         try:
-            wire = await loop.run_in_executor(None, run)
+            ls, wire = await loop.run_in_executor(None, run)
+            self._lightning_last = ls  # the statistics of the next lightning_stats message use it
             await self.send({"type": "lightning_result", "request_id": rid, **wire})  # type: ignore[attr-defined]
         except Exception as exc:
             logger.info("lightning_open failed: %s", exc)
@@ -128,3 +133,31 @@ class LightningMessages:
                 else f"{type(exc).__name__}: {exc}"
             )
             await self.send({"type": "lightning_error", "request_id": rid, "message": text})  # type: ignore[attr-defined]
+
+    async def _handle_lightning_stats(self, msg: dict[str, Any]) -> None:
+        """``{type: "lightning_stats", request_id, z_step_m?, bin_s?}``: height distribution and lightning jumps of the LMA set read last."""
+        rid = msg.get("request_id")
+        ls = getattr(self, "_lightning_last", None)
+        loop = asyncio.get_running_loop()
+
+        def run() -> dict[str, Any]:
+            from engine import lightning_stats
+
+            if ls is None:
+                raise ValueError("no lightning files are open")
+            step, bin_s = msg.get("z_step_m", 500.0), msg.get("bin_s", 60.0)
+            if not (_number(step) and _number(bin_s)):
+                raise ValueError("z_step_m and bin_s must be numbers")
+            return lightning_stats.lma_stats(ls, z_step_m=float(step), bin_s=float(bin_s))
+
+        try:
+            stats = await loop.run_in_executor(None, run)
+            await self.send({"type": "lightning_stats_result", "request_id": rid, **stats})  # type: ignore[attr-defined]
+        except Exception as exc:
+            logger.info("lightning_stats failed: %s", exc)
+            text = (
+                str(exc)
+                if isinstance(exc, ValueError | ImportError)
+                else f"{type(exc).__name__}: {exc}"
+            )
+            await self.send({"type": "lightning_stats_error", "request_id": rid, "message": text})  # type: ignore[attr-defined]

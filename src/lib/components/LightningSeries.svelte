@@ -14,6 +14,7 @@
     volumeS = null,
     tRefMs,
     color = 'var(--c-accent)',
+    marks = [],
   }: {
     series: Series | null;
     title: string;
@@ -22,6 +23,8 @@
     volumeS?: number | null;
     tRefMs: number;
     color?: string;
+    /** Times (seconds after tRef) of lightning jumps to mark. */
+    marks?: number[];
   } = $props();
 
   const W = 280;
@@ -84,6 +87,11 @@
       {#if volumeS !== null && volumeS >= geom.t0 && volumeS <= geom.t1}
         <line x1={geom.x(volumeS)} x2={geom.x(volumeS)} y1={PAD.t - 2} y2={H - PAD.b} stroke="var(--c-text)" stroke-width="1" stroke-dasharray="3 2" />
       {/if}
+      {#each marks as m (m)}
+        {#if m >= geom.t0 && m <= geom.t1}
+          <line x1={geom.x(m)} x2={geom.x(m)} y1={PAD.t - 2} y2={H - PAD.b} stroke="var(--c-alarm)" stroke-width="1.6"><title>lightning jump starts {hhmm(m)} UTC</title></line>
+        {/if}
+      {/each}
       <text x={PAD.l} y={H - 3} class="tick">{hhmm(geom.t0)}</text>
       <text x={W - PAD.r} y={H - 3} class="tick" text-anchor="end">{hhmm(geom.t1)} UTC</text>
       <text x={W - PAD.r} y={PAD.t + 4} class="tick" text-anchor="end">max {Number(geom.max.toPrecision(3))}</text>
