@@ -52,6 +52,10 @@ bundle = ["pyinstaller>=6.16"]
 # encode): its PyPI wheels bundle an FFmpeg built with GPL parts, so the project never ships it
 # (not in the installers, not in the movie components pack); installing this extra is your choice.
 video = ["playwright>=1.40,<2.0", "av>=12.0,<20.0"]
+# The sign-in tokens go to the system credential store (Windows Credential Manager, macOS Keychain,
+# Linux Secret Service) instead of a plain file (engine/account/credentials.py, docs/ACCOUNTS.md). The
+# installers carry it; without it (a plain `pip install` of the engine) the tokens stay in a private file.
+keyring = ["keyring>=25.0,<26"]
 # Optional algorithm modules (modules/radarx_*.py). radarx needs Python >= 3.12, as this package does.
 radarx = ["radarx>=0.5.1"]
 

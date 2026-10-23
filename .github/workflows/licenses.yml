@@ -48,7 +48,7 @@ jobs:
       - name: Install the engine (to read the installed package metadata)
         run: |
           python -m pip install --upgrade pip pytest
-          pip install -e "python[radarx]"
+          pip install -e "python[radarx,keyring]"
 
       - name: Tests of the licence policy logic
         run: python -m pytest scripts/licenses -q

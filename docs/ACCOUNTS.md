@@ -61,9 +61,24 @@ The session lives in **one file per user**, in the operating system's user confi
 | Linux | `$XDG_CONFIG_HOME/radarx-desktop/session.json` (default `~/.config/radarx-desktop/`) |
 
 The file is readable by your user only, is replaced atomically and is locked while it is changed, so the app and a
-terminal can run at the same moment. It holds tokens and the e-mail, **never the password**. On Windows the file
-inherits the private permissions of your profile folder. Storing the tokens in the operating system's keychain
-instead of a file is planned; until then the protection is the file mode and your user account.
+terminal can run at the same moment. **It never holds the password.**
+
+**Where the tokens are.** The two secrets (the access token and, after `rxd login`, the refresh token) are kept in
+the operating system's own credential store: Credential Manager on Windows, the Keychain on macOS, the Secret
+Service (GNOME Keyring, KWallet) on Linux. The file then holds only the e-mail and the times the offline rule needs,
+marked as "tokens in the credential store". A session file from an earlier version is moved there the first time it
+is read, and the tokens are removed from the file only after they have been read back from the store; you stay
+signed in. Where there is no credential store the tokens stay in the file, which only your user can read (mode 0600;
+on Windows the access list names only you): a computer without the optional keychain component, a Linux session
+without a desktop (an `ssh` login, a cluster login node, a container), or a store that refuses. A refusing store is
+noted in the log once and never signs you out. Set `RADARX_CREDENTIAL_STORE=file` to keep everything in the file, or
+`RADARX_CREDENTIAL_STORE=keyring` to insist on the store. The folder named by `RADARX_CONFIG_DIR` always uses its
+own file.
+
+Limits, said plainly: a program running as you can ask the credential store for the tokens too (the store protects
+against other users and against someone reading the disk or a backup, not against software you run); an older
+version of Radarx cannot read a session whose tokens are in the store and asks you to sign in again; a copy of the
+old plain file may remain in free disk space or in a backup made before the move.
 
 * **`rxd login`** signs in with e-mail and password (typed without echo, never on the command line, never
   stored) and writes a terminal session: a one-hour access token **and** a refresh token, which `rxd` uses to
@@ -172,7 +187,8 @@ not copy protection and not security against a determined user. In particular:
   offline there is none.
 * Within the offline rule, a revoked or deleted account keeps working for up to 30 days when it cannot reach the
   server, and up to an hour (the token's life) when it can.
-* The session file holds a one-hour access token (and, for `rxd login`, a refresh token) protected by file
-  permissions only; anything running as the same user can read it.
+* The session's tokens (a one-hour access token and, for `rxd login`, a refresh token) are in the system credential
+  store where there is one, and otherwise in a file only your user can read; anything running as the same user can
+  still ask for them.
 * The activity log is only as honest as the program that sends it, and it cannot be switched off while an account
   is used.
