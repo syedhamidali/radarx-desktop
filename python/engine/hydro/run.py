@@ -65,6 +65,7 @@ def run_qpe(
     adjust: str | None = None,
     adjust_options: Mapping[str, Any] | None = None,
     dem: Any = None,
+    ensemble: Mapping[str, Any] | None = None,
     progress: ProgressFn | None = None,
     cancel: Callable[[], bool] | None = None,
     **accumulate_options: Any,
@@ -74,7 +75,10 @@ def run_qpe(
     ``basins`` / ``gauges`` / ``dem`` / ``frequency`` may be file paths or the objects of
     :mod:`engine.hydro.basins` / :mod:`engine.hydro.gauges`. Returns the
     :class:`engine.hydro.accumulate.QpeResult` (``result.basin_series``, ``result.validation``,
-    ``result.exceedance``).
+    ``result.exceedance``). ``ensemble`` (``{"n_members": 30, "seed": 0, "thresholds": [10, 25],
+    "sigma_ln": ..., "corr_length_km": ..., "shares": [c, s, n]}``) adds ``result.ensemble``, the
+    ensemble of the accumulation under an assumed error model (:mod:`engine.hydro.ensemble`);
+    with gauges the error model is taken from them and the probabilities are checked against them.
     """
     from engine.hydro import accumulate as acc
     from engine.hydro import basins as hb
@@ -118,4 +122,75 @@ def run_qpe(
         )
     if bset is not None and frequency is not None:
         result.exceedance = hb.exceedance(result.basin_series, frequency)
+    if ensemble:
+        if progress:
+            progress(98, "Building the ensemble")
+        result.ensemble = build_ensemble(result, ensemble, gset)
     return result
+
+
+ENSEMBLE_OPTIONS = (
+    "n_members",
+    "seed",
+    "thresholds",
+    "quantiles",
+    "sigma_ln",
+    "corr_length_km",
+    "shares",
+)
+
+
+def build_ensemble(result: Any, options: Mapping[str, Any], gset: Any = None):
+    """The ensemble of ``result`` from ``options`` (see :func:`run_qpe`), with the error model taken
+    from the gauges ``gset`` when there are some, and a reliability check against them."""
+    from engine.hydro import ensemble as he
+    from engine.hydro import gauges as hg
+
+    opts = dict(options)
+    unknown = sorted(set(opts) - set(ENSEMBLE_OPTIONS))
+    if unknown:
+        raise he.EnsembleError(
+            f"unknown ensemble option(s) {', '.join(unknown)}; the options are "
+            f"{', '.join(ENSEMBLE_OPTIONS)}"
+        )
+    shares = opts.get("shares")
+    shares = tuple(float(v) for v in shares) if shares is not None else None
+    if shares is not None and len(shares) != 3:
+        raise he.EnsembleError("shares are three numbers: common, spatial, cell to cell")
+    name = "accumulation_adjusted" if result.accumulation_adjusted is not None else "accumulation"
+    model_kw = {
+        "field_name": name,
+        "sigma_ln": opts.get("sigma_ln"),
+        "corr_length_km": opts.get("corr_length_km"),
+        "shares": shares,
+    }
+    pairs = None
+    if gset is not None:
+        # errors of the radar-only estimate against the gauges (the adjusted field is exact at the
+        # gauges, so its in-sample residuals say nothing about the error)
+        totals = gset.quality_control().totals(
+            result.start, result.end, min_coverage=0.9, tolerance_s=300.0
+        )
+        if not totals.empty:
+            pairs = hg.pair_with_radar(totals, result, field="accumulation")
+    model = (
+        he.model_from_gauges(result, pairs, **model_kw)
+        if pairs is not None
+        else he.default_model(result, **model_kw)
+    )
+    kw: dict[str, Any] = {}
+    for key in ("thresholds", "quantiles"):
+        if opts.get(key) is not None:
+            kw[key] = opts[key]
+    ens = he.generate(
+        result,
+        model,
+        n_members=int(opts.get("n_members", 30)),
+        seed=int(opts.get("seed", 0)),
+        field_name=name,
+        **kw,
+    )
+    if pairs is not None:
+        ens.reliability = he.verify_with_gauges(ens, result, pairs)
+    ens.members = None  # the products are kept; the members are not (memory)
+    return ens
