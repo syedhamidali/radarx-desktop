@@ -301,7 +301,8 @@ def test_report_from_volumes_and_again_from_its_record(capsys, volumes, tmp_path
     assert "3.3 mm" in html  # 10 mm/h for 20 min, the largest accumulation
     assert "H1" in html and "<h2>Basins</h2>" in html
     assert html.count("data:image/png;base64,") >= 3
-    assert "NaN" not in html
+    html_text = re.sub(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+", "DATA_URI", html)
+    assert "NaN" not in html_text
     assert str(tmp_path) not in html  # paths are names in the document
     rec = json.loads(Path("rec.json").read_text())
     assert rec["type"] == "event_report" and str(volumes[0]) in rec["inputs"]
