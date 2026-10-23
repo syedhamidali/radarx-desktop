@@ -54,8 +54,8 @@ window is fetched as a time series, with its own time axis.
 
 ```console
 $ rxd env estimate mrms --time 2021-12-11T03:00Z -V mesh -V rotation_30min -V reflectivity_composite
-$ rxd env show mrms --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V mesh -V rotation_30min -o mrms.nc
-$ rxd env show mrms --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V reflectivity_3d -P 'heights_km=[1,3,5]'
+$ rxd env show mrms --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V mesh -V rotation_30min -o mrms.nc
+$ rxd env show mrms --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V reflectivity_3d -P 'heights_km=[1,3,5]'
 ```
 
 `estimate` downloads only a few kB of listing; `show` asks first (or needs `--yes`, which approves exactly the printed

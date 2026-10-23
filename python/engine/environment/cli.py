@@ -24,8 +24,8 @@ EXAMPLES = (
     "  rxd env providers                                  the sources, their class and licence\n"
     "  rxd env inventory hrrr                             what HRRR offers\n"
     "  rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km\n"
-    "  rxd env fetch hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V @storm_environment\n"
-    "  rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V cape -o cape.nc\n"
+    "  rxd env fetch hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V @storm_environment\n"
+    "  rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V cape -o cape.nc\n"
     "  rxd env profile hrrr --time 2021-12-11T03:00Z --lat 36.74 --lon -88.64\n"
     "  rxd env cache                                      folder, size, limit\n"
     "  rxd env cache --max-mb 4096 --offline              set the cache limit; no network\n"
@@ -50,7 +50,11 @@ def register(command: Any, cli: Any) -> None:
     p.add_argument("--product", metavar="NAME", help="the provider's product (see inventory)")
     p.add_argument("--time", metavar="UTC", help="the time wanted, e.g. 2021-12-11T03:00Z")
     p.add_argument("--time-end", metavar="UTC", help="end of a time window")
-    p.add_argument("--bbox", metavar="W,S,E,N", help="area in degrees (west,south,east,north)")
+    p.add_argument(
+        "--bbox",
+        metavar="W,S,E,N",
+        help="area in degrees; with a negative west write --bbox=W,S,E,N",
+    )
     p.add_argument(
         "-V",
         "--variable",
