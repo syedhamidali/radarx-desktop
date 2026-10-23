@@ -556,6 +556,7 @@ def test_builtin_volume_modules_are_marked_volume(registry):
         "radarx_tornado_prob",
         "radarx_melting_layer",
         "radarx_qvp",
+        "radarx_rotation_track",
         "hydro_basin_rate",
     }
     for mid, spec in registry.MODULES.items():
