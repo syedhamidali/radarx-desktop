@@ -37,6 +37,15 @@ command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help` a
 and exits with **code 5**. With no network a sign-in keeps working for 30 days after the server last checked it.
 The deprecated `xrd` command behaves identically.
 
+**`rxd login` needs a terminal.** The password is typed at a prompt and is never taken from the command line, a
+file or an environment variable, so there is no switch for scripts. Where there is no terminal (input redirected
+from a file or a pipe, an editor or agent shell without a console, a scheduled job) it says so and stops with
+**exit code 5**, the same code as every command that needs an account, and `--json` prints
+`{"signed_in": false, "error": "no_terminal"}`. A Ctrl-D or Ctrl-Z at a prompt cancels the same way. What to do
+instead: sign in once in a normal terminal window (over `ssh`, use `ssh -t HOST` so the other end gets a terminal),
+or sign in in the Radarx app, which the command line shares. A `rxd login` session renews itself, so jobs started
+later by a script run under it without asking again.
+
 ## Quick start
 
 The six commands most people need (replace the file name with yours):
