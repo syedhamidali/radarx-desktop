@@ -32,6 +32,15 @@ for it.
   a late-finishing module returns is discarded. A module that never checks keeps its thread until
   it returns; after 3 such stuck runs new runs are refused with "Restart radarx-desktop".
   The thread is a daemon (it never blocks exit) and is not part of the shared executor pool.
+* **Cancel on request**: the engine understands `cancel_module` (and `cancel_export`, see
+  [STABILITY.md](STABILITY.md)). The waiting request ends at once with `module_error` and
+  `cancelled: true`; a module that checks `ctx.cancelled` or calls `ctx.progress()` also stops
+  computing. The Cancel button of a running module in the activity tray sends it.
+* **Memory guard**: while a module runs the engine checks its own size every half second. If it
+  grows past `XRADAR_MODULE_MAX_MB` (default 75 % of the computer's memory; `0` turns the guard
+  off) the run is stopped with "... was stopped because it used too much memory ...". A module
+  that never checks the cancel flag cannot be interrupted and keeps its thread (and its memory)
+  until it returns, exactly like after a timeout.
 * **Output checks**: every field must be numeric and have the sweep's `(n_azimuth, n_range)` shape;
   +/-inf become NaN (with a `warnings` entry in the result); a field that is only infinities, or
   a non-`Result` return value, is an error that says what to check.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import gc
 import logging
 import math
 import os
@@ -1252,6 +1253,11 @@ class RadarReader:
             self._path = None
             self._format = None
             self._reset_caches()
+        if self._temp_files:
+            # Let xarray's file manager close the handle it holds on the decompressed copy (a
+            # locked file cannot be removed on Windows), then remove the copy now instead of when
+            # the garbage collector gets to this reader: it can be gigabytes.
+            gc.collect()
         _unlink_all(self._temp_files)
 
     def get_schema(self) -> dict[str, Any]:
