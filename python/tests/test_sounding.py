@@ -24,7 +24,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
 from engine import sounding as S  # noqa: N812
 
 pytest.importorskip("radarx")
@@ -576,8 +575,10 @@ def test_diagnostics_are_labelled_complete_and_json_safe(bmx_csv: S.Sounding) ->
         "freezing",
         "wet_bulb_zero",
         "pw",
+        "lapse_rate",
     ):
         assert d["definitions"][key].strip(), key
+    assert "lapse_rates" in d and isinstance(d["lapse_rates"], dict)
     assert d["units"]["height"].startswith("m AGL") and "Bolton" in d["references"]["bolton"]
     assert "launch hour is not in it" in " ".join(
         d["notes"]
@@ -628,5 +629,98 @@ def test_summary_lines_name_the_parcels_and_units(bmx_csv: S.Sounding) -> None:
         "bulk shear 0-6km",
         "SRH 0-3km",
         "precipitable water",
+        "lapse rate",
     ):
         assert token in text, token
+
+
+# -- lapse rates: known-answer tests -----------------------------------------------------------
+
+
+def test_lapse_rate_of_a_linear_temperature_profile_is_exact() -> None:
+    """A temperature that falls linearly at exactly 6.5 K/km gives 6.5 K/km in any layer."""
+    z = np.arange(0.0, 12001.0, 50.0)
+    gamma = 6.5e-3  # K/m  (standard atmosphere)
+    t = 300.0 - gamma * z
+    # exact layer
+    assert S.lapse_rate(z, t, 0.0, 0.0, 3000.0) == pytest.approx(6.5, rel=1e-6)
+    assert S.lapse_rate(z, t, 0.0, 0.0, 6000.0) == pytest.approx(6.5, rel=1e-6)
+    # layer above the ground station
+    assert S.lapse_rate(z + 500.0, t, 500.0, 0.0, 3000.0) == pytest.approx(6.5, rel=1e-6)
+    # layer not spanned: None
+    assert S.lapse_rate(z, t, 0.0, 0.0, 20000.0) is None
+
+
+def test_lapse_rate_of_an_isothermal_layer_is_zero() -> None:
+    z = np.arange(0.0, 5001.0, 100.0)
+    t = np.full(z.size, 280.0)
+    assert S.lapse_rate(z, t, 0.0, 0.0, 3000.0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_lapse_rate_flags_a_super_adiabatic_layer_in_notes() -> None:
+    """An environmental lapse rate > 9.8 K/km (super-adiabatic) adds a note to diagnose()."""
+    z = np.arange(0.0, 5001.0, 10.0)
+    # surface temperature inversion then rapidly falling temperature (e.g. near-surface heating)
+    t = 305.0 - 12e-3 * z  # 12 K/km: super-adiabatic
+    p = 100000.0 * np.exp(-z / 8000.0)
+    td = t - 5.0
+    ds, _, _ = S.build_profile(pressure_pa=p, height_m=z, temperature_k=t, dewpoint_k=td)
+    d = S.diagnose(S.Sounding(profile=ds))
+    assert d["lapse_rates"]["0-3km_k_per_km"] == pytest.approx(12.0, rel=1e-3)
+    assert any("super-adiabatic" in n for n in d["notes"])
+
+
+def test_diagnose_includes_lapse_rates_for_weisman_klemp() -> None:
+    """Weisman-Klemp: theta increases at 5/4 power of z/ztr so the lapse rate is sub-dry-adiabatic
+    everywhere. The 0-3 km value should be between 6 and 9 K/km."""
+    snd = S.weisman_klemp()
+    d = S.diagnose(snd)
+    assert "lapse_rates" in d
+    lr_03 = d["lapse_rates"]["0-3km_k_per_km"]
+    assert lr_03 is not None and 6.0 < lr_03 < 9.5
+    # 700-500 hPa layer should also be available for this deep sounding
+    assert d["lapse_rates"]["700_500hPa_k_per_km"] is not None
+
+
+# -- radarx.retrieve.wind_profile cross-validation ------------------------------------------
+
+
+def test_radarx_wind_profile_matches_local_implementations_on_weisman_klemp() -> None:
+    """radarx.retrieve.wind_profile.bulk_shear, bunkers_storm_motion and storm_relative_helicity
+    must agree with the local implementations to within 0.1 m/s and 1 m2/s2, so that either path
+    through _wind_diag_radarx produces the same numbers and the local functions are a valid
+    fall-back. Implements the cross-validation described in docs/source-diagnostics.md."""
+    pytest.importorskip("radarx.retrieve.wind_profile")
+    from radarx.retrieve import wind_profile as wp
+
+    snd = S.weisman_klemp()
+    ds = snd.profile
+    z = np.asarray(ds["height"].values, dtype=float)
+    u = np.asarray(ds["u"].values, dtype=float)
+    v = np.asarray(ds["v"].values, dtype=float)
+    ground = float(z[0])
+
+    # bulk shear 0-6 km
+    local_sh6 = S.bulk_shear(z, u, v, ground, 0.0, 6000.0)
+    rx_sh6 = wp.bulk_shear(ds, bottom=0.0, top=6000.0, ground=ground)
+    assert local_sh6["u"] == pytest.approx(float(rx_sh6["shear_u"].values), abs=0.1)
+    assert local_sh6["v"] == pytest.approx(float(rx_sh6["shear_v"].values), abs=0.1)
+
+    # bulk shear 0-1 km
+    local_sh1 = S.bulk_shear(z, u, v, ground, 0.0, 1000.0)
+    rx_sh1 = wp.bulk_shear(ds, bottom=0.0, top=1000.0, ground=ground)
+    assert local_sh1["u"] == pytest.approx(float(rx_sh1["shear_u"].values), abs=0.1)
+
+    # Bunkers right mover
+    local_bk = S.bunkers_motion(z, u, v, ground)
+    rx_right = wp.bunkers_storm_motion(ds, mover="right", ground=ground)
+    assert local_bk["right_mover"]["u"] == pytest.approx(float(rx_right["u"].values), abs=0.2)
+    assert local_bk["right_mover"]["v"] == pytest.approx(float(rx_right["v"].values), abs=0.2)
+
+    # SRH 0-3 km for the right mover
+    cx, cy = local_bk["right_mover"]["u"], local_bk["right_mover"]["v"]
+    local_srh = S.storm_relative_helicity(z, u, v, ground, 3000.0, cx, cy)
+    rx_srh = wp.storm_relative_helicity(
+        ds, storm_motion="right", bottom=0.0, top=3000.0, ground=ground
+    )
+    assert local_srh == pytest.approx(float(rx_srh.values), abs=1.0)
