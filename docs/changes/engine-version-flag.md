@@ -1,0 +1,1 @@
+- **The analysis engine reports its version**: running the engine with `--version` prints the version and exits, which makes it easy to check which engine an installation carries.

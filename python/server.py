@@ -6206,7 +6206,13 @@ def main() -> None:
     parser.add_argument(
         "--web", action="store_true", help="public web-service mode (same as XRADAR_WEB=1)"
     )
+    parser.add_argument("--version", action="store_true", help="print the engine version and exit")
     args = parser.parse_args()
+    if args.version:
+        from engine.provenance import software_version
+
+        print(f"radarx-desktop engine {software_version()}")
+        return
     if args.web:
         os.environ["XRADAR_WEB"] = "1"
         web.reload_settings()
