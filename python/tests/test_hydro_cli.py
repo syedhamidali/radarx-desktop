@@ -457,6 +457,158 @@ class TestBasinOutputs:
         assert code == 2 and "--basins" in err
 
 
+class TestEnsembleCommand:
+    """``--ensemble N`` on synthetic volumes (uniform 10 mm/h for 20 min = 3.33 mm everywhere)."""
+
+    BASE = (
+        "-P",
+        "min_dbz=-30",
+        "--resolution-m",
+        "2000",
+        "--max-range-km",
+        "100",
+    )
+    TRUE_MM = 10 * 1200 / 3600
+
+    def test_products_provenance_and_seed(self, capsys, volumes):
+        import xarray as xr
+
+        args = ("qpe", "-i", *volumes, *self.BASE, "--ensemble", "24", "--seed", "3")
+        code, out, _ = run(capsys, *args, "--exceed", "2,3.3,6", "-o", "e1.nc", "--json")
+        assert code == 0
+        doc = json.loads(out)
+        e = doc["ensemble"]
+        assert e["n_members"] == 24 and e["seed"] == 3 and e["record"]["type"] == "qpe_ensemble"
+        assert "ASSUMED" in e["disclaimer"]
+        src = e["error_model"]["sources"]
+        assert "ASSUMED DEFAULT" in src["corr_length_km"] and "ASSUMED DEFAULT" in src["shares"]
+        assert "engine's own uncertainty" in src["sigma_ln"]
+        ds = xr.open_dataset("e1.nc")
+        mean = ds["ens_mean"].values
+        wet = np.isfinite(mean) & (ds["accumulation"].values > 1)
+        # the ensemble mean is the estimate (mean-preserving), up to the Monte Carlo error
+        assert float(np.nanmean(mean[wet])) == pytest.approx(self.TRUE_MM, rel=0.1)
+        assert ds["ens_mean"].attrs["provenance_type"] == "RETRIEVED"
+        assert "ASSUMED" in ds["prob_ge_3.3mm"].attrs["ensemble_label"]
+        p2, p33, p6 = (
+            float(np.nanmean(ds[f"prob_ge_{t}mm"].values[wet])) for t in ("2", "3.3", "6")
+        )
+        assert p2 > p33 > p6 and p2 > 0.6 and p6 < 0.3
+        rec = json.loads(ds["ens_std"].attrs["ensemble_record"])
+        assert rec["seed"] == 3
+
+        # same seed: the same fields; another seed: different ones
+        run(capsys, *args, "--exceed", "2,3.3,6", "-o", "e2.nc", "-q")
+        run(capsys, *args[:-2], "--seed", "4", "--exceed", "2,3.3,6", "-o", "e3.nc", "-q")
+        a, b, c = (xr.open_dataset(f)["ens_std"].values for f in ("e1.nc", "e2.nc", "e3.nc"))
+        assert np.array_equal(a, b, equal_nan=True)
+        assert not np.array_equal(a, c, equal_nan=True)
+
+    def test_options_need_an_ensemble_and_errors_are_usage_errors(self, capsys, volumes):
+        code, _, err = run(capsys, "qpe", "-i", *volumes, *self.BASE, "--exceed", "5")
+        assert code == 2 and "--ensemble" in err
+        code, _, err = run(capsys, "qpe", "-i", *volumes, *self.BASE, "--ensemble", "1")
+        assert code != 0 and "2 to 500" in err
+        code, _, err = run(
+            capsys,
+            "qpe",
+            "-i",
+            *volumes,
+            *self.BASE,
+            "--ensemble",
+            "5",
+            "--error-shares",
+            "0.5,0.5,0.5",
+        )
+        assert code != 0 and "add up to 1" in err
+
+    def test_figure_field_and_basin_probabilities(self, capsys, volumes, tmp_path):
+        gj = tmp_path / "b.geojson"
+        ring = [[-97.2, 34.9], [-96.8, 34.9], [-96.8, 35.2], [-97.2, 35.2], [-97.2, 34.9]]
+        gj.write_text(
+            json.dumps(
+                {
+                    "type": "Feature",
+                    "properties": {"huc12": "H1"},
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                }
+            )
+        )
+        code, out, _ = run(
+            capsys,
+            "qpe",
+            "-i",
+            *volumes,
+            *self.BASE,
+            "-b",
+            gj,
+            "--ensemble",
+            "30",
+            "--seed",
+            "1",
+            "--exceed",
+            "1,3.3,10",
+            "--field",
+            "prob_ge_3.3mm",
+            "-p",
+            "prob.png",
+            "--json",
+        )
+        assert code == 0 and Path("prob.png").stat().st_size > 3000
+        row = json.loads(out)["ensemble"]["basins"][0]
+        assert row["id"] == "H1"
+        bm = row["basin_mean_mm"]
+        assert bm["mean"] == pytest.approx(self.TRUE_MM, rel=0.1)
+        # a basin mean is less variable than a cell: its 5-95 % range is narrower than a cell's
+        cell_sd = json.loads(out)["ensemble"]["median_relative_spread"]
+        assert (bm["p95"] - bm["p05"]) / (2 * 1.645) / bm["mean"] < cell_sd
+        probs = row["prob_basin_mean_ge"]
+        assert (
+            probs["1"] > 0.95 and probs["10"] < 0.05 and probs["1"] >= probs["3.3"] >= probs["10"]
+        )
+
+    def test_gauges_give_the_model_and_a_reliability_check(self, capsys, volumes):
+        # 6 x 6 gauges, each reading 5 mm where the radar says 3.33 mm: ratio 1.5
+        lat = np.repeat(np.linspace(34.7, 35.3, 6), 6)
+        lon = np.tile(np.linspace(-97.5, -96.5, 6), 6)
+        pd.DataFrame(
+            {
+                "station": [f"G{i}" for i in range(36)],
+                "lat": lat,
+                "lon": lon,
+                "time": "2024-05-01 20:20:00",
+                "precip_mm": 5.0,
+            }
+        ).to_csv("gauges.csv", index=False)
+        code, out, _ = run(
+            capsys,
+            "qpe",
+            "-i",
+            *volumes,
+            *self.BASE,
+            "--gauges",
+            "gauges.csv",
+            "--gauge-interval-s",
+            "1200",
+            "--adjust",
+            "mfb",
+            "--ensemble",
+            "20",
+            "--json",
+        )
+        assert code == 0
+        e = json.loads(out)["ensemble"]
+        gs = e["error_model"]["gauge_stats"]
+        assert gs["used"] and gs["n_pairs"] >= 30
+        assert gs["mean_ratio_gauge_over_radar"] == pytest.approx(1.5, rel=0.03)
+        assert "gauges: root mean square" in e["error_model"]["sources"]["sigma_ln"]
+        # the bias is entirely "common" error here (all gauges agree)
+        assert e["error_model"]["shares"]["common"] > 0.9
+        rel = e["reliability"]
+        assert rel["validated"] and rel["model_from_the_same_gauges"] and rel["n_gauges"] >= 30
+        assert "optimistic" in rel["note"]
+
+
 class TestApiAndModule:
     def test_api_qpe_volume_and_list(self, volumes, tmp_path):
         res = api.qpe(

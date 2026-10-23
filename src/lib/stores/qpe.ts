@@ -66,6 +66,10 @@ export interface QpeSettings {
   basinIdField: string;
   thresholds: string;
   frequencyPath: string;
+  /** ensemble of the accumulation under an assumed error model: 0 = off */
+  ensembleMembers: number;
+  ensembleSeed: number;
+  ensembleThresholds: string;
 }
 
 export const DEFAULT_QPE_SETTINGS: QpeSettings = {
@@ -93,6 +97,9 @@ export const DEFAULT_QPE_SETTINGS: QpeSettings = {
   basinIdField: '',
   thresholds: '10,25,50,100',
   frequencyPath: '',
+  ensembleMembers: 0,
+  ensembleSeed: 0,
+  ensembleThresholds: '5,10,25,50,100',
 };
 
 export interface QpeRadar {
@@ -136,6 +143,8 @@ export interface QpeSummary {
   /** the basins as GeoJSON (WGS 84, simplified for drawing) with their statistics in the properties */
   basin_geojson?: BasinCollection;
   exceedance?: Record<string, any>[];
+  /** ensemble under an ASSUMED error model: error model with where each number came from, run record, reliability */
+  ensemble?: Record<string, any>;
   gauge_validation?: Record<string, any>;
   fields: { name: string; label: string; units: string }[];
   default_field: string;
@@ -275,6 +284,17 @@ export function buildRunMessage(s: QpeSettings, fileIds: string[], requestId: st
     };
   }
   if (s.gaugePath.trim()) msg.gauges = gaugeSpec(s);
+  if (s.ensembleMembers >= 2) {
+    const thresholds = s.ensembleThresholds
+      .split(',')
+      .map((t) => Number(t.trim()))
+      .filter((t) => Number.isFinite(t) && t > 0);
+    msg.ensemble = {
+      n_members: Math.min(500, Math.round(s.ensembleMembers)),
+      seed: Math.max(0, Math.round(s.ensembleSeed)),
+      ...(thresholds.length ? { thresholds } : {}),
+    };
+  }
   return msg;
 }
 

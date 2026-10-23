@@ -20,6 +20,7 @@ from pathlib import Path
 
 # open-radar-data names used by the tests
 KATX = "KATX20130717_195021_V06"  # NEXRAD Level II (36 MB)
+KILX = "KILX20230629_154426_V06"  # NEXRAD Level II, 12 cuts (10 MB)
 DOW8_PPI = "cfrad.20211011_201557.188_to_20211011_201617.720_DOW8_PPI.nc"  # CfRadial1 (18 MB)
 DOW8_RHI = "cfrad.20211011_201733.023_to_20211011_201745.299_DOW8_RHI.nc"  # CfRadial1 RHI (3.7 MB)
 DOW8_RHI_2 = "cfrad.20211011_223602.712_to_20211011_223612.091_DOW8_RHI.nc"  # RHI (1.7 MB)
@@ -81,3 +82,15 @@ def katx() -> Path | None:
     if env and Path(env).is_file():
         return Path(env)
     return get(KATX)
+
+
+#: the 2021-12-11 Kentucky/Tennessee tornado-outbreak volumes of the tutorial (optional, local only)
+EVENT_DIR = Path(
+    os.environ.get("XRADAR_TEST_EVENT_DIR", "~/Downloads/radarx_movie_tutorial/data/nexrad")
+).expanduser()
+
+
+def event_volume(radar: str, stamp: str) -> Path | None:
+    """``<radar>20211211_<stamp>_V06`` from the tutorial folder (``$XRADAR_TEST_EVENT_DIR``)."""
+    path = EVENT_DIR / radar / f"{radar}20211211_{stamp}_V06"
+    return path if path.is_file() else None
