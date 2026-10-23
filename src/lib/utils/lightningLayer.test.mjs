@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   f32, i32, decodeLightning, windowSeconds, lowerBound, fade, MIN_FADE, visiblePoints, channelsOf, coveredFraction,
   windowCoverageText, rateSeries, dataSpan, niceBin, flashRate, pointRate, placeAll, scenePoints, windowStats, flashesText,
-  coverageNote, DEFAULT_WINDOW, boxAround, buildOpenRequest, DEFAULT_OPEN,
+  coverageNote, DEFAULT_WINDOW, boxAround, buildOpenRequest, DEFAULT_OPEN, heightPercentile, modeHeight, decodeStats,
 } from './lightningLayer.ts';
 
 const b64f = (arr) => Buffer.from(new Float32Array(arr).buffer).toString('base64');
@@ -239,4 +239,32 @@ test('the open request carries every parameter the user sees', () => {
   const p = buildOpenRequest('r2', ['/a.nc'], null, { ...DEFAULT_OPEN, parallaxOn: true, parallaxKm: 9.5 });
   assert.equal(p.parallax_to_km, 9.5);
   assert.equal('box' in p, false, 'without a radar the whole file is read');
+});
+
+test('height percentiles and mode of a hand-made distribution', () => {
+  // bins of 1 km centred at 5.5, 6.5, 7.5, 8.5 with 10, 30, 40, 20 sources: 100 in all
+  const z = [5.5, 6.5, 7.5, 8.5];
+  const c = [10, 30, 40, 20];
+  assert.equal(modeHeight(z, c), 7.5);
+  // the median (50) is reached 10 of the 40 sources into the 7-8 km bin: 7 + 10/40 = 7.25 km
+  assert.ok(Math.abs(heightPercentile(z, c, 0.5, 1) - 7.25) < 1e-12);
+  assert.ok(Math.abs(heightPercentile(z, c, 0.1, 1) - 6.0) < 1e-12, '10 % of the sources lie below 6 km');
+  assert.ok(Math.abs(heightPercentile(z, c, 1, 1) - 9.0) < 1e-12);
+  assert.ok(Number.isNaN(heightPercentile(z, [0, 0, 0, 0], 0.5, 1)));
+  assert.ok(Number.isNaN(modeHeight(z, [0, 0, 0, 0])));
+});
+
+test('statistics from the engine are decoded and refused when malformed', () => {
+  const msg = {
+    height: { z_km: [5.5, 6.5], z_step_m: 1000, sources: [3, 4], initiations: [1, 0], reference: 'above mean sea level' },
+    rate: { bin_s: 60, edges_s: [0, 60], per_min: [2, null] },
+    jump: { available: true, reason: '', start_s: [840], level: [2.4], sigma: 2, min_rate_per_min: 10 },
+    notes: ['n'],
+    references: ['r'],
+  };
+  const s = decodeStats(msg);
+  assert.deepEqual(s.height.sources, [3, 4]);
+  assert.equal(s.jump.startS[0], 840);
+  assert.equal(s.rate.perMin[1], null);
+  assert.throws(() => decodeStats({}), /does not know/);
 });

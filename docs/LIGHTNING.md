@@ -73,6 +73,31 @@ is this program's own and agrees with the paper only in that long flashes are sp
 * Ester, M., H.-P. Kriegel, J. Sander and X. Xu, 1996: A density-based algorithm for discovering clusters in large
   spatial databases with noise. *Proc. KDD-96*, 226-231.
 
+## LMA statistics: source heights and lightning jumps
+
+![The Lightning panel for an LMA (a synthetic array, not real data) over a KHPX scan: flash rate, source density and source height](images/lightning-lma-panel-dark.png)
+![The synthetic LMA sources at their heights in 3D, light theme](images/lightning-lma-3d-light.png)
+
+For an LMA the panel adds two things, both computed by the radarx library:
+
+* **Source height**: how many sources (bars) and flash initiations (dots) lie in each height bin, in
+  kilometres above mean sea level (bin height 500 m), with the median and the most common height. This is a
+  distribution of *located* sources: a source is found less often with distance from the array and when fewer
+  stations see it, and shallow sources far from the array are missed first, so a storm far from the network
+  looks higher than it is.
+* **Lightning jumps**: the "2 sigma" algorithm of Schultz, Petersen and Carey (2009) on the flash rate per
+  minute: the rate is averaged over 2 minutes, a jump is flagged when its rate of change exceeds two standard
+  deviations of the five earlier changes while the rate is at least 10 flashes per minute. Jumps are marked in red
+  on the flash-rate chart. The algorithm needs 14 minutes of data; with less, the panel says so instead of
+  showing "no jump". Minutes without data are counted as zero for this algorithm (it needs a continuous
+  series) and the panel says how many.
+
+**Charge layers are not inferred.** Where charge sits is an interpretation of the sources, not something the array
+measures, so the program does not offer it.
+
+Gridded products (source density, flash extent density, flash initiation density on a map) are not in the
+panel yet.
+
 ## GLM parallax
 
 (The geometry is the radarx library's `glm_parallax`; with an older radarx the program uses its own copy of the same maths.)
