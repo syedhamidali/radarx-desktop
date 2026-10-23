@@ -11,6 +11,7 @@ OUTPUT_STANDARDS
 ENVIRONMENT
 environment-sources
 LICENSES
+image-credits
 PRIVACY
 REPORTING
 ```

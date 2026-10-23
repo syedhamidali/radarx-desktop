@@ -1,0 +1,4 @@
+{
+  "_comment": "Fill in after the first Zenodo upload (docs/zenodo/README.md). concept_doi: the one DOI of the documentation, as Zenodo shows it (10.5281/zenodo.<conceptrecid>). Leave empty until Zenodo has assigned it: never invent one.",
+  "concept_doi": ""
+}

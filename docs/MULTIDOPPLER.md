@@ -129,7 +129,13 @@ fading in and out over about 0.4 s, and the wind row has a third:
 
 ![Four frames of the flow over the mosaic volume (Mayfield, KY, 2021-12-11 02:08 UTC)](images/wind3d-flow-strip.png)
 
+```{only} html
 ![Flow of the analysis, animated](images/wind3d-flow.gif)
+```
+
+```{only} latex
+![Flow of the analysis (first frame; the web pages show it animated)](images/wind3d-flow-frame.png)
+```
 
 Flow with *Animate field* on (left: the echo drifts a little along the wind as well), and on a
 light scene (right: darker saturated trails with a thin light halo):
