@@ -18,6 +18,7 @@
   import { styleFor, variableStylesRevision } from '../utils/variableStyles';
   import MapBackground from './MapBackground.svelte';
   import GeoOverlay from './GeoOverlay.svelte';
+  import BasinOverlay from './BasinOverlay.svelte';
   import { lazy } from '../utils/lazy.svelte';
   import { showRadarSites } from '../stores/radarSitesPref';
   import MeasureTools from './MeasureTools.svelte';
@@ -893,6 +894,19 @@
           {radarLat}
           {radarLon}
           {radarName}
+          maxRange={currentMaxRange}
+          {scale}
+          {translateX}
+          {translateY}
+          {containerWidth}
+          {containerHeight}
+        />
+      {/if}
+
+      {#if hasRendered && (radarLat !== 0 || radarLon !== 0)}
+        <BasinOverlay
+          {radarLat}
+          {radarLon}
           maxRange={currentMaxRange}
           {scale}
           {translateX}
