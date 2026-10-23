@@ -98,3 +98,15 @@ images/nowcast/skill_by_event.png,NEXRAD,,"verification figure computed from eig
 images/nowcast/skill_vs_lead.png,NEXRAD,,"verification figure computed from eight NEXRAD cases; no map, no imagery"
 images/nowcast/skill_vs_persistence.png,NEXRAD,,"verification figure computed from eight NEXRAD cases; no map, no imagery"
 images/ui/live-map.png,OSM;NEXRAD,yes,"live composite of KTLX, KVNX and KINX (21 Oct 2026); map tiles credited in the frame"
+images/ui/live-chooser-search.png,OSM,yes,"radar chooser, DWD basemap, search for South Africa; site markers only, no radar echo"
+images/ui/live-consent-dwd.png,OSM,yes,consent dialog for two DWD radars; basemap visible behind it, no radar data fetched yet
+images/ui/live-map-all-echo.png,OSM;NEXRAD,yes,"same live composite as live-map-light.png with Hide echo below set to nothing (all echo)"
+images/ui/live-map-dwd.png,OSM;DWD,yes,"live composite of two DWD radars (Essen, Flechtdorf); DWD data credited and licensed CC BY 4.0 in the frame"
+images/ui/live-map-light.png,OSM;NEXRAD,yes,"live composite of KTLX, KVNX and KINX, light theme"
+images/ui/live-multidoppler.png,OSM;NEXRAD,yes,Multi-Doppler winds from the three live NEXRAD radars; map tiles credited in the frame
+images/ui/live-open-3d.png,OSM;NEXRAD,no,the live map's volumes opened as files and shown in the 3D view; map draped under the 3D view
+images/ui/radar-flat-light.png,OSM,yes,"radar network map, flat/Mercator projection, light theme, a selected site's card open"
+images/ui/radar-globe-australia-light.png,OSM,yes,"radar network globe, light theme, over Australia"
+images/ui/radar-globe-dark.png,OSM,yes,"radar network globe, dark theme"
+images/ui/radar-globe-europe-card.png,OSM,yes,"radar network globe, dark theme, over Europe with a selected site's card open"
+images/ui/radar-globe-none-dark.png,,,"radar network globe, dark theme, basemap style ""none"" (no map tiles, no OSM credit)"
