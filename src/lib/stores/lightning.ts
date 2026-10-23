@@ -31,6 +31,8 @@ import {
   type Visible,
   type WindowSpec,
 } from '../utils/lightningLayer';
+import { latLonToDataSpace } from '../utils/geoProjection';
+import { DEFAULT_MIXER, type ListenerPose, type Mixer } from '../utils/liveSound';
 
 export interface LightningState {
   data: LightningData | null;
@@ -234,3 +236,71 @@ declare global {
 // A hook for screenshots and scripts in a development build (no file dialog in a plain browser).
 if (typeof window !== 'undefined' && import.meta.env?.DEV) window.__radarxLightning = { open: openLightningFiles };
 
+
+// ── Sound ───────────────────────────────────────────────────────────────────
+
+export interface SoundSettings {
+  mixer: Mixer;
+  /** Data seconds per real second of the replay. */
+  speed: number;
+  /** Where the listener is: at the radar, or at the 3D camera (follows it). */
+  listener: 'radar' | 'camera';
+}
+
+const SOUND_KEY = 'xradar-lightning-sound';
+
+function loadSound(): SoundSettings {
+  const d: SoundSettings = { mixer: structuredClone(DEFAULT_MIXER), speed: 30, listener: 'radar' };
+  try {
+    const raw = JSON.parse(localStorage.getItem(SOUND_KEY) ?? 'null');
+    if (!raw || typeof raw !== 'object') return d;
+    const num = (v: unknown, fb: number, lo: number, hi: number) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fb);
+    const layer = (l: any, fb: { levelDb: number; mute: boolean }) => ({ levelDb: num(l?.levelDb, fb.levelDb, -40, 12), mute: typeof l?.mute === 'boolean' ? l.mute : fb.mute });
+    return {
+      mixer: {
+        masterDb: num(raw.mixer?.masterDb, d.mixer.masterDb, -40, 6),
+        ceilingDb: num(raw.mixer?.ceilingDb, d.mixer.ceilingDb, -24, 0),
+        layers: { thunder: layer(raw.mixer?.layers?.thunder, d.mixer.layers.thunder), ticks: layer(raw.mixer?.layers?.ticks, d.mixer.layers.ticks) },
+      },
+      speed: num(raw.speed, d.speed, 1, 600),
+      listener: raw.listener === 'camera' ? 'camera' : 'radar',
+    };
+  } catch {
+    return d;
+  }
+}
+
+/** Mixer, replay speed and listener. Remembered in the browser. Sound itself never starts without a click. */
+export const soundSettings = writable<SoundSettings>(loadSound());
+soundSettings.subscribe((s) => {
+  try {
+    localStorage.setItem(SOUND_KEY, JSON.stringify(s));
+  } catch {
+    /* blocked storage */
+  }
+});
+
+/** The 3D camera's position and heading, written by the 3D view every frame (not reactive: read when needed). */
+let cameraPose: ListenerPose | null = null;
+export function setCameraPose(p: ListenerPose | null): void {
+  cameraPose = p;
+}
+
+/** The listener now: the 3D camera when asked for and known, otherwise the radar (0, 0, facing north). */
+export function currentListener(): ListenerPose {
+  return get(soundSettings).listener === 'camera' && cameraPose ? cameraPose : { x: 0, y: 0, yawDeg: 0 };
+}
+
+/** Position of every flash (km east / north of the radar). */
+export function flashPlacer(data: LightningData, radarLat: number, radarLon: number): (flash: number) => [number, number] {
+  return (i) => {
+    const [x, y] = latLonToDataSpace(data.f.lat[i], data.f.lon[i], radarLat, radarLon);
+    return [x / 1000, y / 1000];
+  };
+}
+
+/** The radar of the open file (position), for the sound panel. */
+export function radarPosition(): { lat: number; lon: number } | null {
+  const r = currentRadar();
+  return r ? { lat: r.lat, lon: r.lon } : null;
+}
