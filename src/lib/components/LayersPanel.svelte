@@ -49,7 +49,7 @@
         {#if scan}Radar scan: {formatUtc(scan)}{:else if hasLive && liveFrame}{liveLayerLine(liveFrame.time, liveFrame.radars.map((r) => r.station))}{:else}Radar scan: unknown{/if}
       </p>
       {#each grouped as g (g.group)}
-        <h4 class="hud-label">{g.group}</h4>
+        <h3 class="hud-label">{g.group}</h3>
         <ul>
           {#each g.items as r (r.id)}
             <li class:active={r.id === `file:${$activeFileId}`} data-layer={r.id}>
@@ -81,7 +81,7 @@
   .layers { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
   .empty { margin: 0; color: var(--c-muted); font-size: var(--fs-xs); line-height: 1.5; }
   .ref { margin: 0; font-size: var(--fs-xs); color: var(--c-text-dim); }
-  h4 { margin: var(--space-2) 0 0; }
+  h3 { margin: var(--space-2) 0 0; }
   ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
   li {
     display: flex;

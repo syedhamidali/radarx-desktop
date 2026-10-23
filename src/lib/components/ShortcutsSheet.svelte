@@ -133,7 +133,9 @@
         </button>
       </div>
 
-      <div class="shortcuts-body">
+      <!-- scrollable: keyboard users must be able to focus it to scroll (axe: scrollable-region-focusable) -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <div class="shortcuts-body" tabindex="0" role="region" aria-label="Keyboard shortcuts list">
         <div class="shortcuts-grid">
           {#each filteredByCategory as category}
             <div class="shortcut-category">

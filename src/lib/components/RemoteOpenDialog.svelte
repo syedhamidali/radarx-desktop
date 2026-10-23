@@ -6,6 +6,7 @@
   import { fade } from 'svelte/transition';
   import { focusTrap } from '../utils/focusTrap';
   import { remoteEngine } from '../stores/remoteEngine';
+  import { t } from '../i18n';
 
   let { onopen, onclose }: { onopen: (path: string) => void; onclose: () => void } = $props();
 
@@ -32,20 +33,20 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="scrim" onclick={(e) => e.target === e.currentTarget && onclose()} transition:fade={{ duration: 120 }}>
   <div class="dlg brackets-4" role="dialog" aria-modal="true" aria-labelledby="ro-title" use:focusTrap={{ initial: 'input[name=path]' }}>
-    <h2 id="ro-title">Open a file on the remote engine</h2>
+    <h2 id="ro-title">{$t('remoteOpen.title')}</h2>
     <p class="lead">
-      Type the path of the file <strong>on the computer where <code>rxd serve</code> runs</strong>
-      {#if $remoteEngine.hostPort}(reached at <span class="mono">{$remoteEngine.hostPort}</span>){/if}.
-      The file picker of this computer cannot see it.
+      {$t('remoteOpen.leadBefore')} <strong>{$t('remoteOpen.leadWhere')}</strong>
+      {#if $remoteEngine.hostPort}<span class="mono">{$t('remoteOpen.reachedAt', { hostPort: $remoteEngine.hostPort })}</span>{/if}.
+      {$t('remoteOpen.leadAfter')}
     </p>
     <form onsubmit={submit}>
     <label class="field">
-      <span>Path on the remote computer</span>
+      <span>{$t('remoteOpen.pathLabel')}</span>
       <input name="path" type="text" bind:value={path} placeholder="/scratch/me/radar/KHPX20211211_023231_V06" spellcheck="false" autocapitalize="off" autocomplete="off" />
     </label>
     <div class="row">
-      <button type="button" onclick={onclose}>Cancel</button>
-      <button class="primary" type="submit" disabled={!trimmed}>Open</button>
+      <button type="button" onclick={onclose}>{$t('remoteOpen.cancel')}</button>
+      <button class="primary" type="submit" disabled={!trimmed}>{$t('remoteOpen.open')}</button>
     </div>
     </form>
   </div>
