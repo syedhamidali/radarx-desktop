@@ -39,9 +39,20 @@ ndimage = LazyModule("scipy.ndimage")  # imported on first use (~150 ms)
 # ---------------------------------------------------------------------------
 
 
+def _helper_path(filename: str, engine_dir: Path | None = None) -> Path:
+    """Where a shared helper of the built-in modules lives.
+
+    ``modules/`` next to ``engine/`` in a source checkout or the frozen engine,
+    ``engine/builtin_modules`` in an installed wheel.
+    """
+    from engine.plugins import builtin_modules_dir
+
+    return builtin_modules_dir(engine_dir or Path(__file__).resolve().parent) / filename
+
+
 def _load_helper(name: str, filename: str):
     if name not in sys.modules:
-        path = Path(__file__).resolve().parent.parent / "modules" / filename
+        path = _helper_path(filename)
         spec = importlib.util.spec_from_file_location(name, path)
         if spec is None or spec.loader is None:  # pragma: no cover
             raise ImportError(f"cannot load {path}")
