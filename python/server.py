@@ -52,6 +52,7 @@ from engine import (
     _radarx_import,
     derived,
     layer_provenance,
+    local_access,
     mosaic,
     pipeline,
     plugins,
@@ -119,13 +120,6 @@ logger = logging.getLogger("xradar-server")
 WS_MAX_SIZE_MB = int(os.environ.get("XRADAR_WS_MAX_SIZE_MB", "10"))
 WS_MAX_SIZE = WS_MAX_SIZE_MB * 1024 * 1024
 EXPECTED_SESSION_TOKEN = os.environ.get("XRADAR_SESSION_TOKEN")
-ALLOWED_ORIGIN_PREFIXES = (
-    "tauri://localhost",
-    "http://tauri.localhost",
-    "https://tauri.localhost",
-    "http://localhost:",
-    "http://127.0.0.1:",
-)
 
 # Binary frames stay comfortably under WKWebView's 1 MB WebSocket message cap.
 CHUNK_SIZE = 900 * 1024
@@ -691,12 +685,9 @@ def _origin_allowed(ws: ServerConnection) -> bool:
             web.settings(),
             allow_missing=False,
         )
-    if not EXPECTED_SESSION_TOKEN:
-        return True
-    origin = headers.get("Origin") if headers is not None else None
-    if not origin:
-        return True
-    return any(origin.startswith(prefix) for prefix in ALLOWED_ORIGIN_PREFIXES)
+    # The desktop engine: a second line behind the handshake check (engine/local_access.py, which
+    # also checks ``Host``), with or without a session token.
+    return local_access.origin_ok(headers.get("Origin") if headers is not None else None)
 
 
 # ---------------------------------------------------------------------------
@@ -6119,6 +6110,8 @@ async def _run_server(
             server_header=None,
             max_queue=8,
         )
+    else:  # the app's own engine: a foreign web page gets a 403 before any WebSocket opens
+        serve_kwargs["process_request"] = local_access.process_request
     serve_kwargs.update(serve_options or {})
     bind_host = host or ("127.0.0.1" if web_mode else "localhost")
     async with websockets.serve(

@@ -116,6 +116,17 @@ applies the same rule to its own stored session, without asking the server to re
 offline the next day opens the app ("offline" in the status bar). Only a **definite** answer from the server (its
 own session or user is gone) signs the user out; a server error, a rate limit, a portal page or a timeout does not.
 
+### Who can reach the app's engine
+
+The app's analysis engine listens on your own computer only. A web page open in your browser cannot talk to it:
+the engine answers a connection from any page other than the app itself with "403 Forbidden" before anything is
+exchanged, and it does the same when the request names a computer other than your own (the trick used to point a
+web page at a local program). The app's own windows are accepted, and so is the development server of the app.
+This holds for an engine you start by hand as well as for the one the app starts. The engine the app starts also
+requires a random key, made for that run, on every message; a program on your computer that is not a web page still
+has to know it. Another program running as you can read your files whatever the engine does, so this protects you
+from web pages, not from software you have already installed.
+
 ## The activity log
 
 Each signed-in account sends a small **feature-level** log, so the Radarx team knows who uses the program and which
