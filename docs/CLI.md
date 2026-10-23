@@ -416,6 +416,10 @@ wrote rain.png
   Without `-o`/`-p`: `qpe_<time>.nc` and `qpe_<time>_map.png`.
 * Gauges are local files (CSV/JSON/NOAA hourly and daily/METAR): `--gauges FILE --adjust mfb|brandes|ked`; the validation
   (bias, RMSE, correlation, KGE, leave-one-out) is printed and in `--json`. Nothing is downloaded.
+* `--ensemble N [--seed S] [--exceed 10,25,50]` adds an ensemble of the accumulation under an *assumed* multiplicative error
+  model (mean, spread, 5/50/95 % percentiles, exceedance probabilities, per basin too; seeded, with a run record). The error
+  parameters come from the gauges when there are some and are marked as assumed defaults otherwise
+  (`--error-sigma-ln`, `--error-corr-km`, `--error-shares` override); see {doc}`HYDROLOGY`.
 * `rxd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
   mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
   with `--frequency table.json`, the return period of the basin-mean depth (add `"areal_reduction"` to the table for the
