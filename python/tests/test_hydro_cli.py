@@ -381,6 +381,82 @@ class TestBasinCommand:
         assert 2 < ex["return_period_years"] < 10
 
 
+class TestBasinOutputs:
+    """Outlines for a GIS, the map figure, and the metadata of the CSV files."""
+
+    @staticmethod
+    def _basin(tmp_path):
+        gj = tmp_path / "b.geojson"
+        ring = [[-97.2, 34.9], [-96.8, 34.9], [-96.8, 35.2], [-97.2, 35.2], [-97.2, 34.9]]
+        gj.write_text(
+            json.dumps(
+                {
+                    "type": "Feature",
+                    "properties": {"huc12": "H1"},
+                    "geometry": {"type": "Polygon", "coordinates": [ring]},
+                }
+            )
+        )
+        return gj
+
+    def test_geojson_map_and_csv_metadata(self, capsys, volumes, tmp_path):
+        gj = self._basin(tmp_path)
+        code, _, _ = run(
+            capsys,
+            "basin",
+            "-i",
+            *volumes,
+            "-b",
+            gj,
+            "-P",
+            "min_dbz=-30",
+            "--resolution-m",
+            "2000",
+            "--max-range-km",
+            "100",
+            "-o",
+            "out.geojson",
+            "-o",
+            "out.csv",
+            "--map",
+            "map.png",
+            "-q",
+        )
+        assert code == 0
+        fc = json.loads(Path("out.geojson").read_text())
+        f = fc["features"][0]
+        assert fc["provenance_type"] == "RETRIEVED" and fc["label"].startswith("an estimate")
+        assert f["properties"]["id"] == "H1"
+        assert f["properties"]["accumulation_mean_mm"] == pytest.approx(10 * 1200 / 3600, rel=0.03)
+        assert Path("map.png").stat().st_size > 5000
+
+        # the CSV files carry their provenance, units and uncertainty statement in # lines
+        table = Path("out.csv").read_text().splitlines()
+        meta = [ln for ln in table if ln.startswith("#")]
+        assert any(ln.startswith("# columns:") and "accumulation_mean_mm [mm]" in ln for ln in meta)
+        assert any(ln.startswith("# uncertainty:") for ln in meta)
+        df = pd.read_csv("out.csv", comment="#")
+        assert df.loc[0, "id"] == "H1"
+        series = Path("out_H1_series.csv").read_text().splitlines()
+        meta = [ln for ln in series if ln.startswith("#")]
+        assert any("basin_area_km2" in ln for ln in meta)
+        assert any(ln.startswith("# accumulation_1sigma_mm:") for ln in meta)
+        assert any(ln.startswith("# columns:") and "cumulative_mm [mm]" in ln for ln in meta)
+        ts = pd.read_csv("out_H1_series.csv", comment="#")
+        assert list(ts.columns) == [
+            "time",
+            "mean_rate_mm_h",
+            "peak_cell_rate_mm_h",
+            "coverage",
+            "cumulative_mm",
+        ]
+        assert ts["cumulative_mm"].iloc[-1] == pytest.approx(10 * 1200 / 3600, rel=0.03)
+
+    def test_geojson_needs_basins_in_the_qpe_command(self, capsys, volumes):
+        code, _, err = run(capsys, "qpe", "-i", *volumes, "-o", "x.geojson")
+        assert code == 2 and "--basins" in err
+
+
 class TestApiAndModule:
     def test_api_qpe_volume_and_list(self, volumes, tmp_path):
         res = api.qpe(

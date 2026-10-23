@@ -57,10 +57,12 @@ from engine import (
     plugins,
     quality,
     rhi,
+    runrecord,
     varmap,
     web,
 )
 from engine import multidoppler as mdop
+from engine import project as project_file
 from engine.account import activity as account_activity
 from engine.account import config as account_config
 from engine.account import core as account_core
@@ -578,6 +580,8 @@ def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
             f"Unreadable data in {msg_type}: the open file looks truncated or damaged ({detail}). "
             "Re-download or re-copy it, then open it again."
         )
+    if isinstance(exc, (project_file.ProjectError, runrecord.RunRecordError)):
+        return logging.WARNING, f"{detail} (in {msg_type})"  # already written for the user
     if isinstance(exc, (ValueError, TypeError, OverflowError)):
         return logging.WARNING, f"Invalid input for {msg_type}: {detail}"
     if isinstance(exc, FileNotFoundError):
@@ -605,6 +609,13 @@ def _failure_text(msg_type: str, exc: BaseException) -> tuple[int, str]:
         f"Unexpected error in {msg_type}: {detail}. Try again; if it keeps happening, restart "
         "the app (details are in the engine log)."
     )
+
+
+def _radarx_use(module_id: str) -> dict[str, str | None]:
+    """``{"radarx": version}`` for a module that is computed by the radarx library."""
+    if not module_id.startswith("radarx"):
+        return {}
+    return {"radarx": runrecord.provenance.radarx_version() or "(version unknown)"}
 
 
 def _blank_to_none(value: Any) -> Any:
@@ -900,6 +911,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         self._access_token: str | None = None
         self._why_refused = "no_session"
         self._app_started = False
+        #: What was done in this session (modules, pipelines, exports), for the run record and
+        #: the methods text (engine/runrecord.py).
+        self._runlog = runrecord.RunLog()
 
     # ------------------------------------------------------------------
     # Accounts: the gate, auth_session / auth_signout, the activity log
@@ -1306,6 +1320,10 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "get_cross_section_3d": self._handle_get_cross_section_3d,
             "list_modules": self._handle_list_modules,
             "run_module": self._handle_run_module,
+            "get_run_record": self._handle_get_run_record,
+            "clear_run_record": self._handle_clear_run_record,
+            "save_project": self._handle_save_project,
+            "load_project": self._handle_load_project,
             "list_derived": self._handle_list_derived,
             "clear_derived": self._handle_clear_derived,
             "list_pipeline_steps": self._handle_list_pipeline_steps,
@@ -2356,6 +2374,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             store = derived.store_for(removed, create=False)
             if store is not None:
                 store.drop()
+            # Release the file now (its decompressed .gz copy included), not whenever the garbage
+            # collector gets to the reader.
+            removed.close()
 
         # If we closed the active file, fall back to the most recently opened remaining one.
         if _get_last_file_id() == file_id:
@@ -2607,6 +2628,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             except web.WebError as exc:
                 await self.send_error(f"export: {exc}")
                 return
+        self._log_export_step(fmt, reader, variable, sweep, saved_path, dpi)
         await self.send(
             {"type": "export_complete", **result_path, "derived_exported": derived_names}
         )
@@ -3924,6 +3946,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             cancel.set()  # a still-running module is abandoned; its late result is dropped
             raise
         out_file_id = resolved_id or msg.get("file_id")
+        self._log_module_step(module_id, payload, reader, sweep=sweep)
         await self.send({"type": "module_result", **payload, "file_id": out_file_id})
         blocks = {b.get("name"): b for b in payload.get("blocks", []) if b.get("type") == "field"}
         for name, (fields_hdr, arrays) in zip(fields, packed, strict=True):
@@ -4031,6 +4054,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             raise plugins.ModuleError(str(exc)) from exc
         names = {name for name, _, _ in built}
         evicted = [n for n in dict.fromkeys(evicted) if n not in names or not store.has(n)]
+        self._log_module_step(module_id, {"params": params}, reader, sweep=None)
         await self.send(_volume_result_message(run, built, store, evicted, out_file_id))
         await self._send_derived_list(out_file_id, reader, evicted=evicted)
 
@@ -4303,6 +4327,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
                 for name, arrays, meta in built
                 if name in listing
             ]
+            self._log_pipeline_steps(recipe, reader)
             await self.send(
                 {
                     "type": "pipeline_result",
@@ -4322,6 +4347,168 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             await self._send_derived_list(out_file_id, reader, evicted=evicted)
 
         await self._pipeline_guard("run_pipeline", body(), progress=True)
+
+    # ------------------------------------------------------------------
+    # Run record, methods text and project files (engine/runrecord.py, engine/project.py)
+    # ------------------------------------------------------------------
+
+    def _log_module_step(
+        self, module_id: str, payload: dict[str, Any], reader: RadarReader, *, sweep: int | None
+    ) -> None:
+        """Remember a finished module run (never fails the run)."""
+        try:
+            spec = plugins.MODULES.get(module_id)
+            if spec is None:
+                return
+            defaults = {p["name"]: p.get("default") for p in spec.params if "name" in p}
+            params = dict(payload.get("params") or {})
+            if sweep is None:
+                params = {**params, "sweeps": "all"}
+            first = (spec.description or "").strip().split(". ")[0].strip()
+            self._runlog.add(
+                runrecord.make_step(
+                    "module",
+                    module_id,
+                    spec.title,
+                    params,
+                    defaults=defaults,
+                    version=spec.version,
+                    sweep=sweep,
+                    input_name=reader._path or None,
+                    data_class="RETRIEVED",
+                    description=first,
+                    elapsed_ms=payload.get("elapsed_ms"),
+                    uses=_radarx_use(module_id),
+                )
+            )
+        except Exception as exc:  # the record is a convenience: it must not break processing
+            logger.debug("run record: could not log %s: %s", module_id, exc)
+
+    def _log_pipeline_steps(self, recipe: Any, reader: RadarReader) -> None:
+        try:
+            for st in recipe.enabled_steps():
+                spec = pipeline.STEPS.get(st["step_id"])
+                if spec is None:
+                    continue
+                self._runlog.add(
+                    runrecord.make_step(
+                        "pipeline",
+                        spec.id,
+                        spec.title,
+                        {
+                            **{p["name"]: p.get("default") for p in spec.params},
+                            **st.get("params", {}),
+                        },
+                        defaults={p["name"]: p.get("default") for p in spec.params},
+                        sweep=None,
+                        input_name=reader._path or None,
+                        data_class="RETRIEVED",
+                        description=f"Step of the pipeline '{recipe.name}' on {recipe.target}",
+                        uses=(
+                            {"radarx": runrecord.provenance.radarx_version()}
+                            if "radarx" in spec.packages
+                            else None
+                        ),
+                    )
+                )
+        except Exception as exc:
+            logger.debug("run record: could not log pipeline %s: %s", recipe.name, exc)
+
+    def _log_export_step(
+        self,
+        fmt: str,
+        reader: RadarReader,
+        variable: Any,
+        sweep: Any,
+        saved_path: str,
+        dpi: Any,
+    ) -> None:
+        try:
+            params = {"format": fmt, "variable": variable or "(first)", "sweep": sweep}
+            if str(fmt).lower() in ("png", "svg", "pdf"):
+                params["dpi"] = dpi
+            self._runlog.add(
+                runrecord.make_step(
+                    "export",
+                    "export",
+                    f"Export as {str(fmt).upper()}",
+                    params,
+                    input_name=reader._path or None,
+                    output_name=saved_path,
+                )
+            )
+        except Exception as exc:
+            logger.debug("run record: could not log the export: %s", exc)
+
+    async def _handle_get_run_record(self, msg: dict[str, Any]) -> None:
+        """``{type: "get_run_record"}`` -> ``{type: "run_record", record, methods, paragraphs}``.
+
+        The record is what this session did so far (modules, pipelines, exports) with every
+        parameter, the software and library versions; ``methods`` is the plain-language text.
+        """
+        record = self._runlog.record()
+        paragraphs = runrecord.methods_paragraphs(record)
+        await self.send(
+            {
+                "type": "run_record",
+                "record": record,
+                "methods": "\n\n".join(paragraphs) + "\n",
+                "paragraphs": paragraphs,
+            }
+        )
+
+    async def _handle_clear_run_record(self, msg: dict[str, Any]) -> None:
+        """``{type: "clear_run_record"}``: start a new record (the next steps start at 1)."""
+        self._runlog.clear()
+        await self.send({"type": "run_record_cleared"})
+
+    def _require_desktop_project(self, what: str) -> None:
+        if self.session is not None:
+            raise project_file.ProjectError(f"{what} is a feature of the desktop app.")
+
+    async def _handle_save_project(self, msg: dict[str, Any]) -> None:
+        """``{type: "save_project", path, name?, files, view?, recipe?}`` -> ``project_saved``.
+
+        Writes the project file (no data inside; see engine/project.py) with the run record of
+        this session. ``files`` defaults to the files open now.
+        """
+        self._require_desktop_project("Saving a project")
+        path = msg.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise project_file.ProjectError("save_project: 'path' must be a non-empty string")
+        files = msg.get("files")
+        if files is None:
+            files = [r._path for r in _readers().values() if getattr(r, "_path", None)]
+        if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+            raise project_file.ProjectError("save_project: 'files' must be a list of paths")
+        loop = asyncio.get_running_loop()
+        record = self._runlog.record() if len(self._runlog) else None
+        written = await loop.run_in_executor(
+            None,
+            lambda: project_file.save_project(
+                path,
+                name=str(msg.get("name") or ""),
+                files=files,
+                view=msg.get("view"),
+                recipe=msg.get("recipe"),
+                run_record=record,
+            ),
+        )
+        await self.send({"type": "project_saved", "path": written, "files": len(files)})
+
+    async def _handle_load_project(self, msg: dict[str, Any]) -> None:
+        """``{type: "load_project", path}`` -> ``{type: "project_loaded", project, resolved}``.
+
+        Nothing is opened here: ``resolved`` says for every recorded file where it is now and
+        whether it ``changed`` since the project was saved; the app opens the files it finds.
+        """
+        self._require_desktop_project("Opening a project")
+        path = msg.get("path")
+        if not isinstance(path, str) or not path.strip():
+            raise project_file.ProjectError("load_project: 'path' must be a non-empty string")
+        loop = asyncio.get_running_loop()
+        loaded = await loop.run_in_executor(None, project_file.load_project, path)
+        await self.send({"type": "project_loaded", "path": path, "project": loaded})
 
     async def _handle_cancel_pipeline(self, msg: dict[str, Any]) -> None:
         """``{type: "cancel_pipeline", file_id?}``: stop a running pipeline after its step."""
