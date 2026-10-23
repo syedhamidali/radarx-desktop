@@ -93,6 +93,7 @@ COMMANDS = (
     "animate",
     "qpe",
     "basin",
+    "indicators",
     "export",
     "methods",
     "project",
@@ -401,7 +402,8 @@ GROUPS = (
                  ("winds", "3-D winds from two or more radars (multi-Doppler)"),
                  ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
     ("Hydrology", (("qpe", "rain rate / accumulation with uncertainty, gauges (docs/HYDROLOGY.md)"),
-                   ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"))),
+                   ("basin", "area-weighted rainfall over basins: table, hyetograph, return period"),
+                   ("indicators", "flash-flood indicators: rain vs guidance, return period, vs climatology"))),
     ("Forecast", (("nowcast", "advection nowcast (0-2 h) with ensemble, probabilities and verification"),)),
     ("Weather", (("env", "model, reanalysis and radar-product data: estimate, fetch with consent, show, profile"),)),
     ("Save", (("export", "write NetCDF / CfRadial2 / Zarr / CSV / an image"),
@@ -2018,7 +2020,8 @@ rxd qpe --list-relations
 rxd qpe -i 'mayfield/KHPX/*_V06' -o rain.nc -p rain.png
 rxd qpe -i 'mayfield/*/*_V06' --relation tropical --composite best -o network.nc
 rxd qpe -i 'mayfield/KHPX/*_V06' --gauges gauges.csv --adjust ked -o adjusted.nc
-rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png""",
+rxd basin -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --thresholds 10,25,50 -p series.png
+rxd indicators -i 'mayfield/KHPX/*_V06' --guidance ffg_1h.nc --vintage 'FFG issued 00Z' -o ind.nc""",
     "forecast": """\
 # FORECAST - advection nowcast: motion from the last frames, extrapolation, ensemble, verification
 rxd nowcast -i 'mayfield/KHPX/*_V06' --lead 60 --step 5 -o nowcast/
@@ -2058,6 +2061,7 @@ TOPIC_ALIASES = {
     "animate": "animate",
     "qpe": "hydrology",
     "basin": "hydrology",
+    "indicators": "hydrology",
     "nowcast": "forecast",
     "env": "weather",
     "export": "save",
