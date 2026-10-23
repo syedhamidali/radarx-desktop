@@ -1,6 +1,5 @@
 """The event report: a golden file for a synthetic case, escaping, and the run record."""
 
-# ruff: noqa: E501
 from __future__ import annotations
 
 import base64
@@ -17,6 +16,7 @@ pytest.importorskip("radarx")
 from engine import cli
 from engine.hydro import report
 from engine.reader import RadarReader
+
 from tests.hydro_synth import make_tree
 
 GOLDEN = Path(__file__).parent / "golden" / "event_report.html"
