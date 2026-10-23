@@ -295,6 +295,28 @@ published curves depend on region, duration and return period (e.g. the US Weath
 curves, Svensson and Jones 2010 for the UK), so you choose the one that fits your region and cite it. The factor used and the
 point-equivalent depth are reported next to the return period.
 
+## Event report
+
+`rxd report` makes **one HTML file** of a rainfall event: the event summary (largest and mean accumulation, wet area, largest
+rate, share of the period with data, median relative uncertainty), the accumulation map, the radars and volumes used, the basin
+table with its map, series, areas above depths and return periods (when you give basins and a frequency table), the validation
+against rain gauges (when you give gauges), the methods and their references, the run record and the credits. Every number has
+its unit and its class (`RETRIEVED` or `ADJUSTED`), the uncertainty is given where the engine has one, a missing number is
+written as "not available", and the page says in a banner that these are estimates, not observations. The figures are embedded:
+the file is self-contained, loads nothing when it is opened, and prints to PDF from any browser (the program does not write a PDF).
+
+```bash
+rxd report -i 'mayfield/KHPX/*_V06' -b watersheds.geojson --gauges gauges.csv \
+    --title 'Mayfield, 11 December 2021' -o event.html --record event.json
+rxd report --from-record event.json -o event_again.html
+```
+
+**Reproducible.** `--record FILE` writes the run record (the radar files, every option of the estimate, the title); `--from-record`
+makes the same report again from it, with the same numbers and figures (only the creation time differs). The record carries file
+paths so that it can be run again; the copy printed in the report keeps only file names. The estimate, ensemble and indicator
+sections are written by the report from the same results the other commands give; the ensemble and indicator sections can be
+added from the Python interface and are not yet command-line options of `rxd report`.
+
 ## Accuracy against a known truth
 
 These numbers come from the validation runs of the method; the DSD runs use the radarx forward
