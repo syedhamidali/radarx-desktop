@@ -23,7 +23,12 @@ from typing import Any
 import numpy as np
 
 from engine._lazy import LazyModule
-from engine.dealias_reference import REFERENCES, fold_check, fold_reference_shift
+from engine.dealias_reference import (
+    REFERENCES,
+    fold_check,
+    fold_reference_shift,
+    implausible_velocity,
+)
 from engine.pipeline import StepOutcome, StepSkippedError, WorkingState, step
 from engine.plugins import param
 
@@ -769,7 +774,13 @@ def range_clip(
             ),
         ),
     ],
-    kernels=[unfold_velocity, G.covers_full_circle, fold_reference_shift, fold_check],
+    kernels=[
+        unfold_velocity,
+        G.covers_full_circle,
+        fold_reference_shift,
+        fold_check,
+        implausible_velocity,
+    ],
     script="""
         nyq = {nyquist_velocity} or nyquist_of(ds, fields["VRADH"])
         vel = np.where(keep, fields["VRADH"], np.nan)
@@ -780,6 +791,12 @@ def range_clip(
             out = res.transpose("azimuth", "range").values.astype("float32")
         else:
             out = unfold_velocity(vel, nyq, covers_full_circle(azimuth))
+        absurd = implausible_velocity(out, nyq)
+        if absurd.any():
+            n_bad = int(absurd.sum())
+            warnings.warn(f"{{n_bad}} gate(s) beyond a plausible velocity removed", stacklevel=1)
+            out = np.where(absurd, np.nan, out)
+            keep = keep & ~absurd
         if {reference} != "none":
             try:
                 k, _ = fold_reference_shift(np.where(keep, out, np.nan), azimuth, nyq, {reference})
@@ -827,6 +844,15 @@ def dealias(
         out = unfold_velocity(masked, nyq, _wrap(state))
         used = "built-in" if method == "builtin" else "built-in (radarx not installed)"
     notes = [f"{used}, Vn = {nyq:g} m/s ({source})"]
+    # a velocity no wind can have (radarx issue 350) is removed, counted and warned about
+    absurd = implausible_velocity(out, nyq)
+    if absurd.any():
+        out = np.where(absurd, np.nan, out)
+        removed = state.restrict(~absurd)
+        notes.append(
+            f"{int(absurd.sum())} gate(s) beyond a plausible velocity removed ({removed} valid)"
+        )
+        warnings.warn(notes[-1], RuntimeWarning, stacklevel=2)
     if reference != "none":
         try:
             k, how = fold_reference_shift(

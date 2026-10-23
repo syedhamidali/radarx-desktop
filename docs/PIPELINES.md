@@ -128,6 +128,11 @@ replaced by raw data.
   On the command line: `-P dealias.reference=zero` (or `vad`). The same option is in the QC panel's velocity
   dealiasing. The default stays `none` until it can be checked against independent winds (a sounding, a
   model analysis or a second radar).
+* **Impossible velocities are removed.** After unfolding, any gate whose velocity is beyond 150 m/s (or
+  five Nyquist velocities, if that is larger) is set to missing, counted in the notes and the run record, and
+  warned about. No such wind has been measured; it is a known fault of the radarx region method on rare
+  gates (a fold of thousands of intervals, 523 294 m/s on one real KVWX sweep). Errors of one to three
+  intervals stay below the bound and are the job of the fold check.
 * **Fold check (always on).** Every dealiasing (the pipeline step, the QC panel's velocity dealiasing and the
   *Velocity Dealiasing* module) tests its own result and says so in its notes and in the run record; it never
   changes the data. Each 10 km range ring with echo around most of the circle gets a uniform-wind VAD fit

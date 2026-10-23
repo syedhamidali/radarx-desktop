@@ -396,3 +396,66 @@ class TestEngine:
     def test_registry_offers_the_option(self) -> None:
         p = qc.QC_REGISTRY["velocity_dealiasing"]["params"]["engine"]
         assert p["default"] == "auto" and p["options"] == ["auto", "builtin", "radarx"]
+
+
+class TestImplausibleGuard:
+    """A few gates with an extreme fold (radarx issue 350) never reach the result."""
+
+    def test_kernel(self) -> None:
+        from engine.dealias_reference import implausible_velocity
+
+        v = np.array([0.0, 149.0, -151.0, 523294.5, np.nan, 160.0])
+        assert implausible_velocity(v, 10.0).tolist() == [False, False, True, True, False, True]
+        assert implausible_velocity(np.array([160.0]), 40.0).tolist() == [False]  # 5 Vn = 200
+
+    def test_extreme_fold_from_the_engine_is_removed_counted_and_warned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        truth = uniform_wind(8.0, 200.0)
+        bad = truth.copy()
+        bad[100, 50:54] += 9873 * 2 * NYQ  # four gates, as on the real KVWX sweep
+
+        monkeypatch.setattr(qc, "_radarx_unfold", lambda data, nyq: bad.copy())
+        with pytest.warns(RuntimeWarning, match="4 gate"):
+            out = qc.velocity_dealiasing(as_da(fold(truth)), NYQ)
+        assert np.isnan(out.values[100, 50:54]).all()
+        assert out.attrs["qc_implausible_gates"] == 4
+        assert "set to missing" in out.attrs["qc_dealiased"]
+        rest = np.isfinite(out.values)
+        np.testing.assert_allclose(out.values[rest], truth[rest], atol=1e-9)
+
+    def test_clean_result_has_no_flag(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            out = qc.velocity_dealiasing(as_da(fold(uniform_wind(8.0, 200.0))), NYQ)
+        assert out.attrs["qc_implausible_gates"] == 0
+
+    def test_pipeline_step_removes_the_gates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from engine import pipeline_steps
+
+        truth = uniform_wind(8.0, 200.0)
+        bad = truth.copy()
+        bad[100, 50:54] += 9873 * 2 * NYQ
+        monkeypatch.setattr(pipeline_steps, "unfold_velocity", lambda vel, nyq, wrap: bad.copy())
+        with pytest.warns(RuntimeWarning, match="beyond a plausible velocity"):
+            out = _run(_tree(fold(truth), NYQ), method="builtin")
+        assert np.isnan(out.after[100, 50:54]).all()
+        assert any("beyond a plausible velocity" in n for n in out.steps[0]["notes"])
+
+    @needs_radarx
+    def test_real_kvwx_sweep_with_radarx_gives_no_absurd_velocity(self) -> None:
+        """KVWX 2021-12-11 02:56:51, sweep_1 (Vn 26.5): radarx 0.5.1 gives four gates a fold of
+        9873 (523 294 m/s). With the default engine none of that reaches the result."""
+        path = radar_data.event_volume("KVWX", "025651")
+        if path is None:
+            pytest.skip("the tutorial KVWX volume is not available (tests/radar_data.py)")
+        vel, az, rng, nyq = _real_sweep(path, "sweep_1")
+        da = xr.DataArray(vel, dims=("azimuth", "range"), coords={"azimuth": az, "range": rng})
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            out = qc.velocity_dealiasing(da, nyq)
+        assert float(np.nanmax(np.abs(out.values))) <= max(150.0, 5 * nyq)
+        if "radarx" in out.attrs["qc_dealiased"] and out.attrs["qc_implausible_gates"]:
+            assert (
+                out.attrs["qc_implausible_gates"] == 4
+            )  # radarx 0.5.1: the four gates of issue 350

@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["REFERENCES", "fold_check", "fold_reference_shift"]
+__all__ = ["REFERENCES", "fold_check", "fold_reference_shift", "implausible_velocity"]
 
 #: accepted values of the ``reference`` option, the first is the default
 REFERENCES = ("none", "zero", "vad")
@@ -230,3 +230,18 @@ def fold_check(vel, azimuth, nyquist, range_m=None):
             "method or the other dealiasing method"
         )
     return out
+
+
+def implausible_velocity(vel, nyquist):
+    """Gates whose unfolded radial velocity is beyond any physical value (True = implausible).
+
+    The bound is the larger of 150 m/s and 5 Nyquist velocities. No radial wind of that size has
+    been measured (the highest Doppler radar wind speeds reported are about 135 m/s), and the
+    region unfolding of radarx 0.5.1 can give a few gates a fold of thousands of intervals
+    (velocities of 5e5 m/s, radarx issue 350). A fold error of one to three intervals stays below
+    the bound and is left to :func:`fold_check`. NaN is never flagged.
+    """
+    v = np.asarray(vel, dtype=np.float64)
+    limit = max(150.0, 5.0 * float(nyquist))
+    with np.errstate(invalid="ignore"):
+        return np.abs(v) > limit

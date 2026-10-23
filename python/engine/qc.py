@@ -412,7 +412,12 @@ def velocity_dealiasing(
         ``"vad"`` uses the constant term of a uniform-wind VAD fit (refused when the echo leaves
         an azimuth gap wider than 180 degrees). See :mod:`engine.dealias_reference`.
     """
-    from engine.dealias_reference import REFERENCES, fold_check, fold_reference_shift
+    from engine.dealias_reference import (
+        REFERENCES,
+        fold_check,
+        fold_reference_shift,
+        implausible_velocity,
+    )
 
     if not np.isfinite(nyquist_vel) or nyquist_vel <= 0:
         raise ValueError(f"nyquist_vel must be a positive number, got {nyquist_vel}")
@@ -458,6 +463,19 @@ def velocity_dealiasing(
             values = values - n_folds * interval
 
     note = f"nyquist_vel={nyquist_vel}, {used}"
+    # Whatever the engine returned, a velocity no wind can have is set to missing, counted and
+    # warned about, never passed on (radarx issue 350: a few gates with a fold of thousands).
+    absurd = implausible_velocity(values, nyquist_vel)
+    n_absurd = int(absurd.sum())
+    if n_absurd:
+        values = np.where(absurd, np.nan, values)
+        note += f", {n_absurd} gate(s) beyond a plausible velocity set to missing"
+        warnings.warn(
+            f"velocity dealiasing ({used}) gave {n_absurd} gate(s) with a velocity beyond "
+            f"{max(150.0, 5.0 * nyquist_vel):g} m/s; they were set to missing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     if reference != "none":
         az_axis = _azimuth_axis(data)
         k, how = fold_reference_shift(
@@ -467,7 +485,7 @@ def velocity_dealiasing(
         note += f", {how}"
 
     out = data.copy(data=values)
-    out.attrs = {**data.attrs, "qc_dealiased": note}
+    out.attrs = {**data.attrs, "qc_dealiased": note, "qc_implausible_gates": n_absurd}
     if values.ndim == 2 and "azimuth" in data.coords and not mask.all():
         # Always on: say loudly when the unfolded sweep sits in a wrong interval (issue #152).
         az_axis = _azimuth_axis(data)
