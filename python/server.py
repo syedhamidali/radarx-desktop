@@ -2355,6 +2355,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             store = derived.store_for(removed, create=False)
             if store is not None:
                 store.drop()
+            # Release the file now (its decompressed .gz copy included), not whenever the garbage
+            # collector gets to the reader.
+            removed.close()
 
         # If we closed the active file, fall back to the most recently opened remaining one.
         if _get_last_file_id() == file_id:
