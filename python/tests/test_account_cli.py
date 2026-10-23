@@ -25,6 +25,12 @@ def run(capsys, *argv: str) -> tuple[int, str, str]:
     return code, captured.out, captured.err
 
 
+@pytest.fixture(autouse=True)
+def at_a_terminal(monkeypatch):
+    """These tests are a person at a terminal; the no-terminal tests take it away again."""
+    monkeypatch.setattr("engine.account.commands.stdin_is_a_terminal", lambda: True)
+
+
 @pytest.fixture()
 def typed_password(monkeypatch):
     """What the user types at the hidden password prompt; records that getpass was used."""
@@ -235,3 +241,61 @@ def test_bypass_variable_lets_the_cli_run_for_developers(tmp_path):
     }
     proc = run_python(["-W", "ignore", "-m", "engine", "modules", "--json"], env=env)
     assert proc.returncode == 0, proc.stderr
+
+
+# -- no terminal: a plain message and exit code 5, never "this looks like a bug" -----------------
+
+
+def test_login_without_a_terminal_says_so_and_exits_5(gate_on, capsys, monkeypatch):
+    asked: list[str] = []
+    monkeypatch.setattr("engine.account.commands.stdin_is_a_terminal", lambda: False)
+    monkeypatch.setattr(getpass, "getpass", lambda *a, **k: asked.append("password") or "x")
+    monkeypatch.setattr("builtins.input", lambda *a: asked.append("email") or "x")
+    code, _out, err = run(capsys, "login", "--email", "ada@example.test")
+    assert code == 5
+    assert "no terminal" in err and "ssh -t" in err and "radarx-desktop app" in err
+    assert "bug" not in err and "Traceback" not in err
+    assert asked == []  # nothing was asked, nothing was read
+    assert SessionStore().load() is None
+
+
+def test_login_without_a_terminal_in_json_mode(gate_on, capsys, monkeypatch):
+    monkeypatch.setattr("engine.account.commands.stdin_is_a_terminal", lambda: False)
+    code, out, err = run(capsys, "login", "--json")
+    assert code == 5
+    assert json.loads(out) == {"signed_in": False, "error": "no_terminal"}
+    assert "no terminal" in err
+
+
+@pytest.mark.parametrize("where", ["email", "password"])
+def test_end_of_input_at_a_prompt_is_a_cancel_not_a_bug(gate_on, capsys, monkeypatch, where):
+    def end_of_input(*_a, **_k):
+        raise EOFError
+
+    if where == "email":
+        monkeypatch.setattr("builtins.input", end_of_input)
+        argv = ("login",)
+    else:
+        monkeypatch.setattr(getpass, "getpass", end_of_input)
+        argv = ("login", "--email", "ada@example.test")
+    code, _out, err = run(capsys, *argv)
+    assert code == 5 and "cancelled" in err and "bug" not in err
+    assert SessionStore().load() is None
+
+
+def test_the_real_program_without_a_terminal_gives_the_same_answer(tmp_path):
+    import subprocess
+
+    env = {**__import__("os").environ, "RADARX_CONFIG_DIR": str(tmp_path), "PYTHONUTF8": "1"}
+    env.pop("RADARX_AUTH_DISABLED", None)
+    done = subprocess.run(
+        [sys.executable, "-m", "engine", "login", "--email", "ada@example.test"],
+        cwd=PYTHON_DIR,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 5, done.stderr
+    assert "no terminal" in done.stderr and "bug" not in done.stderr
