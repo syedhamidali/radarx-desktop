@@ -1005,7 +1005,7 @@ REFERENCES = {
     "tornado forecast parameter. Preprints, 16th Conf. Severe Local Storms, Kananaskis Park, "
     "Alberta, Amer. Meteor. Soc., 588-592.",
     "wind_profile": "Shear, Bunkers storm motion and storm-relative helicity: "
-    "radarx.retrieve.wind_profile (https://github.com/syedhamidali/radarx); "
+    "radarx.retrieve.wind_profile (https://pypi.org/project/radarx/); "
     "methods are height-weighted means (Bunkers et al. 2000) and the discrete SRH sum "
     "of Davies-Jones (1984), exact for linear winds between levels.",
 }
