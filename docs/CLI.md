@@ -409,7 +409,10 @@ wrote rain.png
   (bias, RMSE, correlation, KGE, leave-one-out) is printed and in `--json`. Nothing is downloaded.
 * `rxd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
   mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
-  with `--frequency table.json`, the return period of the basin-mean depth.
+  with `--frequency table.json`, the return period of the basin-mean depth (add `"areal_reduction"` to the table for the
+  point-to-area factor; without it the return period is a lower bound, and the output says so). `-o basins.geojson` writes
+  the outlines with their statistics for a GIS and `--map map.png` the accumulation with each basin filled by its mean; the CSV
+  files begin with `#` lines (units, method, uncertainty, sources).
 * A long series is read one file at a time; give `--extent W,S,E,N` so that each file is decoded once.
 
 ### Save: `export`
@@ -424,6 +427,21 @@ rxd export -i KTLX20130520_201643_V06.gz -o qc.nc --pipeline "Reflectivity QC" -
 
 Derived variables only exist inside one run, so `export` can compute them first (`--pipeline RECIPE`,
 `--run MODULE`, repeatable, all sweeps) and write them into the file with `--include-derived`.
+
+### Cite and repeat: `methods` and `project`
+
+```bash
+rxd methods run_record.json -o methods.txt   # plain-language methods: one paragraph per step
+rxd project show storm.radarxproj            # files, recipe, run record, where the files are now
+rxd project check storm.radarxproj           # exit code 3 when a recorded file is missing or changed
+```
+
+The app records what you did (modules, pipelines, exports) with every parameter, including the
+defaults that were applied, and the software and library versions; **Export > Run record** saves it
+as JSON or copies the methods text. `methods` writes that text from a saved record or from a
+project file, naming radarx and its version for every step radarx computes. A project file holds
+no data: it lists the files (path, path relative to the project, size and modification time), what
+was on screen and the pipeline recipe, so a piece of work can be picked up again or handed on.
 
 ### Remote: `serve`
 
