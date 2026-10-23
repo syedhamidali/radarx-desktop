@@ -126,6 +126,8 @@ attributes, the `history` and the comment of the derived variable; for pipelines
 the script the app can write ({doc}`PIPELINES`, {doc}`OUTPUT_STANDARDS`); for the command line it is the
 command line itself ({doc}`CLI`). A result that cannot be explained by its record is a bug.
 
+The app also keeps this record for a session (every module, pipeline step and export with all parameters and the software and library versions), writes it as JSON, and turns it into a methods text with one paragraph per step that names radarx and its version for every step radarx computes ({doc}`export`); a project file stores it together with the open files (never the data).
+
 Randomness is seeded, and the seed is part of the record. Results do not depend on the machine's locale,
 time zone (all times are UTC) or window size.
 
