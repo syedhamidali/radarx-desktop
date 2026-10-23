@@ -7,6 +7,7 @@ import base64
 import concurrent.futures
 import contextlib
 import contextvars
+import errno
 import functools
 import gc
 import importlib
@@ -6147,6 +6148,19 @@ async def _run_server(
 
 _CRASH_LOG_MAX_BYTES = 512 * 1024
 _crash_log_file: Any = None  # kept open for faulthandler
+#: Exit code when the port is taken (EX_TEMPFAIL: "try again", here with another port).
+EXIT_PORT_IN_USE = 75
+
+
+def rotate_crash_log(path: Path, max_bytes: int = _CRASH_LOG_MAX_BYTES) -> None:
+    """Keep the log bounded without losing the newest report: a log over *max_bytes* becomes
+    ``engine-crash.log.1`` (replacing the older copy), so at most two files of that size exist."""
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
 def enable_crash_log() -> Path | None:
@@ -6166,8 +6180,7 @@ def enable_crash_log() -> Path | None:
     path = Path.home() / ".xradar-desktop" / "engine-crash.log"
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.exists() and path.stat().st_size > _CRASH_LOG_MAX_BYTES:
-            path.unlink()  # keep it small: only the newest crashes matter
+        rotate_crash_log(path)
         _crash_log_file = open(path, "a", buffering=1, encoding="utf-8")  # noqa: SIM115
         _crash_log_file.write(
             f"--- engine {ENGINE_ID} pid {os.getpid()} started "
@@ -6213,6 +6226,15 @@ def main() -> None:
         asyncio.run(_run_server(port, args.host))
     except KeyboardInterrupt:
         logger.info("Interrupted — exiting")
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        print(
+            f"error: port {port} is already in use (another engine or program is listening on it). "
+            "Use another port with --port.",
+            file=sys.stderr,
+        )
+        sys.exit(EXIT_PORT_IN_USE)
 
 
 if __name__ == "__main__":

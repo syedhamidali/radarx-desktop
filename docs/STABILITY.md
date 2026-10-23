@@ -189,7 +189,7 @@ All within run-to-run noise (the largest difference, NetCDF sweep switching, is 
 
 **If the engine still dies natively.** The engine now enables `faulthandler`
 (`server.enable_crash_log`): the Python stack of every thread goes to
-`~/.xradar-desktop/engine-crash.log` (web mode: stderr; the file is cut at 512 KB). The shell
+`~/.xradar-desktop/engine-crash.log` (on Windows `%USERPROFILE%\.xradar-desktop\engine-crash.log`; web mode: stderr). A log over 512 KB is renamed to `engine-crash.log.1` at the next start (the older copy is replaced), so the newest report is never thrown away and at most two files exist. The shell
 logs *how* the process ended in plain words ("crashed (segmentation fault, signal 11)") and puts
 it into the restart message; the UI's "engine restarted" notice (see #2 above) now says the engine
 crashed and where the log is. Files are not re-opened automatically.
