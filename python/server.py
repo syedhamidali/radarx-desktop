@@ -1249,6 +1249,9 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         if not msg_type:
             await self.send_error("Message missing 'type' field")
             return
+        if not isinstance(msg_type, str):  # a list or object would crash the lookups below
+            await self.send_error("Message 'type' must be a string")
+            return
 
         # Web mode has no session token (a browser has none); the session itself is the boundary.
         if (
@@ -1264,9 +1267,6 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         # account on this connection (docs/ACCOUNTS.md).
         if msg_type in AUTH_MESSAGES:
             await self._handle_account_message(msg_type, msg)
-            return
-        if msg_type not in GATE_OPEN_MESSAGES and self._gate_active() and not self._authorised():
-            await self._refuse(msg_type, msg)
             return
 
         table: dict[str, Any] = {
@@ -1374,7 +1374,12 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
         handler = table.get(msg_type) if isinstance(msg_type, str) else None
 
         if handler is None:
-            await self.send_error(f"Unknown message type: {msg_type}")
+            # Said as it is, signed in or not: a mistyped message type is not a sign-in problem.
+            await self.send_error(f"Unknown message type: {str(msg_type)[:64]}")
+            return
+
+        if msg_type not in GATE_OPEN_MESSAGES and self._gate_active() and not self._authorised():
+            await self._refuse(msg_type, msg)
             return
 
         blocked = _ppi_only_block(msg_type, msg)

@@ -23,7 +23,12 @@ from typing import Any
 import numpy as np
 
 from engine._lazy import LazyModule
-from engine.dealias_reference import REFERENCES, fold_reference_shift
+from engine.dealias_reference import (
+    REFERENCES,
+    fold_check,
+    fold_reference_shift,
+    implausible_velocity,
+)
 from engine.pipeline import StepOutcome, StepSkippedError, WorkingState, step
 from engine.plugins import param
 
@@ -780,7 +785,13 @@ def range_clip(
             ),
         ),
     ],
-    kernels=[unfold_velocity, G.covers_full_circle, fold_reference_shift],
+    kernels=[
+        unfold_velocity,
+        G.covers_full_circle,
+        fold_reference_shift,
+        fold_check,
+        implausible_velocity,
+    ],
     script="""
         nyq = {nyquist_velocity} or nyquist_of(ds, fields["VRADH"])
         vel = np.where(keep, fields["VRADH"], np.nan)
@@ -791,12 +802,21 @@ def range_clip(
             out = res.transpose("azimuth", "range").values.astype("float32")
         else:
             out = unfold_velocity(vel, nyq, covers_full_circle(azimuth))
+        absurd = implausible_velocity(out, nyq)
+        if absurd.any():
+            n_bad = int(absurd.sum())
+            warnings.warn(f"{{n_bad}} gate(s) beyond a plausible velocity removed", stacklevel=1)
+            out = np.where(absurd, np.nan, out)
+            keep = keep & ~absurd
         if {reference} != "none":
             try:
                 k, _ = fold_reference_shift(np.where(keep, out, np.nan), azimuth, nyq, {reference})
                 out = out + np.float32(k * 2.0 * nyq)
             except ValueError as exc:
                 warnings.warn(f"dealias reference not applied: {exc}", stacklevel=1)
+        check = fold_check(np.where(keep, out, np.nan), azimuth, nyq, range_m)
+        if check["status"] in ("whole_field_offset", "inconsistent"):
+            warnings.warn(check["message"], RuntimeWarning, stacklevel=1)
         fields["VRADH"] = np.where(np.isfinite(out), out, fields["VRADH"])
     """,
 )
@@ -835,6 +855,15 @@ def dealias(
         out = unfold_velocity(masked, nyq, _wrap(state))
         used = "built-in" if method == "builtin" else "built-in (radarx not installed)"
     notes = [f"{used}, Vn = {nyq:g} m/s ({source})"]
+    # a velocity no wind can have (radarx issue 350) is removed, counted and warned about
+    absurd = implausible_velocity(out, nyq)
+    if absurd.any():
+        out = np.where(absurd, np.nan, out)
+        removed = state.restrict(~absurd)
+        notes.append(
+            f"{int(absurd.sum())} gate(s) beyond a plausible velocity removed ({removed} valid)"
+        )
+        warnings.warn(notes[-1], RuntimeWarning, stacklevel=2)
     if reference != "none":
         try:
             k, how = fold_reference_shift(
@@ -848,10 +877,17 @@ def dealias(
     unfolded = good & (np.abs(out - masked) > nyq)
     state.fields["VRADH"] = np.where(np.isfinite(out), out, raw).astype(np.float32)
     notes[0] += f"; {int(unfolded.sum())} gates unfolded"
+    # Always on, whatever the reference: is the unfolded sweep in the right interval? (issue #152)
+    check = fold_check(
+        np.where(np.isfinite(masked), out, np.nan), state.azimuth, nyq, state.range_m
+    )
+    notes.append(check["message"])
+    if check["status"] in ("whole_field_offset", "inconsistent"):
+        warnings.warn(check["message"], RuntimeWarning, stacklevel=2)
     return StepOutcome(
         modified=int(unfolded.sum()),
         notes=notes,
-        metrics={"nyquist": nyq},
+        metrics={"nyquist": nyq, "fold_check": {k: v for k, v in check.items() if k != "message"}},
     )
 
 

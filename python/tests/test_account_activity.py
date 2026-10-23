@@ -375,6 +375,7 @@ def test_cli_records_the_command_name_and_flushes_before_exit(signed_in, capsys)
 def test_cli_login_logout_whoami_events(gate_on, capsys, monkeypatch):
     import getpass
 
+    monkeypatch.setattr("engine.account.commands.stdin_is_a_terminal", lambda: True)
     monkeypatch.setattr(getpass, "getpass", lambda *a, **k: "correct horse 1")
     assert cli.main(["login", "--email", "ada@example.test"]) == 0
     assert cli.main(["whoami"]) == 0
