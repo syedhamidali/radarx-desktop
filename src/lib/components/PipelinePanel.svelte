@@ -37,6 +37,10 @@
     showPreviewView,
     type PipelineView,
     type StepStat,
+    undoDraft,
+    redoDraft,
+    canUndo,
+    canRedo,
   } from '../stores/pipeline';
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import ParamField from './ParamField.svelte';
@@ -85,13 +89,23 @@
     { id: 'after', label: 'After' },
     { id: 'removed', label: 'Removed by' },
   ];
+
+  /** Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z while the focus is in the editor (text boxes keep their own undo). */
+  function onEditorKey(e: KeyboardEvent): void {
+    if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+    const el = e.target as HTMLElement;
+    if (el instanceof HTMLInputElement && (el.type === 'text' || el.type === 'number')) return;
+    e.preventDefault();
+    if (e.shiftKey) redoDraft();
+    else undoDraft();
+  }
 </script>
 
 <CollapsiblePanel title="Pipelines" badge={$draft.steps.length > 0 ? $draft.steps.length : null}>
   {#if !hasFile}
     <p class="empty">Open a radar file to build a processing pipeline.</p>
   {:else}
-    <div class="stack">
+    <div class="stack" role="group" aria-label="Pipeline editor" onkeydown={onEditorKey}>
       <section class="row">
         <label for="pl-recipe">Recipe</label>
         <div class="inline">
@@ -102,6 +116,8 @@
             {/each}
           </select>
           <button type="button" onclick={() => { selectedRecipe = ''; newRecipe($draft.target); }}>New</button>
+          <button type="button" onclick={undoDraft} disabled={!$canUndo} title="Undo the last change to the recipe (Ctrl/Cmd+Z)" aria-label="Undo recipe change">Undo</button>
+          <button type="button" onclick={redoDraft} disabled={!$canRedo} title="Redo (Ctrl/Cmd+Shift+Z)" aria-label="Redo recipe change">Redo</button>
         </div>
         {#if currentRecipe?.description}<p class="help">{currentRecipe.description}</p>{/if}
       </section>

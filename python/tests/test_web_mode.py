@@ -572,6 +572,8 @@ class TestEveryPathHandler:
             "_handle_save_image_file",  # refused outright in the web service (test below)
             "_export_mosaic",
             "_handle_export_multidoppler",
+            "_handle_save_project",  # refused outright in the web service (test below)
+            "_handle_load_project",
         }, found
 
     async def _open(self, client: WebClient, nc_file: Path) -> str:
@@ -631,6 +633,13 @@ class TestEveryPathHandler:
         errors = [m for m in replies if m["type"] == "error"]
         assert errors and "file name only" in errors[-1]["message"], (bad, replies)
         _no_outside_writes(web_env)
+
+    @pytest.mark.parametrize("kind", ["save_project", "load_project"])
+    async def test_project_files_are_a_desktop_feature(self, client: WebClient, kind: str) -> None:
+        replies = await client.call({"type": kind, "path": "/tmp/pwned.radarxproj"})
+        errors = [m for m in replies if m["type"] == "error"]
+        assert errors and "desktop app" in errors[-1]["message"], replies
+        assert not [m for m in replies if m["type"] in ("project_saved", "project_loaded")]
 
     @pytest.mark.parametrize("bad", BAD_OUTPUT_NAMES[:-3])
     async def test_save_text_file_path(self, client: WebClient, web_env: Path, bad: str) -> None:
