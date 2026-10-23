@@ -112,8 +112,8 @@ replaced by raw data.
   result in both cases.
 * **The whole sweep can be off by twice the Nyquist velocity.** Dealiasing makes neighbouring regions agree,
   but nothing in the folded data says which interval the sweep as a whole belongs to: a 25 m/s wind seen with
-  a Nyquist velocity of 10 m/s can come out 20 m/s off at every gate (the region method of the QC panel does
-  this on a synthetic uniform wind). The **Fold reference** parameter (default `none`, the sweep as dealiased)
+  a Nyquist velocity of 10 m/s can come out 20 m/s off at every gate (the built-in region method, used when radarx is not installed, does
+  this on a synthetic uniform wind; radarx's region method anchors the absolute fold at a zero mean and gets it right). The **Fold reference** parameter (default `none`, the sweep as dealiased)
   chooses that whole-sweep multiple from a stated assumption; it shifts every gate by the same amount and
   never changes the region structure:
   * `zero`: the along-beam wind averages to about zero around a full circle. That holds for a wind that is
@@ -128,5 +128,36 @@ replaced by raw data.
   On the command line: `-P dealias.reference=zero` (or `vad`). The same option is in the QC panel's velocity
   dealiasing. The default stays `none` until it can be checked against independent winds (a sounding, a
   model analysis or a second radar).
+* **Impossible velocities are removed.** After unfolding, any gate whose velocity is beyond 150 m/s (or
+  five Nyquist velocities, if that is larger) is set to missing, counted in the notes and the run record, and
+  warned about. No such wind has been measured; it is a known fault of the radarx region method on rare
+  gates (a fold of thousands of intervals, 523 294 m/s on one real KVWX sweep). Errors of one to three
+  intervals stay below the bound and are the job of the fold check.
+* **Fold check (always on).** Every dealiasing (the pipeline step, the QC panel's velocity dealiasing and the
+  *Velocity Dealiasing* module) tests its own result and says so in its notes and in the run record; it never
+  changes the data. Each 10 km range ring with echo around most of the circle gets a uniform-wind VAD fit
+  (Browning and Wexler 1968) to the median of each 10-degree sector. In a correctly unfolded sweep the
+  constant term of that fit is only the small divergence-like part of the wind, a few m/s; a ring whose
+  constant is more than one Nyquist velocity from zero was unfolded to a wrong interval. The verdict is one of:
+  * *passed*: under 10 % of the gates of the testable rings are affected.
+  * *whole sweep off by k x 2 x Nyquist*: at least 90 % of the gates of the testable rings sit in rings with the
+    same multiple, and those rings hold at least half of the sweep's gates. The message gives the shift that
+    undoes it, which is what `Fold reference: vad` or `zero` applies. A warning is raised.
+  * *inconsistent*: 10 % or more of the testable gates are affected but not as one whole-sweep multiple (or the
+    testable rings hold under half of the gates), so parts of the sweep sit in different intervals, or the
+    whole sweep is off but cannot be shown to be. No shift is suggested. A warning is raised; do not use that
+    sweep for winds, shear or rotation without looking at it, and try UNRAVEL or the other method.
+  * *not possible*: too little echo around the radar (sector scans, echo on one side).
+  What it cannot see: a minority of wrongly unfolded gates (the median ignores up to about half of each
+  sector), gates in rings that are not complete, and an offset that the wind itself really has.
+  Measured on 133 Doppler cuts (0.5 to 8 degrees) of 12 NEXRAD volumes, the lowest cuts of the 2021-12-11
+  tornado outbreak from four radars and three other days: the built-in region method (the fallback when radarx
+  is not installed) gave no whole-sweep offset and one inconsistent cut; radarx's region method (used by the
+  step and by the QC panel when radarx is installed) gave no whole-sweep offset and three inconsistent cuts,
+  in six cuts a handful of gates with velocities of hundreds of thousands of m/s (reported to the radarx
+  authors); the built-in unfolding of the pipeline step gave three whole-sweep offsets and twelve
+  inconsistent cuts. Five cuts could not be tested. Because no volume showed a whole-sweep offset that a single
+  shift repairs with the methods you get by default, the default of *Fold reference* stays `none`; the check is
+  what protects you.
 * The clutter and biological defaults are conservative starting points tuned on S-band NEXRAD
   data; check the preview ("Removed by") before trusting them on other radars.

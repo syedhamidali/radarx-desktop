@@ -113,6 +113,14 @@ applies when:
 | expired, app session | the app renews its own token and hands it over. If the server is **reachable** (a short probe) and nobody renewed it: refused ("open the app or sign in again"). If it is **not reachable**: accepted until 30 days after the token was issued |
 | the app with an expired token | accepted on the same 30-day rule (a ship has no network); the app renews and hands over a fresh token when it can |
 
+**What works offline.** Everything in the app and in `rxd` needs a signed-in account, **including opening and
+processing local files**: no feature is open without one. Offline means "signed in earlier": the first sign-in on a
+computer needs the network, and after it the program keeps working without one for the 30 days above. With no
+session at all (never signed in, signed out, or past the 30 days) every request is answered "not signed in" together
+with the reason (no sign-in, expired, revoked, offline too long) and what to do. A request the engine does not know
+at all, for example a mistyped one, is answered as an unknown request, whether or not anyone is signed in, so a
+typing mistake is never mistaken for a sign-in problem.
+
 **Clocks.** The latest clock reading ever seen with a session is kept and the later of it and the current clock is
 used, so setting the clock **backwards** does not extend the 30 days. Honest limits: (1) a clock that is simply
 stopped at an old date (never advanced) cannot be told from a real one without a trusted time source, so it *does*

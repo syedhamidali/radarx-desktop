@@ -37,6 +37,15 @@ command except `login`, `logout`, `whoami`, `examples`, `completion`, `--help` a
 and exits with **code 5**. With no network a sign-in keeps working for 30 days after the server last checked it.
 The deprecated `xrd` command behaves identically.
 
+**`rxd login` needs a terminal.** The password is typed at a prompt and is never taken from the command line, a
+file or an environment variable, so there is no switch for scripts. Where there is no terminal (input redirected
+from a file or a pipe, an editor or agent shell without a console, a scheduled job) it says so and stops with
+**exit code 5**, the same code as every command that needs an account, and `--json` prints
+`{"signed_in": false, "error": "no_terminal"}`. A Ctrl-D or Ctrl-Z at a prompt cancels the same way. What to do
+instead: sign in once in a normal terminal window (over `ssh`, use `ssh -t HOST` so the other end gets a terminal),
+or sign in in the Radarx app, which the command line shares. A `rxd login` session renews itself, so jobs started
+later by a script run under it without asking again.
+
 ## Quick start
 
 The six commands most people need (replace the file name with yours):
@@ -59,7 +68,7 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 are on the {doc}`installation` page):
 
 ```bash
-pip install "https://downloads.labshope.com/radarx/v0.4.1/radarx_desktop_engine-0.4.1-py3-none-any.whl"
+pip install "https://downloads.labshope.com/radarx/v0.5.0/radarx_desktop_engine-0.5.0-py3-none-any.whl"
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```
@@ -407,6 +416,10 @@ wrote rain.png
   Without `-o`/`-p`: `qpe_<time>.nc` and `qpe_<time>_map.png`.
 * Gauges are local files (CSV/JSON/NOAA hourly and daily/METAR): `--gauges FILE --adjust mfb|brandes|ked`; the validation
   (bias, RMSE, correlation, KGE, leave-one-out) is printed and in `--json`. Nothing is downloaded.
+* `--ensemble N [--seed S] [--exceed 10,25,50]` adds an ensemble of the accumulation under an *assumed* multiplicative error
+  model (mean, spread, 5/50/95 % percentiles, exceedance probabilities, per basin too; seeded, with a run record). The error
+  parameters come from the gauges when there are some and are marked as assumed defaults otherwise
+  (`--error-sigma-ln`, `--error-corr-km`, `--error-shares` override); see {doc}`HYDROLOGY`.
 * `rxd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
   mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
   with `--frequency table.json`, the return period of the basin-mean depth (add `"areal_reduction"` to the table for the

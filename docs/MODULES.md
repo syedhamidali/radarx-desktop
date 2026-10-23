@@ -70,9 +70,10 @@ app gains the `radarx_*` modules:
 | `radarx_qpe` | rain-rate field (Z, Z-ZDR, KDP or HID-blended relations) |
 | `hydro_qpe` | hydrology: rain rate with a selectable relation, uncertainty, beam quality and the relation used ({doc}`HYDROLOGY`) |
 | `hydro_basin_rate` | hydrology: area-weighted rain rate over basin polygons from one volume (GeoJSON / shapefile / GeoPackage) |
-| `radarx_dealias` | dealiased velocity / fold-number field |
+| `radarx_dealias` | dealiased velocity / fold-number field, with a fold check of the result ({doc}`PIPELINES`) |
 | `radarx_shear` | azimuthal shear / radial divergence (LLSD) field |
 | `radarx_couplets` | rotation couplets: table + overlay |
+| `radarx_rotation_track` | maximum low-level azimuthal shear over a sequence of volumes (swath) and linked couplet tracks ({doc}`ROTATION`) |
 | `radarx_zdr_arc` | ZDR arc and KDP-ZDR separation per storm (Wilson & Van Den Broeke 2021) |
 | `radarx_zdr_column` | ZDR column depth and objects (Snyder et al. 2015) |
 | `radarx_vil` | VIL, VIL density or echo top |

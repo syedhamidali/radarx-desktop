@@ -1,1 +1,0 @@
-- **Closing a file frees its disk copy at once:** a compressed (.gz) radar file is unpacked to a temporary copy while it is open; closing the file now deletes that copy immediately instead of whenever the system next tidies memory, so repeated opening and closing no longer piles up copies on macOS and Windows.
