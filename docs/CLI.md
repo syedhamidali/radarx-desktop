@@ -271,7 +271,7 @@ HRRR model analysis and forecast (NOAA, AWS open data)  [MODEL]
   Saved to  /Users/you/.xradar-desktop/environment-cache
   Credit    High-Resolution Rapid Refresh (HRRR), NOAA/NCEP/EMC, ...
   Note      run 2021-12-11 03 UTC, forecast hour 0 (analysis), valid 2021-12-11 03:00 UTC; requested 03:00 UTC, ...
-$ rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V cape -V srh_0_3km -o env.nc   # asks first
+$ rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V cape -V srh_0_3km -o env.nc   # asks first
 ```
 
 `estimate` downloads nothing. `fetch`, `show` and `profile` ask on a terminal; in a script `--yes` approves exactly the

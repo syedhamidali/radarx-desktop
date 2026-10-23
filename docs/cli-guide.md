@@ -336,7 +336,7 @@ Model fields and other environment data are fetched, cached and labelled by one 
 ```bash
 rxd env providers                                                   # the sources, their class and licence
 rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km # exact size and servers; nothing is downloaded
-rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V @storm_environment -o environment.nc
+rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V @storm_environment -o environment.nc
 rxd env cache --max-mb 4096                                         # the cache is shared with the app
 ```
 

@@ -2028,7 +2028,7 @@ rxd nowcast -i 'mayfield/KHPX/*_V06' --verify -o scores.json""",
 # WEATHER - model and reanalysis fields, radar products; nothing is downloaded without your yes
 rxd env providers
 rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km
-rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V @storm_environment -o env.nc
+rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V @storm_environment -o env.nc
 rxd env profile hrrr --time 2021-12-11T03:00Z --lat 36.74 --lon -88.64""",
     "save": f"""\
 # SAVE - NetCDF, Zarr, CSV, images

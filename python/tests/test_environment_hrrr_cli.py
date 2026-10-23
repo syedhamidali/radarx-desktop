@@ -17,7 +17,7 @@ from tests import env_synth as es
 
 pytestmark = pytest.mark.skipif(not es.have_eccodes(), reason="ecCodes (extra 'grib') missing")
 
-ARGS = ("hrrr", "--time", "2021-12-11T03:00Z", "--bbox", "-93.8,35,-93.4,35.3", "-V", "cape,cin")
+ARGS = ("hrrr", "--time", "2021-12-11T03:00Z", "--bbox=-93.8,35,-93.4,35.3", "-V", "cape,cin")
 
 
 @pytest.fixture()

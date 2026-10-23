@@ -65,7 +65,7 @@ level), and fewer than about 40 levels make CAPE, CIN and helicity approximate; 
 
 ```console
 $ rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km
-$ rxd env show hrrr --time 2021-12-11T03:00Z --bbox -92.5,34,-85,39 -V @storm_environment -o environment.nc
+$ rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V @storm_environment -o environment.nc
 $ rxd env profile hrrr --product profile --time 2021-12-11T03:00Z --lat 36.74 --lon -88.64 --yes
 ```
 
