@@ -213,10 +213,17 @@ class TestModuleMemoryGuard:
         assert "too much memory" in err["message"]
         assert "XRADAR_MODULE_MAX_MB" in err["message"]
         assert time.monotonic() - t0 < 30
-        # the cooperative module stopped allocating after the guard fired
+        # the cooperative module stopped allocating after the guard fired: wait for the length to
+        # stop changing rather than a fixed sleep (check_cancelled() is only re-read at the top of
+        # the next loop iteration, so one more append can land shortly after the error is sent,
+        # more so on a loaded CI runner)
         _, hoard = hungry
         size = len(hoard)
-        await asyncio.sleep(0.4)
+        for _ in range(50):  # up to ~5 s
+            await asyncio.sleep(0.1)
+            if len(hoard) == size:
+                break
+            size = len(hoard)
         assert len(hoard) == size < 400
 
     def test_limit_settings(self, monkeypatch) -> None:
