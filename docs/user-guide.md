@@ -70,6 +70,7 @@ export
 :caption: Environment data and diagnostics
 
 ENVIRONMENT
+source-hrrr
 source-era5
 source-diagnostics
 ```

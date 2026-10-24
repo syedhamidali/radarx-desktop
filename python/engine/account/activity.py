@@ -115,7 +115,7 @@ KNOWN_COMMANDS = frozenset(
     {
         "login", "logout", "whoami", "info", "check", "plot", "pipeline", "run", "modules", "cells",
         "sounding", "lightning", "mosaic", "winds", "animate", "qpe", "basin", "indicators",
-        "export", "methods", "project", "serve", "examples", "completion",
+        "export", "methods", "project", "env", "serve", "examples", "completion",
     }
 )  # fmt: skip
 #: ``format`` values: the format families of ``file_opened`` and the export formats.
