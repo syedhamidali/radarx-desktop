@@ -105,6 +105,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | | `rxd modules` | `list` (default) or `show ID` the algorithms |
 | | `rxd cells` | storm cells; several files are tracked in time |
 | | `rxd sounding` | a radiosonde file: CAPE, CIN, shear, helicity, freezing level, precipitable water |
+| | `rxd lightning` | GOES GLM or LMA files: flashes, flash clustering, flash rate per minute ({doc}`LIGHTNING`) |
 | Combine | `rxd mosaic` | several radars on one map |
 | | `rxd winds` | 3-D winds from two or more radars |
 | | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes, with an optional synthesised sound track (`--sound`) |

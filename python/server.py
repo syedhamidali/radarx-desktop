@@ -82,6 +82,7 @@ from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.environment.messages import EnvironmentMessages
 from engine.exporter import _FORMAT_EXT, RadarExporter
 from engine.jobs import JobCancelled, JobRegistry, cancel_on_progress
+from engine.lightning_messages import LightningMessages
 from engine.processor import (
     MAX_SECTION_POINTS,
     RadarProcessor,
@@ -164,6 +165,14 @@ def shutdown_activity_pool() -> None:
         pool, _activity_pool_obj = _activity_pool_obj, None
     if pool is not None:
         pool.shutdown(wait=True)
+
+
+@functools.lru_cache(maxsize=1)
+def _remote_engine_device_id() -> str:
+    """One id for this ``rxd serve`` process's own activity rows, kept in memory only: a remote
+    engine must never write into the cluster account's shared config directory (see the ``persist``
+    guard in ``auth_session``)."""
+    return uuid.uuid4().hex
 
 
 # The request being handled by the current task (for the activity log's details).
@@ -917,7 +926,7 @@ def _export_inputs(
     return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
 
 
-class ConnectionHandler(EnvironmentMessages, AnimateMessages):
+class ConnectionHandler(EnvironmentMessages, AnimateMessages, LightningMessages):
     """Manages message routing for a single WebSocket connection, using shared state."""
 
     def __init__(
@@ -1090,6 +1099,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
                 "device": re.sub(r"[^A-Za-z0-9]", "", str(self.session.id))[:40] or None,
                 "os_name": "Web",
             }
+        elif self.remote_engine:  # a remote engine: never touch the cluster's shared config dir
+            web_extra = {"uid": account.user_id, "device": _remote_engine_device_id()}
         else:  # desktop: only while the shared session file is still this connection's account
             web_extra = {"uid": account.user_id}
         surface = "engine" if event == "error" else "app"
@@ -1405,6 +1416,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "auto_cancel": self._handle_autopilot,
             **self._env_handlers(),  # env_* and sounding_open (engine/environment/messages.py)
             **self._animate_handlers(),  # animate_* : the Movie Studio (engine/animate_service.py)
+            **self._lightning_handlers(),  # lightning_open (engine/lightning_messages.py)
         }
         if self.session is not None:
             table.update(

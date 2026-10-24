@@ -10,6 +10,8 @@
   import { PPIRenderer, getCachedSweep, getDefaultCmap, getDefaultRange, type SweepDataEntry } from '../utils/ppiRenderer';
   import ColorBar from './ColorBar.svelte';
   import StormOverlay from './StormOverlay.svelte';
+  import LightningOverlay from './LightningOverlay.svelte';
+  import { lightning } from '../stores/lightning';
   import ModuleOverlay from './ModuleOverlay.svelte';
   import { displayedField, hideField, type DisplayedField } from '../stores/modules';
   import { activeDerived } from '../stores/derived';
@@ -916,6 +918,19 @@
 
       {#if $showRadarSites && sitesLayer.component && hasRendered && (radarLat !== 0 || radarLon !== 0)}
         <sitesLayer.component
+          {radarLat}
+          {radarLon}
+          maxRange={currentMaxRange}
+          {scale}
+          {translateX}
+          {translateY}
+          {containerWidth}
+          {containerHeight}
+        />
+      {/if}
+
+      {#if hasRendered && $lightning.data && (radarLat !== 0 || radarLon !== 0)}
+        <LightningOverlay
           {radarLat}
           {radarLon}
           maxRange={currentMaxRange}

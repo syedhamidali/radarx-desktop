@@ -16,6 +16,7 @@ export const PANEL_IDS = [
   'sounding',
   'qc',
   'storm',
+  'lightning',
   'modules',
   'pipeline',
   'processing',
