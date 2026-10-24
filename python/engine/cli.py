@@ -88,6 +88,7 @@ COMMANDS = (
     "modules",
     "cells",
     "sounding",
+    "lightning",
     "mosaic",
     "winds",
     "animate",
@@ -397,7 +398,8 @@ GROUPS = (
                  ("run", "run an algorithm: hydrometeor classes, shear, rain rate ... (= modules run)"),
                  ("modules", "list | show the algorithms and their parameters"),
                  ("cells", "find storm cells; several files are tracked in time"),
-                 ("sounding", "read a radiosonde file: CAPE, CIN, shear, helicity, freezing level"))),
+                 ("sounding", "read a radiosonde file: CAPE, CIN, shear, helicity, freezing level"),
+                 ("lightning", "observed GOES GLM or LMA lightning: flashes, clustering, flash rate"))),
     ("Combine", (("mosaic", "merge several radars onto one map"),
                  ("winds", "3-D winds from two or more radars (multi-Doppler)"),
                  ("animate", "a storm-centred 3D animation (MP4) from many volumes of one or more radars"))),
@@ -819,6 +821,11 @@ def build_parser() -> argparse.ArgumentParser:
     from engine import governor_cli
 
     governor_cli.add_parser(command, _add_input)
+
+    # -- lightning (engine/lightning_cli.py) -----------------------------------------------
+    from engine import lightning_cli
+
+    lightning_cli.add_parser(command, _add_input, _add_output)
 
     # -- serve (the engine for the app on another computer; engine/serve_cli.py) -----------
     from engine import serve_cli

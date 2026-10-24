@@ -161,7 +161,7 @@ export function formatValue(v: unknown): string {
 
 // ── Layers: which engine message describes which layer ───────────────────────────────────────────
 
-export type LayerGroup = 'Radar' | 'Derived' | 'Mosaic' | 'Winds' | 'Cells' | 'Sections' | 'Environment' | 'Forecast' | 'Appearance';
+export type LayerGroup = 'Radar' | 'Derived' | 'Mosaic' | 'Winds' | 'Cells' | 'Lightning' | 'Sections' | 'Environment' | 'Forecast' | 'Appearance';
 
 export interface LayerKey {
   id: string;
@@ -171,7 +171,7 @@ export interface LayerKey {
   fileId?: string;
 }
 
-const GROUP_ORDER: LayerGroup[] = ['Radar', 'Derived', 'Mosaic', 'Winds', 'Cells', 'Sections', 'Environment', 'Forecast', 'Appearance'];
+const GROUP_ORDER: LayerGroup[] = ['Radar', 'Derived', 'Mosaic', 'Winds', 'Cells', 'Lightning', 'Sections', 'Environment', 'Forecast', 'Appearance'];
 export const groupRank = (g: LayerGroup): number => GROUP_ORDER.indexOf(g);
 
 /** Where the provenance object sits in a message (most messages: top level). */
@@ -212,6 +212,8 @@ export function layerKeyFromMessage(type: string, msg: any, prov: Provenance | n
       return { id: 'xsec3d', group: 'Sections', title: title ?? '3D cross-section' };
     case 'volume_data':
       return { id: 'volume3d', group: 'Sections', title: title ?? '3D volume' };
+    case 'lightning_result':
+      return { id: 'lightning', group: 'Lightning', title: title ?? 'Lightning' };
     case 'sounding_result':
       return { id: 'sounding', group: 'Environment', title: title ?? 'Sounding' };
     case 'env_fetch_result':

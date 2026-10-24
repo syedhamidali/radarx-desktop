@@ -82,6 +82,7 @@ from engine.dualpol import histogram_data, region_stats, scatter_data
 from engine.environment.messages import EnvironmentMessages
 from engine.exporter import _FORMAT_EXT, RadarExporter
 from engine.jobs import JobCancelled, JobRegistry, cancel_on_progress
+from engine.lightning_messages import LightningMessages
 from engine.processor import (
     MAX_SECTION_POINTS,
     RadarProcessor,
@@ -917,7 +918,7 @@ def _export_inputs(
     return tree, [derived.export_name(v) if v in stored else v for v in variables], opts, names
 
 
-class ConnectionHandler(EnvironmentMessages, AnimateMessages):
+class ConnectionHandler(EnvironmentMessages, AnimateMessages, LightningMessages):
     """Manages message routing for a single WebSocket connection, using shared state."""
 
     def __init__(
@@ -1405,6 +1406,7 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages):
             "auto_cancel": self._handle_autopilot,
             **self._env_handlers(),  # env_* and sounding_open (engine/environment/messages.py)
             **self._animate_handlers(),  # animate_* : the Movie Studio (engine/animate_service.py)
+            **self._lightning_handlers(),  # lightning_open (engine/lightning_messages.py)
         }
         if self.session is not None:
             table.update(
