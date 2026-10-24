@@ -167,6 +167,14 @@ def shutdown_activity_pool() -> None:
         pool.shutdown(wait=True)
 
 
+@functools.lru_cache(maxsize=1)
+def _remote_engine_device_id() -> str:
+    """One id for this ``rxd serve`` process's own activity rows, kept in memory only: a remote
+    engine must never write into the cluster account's shared config directory (see the ``persist``
+    guard in ``auth_session``)."""
+    return uuid.uuid4().hex
+
+
 # The request being handled by the current task (for the activity log's details).
 _CURRENT_REQUEST: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "radarx_current_request", default=None
@@ -1091,6 +1099,8 @@ class ConnectionHandler(EnvironmentMessages, AnimateMessages, LightningMessages)
                 "device": re.sub(r"[^A-Za-z0-9]", "", str(self.session.id))[:40] or None,
                 "os_name": "Web",
             }
+        elif self.remote_engine:  # a remote engine: never touch the cluster's shared config dir
+            web_extra = {"uid": account.user_id, "device": _remote_engine_device_id()}
         else:  # desktop: only while the shared session file is still this connection's account
             web_extra = {"uid": account.user_id}
         surface = "engine" if event == "error" else "app"
