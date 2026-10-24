@@ -14,7 +14,7 @@ starts `python/.venv` + `server.py` as before. `XRADAR_PYTHON=/path/to/python` f
 
 ```bash
 cd python
-pip install -e ".[radarx,bundle,dev]"          # radarx needs Python >= 3.12; no system libraries needed
+pip install -e ".[radarx,bundle,keyring,dev]"          # radarx needs Python >= 3.12; no system libraries needed
 python packaging/build_engine.py           # -> python/dist/xradar-engine/, then smoke-tests it
 
 # The packaged engine requires a signed-in account and ignores the development bypass, so the smoke test
