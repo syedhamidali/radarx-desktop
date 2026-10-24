@@ -96,6 +96,7 @@ COMMANDS = (
     "basin",
     "report",
     "indicators",
+    "env",
     "export",
     "methods",
     "project",
