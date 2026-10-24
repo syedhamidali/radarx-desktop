@@ -116,3 +116,4 @@ images/lightning-3d-dark.png,OSM;NEXRAD;GLM,no,"GLM flashes on the ground below 
 images/lightning-panel-dark.png,OSM;NEXRAD;GLM,yes,the Lightning panel, same KHPX/GLM scene as lightning-2d-dark.png; map tiles credited in the frame
 images/lightning-lma-3d-light.png,NEXRAD,no,"3D view with a synthetic LMA array (not real data) over a KHPX scan, light theme; map draped under the 3D view"
 images/lightning-lma-panel-dark.png,OSM;NEXRAD,yes,"the Lightning panel with a synthetic LMA array (not real data) over the same KHPX scan; map tiles credited in the frame"
+images/lightning-sound-dark.png,OSM;NEXRAD;GLM,yes,"the Sound panel, same KHPX/GLM scene; synthesised thunder and flash ticks, not a recording; map tiles credited in the frame"

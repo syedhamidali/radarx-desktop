@@ -117,6 +117,49 @@ from the assumed height to the height you give (WGS84 Earth, the satellite at th
 and the panel says it is applied. A flash assumed higher moves towards the point under the satellite, a lower one
 away from it.
 
+## Sound
+
+![The Sound section of the Lightning panel: Listen, speed, listener, mixer and what drives each layer](images/lightning-sound-dark.png)
+
+Open **Sound** in the Lightning panel and press **Listen to this window**: the flashes of the time window are
+replayed in time order, with a thunder for each. Nothing plays until you press the button, and **Stop** silences
+it at once. The sound says what it is: **Synthesised from the data, not a recording.**
+
+What is real and what is made up:
+
+* **From the data**: when each flash happened, where it was, how strong it was (GLM radiant energy, or the
+  number of LMA sources, on a log scale between the 5th and 95th percentile of the flashes read), and the
+  physics of the delay (the thunder arrives after distance divided by 343 m/s) and of the level (farther is
+  quieter, duller and longer).
+* **Made up**: the timbre. Thunder is shaped noise, a crack for a flash within 4 km and a low rumble for a distant
+  one. It is not a model of real thunder.
+* **Time-lapse**: the window is replayed at 1x to 300x (30x by default: a 5-minute window lasts 10 seconds). The
+  thunder delay is divided by the same factor, so a flash 10 km away is heard 1 s after its tick at 30x, and 29 s
+  after it at 1x, the real delay.
+* **Direction**: the listener is at the radar facing north, or follows the 3D camera (position and heading), so a
+  flash to the east is heard on the right of a listener who faces north. The panning is binaural-style (HRTF) in
+  the browser.
+* **No other sounds.** There are no wind, rain, hail or tornado sounds, because nothing in lightning data says
+  anything about them.
+
+A small **mixer** sets the master level, the level and mute of each layer (thunder, and a short tick at the time of
+each flash, which is off by default) and a **limiter ceiling** (default -6 dBFS): the limiter never makes the sound
+louder, it only keeps it under the ceiling, and the default master level of -6 dB leaves further room. The panel lists
+which instrument drives each layer. At most 150 flashes are voiced at once (the loudest); it says how many were left out.
+
+Measured: planning the replay of 1564 flashes takes 2 ms; building the audio graph for the 150 loudest takes 0.34 s (thunders are shared between flashes of about the same distance and strength; 1.0 s before that was done); frames while it plays are not slower than idle in a software-rendered headless Chrome.
+
+Checks that were done: the delay, the direction, the equal-power panning, the loudness falling with distance, the
+tail growing with distance, the limiter and the normalisation are tested against hand-computed values, and the same
+seed gives the same sound. For a strong flash (strength 0.8 of 1) the RMS level of the whole thunder falls from
+about -19 dBFS (RMS) at 1 to 3 km to -29 dBFS at 10 km, -42 dBFS at 30 km and -49 dBFS at 60 km, so a thunder 60 km away
+is far below the others at the default settings, as it should be. Levels are RMS in dBFS, not a perceptual loudness (no
+K-weighting). **Not done**: a listening test with people, and a comparison with real storm recordings (no
+licence-clean recordings are included, and the sound has only been measured, not listened to). Do not read
+the realism of the timbre from this.
+
+Sound of the finished movies is a separate, older feature ({doc}`ANIMATE`); the live sound here is not written into them.
+
 ## What the data cannot say
 
 * **Detection efficiency** is not in the files and is not computed. GLM sees less toward the edge of its field of

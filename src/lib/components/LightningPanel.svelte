@@ -22,6 +22,7 @@
   import ProvenanceChip from './ProvenanceChip.svelte';
   import LightningSeries from './LightningSeries.svelte';
   import LightningHeights from './LightningHeights.svelte';
+  import LightningSound from './LightningSound.svelte';
 
   const st = $derived($lightning);
   const data = $derived(st.data);
@@ -202,6 +203,8 @@
           <button onclick={rereadLightning} disabled={st.loading || !connected}>Apply</button>
         </fieldset>
       {/if}
+
+      <LightningSound />
 
       <details class="about" open>
         <summary>What this shows, and its limits</summary>
