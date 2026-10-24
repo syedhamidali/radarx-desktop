@@ -41,6 +41,7 @@ RADAR_MAP
 RHI
 CROSSSECTION
 CELLS
+LIGHTNING
 ROTATION
 ```
 
@@ -69,6 +70,7 @@ export
 :caption: Environment data and diagnostics
 
 ENVIRONMENT
+source-era5
 source-diagnostics
 ```
 

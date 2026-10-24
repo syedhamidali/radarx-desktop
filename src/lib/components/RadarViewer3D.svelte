@@ -30,6 +30,8 @@
   import { buildGroundMap } from '../utils/groundMap';
   import { get } from 'svelte/store';
   import { showRadarSites } from '../stores/radarSitesPref';
+  import { lightning, lightningSettings, lightningWindow, sceneNow, setCameraPose } from '../stores/lightning';
+  import { drawLightning, drawLightningLabel } from '../utils/lightningScene3d';
   import type { SceneMarker } from '../utils/scene3d';
   import { GLSL_THRESHOLD, GLSL_HASH, GLSL_GROUND_POLAR } from '../utils/volumeShaderParts';
   import CmapSelect from './CmapSelect.svelte';
@@ -1442,6 +1444,28 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
     }
   }
 
+  // Observed lightning (GLM, LMA): follows the volume time through the layer's window; redraw when it changes.
+  $effect(() => {
+    void [$lightning.data, $lightningSettings, $lightningWindow];
+    untrack(markDirty);
+  });
+
+  /** Lightning above the scene: the points of the window in time order, with a label that says what they are. */
+  function drawSceneLightning(ctx: CanvasRenderingContext2D, cam: Cam, cssH: number) {
+    const data = get(lightning).data;
+    // the listener of the lightning sound follows this camera (km east / north of the radar, heading clockwise from north)
+    setCameraPose({ x: cam.eye[0], y: cam.eye[1], yawDeg: (Math.atan2(cam.fwd[0], cam.fwd[1]) * 180) / Math.PI });
+    if (!data || !get(lightningSettings).show3d) return;
+    const site = currentSite();
+    if (!site) return;
+    const altM = Number(($radarData.attributes ?? {}).altitude);
+    const pts = sceneNow(site.lat, site.lon, Number.isFinite(altM) ? altM / 1000 : 0, rangeKm);
+    const n = drawLightning(ctx, cam, pts, vexag, cam.w, cam.h);
+    const flashes = new Set(pts.map((p) => p.flash)).size;
+    const label = `Lightning (observed, ${data.kind === 'glm' ? 'GLM, no height: on the ground' : 'LMA'}): ${flashes} ${flashes === 1 ? 'flash' : 'flashes'} within ${Math.round(rangeKm)} km${n < pts.length ? `, first ${n} points drawn` : ''}`;
+    drawLightningLabel(ctx, label, cssH);
+  }
+
   /** Height scale, range-ring labels, N/E/S/W, radar marker, north arrow: a 2D layer above the GL canvas. */
   function drawSceneOverlay(
     eye: [number, number, number], fwd: [number, number, number],
@@ -1462,6 +1486,7 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
         siteName, showRings: groundMode !== 'off', showFrame: true,
         markers: sceneSiteMarkers(),
       });
+      drawSceneLightning(overlayCtx, cam, cssH);
     } catch (e) {
       console.warn('[3D] overlay failed:', e);
     }
