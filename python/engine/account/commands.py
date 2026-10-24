@@ -8,12 +8,16 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 import time
 from typing import Any
 
 from engine.account import activity, config, core, gotrue
 from engine.account.errors import AccountRequired, AccountServerError
+
+#: ``engine.cli.EXIT_ACCOUNT`` (cli imports this module, so the value is repeated here).
+EXIT_ACCOUNT = 5
 
 EXAMPLES_LOGIN = (
     "examples:\n"
@@ -78,15 +82,68 @@ def sign_in_message(prog: str, exc: AccountRequired) -> str:
     return "\n".join(lines)
 
 
-def cmd_login(args: argparse.Namespace, out: Any) -> int:
-    email = (args.email or "").strip()
-    if not email:
+NO_TERMINAL = (
+    "cannot sign in here: there is no terminal to type the password into (the input is\n"
+    "redirected, or this program was started without a console).\n"
+    "  Run 'rxd login' in a normal terminal window (over ssh: 'ssh -t HOST'), or sign in once in\n"
+    "  the radarx-desktop app; the command line shares that sign-in.\n"
+    "A password is never taken from the command line, a file or an environment variable."
+)
+
+
+def _no_terminal(out: Any) -> int:
+    """Exit code 5 (still not signed in), like every command that needs an account."""
+    print(f"error: {NO_TERMINAL}", file=sys.stderr)
+    if out.json:
+        out.emit_json({"signed_in": False, "error": "no_terminal"})
+    return EXIT_ACCOUNT
+
+
+def _cancelled(out: Any) -> int:
+    print("sign-in cancelled", file=sys.stderr)
+    if out.json:
+        out.emit_json({"signed_in": False, "error": "cancelled"})
+    return EXIT_ACCOUNT
+
+
+def stdin_is_a_terminal() -> bool:
+    """Is a person typing at this program's input?
+
+    ``isatty()`` alone is not enough on Windows: it is also true for the ``NUL`` device (input
+    redirected from nothing), and the hidden prompt then waits for ever. A real console answers
+    ``GetConsoleMode``.
+    """
+    try:
         if not sys.stdin.isatty():
-            raise cli_usage("give your e-mail with --email (and type the password when asked)")
-        email = input("E-mail: ").strip()
-    if not email:
-        raise cli_usage("an e-mail is needed")
-    password = getpass.getpass("Password (not shown): ")
+            return False
+    except (AttributeError, ValueError):  # no stdin, or a closed one
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+        return bool(kernel32.GetConsoleMode(handle, ctypes.byref(ctypes.c_uint32())))
+    except (AttributeError, OSError):
+        return True
+
+
+def cmd_login(args: argparse.Namespace, out: Any) -> int:
+    # The password is typed at a terminal, never taken from anywhere else; without one there is
+    # nothing to ask (a redirected input, an IDE or agent shell, a scheduled job).
+    if not stdin_is_a_terminal():
+        return _no_terminal(out)
+    email = (args.email or "").strip()
+    try:
+        if not email:
+            email = input("E-mail: ").strip()
+        if not email:
+            raise cli_usage("an e-mail is needed")
+        password = getpass.getpass("Password (not shown): ")
+    except EOFError:  # end of input at a prompt (Ctrl-D, Ctrl-Z)
+        return _cancelled(out)
     if not password:
         raise cli_usage("a password is needed")
     try:

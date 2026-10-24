@@ -1,6 +1,6 @@
 [project]
 name = "radarx-desktop-engine"
-version = "0.4.1"
+version = "0.5.0"
 description = "Python sidecar engine for radarx-desktop"
 requires-python = ">=3.12"
 license = { text = "PolyForm-Noncommercial-1.0.0" }
@@ -31,7 +31,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "open-radar-data"]
+# eccodes is in dev so the tests of the GRIB2 readers (HRRR, MRMS) run in CI.
+dev = ["pytest", "pytest-asyncio", "pytest-cov", "ruff", "open-radar-data", "eccodes>=2.38,<3.0"]
+# Decoding GRIB2 messages (environment data from HRRR and MRMS): ecCodes from ECMWF, Apache-2.0, with its
+# compiled library. Downloading and caching those messages needs nothing, only reading them does, so the
+# default install and the installers stay small (engine/environment/gribio.py says how to get it).
+grib = ["eccodes>=2.38,<3.0"]
 # engine/arrow_bridge.py (xarray -> Arrow IPC). The app does not use it (the WebSocket sends raw
 # binary chunks), so pyarrow (~55 MB unpacked) is neither installed by default nor bundled.
 arrow = ["pyarrow>=15.0,<30.0"]
@@ -47,6 +52,10 @@ bundle = ["pyinstaller>=6.16"]
 # encode): its PyPI wheels bundle an FFmpeg built with GPL parts, so the project never ships it
 # (not in the installers, not in the movie components pack); installing this extra is your choice.
 video = ["playwright>=1.40,<2.0", "av>=12.0,<20.0"]
+# The sign-in tokens go to the system credential store (Windows Credential Manager, macOS Keychain,
+# Linux Secret Service) instead of a plain file (engine/account/credentials.py, docs/ACCOUNTS.md). The
+# installers carry it; without it (a plain `pip install` of the engine) the tokens stay in a private file.
+keyring = ["keyring>=25.0,<26"]
 # Optional algorithm modules (modules/radarx_*.py). radarx needs Python >= 3.12, as this package does.
 radarx = ["radarx>=0.5.1"]
 

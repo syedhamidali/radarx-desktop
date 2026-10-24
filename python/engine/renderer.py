@@ -14,7 +14,13 @@ from typing import Any
 
 import numpy as np
 import xarray as xr
-from PIL import Image, ImageDraw, ImageFont
+
+from engine._lazy import LazyModule
+
+# Pillow is imported when the first image is drawn, not when the engine starts (about 25 ms).
+Image = LazyModule("PIL.Image")
+ImageDraw = LazyModule("PIL.ImageDraw")
+ImageFont = LazyModule("PIL.ImageFont")
 
 logger = logging.getLogger(__name__)
 

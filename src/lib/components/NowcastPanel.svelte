@@ -123,7 +123,7 @@
 
     <!-- Input -->
     <section class="block">
-      <h4>Start from</h4>
+      <h3>Start from</h3>
       <div class="seg" role="radiogroup" aria-label="Frames to start from">
         {#each SOURCES as src}
           <button type="button" role="radio" aria-checked={s.source === src.key} class="seg-btn" class:on={s.source === src.key} title={src.hint} onclick={() => onSource(src.key)}>{src.label}</button>
@@ -171,7 +171,7 @@
 
     <!-- Settings -->
     <section class="block">
-      <h4>Forecast</h4>
+      <h3>Forecast</h3>
       <div class="grid2">
         <label class="field">
           <span>Lead time (max {NOWCAST_MAX_LEAD_MIN} min)</span>
@@ -239,7 +239,7 @@
     {#if res && label}
       <section class="block result" aria-label="Nowcast result">
         <div class="block-head">
-          <h4>Forecast frame</h4>
+          <h3>Forecast frame</h3>
           <span class="spacer"></span>
           <ProvenanceChip provenance={res.provenance ?? { kind: 'forecast', source: 'nowcast' }} title="Nowcast" />
         </div>
@@ -356,9 +356,9 @@
   .root { display: flex; flex-direction: column; gap: var(--space-3); }
   .block { display: flex; flex-direction: column; gap: var(--space-2); }
   .block-head { display: flex; align-items: center; gap: var(--space-1); }
-  h4 { margin: 0; font-size: var(--fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-muted); }
+  h3 { margin: 0; font-size: var(--fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-muted); }
   .result { padding-top: var(--space-2); border-top: 1px solid var(--c-border); }
-  .result h4 { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); color: var(--c-text); }
+  .result h3 { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); color: var(--c-text); }
   .spacer { flex: 1; }
   .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .dim { color: var(--c-muted); font-weight: 400; }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import gc
 import logging
 import math
 import os
@@ -145,7 +146,19 @@ def mask_variable(v: xr.DataArray) -> xr.DataArray:
     tol = 0.25 * abs(scale)
     vals = v.variable
     bad = (abs(vals - offset) <= tol) | (abs(vals - (offset + scale)) <= tol)
-    return v.where(~bad, other=np.nan).assign_attrs(v.attrs)
+    out = v.where(~bad, other=np.nan).assign_attrs(v.attrs)
+    return out.astype(np.float32, keep_attrs=True) if decode_float32() else out
+
+
+def decode_float32() -> bool:
+    """True when integer-encoded moments are kept as float32 once decoded (``XRADAR_FLOAT32=1``).
+
+    Off by default. The no-echo codes are found on the exact float64 values first, then the
+    result is rounded to float32: an error of at most 6e-8 of the value (< 5e-6 dB / m/s for any
+    real moment), far below the 0.5 unit steps the radar itself stores. It halves the memory of
+    a decoded moment and the copy made when it is first read (docs/PERFORMANCE.md).
+    """
+    return os.environ.get("XRADAR_FLOAT32", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _no_echo_params(v: xr.DataArray) -> tuple[float, float] | None:
@@ -173,7 +186,8 @@ class _LazyMasked(BackendArray):
         self._offset = offset
         self._scale = scale
         self.shape = var.shape
-        self.dtype = var.dtype
+        self._float32 = decode_float32()
+        self.dtype = np.dtype("float32") if self._float32 else var.dtype
 
     def __getitem__(self, key: Any) -> np.ndarray:
         return indexing.explicit_indexing_adapter(
@@ -184,7 +198,7 @@ class _LazyMasked(BackendArray):
         vals = np.asarray(self._var[key].values)
         tol = 0.25 * abs(self._scale)
         bad = (abs(vals - self._offset) <= tol) | (abs(vals - (self._offset + self._scale)) <= tol)
-        out = vals.copy()
+        out = vals.astype(np.float32) if self._float32 else vals.copy()
         out[bad] = np.nan
         return out
 
@@ -1252,6 +1266,11 @@ class RadarReader:
             self._path = None
             self._format = None
             self._reset_caches()
+        if self._temp_files:
+            # Let xarray's file manager close the handle it holds on the decompressed copy (a
+            # locked file cannot be removed on Windows), then remove the copy now instead of when
+            # the garbage collector gets to this reader: it can be gigabytes.
+            gc.collect()
         _unlink_all(self._temp_files)
 
     def get_schema(self) -> dict[str, Any]:

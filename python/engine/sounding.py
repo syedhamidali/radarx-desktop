@@ -72,6 +72,9 @@ class Sounding:
     dewpoint_filled: Any = None
     #: "observed" (a radiosonde) or "model" (a model/reanalysis column such as ERA5 or HRRR)
     data_class: str = "observed"
+    #: a ready-made provenance (a model column from the environment providers has run time,
+    #: forecast hour and grid spacing to show); ``None`` = the generic one below
+    prov: Any = None
 
     @property
     def surface_height_m(self) -> float:
@@ -93,6 +96,8 @@ class Sounding:
         )
 
     def layer_provenance(self) -> layer_provenance.LayerProvenance:
+        if self.prov is not None:
+            return self.prov
         model = self.data_class == "model"
         return layer_provenance.sounding(
             station=self.station or self.station_name,
@@ -980,6 +985,10 @@ DEFINITIONS: dict[str, str] = {
     "pw": "Precipitable water (mm): (1/g) times the integral of the specific humidity over "
     "pressure "
     "from the surface to the top level with a reported humidity.",
+    "lapse_rate": "Environmental lapse rate (K/km): -(dT/dz) averaged over the layer (positive "
+    "= temperature falls with height, the normal atmosphere). Dry adiabatic rate = 9.8 K/km; "
+    "average moist adiabatic rate ≈ 6.5 K/km. Super-adiabatic (> 9.8) is absolutely unstable. "
+    "Layers are 0-3 km (low-level convective) and 700-500 hPa (mid-level conditional instability).",
 }
 
 REFERENCES = {
@@ -995,6 +1004,10 @@ REFERENCES = {
     "daviesjones": "Davies-Jones, R., D. Burgess, and M. Foster, 1990: Test of helicity as a "
     "tornado forecast parameter. Preprints, 16th Conf. Severe Local Storms, Kananaskis Park, "
     "Alberta, Amer. Meteor. Soc., 588-592.",
+    "wind_profile": "Shear, Bunkers storm motion and storm-relative helicity: "
+    "radarx.retrieve.wind_profile (https://pypi.org/project/radarx/); "
+    "methods are height-weighted means (Bunkers et al. 2000) and the discrete SRH sum "
+    "of Davies-Jones (1984), exact for linear winds between levels.",
 }
 
 PARCELS = {
@@ -1126,6 +1139,145 @@ def precipitable_water_mm(p_pa: Any, td_k: Any, reported: Any) -> tuple[float, f
     return pw, float(pp[-1] / 100.0)
 
 
+def lapse_rate(z: Any, t: Any, ground: float, bottom: float, top: float) -> float | None:
+    """Environmental lapse rate (K/km) in a layer defined by AGL heights *bottom*-*top*.
+
+    Positive when temperature falls with height (the normal atmosphere, up to ~9.8 K/km dry
+    adiabatic). The endpoints are linearly interpolated; ``None`` when the layer is not fully
+    spanned by the valid temperature levels.
+    """
+    ok = np.isfinite(t) & np.isfinite(z)
+    if ok.sum() < 2:
+        return None
+    zz, tt = z[ok], t[ok]
+    z0, z1 = ground + bottom, ground + top
+    if z0 < zz[0] - 1e-6 or z1 > zz[-1] + 1e-6:
+        return None
+    dz = top - bottom
+    if dz == 0:
+        return None
+    t0 = float(np.interp(z0, zz, tt))
+    t1 = float(np.interp(z1, zz, tt))
+    return -(t1 - t0) / dz * 1000.0  # K/km, positive = falling with height
+
+
+def _lapse_rate_pressure(z: Any, t: Any, p: Any, p_top_pa: float, p_bot_pa: float) -> float | None:
+    """Lapse rate (K/km) between two pressure levels, by interpolation in log-pressure."""
+    ok = np.isfinite(t) & np.isfinite(z) & np.isfinite(p) & (p > 0)
+    if ok.sum() < 2:
+        return None
+    pp, zz, tt = p[ok], z[ok], t[ok]
+    if p_bot_pa > pp[0] + 1e-3 or p_top_pa < pp[-1] - 1e-3:
+        return None  # layer not covered
+    lp = -np.log(pp)
+    lp_bot, lp_top = -math.log(p_bot_pa), -math.log(p_top_pa)
+    if lp_bot < lp[0] - 1e-9 or lp_top > lp[-1] + 1e-9:
+        return None
+    t_bot = float(np.interp(lp_bot, lp, tt))
+    t_top = float(np.interp(lp_top, lp, tt))
+    z_bot = float(np.interp(lp_bot, lp, zz))
+    z_top = float(np.interp(lp_top, lp, zz))
+    dz = z_top - z_bot
+    if dz < 1.0:
+        return None
+    return -(t_top - t_bot) / dz * 1000.0  # K/km
+
+
+def _wind_diag_radarx(
+    ds: Any, ground: float, u: Any, v: Any, z: Any
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    """Shear, Bunkers storm motion and SRH using radarx.retrieve.wind_profile when available.
+
+    Returns ``(shear_dict, storm_motion_dict_or_None, srh_dict)``.
+    Falls back to the local implementations when radarx is not importable or raises.
+    """
+    try:
+        from radarx.retrieve import wind_profile as wp
+
+        def _vec(r: Any) -> dict[str, Any]:
+            spd = float(r["speed"].values)
+            u_v = float(r["u"].values)
+            v_v = float(r["v"].values)
+            return {
+                "u": _num(u_v, 2),
+                "v": _num(v_v, 2),
+                "speed_ms": _num(spd, 1),
+                "speed_kt": _num(spd / KNOT, 0),
+                "from_deg": _num(float(r["direction"].values), 0),
+            }
+
+        shear: dict[str, Any] = {}
+        for label, top_m in (("0-1km", 1000.0), ("0-3km", 3000.0), ("0-6km", 6000.0)):
+            try:
+                r = wp.bulk_shear(ds, bottom=0.0, top=top_m, ground=ground)
+                shear[label] = {
+                    "u": _num(float(r["shear_u"].values), 2),
+                    "v": _num(float(r["shear_v"].values), 2),
+                    "speed_ms": _num(float(r["shear_speed"].values), 1),
+                    "speed_kt": _num(float(r["shear_speed"].values) / KNOT, 0),
+                }
+            except Exception:
+                shear[label] = bulk_shear(z, u, v, ground, 0.0, top_m)
+
+        storm: dict[str, Any] | None = None
+        try:
+            rm = wp.bunkers_storm_motion(ds, mover="right", ground=ground)
+            lm = wp.bunkers_storm_motion(ds, mover="left", ground=ground)
+            mn = wp.bunkers_storm_motion(ds, mover="mean", ground=ground)
+            sh6 = wp.bulk_shear(ds, bottom=0.0, top=6000.0, ground=ground)
+            storm = {
+                "mean_wind_0_6km": _vec(mn),
+                "right_mover": _vec(rm),
+                "left_mover": _vec(lm),
+                "shear_0_6km_vector": {
+                    "u": _num(float(sh6["shear_u"].values), 2),
+                    "v": _num(float(sh6["shear_v"].values), 2),
+                },
+            }
+        except Exception:
+            storm = bunkers_motion(z, u, v, ground)
+
+        srh: dict[str, Any] = {}
+        if storm:
+            for side in ("right_mover", "left_mover"):
+                c = storm[side]
+                for top_m, key in ((1000.0, "0-1km"), (3000.0, "0-3km")):
+                    try:
+                        cx = ds["u"] * 0 + (c["u"] or 0.0)
+                        cy = ds["v"] * 0 + (c["v"] or 0.0)
+                        import xarray as xr
+
+                        motion_ds = xr.Dataset({"u": cx, "v": cy})
+                        val_da = wp.storm_relative_helicity(
+                            ds, storm_motion=motion_ds, bottom=0.0, top=top_m, ground=ground
+                        )
+                        srh.setdefault(key, {})[side] = _num(float(val_da.values), 0)
+                    except Exception:
+                        val = storm_relative_helicity(
+                            z, u, v, ground, top_m, c["u"] or 0.0, c["v"] or 0.0
+                        )
+                        srh.setdefault(key, {})[side] = _num(val, 0)
+
+        return shear, storm, srh
+
+    except ImportError:
+        # radarx.retrieve not available: use local implementations
+        shear = {
+            "0-1km": bulk_shear(z, u, v, ground, 0.0, 1000.0),
+            "0-3km": bulk_shear(z, u, v, ground, 0.0, 3000.0),
+            "0-6km": bulk_shear(z, u, v, ground, 0.0, 6000.0),
+        }
+        storm = bunkers_motion(z, u, v, ground)
+        srh = {}
+        if storm:
+            for side in ("right_mover", "left_mover"):
+                c = storm[side]
+                for top_m, key in ((1000.0, "0-1km"), (3000.0, "0-3km")):
+                    val = storm_relative_helicity(z, u, v, ground, top_m, c["u"], c["v"])
+                    srh.setdefault(key, {})[side] = _num(val, 0)
+        return shear, storm, srh
+
+
 def _need_radarx() -> Any:
     try:
         from radarx.io import parcel, sounding
@@ -1215,25 +1367,14 @@ def diagnose(snd: Sounding, *, virtual: bool = True) -> dict[str, Any]:
     out["parcels"] = parcels
     out["virtual_temperature"] = bool(virtual)
 
-    # -- winds -----------------------------------------------------------------------------------
+    # -- winds (radarx.retrieve.wind_profile when available, local fallback) --------------------
     has_wind = int(np.isfinite(u).sum()) >= 2
     if has_wind:
         top_valid = float(z[np.isfinite(u) & np.isfinite(v)][-1])
-        out["shear"] = {
-            "0-1km": bulk_shear(z, u, v, ground, 0.0, 1000.0),
-            "0-3km": bulk_shear(z, u, v, ground, 0.0, 3000.0),
-            "0-6km": bulk_shear(z, u, v, ground, 0.0, 6000.0),
-        }
-        storm = bunkers_motion(z, u, v, ground)
+        shear_d, storm, srh_d = _wind_diag_radarx(ds, ground, u, v, z)
+        out["shear"] = shear_d
         out["storm_motion"] = storm
-        srh: dict[str, Any] = {}
-        if storm:
-            for side in ("right_mover", "left_mover"):
-                c = storm[side]
-                for top, key in ((1000.0, "0-1km"), (3000.0, "0-3km")):
-                    val = storm_relative_helicity(z, u, v, ground, top, c["u"], c["v"])
-                    srh.setdefault(key, {})[side] = _num(val, 0)
-        out["srh"] = srh
+        out["srh"] = srh_d
         if top_valid < ground + 6000.0:
             notes.append(
                 f"Winds end at {top_valid - ground:.0f} m AGL: 0-6 km shear and the Bunkers storm "
@@ -1262,6 +1403,22 @@ def diagnose(snd: Sounding, *, virtual: bool = True) -> dict[str, Any]:
             "freezing, so there is no freezing level to report."
         )
     out["levels"] = levels
+
+    # -- lapse rates -----------------------------------------------------------------------------
+    lr: dict[str, Any] = {}
+    lr["0-3km_k_per_km"] = _num(lapse_rate(z, t, ground, 0.0, 3000.0), 2)
+    lr["700_500hPa_k_per_km"] = _num(
+        _lapse_rate_pressure(z, t, p, 50000.0, 70000.0),
+        2,  # 700-500 hPa, Pa
+    )
+    dry_adiabatic = 9.8  # K/km
+    for key, val in lr.items():
+        if val is not None and val > dry_adiabatic:
+            notes.append(
+                f"Layer {key.replace('_k_per_km', '')} lapse rate {val:.1f} K/km is "
+                f"super-adiabatic (> {dry_adiabatic} K/km: absolutely unstable)."
+            )
+    out["lapse_rates"] = lr
 
     # -- moisture --------------------------------------------------------------------------------
     pw = precipitable_water_mm(p, td, reported)
@@ -1420,6 +1577,12 @@ def summary_lines(diag: Mapping[str, Any]) -> list[str]:
         f"wet-bulb zero {_fmt(lv.get('wet_bulb_zero_agl_m'), 'm AGL')}   "
         f"-20 degC {_fmt(lv.get('minus20_agl_m'), 'm AGL')}"
     )
+    lr = diag.get("lapse_rates") or {}
+    if any(v is not None for v in lr.values()):
+        lines.append(
+            f"lapse rate 0-3km {_fmt(lr.get('0-3km_k_per_km'), 'K/km')}   "
+            f"700-500hPa {_fmt(lr.get('700_500hPa_k_per_km'), 'K/km')}"
+        )
     mo = diag.get("moisture")
     if mo:
         lines.append(

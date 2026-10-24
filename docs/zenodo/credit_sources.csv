@@ -1,0 +1,9 @@
+source,short,kind,credit,terms,link
+OSM,OpenStreetMap tiles,map tiles,© OpenStreetMap contributors,"Open Database License (ODbL) 1.0; attribution required, OpenStreetMap Foundation tile usage policy",https://www.openstreetmap.org/copyright
+EOX,Sentinel-2 cloudless imagery (EOX),satellite imagery,Sentinel-2 cloudless 2021 © EOX IT Services GmbH (contains modified Copernicus Sentinel data 2021),"CC BY-NC-SA 4.0: non-commercial use only, attribution, share-alike; images containing it are under the same terms",https://cloudless.eox.at
+TERRAIN,Terrain Tiles elevation,elevation,"Terrain Tiles (Mapzen / Tilezen; USGS 3DEP and NED, SRTM, GMTED2010 and others)",attribution as listed by the Terrain Tiles project for its sources,https://github.com/tilezen/joerd/blob/master/docs/attribution.md
+NEXRAD,NOAA NEXRAD radar data,radar data,"NOAA NEXRAD Level II, US National Weather Service radar network (public archive on Amazon Web Services)",US Government data without copyright restrictions; credit to NOAA requested,https://www.ncei.noaa.gov/products/radar/next-generation-weather-radar
+DWD,Deutscher Wetterdienst radar data,radar data,"Deutscher Wetterdienst (DWD) Open Data, German national radar network (opendata.dwd.de)",CC BY 4.0; source acknowledged per the DWD Open Data legal notice,https://www.dwd.de/EN/service/legal_notice/legal_notice_node.html
+CPOL,CPOL radar data,radar data,"CPOL radar, Darwin, Australia: sample file of the open-radar-data collection",terms of the open-radar-data collection and of the original data provider,https://github.com/openradar/open-radar-data
+NPOL,NPOL radar data,radar data,NPOL radar: sample file of the open-radar-data collection,terms of the open-radar-data collection and of the original data provider,https://github.com/openradar/open-radar-data
+COW,COW radar data,radar data,COW (C-band on Wheels) radar: sample file,terms of the original data provider,

@@ -109,6 +109,22 @@ class Provider:
             request=request.to_dict(),
         ).to_dict()
 
+    def estimate_notes(self, request: Request, specs: list[FileSpec]) -> list[str]:
+        """Plain sentences shown with the estimate (what was read to plan, which time was chosen,
+        what the sizes mean). Must not use the network."""
+        return []
+
+    def open(self, result: FetchResult, env: Environment | None = None) -> Any:
+        """Gridded providers: the fetched files as an ``xarray.Dataset`` cropped to the request's
+        area, with the provenance in its attributes. Reads the cache only (no network)."""
+        raise NotImplementedError(f"{self.name} does not serve gridded fields.")
+
+    def profile_at(
+        self, result: FetchResult, latitude: float, longitude: float, env: Environment | None = None
+    ) -> Any:
+        """Model providers: the vertical profile at a point as an ``engine.sounding.Sounding``."""
+        raise NotImplementedError(f"{self.name} does not serve vertical profiles.")
+
     # -- shared machinery (do not override) -------------------------------------------------
 
     def describe(self) -> dict[str, Any]:
@@ -179,6 +195,7 @@ class Provider:
         )
         if note:
             est.notes.append(note)
+        est.notes.extend(self.estimate_notes(request, specs))
         if not specs:
             est.can_fetch = False
             est.reason = (

@@ -59,9 +59,11 @@ class TestQcReference:
     NYQ = 10.0
 
     def test_issue_152_case_is_off_without_reference(self) -> None:
-        """Documented limit of the default: 25 m/s with Vn 10 is off by one interval (20 m/s)."""
+        """Limit of the built-in method: 25 m/s with Vn 10 is off by one interval (20 m/s)."""
         truth = uniform_wind(25.0, 70.0)
-        out = qc.velocity_dealiasing(as_da(fold(truth, self.NYQ)), self.NYQ).values
+        out = qc.velocity_dealiasing(
+            as_da(fold(truth, self.NYQ)), self.NYQ, engine="builtin"
+        ).values
         err = out - truth
         assert np.allclose(err, err.flat[0], atol=1e-9)  # one uniform offset ...
         assert abs(err.flat[0]) == pytest.approx(2 * self.NYQ)  # ... of 2 x Nyquist

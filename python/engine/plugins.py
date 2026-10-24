@@ -47,6 +47,8 @@ import numpy as np
 import xarray as xr
 
 from engine import _radarx_import, varmap
+from engine.governor import current_rss
+from engine.jobs import MB, module_memory_limit_bytes
 
 _radarx_import.install()  # radarx must not configure the root logger (issue #91)
 
@@ -69,6 +71,10 @@ class ModuleError(Exception):
 
 class ModuleTimeoutError(ModuleError):
     """A module run exceeded the wall-clock limit (``XRADAR_MODULE_TIMEOUT_S``)."""
+
+
+class ModuleMemoryError(ModuleError):
+    """A module run made the engine grow past the memory guard (``XRADAR_MODULE_MAX_MB``)."""
 
 
 class ModuleCancelled(Exception):  # noqa: N818 - control-flow signal, not an error condition
@@ -739,6 +745,10 @@ _abandoned_runs: list[threading.Thread] = []
 _abandoned_lock = threading.Lock()
 
 
+#: The memory guard looks at the engine's size every this many 0.1 s waits.
+_MEMORY_CHECK_EVERY = 5
+
+
 def module_timeout_s() -> float | None:
     """Wall-clock limit of one module run in seconds (``XRADAR_MODULE_TIMEOUT_S``, default 300).
 
@@ -813,10 +823,30 @@ def _call_module(
     thread = threading.Thread(target=target, name=f"module-{spec.id}", daemon=True)
     thread.start()
     deadline = None if timeout_s is None else time.monotonic() + timeout_s
+    mem_limit = module_memory_limit_bytes()
+    ticks = 0
     while not done.wait(0.1):
         if is_cancelled is not None and is_cancelled():
             _abandon(thread, cancel)
             raise ModuleCancelled()
+        ticks += 1
+        if mem_limit is not None and ticks % _MEMORY_CHECK_EVERY == 0:
+            used = current_rss()
+            if used is not None and used > mem_limit:
+                _abandon(thread, cancel)
+                logger.error(
+                    "Module '%s' stopped: engine memory %d MB above the %d MB guard",
+                    spec.id,
+                    used // MB,
+                    mem_limit // MB,
+                )
+                raise ModuleMemoryError(
+                    f"{spec.title} was stopped because it used too much memory (the engine "
+                    f"reached {used // MB} MB, the limit is {mem_limit // MB} MB). Try a "
+                    "smaller or coarser input, close other open files, or raise the limit "
+                    "with the XRADAR_MODULE_MAX_MB environment variable (megabytes; 0 turns "
+                    "the guard off)."
+                )
         if deadline is not None and time.monotonic() >= deadline:
             _abandon(thread, cancel)
             logger.error("Module '%s' timed out after %g s", spec.id, timeout_s)

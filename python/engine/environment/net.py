@@ -163,6 +163,8 @@ class HttpClient:
         progress: Progress | None,
         cancel: threading.Event | None,
         headers: dict[str, str] | None,
+        method: str | None = None,
+        on_headers: Callable[[Any], None] | None = None,
     ) -> int:
         check_url(url)
         host = urllib.parse.urlparse(url).netloc
@@ -191,9 +193,14 @@ class HttpClient:
                             "Accept": "*/*",
                             **(headers or {}),
                         },
+                        method=method,
                     )
                     timeout = max(self.connect_timeout_s, self.read_timeout_s)
                     with contextlib.closing(self._opener(req, timeout)) as resp:
+                        if on_headers is not None:
+                            on_headers(getattr(resp, "headers", None))
+                        if method == "HEAD":
+                            return 0
                         total = _content_length(resp)
                         if max_bytes is not None and total is not None and total > max_bytes:
                             raise FetchFailed(
@@ -272,6 +279,37 @@ class HttpClient:
             headers=headers,
         )
         return bytes(buf)
+
+    def head(
+        self,
+        url: str,
+        *,
+        cancel: threading.Event | None = None,
+    ) -> dict[str, str]:
+        """Response headers of a HEAD request (lower-case names): size and date, no body."""
+        found: dict[str, str] = {}
+
+        def grab(headers: Any) -> None:
+            if headers is not None:
+                found.update({str(k).lower(): str(v) for k, v in dict(headers.items()).items()})
+
+        self._transfer(
+            url,
+            lambda b: None,
+            lambda: found.clear(),
+            max_bytes=None,
+            progress=None,
+            cancel=cancel,
+            headers=None,
+            method="HEAD",
+            on_headers=grab,
+        )
+        return found
+
+    def content_length(self, url: str, *, cancel: threading.Event | None = None) -> int | None:
+        """Size in bytes of the file at *url* from a HEAD request, or ``None`` if not announced."""
+        value = self.head(url, cancel=cancel).get("content-length", "")
+        return int(value) if value.isdigit() else None
 
     def download(
         self,

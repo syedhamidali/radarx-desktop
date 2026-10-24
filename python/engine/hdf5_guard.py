@@ -108,21 +108,22 @@ def enabled() -> bool:
     return os.environ.get("XRADAR_HDF5_GUARD", "1").strip().lower() not in ("0", "false", "no")
 
 
-def _guarded_openers() -> tuple[Any, ...]:
-    openers: list[Any] = []
-    try:
-        import netCDF4
+#: The classes xarray's NetCDF stores hand to ``CachingFileManager`` as the file opener, by
+#: ``(top-level module, class name)``. Matched by name so that installing the guard does not
+#: import netCDF4 / h5netcdf / h5py (about 140 ms of the engine's start-up; they are loaded by
+#: the background pre-import or by the first file that needs them).
+_GUARDED_OPENERS = {("netCDF4", "Dataset"), ("h5netcdf", "File")}
 
-        openers.append(netCDF4.Dataset)
-    except ImportError:
-        pass
-    try:
-        import h5netcdf
 
-        openers.append(h5netcdf.File)
-    except ImportError:
-        pass
-    return tuple(openers)
+def _is_guarded_opener(opener: Any) -> bool:
+    module = str(getattr(opener, "__module__", "") or "").split(".")[0]
+    return (module, getattr(opener, "__name__", None)) in _GUARDED_OPENERS
+
+
+def _has_guarded_library() -> bool:
+    import importlib.util
+
+    return any(importlib.util.find_spec(module) is not None for module, _ in _GUARDED_OPENERS)
 
 
 def install() -> bool:
@@ -139,8 +140,7 @@ def install() -> bool:
             return False
 
         manager_cls = file_manager.CachingFileManager
-        openers = _guarded_openers()
-        if not openers or not hasattr(manager_cls, "_acquire_with_cache_info"):
+        if not _has_guarded_library() or not hasattr(manager_cls, "_acquire_with_cache_info"):
             logger.warning("xarray file manager changed shape; HDF5 guard not installed")
             return False
 
@@ -156,7 +156,7 @@ def install() -> bool:
         def shared_init(self, opener, *args, **kwargs):  # type: ignore[no-untyped-def]
             mode = kwargs.get("mode")
             if (
-                opener in openers
+                _is_guarded_opener(opener)
                 and mode in ("r", None)
                 and kwargs.get("manager_id") is None
                 and kwargs.get("cache") is None

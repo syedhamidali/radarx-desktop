@@ -189,7 +189,7 @@ All within run-to-run noise (the largest difference, NetCDF sweep switching, is 
 
 **If the engine still dies natively.** The engine now enables `faulthandler`
 (`server.enable_crash_log`): the Python stack of every thread goes to
-`~/.xradar-desktop/engine-crash.log` (web mode: stderr; the file is cut at 512 KB). The shell
+`~/.xradar-desktop/engine-crash.log` (on Windows `%USERPROFILE%\.xradar-desktop\engine-crash.log`; web mode: stderr). A log over 512 KB is renamed to `engine-crash.log.1` at the next start (the older copy is replaced), so the newest report is never thrown away and at most two files exist. The shell
 logs *how* the process ended in plain words ("crashed (segmentation fault, signal 11)") and puts
 it into the restart message; the UI's "engine restarted" notice (see #2 above) now says the engine
 crashed and where the log is. Files are not re-opened automatically.
@@ -203,23 +203,31 @@ engine does not control (for example a future h5py/HDF5 crash in another reader)
 is how that would show up. Newer netCDF4 wheels may fix the root bug, but the guard is cheap and
 stays.
 
+## Follow-ups (issue #98)
+
+| Item | Status | How |
+|---|---|---|
+| Real cancel for modules | Done | `cancel_module` (optionally with `file_id`): the waiting request ends at once with `module_error` / `cancelled: true`, the cancel flag is set so a cooperative module stops computing. The Cancel button of a running module sends it. Test: `test_stability_jobs.py::TestCancelModule` (a module that ignores the flag, one that reports progress, one that polls it, other-file cancel, nothing running). |
+| Real cancel for exports | Done | `cancel_export`: figure/NetCDF/CSV/Zarr exports, batch exports and animations stop at their next progress report (between stages, files or frames), remove the half-written file (an earlier good export of that name stays) and answer `export_cancelled`; files a batch had finished stay. The lock is free again when the worker ends. The engine side is done and tested; the export dialogs have no Cancel button yet (see below). Tests: `TestCancelExport`. |
+| Engine heartbeat / hung engine | Done (engine) and warning in the app | The engine's event loop writes a time stamp every second; a watchdog thread that does not need the loop looks at it. After `XRADAR_WATCHDOG_S` seconds without one (default 60; `0` off) it writes the stacks of all threads to `engine-crash.log` and ends the process with exit code 75; the shell restarts an engine that exited and the app says so (#2/#10). The app also pings every 10 s and warns after 30 s without a pong (`heartbeat.ts`). Tests: `TestWatchdog` (including a child process that really exits with code 75 and leaves the stacks), `heartbeat.test.mjs`. |
+| Memory guard for runaway modules | Done for cooperative modules | While a module runs the engine's resident size is checked twice a second; above `XRADAR_MODULE_MAX_MB` (default 75 % of the RAM) the run is stopped with a message. A module that never checks the cancel flag cannot be interrupted (a thread cannot be killed): it keeps allocating until it returns. Moving modules into a child process (the only complete fix) is still open. Test: `TestModuleMemoryGuard`. |
+| Per-connection request limits (desktop) | Already done before this issue | 32 requests in flight per desktop connection (`XRADAR_DESKTOP_MAX_INFLIGHT`), 16 in web mode; ping, account and every cancel message are always admitted. Test: `test_stability_server.py::TestDesktopInflightLimit`. See "Requests in flight" above. |
+| Overall timeout for cloud opens | Done | Every cloud listing and download-and-open (`list_nexrad_l2_files`, `open_nexrad_l2`, `open_nexrad_realtime`, latest-scan info) ends after `XRADAR_CLOUD_TIMEOUT_S` seconds (default 300; `0` off) with "timed out after N s ... check the internet connection". ARCO (120 s) and the other radar networks (300 s) already had their own. Tests: `TestCloudTimeout` with a stalled download. |
+| Event-loop starvation during large exports | Measured, not removable here | The measured worst stalls are 0.45 s (PNG at 300 dpi) and 1.9 s (NetCDF export); they come from C libraries that hold the GIL, which Python code cannot release. The watchdog limit (60 s) and the app's warning (30 s) are 15 to 30 times above them, so a healthy export never trips either (test: `test_default_is_far_above_the_measured_worst_stall`). Writing exports in a child process would remove the stall and is not done. |
+
 ## What remains (honest list)
 
-* **Cancel stops waiting, not working.** A cancelled open/export/module keeps running in the engine
-  until it ends (only multi-Doppler and pipelines have a real cancel message). `_run_holding` now
-  stops the pile-up, but a long job still occupies a thread, and there is no `cancel_module`.
-* **A hung engine is not detected.** The shell only notices a process that *exited*. A deadlocked or
-  GIL-starved engine looks "connected" to the UI. A heartbeat (the UI pings; no pong in N seconds ->
-  ask the shell to restart) would close this.
-* **No memory guard for a module.** A `MemoryError` is reported nicely, but a module that allocates
-  without bound can still exhaust the machine before it fails; a process-wide `RLIMIT_AS` is not safe
-  for the shared engine. The timeout (300 s desktop, 120 s web) is the only limit. Moving modules into
-  a child process would fix it and is a larger change.
+* **Cancel is cooperative.** Modules, exports, multi-Doppler and pipelines have a real cancel message
+  (see the follow-ups table). A cancelled *open* of a local file, and a module that never checks the
+  flag, still run until they return. The export dialogs have no Cancel button yet.
+* **A GIL-starved engine is detected only by the app's ping.** The watchdog thread needs the GIL
+  too; a C call that holds it for good stops the watchdog as well. The app's warning (30 s) still
+  tells the user; the shell does not yet kill an engine that stays connected but silent.
+* **A module that never yields can still exhaust the memory.** The guard stops cooperative modules;
+  moving modules into a child process would fix the rest and is a larger change.
 * **A native crash still takes the engine down.** ~230 damaged files did not trigger one, but HDF5,
   netCDF4 and xradar are C/Python code reading untrusted bytes. The recovery path is #2/#10 (restart
   plus a message); the web service should keep running in a container as WEB.md says.
-* Cloud opens (`open_nexrad_l2`, realtime) have no overall timeout besides the ARCO one; not testable
-  offline here.
 * `purge_stale_dirs` deletes folders left by a *killed* web server only when they are over an hour
   old, so that several workers can share one folder.
 * NetCDF export of a 12-sweep NEXRAD volume took 28 s and starves the loop (GIL) for up to 2 s. Not a
