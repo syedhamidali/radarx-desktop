@@ -203,6 +203,7 @@
               <circle cx="2" cy="10" r="1.2" /><circle cx="6" cy="10" r="1.2" />
             </svg>
           </div>
+          <h2 class="managed-panel-heading">
           <button class="managed-panel-toggle" on:click={() => toggleCollapse(id)} on:keydown={(e) => handleHeaderKey(e, id)} aria-expanded={!panelCollapsed[id]} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="{panelCollapsed[id] ? 'Expand' : 'Collapse'} {panel.label} (Alt+Up / Alt+Down moves the panel)">
             <span class="managed-panel-index mono">{String(panelOrder.indexOf(id) + 1).padStart(2, '0')}</span>
             {#if PANEL_ICONS[id]}
@@ -217,6 +218,7 @@
               </svg>
             </span>
           </button>
+          </h2>
         </div>
         <div class="managed-panel-content" class:visible={!panelCollapsed[id]}>
           {#if panel.lazy.component}<panel.lazy.component />{/if}
@@ -315,6 +317,7 @@
   .managed-panel-svg { flex-shrink: 0; color: var(--c-muted); }
   .managed-panel:not(.collapsed) .managed-panel-svg { color: var(--c-accent); }
   .managed-panel-icon { font-size: var(--fs-sm); opacity: 0.8; }
+  .managed-panel-heading { display: flex; flex: 1; min-width: 0; margin: 0; font: inherit; }
   .managed-panel-label { flex: 1; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .managed-panel-chevron {

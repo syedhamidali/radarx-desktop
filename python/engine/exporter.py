@@ -18,6 +18,7 @@ import numpy as np
 import xarray as xr
 
 from engine import cfwrite, layer_provenance, provenance, rhi, valuemask
+from engine.jobs import JobCancelled
 from engine.reader import (
     collapse_site_position,
     mask_below_threshold,
@@ -1467,6 +1468,8 @@ class RadarExporter:
                         options=options,
                     )
                     saved.append(path)
+                except JobCancelled:
+                    raise  # the user stopped the batch: not one more failed item
                 except Exception as exc:
                     logger.warning("Batch export failed for %s sweep %d: %s", var, sw, exc)
                     last_error = exc

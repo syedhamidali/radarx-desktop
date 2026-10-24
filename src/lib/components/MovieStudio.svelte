@@ -98,13 +98,13 @@
       transition:fly={{ y: 16, duration: 220 }}
       use:focusTrap={{ initial: '.ms-dialog' }}
     >
-      <header class="head">
+      <div class="head">
         <div>
           <h2 id="ms-title">Movie Studio</h2>
           <div class="sub">A storm in 3D over time, from radar files on disk. The film is an MP4; the record of how it was made is written next to it.</div>
         </div>
         <button class="icon" onclick={closeMovieStudio} aria-label="Close" title="Close (Esc)">&times;</button>
-      </header>
+      </div>
 
       <div class="body">
         <!-- 0. What this needs -->
@@ -399,10 +399,10 @@
         </section>
       </div>
 
-      <footer class="foot">
+      <div class="foot">
         <span class="dim small">Everything here is also <span class="mono">rxd animate</span> on the command line; the record next to the film holds the equivalent command.</span>
         <button class="quiet" onclick={closeMovieStudio}>Close</button>
-      </footer>
+      </div>
     </div>
   </div>
 {/if}

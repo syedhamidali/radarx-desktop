@@ -22,13 +22,18 @@ What is in it (see docs/ACCOUNTS.md):
 ``high_water``    the latest clock reading ever seen with this session; a clock set backwards
                   cannot extend the offline period.
 
-Keychain / Credential Manager storage is a follow-up (docs/ACCOUNTS.md).
+Where the system has a credential store (Windows Credential Manager, macOS Keychain, Linux Secret
+Service) the two secrets, ``access_token`` and ``refresh_token``, live there and the file keeps the
+rest plus ``"credential_store": "keyring"``; without one the file holds everything and is readable
+by its owner only. See ``credentials.py``; a plain file from an earlier version moves into the
+store the first time it is read (docs/ACCOUNTS.md).
 """
 
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import re
 import sys
@@ -40,6 +45,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from engine.account import credentials
+
+logger = logging.getLogger("radarx.account")
 APP_FOLDER = "radarx-desktop"
 LOCK_TIMEOUT_S = 10.0
 
@@ -176,16 +184,22 @@ def _replace(tmp: str, path: Path) -> None:
             time.sleep(0.05 * (attempt + 1))
 
 
-def write_private(path: Path, text: str) -> None:
-    """Write ``text`` to ``path`` atomically, mode 0600 (temp file + rename in the same folder)."""
+def write_private(path: Path, text: str, *, secret: bool = False) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + rename in the same folder), mode 0600.
+
+    ``secret=True`` (a file that holds tokens) also makes it owner-only on Windows, where the mode
+    means nothing: an access list that names only the current user. That runs ``icacls`` (about
+    0.1 s), so it is not done for the small files that are written often."""
     _make_private_dir(path.parent)
     fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(text)  # mkstemp already made the file 0600
+            fh.write(text)  # mkstemp already made the file 0600 (POSIX)
             fh.flush()
             with contextlib.suppress(OSError):
                 os.fsync(fh.fileno())
+        if secret and os.name == "nt":  # the rename keeps the access list of the temporary file
+            credentials.restrict_to_owner(tmp)
         _replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):
@@ -200,6 +214,16 @@ class SessionStore:
         self.directory = directory or config_dir()
         self.path = self.directory / "session.json"
         self._lock_path = self.directory / "session.lock"
+        # The credential store is for the real per-user folder; a folder chosen with
+        # RADARX_CONFIG_DIR (tests, containers) or passed in keeps everything in its own file.
+        self._default_location = (
+            directory is None and not os.environ.get("RADARX_CONFIG_DIR", "").strip()
+        )
+        self._lock_depth = 0
+        self._warned = False
+
+    def _use_credential_store(self) -> bool:
+        return credentials.wanted(self._default_location)
 
     # -- reading ---------------------------------------------------------------------------
     def load(self) -> StoredSession | None:
@@ -218,19 +242,68 @@ class SessionStore:
         except FileNotFoundError:
             return None
         try:
-            return StoredSession.from_json(json.loads(text))
+            data = json.loads(text)
         except ValueError:
             return None
+        if isinstance(data, dict) and data.get(credentials.MARK) == credentials.MARK_VALUE:
+            secrets = credentials.read_secrets()  # raises OSError when the store itself fails
+            if not secrets:
+                return None
+            return StoredSession.from_json({**data, **secrets})
+        session = StoredSession.from_json(data)
+        if session is not None:
+            self._move_into_credential_store(session)
+        return session
+
+    def _move_into_credential_store(self, session: StoredSession) -> None:
+        """A plain file from an earlier version: move its tokens into the credential store and
+        rewrite the file without them. Best effort; on any trouble the file stays as it is."""
+        if self._lock_depth or not self._use_credential_store():
+            return  # inside a locked change the write that follows does it
+        try:
+            credentials.write_secrets(  # a failing store is found out before the file is touched
+                {n: getattr(session, n) for n in credentials.SECRET_FIELDS if getattr(session, n)}
+            )
+            with self.locked():
+                text = self.path.read_text(encoding="utf-8")
+                if json.loads(text).get(credentials.MARK) == credentials.MARK_VALUE:
+                    return
+                self._write(session, keep_time=True)
+        except (OSError, ValueError, TimeoutError):
+            pass
 
     # -- writing ---------------------------------------------------------------------------
     @contextlib.contextmanager
     def locked(self) -> Iterator[None]:
         with _FileLock(self._lock_path):
-            yield
+            self._lock_depth += 1
+            try:
+                yield
+            finally:
+                self._lock_depth -= 1
 
-    def _write(self, session: StoredSession) -> None:
-        session.saved_at = time.time()
-        write_private(self.path, json.dumps(session.to_json(), indent=1))
+    def _write(self, session: StoredSession, *, keep_time: bool = False) -> None:
+        if not keep_time:
+            session.saved_at = time.time()
+        data = session.to_json()
+        if self._use_credential_store():
+            secrets = {name: data[name] for name in credentials.SECRET_FIELDS if data.get(name)}
+            try:
+                credentials.write_secrets(secrets)
+                if credentials.read_secrets() != secrets:  # never drop the plain text on a hope
+                    raise credentials.CredentialStoreError("the credential store did not keep it")
+                for name in credentials.SECRET_FIELDS:
+                    data.pop(name, None)
+                data[credentials.MARK] = credentials.MARK_VALUE
+            except credentials.CredentialStoreError as exc:
+                if not self._warned:
+                    self._warned = True
+                    logger.warning("%s; the sign-in stays in its private file", exc)
+        write_private(
+            self.path,
+            json.dumps(data, indent=1),
+            secret=credentials.MARK not in data,  # tokens in the file: owner-only
+        )
 
     def save(self, session: StoredSession) -> None:
         with self.locked():
@@ -255,6 +328,8 @@ class SessionStore:
     def _unlink(self) -> None:
         with contextlib.suppress(OSError):
             self.path.unlink()
+        if self._default_location or credentials.mode() == "keyring":
+            credentials.delete_secrets()
 
     def note_time(self, now: float, *, min_step_s: float = 3600.0) -> None:
         """Remember ``now`` as the latest clock reading (at most about once an hour)."""

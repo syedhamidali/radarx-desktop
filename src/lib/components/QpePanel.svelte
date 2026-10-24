@@ -205,7 +205,7 @@
     <!-- Data -->
     <section class="block">
       <div class="block-head">
-        <h4>Radar volumes</h4>
+        <h3>Radar volumes</h3>
         <span class="spacer"></span>
         {#if rows.length > 1}
           <button type="button" class="mini" onclick={() => selectAllMosaicFiles(true)}>All</button>
@@ -236,7 +236,7 @@
 
     <!-- Estimate -->
     <section class="block">
-      <h4>Estimate</h4>
+      <h3>Estimate</h3>
       <div class="grid2">
         <label class="field">
           <span>Method</span>
@@ -338,7 +338,7 @@
 
     <!-- Gauges -->
     <section class="block">
-      <h4>Rain gauges <span class="dim">(optional, local file)</span></h4>
+      <h3>Rain gauges <span class="dim">(optional, local file)</span></h3>
       <div class="pathrow">
         <input type="text" placeholder="gauges.csv / .json / NOAA / METAR" value={s.gaugePath} onchange={(e) => updateQpeSettings({ gaugePath: e.currentTarget.value })} aria-label="Gauge file" />
         <button type="button" class="mini" disabled={!desktop} onclick={() => browse('gaugePath', 'Gauge records', ['csv', 'json', 'geojson', 'txt'])} title={desktop ? 'Choose the gauge file' : 'File dialogs need the desktop app: type the path'}>Browse</button>
@@ -382,7 +382,7 @@
 
     <!-- Basins -->
     <section class="block">
-      <h4>Basins <span class="dim">(optional, local file)</span></h4>
+      <h3>Basins <span class="dim">(optional, local file)</span></h3>
       <div class="pathrow">
         <input type="text" placeholder="basins.geojson / .shp / .gpkg" value={s.basinPath} onchange={(e) => updateQpeSettings({ basinPath: e.currentTarget.value })} aria-label="Basin file" />
         <button type="button" class="mini" disabled={!desktop} onclick={() => browse('basinPath', 'Basin polygons', ['geojson', 'json', 'shp', 'gpkg'])} title={desktop ? 'Choose the basin file' : 'File dialogs need the desktop app: type the path'}>Browse</button>
@@ -402,6 +402,30 @@
           <input type="text" placeholder="precipitation-frequency table (JSON), optional" value={s.frequencyPath} onchange={(e) => updateQpeSettings({ frequencyPath: e.currentTarget.value })} aria-label="Frequency table" />
           <button type="button" class="mini" disabled={!desktop} onclick={() => browse('frequencyPath', 'Frequency table', ['json'])}>Browse</button>
         </div>
+      {/if}
+    </section>
+
+    <!-- Probabilistic rainfall -->
+    <section class="block">
+      <h4>Probabilistic rainfall <span class="dim">(optional)</span></h4>
+      <div class="grid2">
+        <label class="field">
+          <span>Members (0 = off)</span>
+          <input type="number" min="0" max="500" step="1" value={s.ensembleMembers} onchange={(e) => updateQpeSettings({ ensembleMembers: Math.max(0, Math.min(500, Math.round(Number(e.currentTarget.value) || 0))) })} />
+        </label>
+        {#if s.ensembleMembers >= 2}
+          <label class="field">
+            <span>Seed</span>
+            <input type="number" min="0" step="1" value={s.ensembleSeed} onchange={(e) => updateQpeSettings({ ensembleSeed: Math.max(0, Math.round(Number(e.currentTarget.value) || 0)) })} />
+          </label>
+          <label class="field wide">
+            <span>Probability of at least (mm)</span>
+            <input type="text" value={s.ensembleThresholds} onchange={(e) => updateQpeSettings({ ensembleThresholds: e.currentTarget.value })} />
+          </label>
+        {/if}
+      </div>
+      {#if s.ensembleMembers >= 2}
+        <p class="help">An ensemble of possible truths under an <strong>assumed</strong> error model (multiplicative, spatially correlated). With gauges the model comes from them, without gauges from the engine's uncertainty and marked defaults. Not a forecast; the probabilities are not calibrated unless the result says they were checked.</p>
       {/if}
     </section>
 
@@ -435,7 +459,7 @@
     {#if st && summary}
       <section class="block result" aria-label="Rainfall result">
         <div class="block-head">
-          <h4>{instant ? 'Rain rate' : 'Accumulation'}</h4>
+          <h3>{instant ? 'Rain rate' : 'Accumulation'}</h3>
           <span class="spacer"></span>
           <span class="chip" class:adj={adjusted} title="An estimate from radar{adjusted ? ' merged with rain gauges' : ''}; not an observation">{provenanceLabel(summary.provenance.type)}</span>
         </div>
@@ -523,7 +547,7 @@
       {#if validation}
         <section class="block result" aria-label="Gauge validation">
           <div class="block-head">
-            <h4>Gauge comparison</h4>
+            <h3>Gauge comparison</h3>
             <span class="spacer"></span>
             <span class="chip adj">{summary.adjustment?.method}</span>
           </div>
@@ -588,11 +612,62 @@
         </section>
       {/if}
 
+      <!-- Ensemble -->
+      {#if summary.ensemble}
+        {@const ens = summary.ensemble}
+        <section class="block result" aria-label="Ensemble under an assumed error model">
+          <div class="block-head">
+            <h4>Ensemble</h4>
+            <span class="spacer"></span>
+            <span class="chip">RETRIEVED · ASSUMED MODEL</span>
+          </div>
+          <p class="help">{ens.disclaimer}</p>
+          <p class="help mono">
+            {ens.n_members} members, seed {ens.seed} · σ(ln) {formatNumber(ens.error_model.sigma_ln)} · correlation {formatNumber(ens.error_model.corr_length_km)} km ·
+            shares {formatNumber(ens.error_model.shares.common)} / {formatNumber(ens.error_model.shares.spatial)} / {formatNumber(ens.error_model.shares.cell_to_cell)} (common / spatial / cell)
+          </p>
+          <ul class="notes">
+            {#each Object.entries(ens.error_model.sources) as [k, v]}<li><strong>{k}</strong>: {v}</li>{/each}
+            {#each ens.error_model.notes as n}<li>{n}</li>{/each}
+          </ul>
+          <p class="help">
+            {#if !ens.reliability}
+              No gauges: the probabilities are <strong>not validated</strong> against observations.
+            {:else if !ens.reliability.validated}
+              {ens.reliability.note}
+            {:else}
+              Checked at {ens.reliability.n_gauges} gauges: Brier skill {formatNumber(ens.reliability.pooled.brier_skill_score)}, reliability slope {formatNumber(ens.reliability.pooled.reliability_slope)} (1 is perfect). {ens.reliability.note}
+            {/if}
+            Switch the map layer above to <span class="mono">ens_std</span> (spread) or <span class="mono">prob_ge_…mm</span> (probability) to see them.
+          </p>
+          {#if ens.basins?.length}
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>Basin</th><th class="num">Mean mm</th><th class="num">5 %</th><th class="num">95 %</th>{#each ens.thresholds_mm as t}<th class="num">P ≥{t}</th>{/each}</tr></thead>
+                <tbody>
+                  {#each ens.basins as b (b.id)}
+                    {#if b.basin_mean_mm}
+                      <tr>
+                        <td class="strong">{b.id}</td>
+                        <td class="num mono">{formatNumber(b.basin_mean_mm.mean)}</td>
+                        <td class="num mono">{formatNumber(b.basin_mean_mm.p05)}</td>
+                        <td class="num mono">{formatNumber(b.basin_mean_mm.p95)}</td>
+                        {#each ens.thresholds_mm as t}<td class="num mono">{formatPercent(b.prob_basin_mean_ge[String(t)])}</td>{/each}
+                      </tr>
+                    {/if}
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </section>
+      {/if}
+
       <!-- Basins -->
       {#if summary.basins?.length}
         <section class="block result" aria-label="Basin rainfall">
           <div class="block-head">
-            <h4>Basins</h4>
+            <h3>Basins</h3>
             <span class="spacer"></span>
             <label class="check inline" title="Draw the basin outlines, filled by the basin-mean accumulation, on the map"><input type="checkbox" bind:checked={$basinOverlayOn} /><span>On map</span></label>
             <span class="chip" class:adj={adjusted}>{adjusted ? 'ADJUSTED' : 'RETRIEVED'}</span>
@@ -664,9 +739,9 @@
   .root { display: flex; flex-direction: column; gap: var(--space-3); }
   .block { display: flex; flex-direction: column; gap: var(--space-2); }
   .block-head { display: flex; align-items: center; gap: var(--space-1); }
-  h4 { margin: 0; font-size: var(--fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-muted); }
+  h3 { margin: 0; font-size: var(--fs-2xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--c-muted); }
   .result { padding-top: var(--space-2); border-top: 1px solid var(--c-border); }
-  .result h4 { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); color: var(--c-text); }
+  .result h3 { text-transform: none; letter-spacing: 0; font-size: var(--fs-sm); color: var(--c-text); }
   .spacer { flex: 1; }
   .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .dim { color: var(--c-muted); font-weight: 400; }

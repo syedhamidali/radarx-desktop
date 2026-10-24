@@ -142,6 +142,25 @@ class TestDamagedFiles:
         assert list(private_tmp.iterdir()) == []
 
     @pytest.mark.asyncio
+    async def test_the_copy_goes_at_close_even_while_something_still_holds_the_reader(
+        self, good_nc: Path, tmp_path: Path, private_tmp: Path
+    ) -> None:
+        """Closing must not wait for the garbage collector: a late prefetch, a cache entry or a
+        traceback can keep the reader alive for a long time (this failed on macOS CI)."""
+        packed = tmp_path / "good.nc.gz"
+        packed.write_bytes(gzip.compress(good_nc.read_bytes()))
+        opened, errors = await _open(str(packed))
+        assert opened and not errors
+        held = server._readers()[opened[0]["file_id"]]  # still referenced after close_file
+        assert len(list(private_tmp.iterdir())) == 1
+        handler, _ = _make_handler()
+        await handler.handle_message(
+            json.dumps({"type": "close_file", "file_id": opened[0]["file_id"]})
+        )
+        assert list(private_tmp.iterdir()) == []
+        assert held is not None
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "payload",
         [

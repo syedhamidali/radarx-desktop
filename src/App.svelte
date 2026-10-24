@@ -989,7 +989,8 @@
     </div>
   {/if}
 
-  <header class="toolbar">
+  <header class="toolbar" aria-label="Radarx toolbar">
+    <h1 class="sr-only">Radarx {$webUi ? 'web' : 'desktop'}: weather radar workbench</h1>
     <div class="toolbar-left">
       <div class="app-title" title="Radarx {$webUi ? 'web' : 'desktop'} v{__APP_VERSION__}">
         <LogoMark size={28} animate={$connectionStatus === 'connecting'} />
@@ -1111,6 +1112,7 @@
   <main class="main-content">
     <aside
       class="sidebar sidebar-left"
+      aria-label="Data inspector"
       class:collapsed={!leftSidebarOpen}
       style="width: {leftSidebarOpen ? leftSidebarWidth + 'px' : '0'}"
     >
@@ -1197,6 +1199,7 @@
     {/if}
     <aside
       class="sidebar sidebar-right"
+      aria-label="Tools panel"
       class:collapsed={!rightSidebarOpen}
       style="width: {rightSidebarOpen ? rightSidebarWidth + 'px' : '0'}"
     >
@@ -1204,7 +1207,7 @@
     </aside>
   </main>
 
-  <footer class="statusbar">
+  <footer class="statusbar" aria-label="Status bar">
     {#if progress && progress.percent > 0 && progress.percent < 100}
       <div class="statusbar-progress"><div class="statusbar-progress-fill" style="width: {progress.percent}%"></div></div>
     {/if}

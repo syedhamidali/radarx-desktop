@@ -77,9 +77,6 @@ class TestRunRecord:
     def test_empty_record_says_so(self) -> None:
         assert "No processing step" in runrecord.methods_text(runrecord.new_record())
 
-    @pytest.mark.skipif(
-        not hasattr(provenance, "numeric_precision_note"), reason="float32 option not merged"
-    )
     def test_float32_setting_is_part_of_the_record(self, monkeypatch) -> None:
         monkeypatch.setenv("XRADAR_FLOAT32", "1")
         record = runrecord.new_record([_step()])

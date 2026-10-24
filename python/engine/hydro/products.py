@@ -44,7 +44,70 @@ FIELDS: dict[str, tuple[str, str, tuple[float, float], str, str]] = {
 }
 
 
+#: fields of an ensemble (only present when the run asked for one)
+ENSEMBLE_FIELDS: dict[str, tuple[str, str, tuple[float, float], str, str]] = {
+    "ens_mean": ("Ensemble mean accumulation", "mm", (0.0, 50.0), "viridis", "sum"),
+    "ens_std": (
+        "Ensemble spread (standard deviation of the members)",
+        "mm",
+        (0.0, 25.0),
+        "magma",
+        "sum",
+    ),
+}
+
+
+def field_spec(name: str) -> tuple[str, str, tuple[float, float], str, str]:
+    """``(label, units, default range, colormap, kind)`` of a field, including the ensemble ones
+    (``ens_mean``, ``ens_std``, ``ens_pNN`` percentiles, ``prob_ge_<t>mm`` probabilities)."""
+    if name in FIELDS:
+        return FIELDS[name]
+    if name in ENSEMBLE_FIELDS:
+        return ENSEMBLE_FIELDS[name]
+    if name.startswith("ens_p") and name[5:].isdigit():
+        return (
+            f"Ensemble {int(name[5:])}th percentile accumulation",
+            "mm",
+            (0.0, 50.0),
+            "viridis",
+            "sum",
+        )
+    if name.startswith("prob_ge_") and name.endswith("mm"):
+        t = name[len("prob_ge_") : -2]
+        return (
+            f"Probability that the accumulation is at least {t} mm (ensemble, assumed error model)",
+            "1",
+            (0.0, 1.0),
+            "cividis",
+            "prob",
+        )
+    raise hqpe.QpeError(f"unknown field {name!r}")
+
+
+def kind_label(name: str) -> str:
+    """The class label that goes next to a field name: never "observed"."""
+    if name.startswith(("ens_", "prob_ge_")):
+        return "RETRIEVED ensemble, assumed error model"
+    return "ADJUSTED" if name.endswith("adjusted") else "RETRIEVED"
+
+
+def is_known_field(name: str) -> bool:
+    try:
+        field_spec(name)
+    except hqpe.QpeError:
+        return False
+    return True
+
+
 def field_array(result: QpeResult, name: str) -> np.ndarray:
+    if name not in FIELDS:
+        ens = getattr(result, "ensemble", None)
+        if ens is None or name not in ens.arrays:
+            raise hqpe.QpeError(
+                f"the result has no field {name!r}"
+                + ("" if ens is not None else " (no ensemble was requested: --ensemble N)")
+            )
+        return np.asarray(ens.arrays[name])
     arr = getattr(result, "accumulation_sigma" if name == "accumulation_sigma" else name, None)
     if name == "adjustment_factor":
         arr = result.adjustment_factor
@@ -55,22 +118,28 @@ def field_array(result: QpeResult, name: str) -> np.ndarray:
 
 def _hide_dry(arr: np.ndarray, name: str) -> np.ndarray:
     """Amounts and rates below 0.05 are drawn as "no rain" (transparent)."""
-    if FIELDS[name][4] in ("sum", "max", "inst") and name != "adjustment_factor":
+    kind = field_spec(name)[4]
+    if kind in ("sum", "max", "inst") and name != "adjustment_factor":
         a = np.asarray(arr, dtype=np.float32)
         return np.where(a >= 0.05, a, np.nan)
+    if kind == "prob":
+        a = np.asarray(arr, dtype=np.float32)
+        return np.where(a >= 0.01, a, np.nan)
     return np.asarray(arr)
 
 
 def default_range(result: QpeResult, name: str) -> tuple[float, float]:
     """Colour range from the data for amounts and rates, fixed for fractions and indexes."""
-    lo, hi = FIELDS[name][2]
+    lo, hi = field_spec(name)[2]
     if name in (
         "accumulation",
         "accumulation_adjusted",
         "accumulation_sigma",
         "rate_max",
         "rate_last",
-    ):
+        "ens_mean",
+        "ens_std",
+    ) or (name.startswith("ens_p") and name[5:].isdigit()):
         a = field_array(result, name)
         fin = a[np.isfinite(a) & (a > 0)]
         if fin.size:
@@ -268,6 +337,23 @@ def to_dataset(result: QpeResult) -> xr.Dataset:
             "units": "dB",
         }
         data["snr"] = result.snr_db
+    ens = getattr(result, "ensemble", None)
+    if ens is not None:
+        eprov = {
+            "provenance_type": "RETRIEVED",
+            "ensemble_label": "ensemble under an ASSUMED error model, not an observation and not "
+            "calibrated unless verified",
+            "ensemble_record": json.dumps(ens.record(), default=str, sort_keys=True),
+        }
+        for ename in sorted(ens.arrays):
+            label, units, _, _, _ = field_spec(ename)
+            names[ename] = dict(long_name=label, units=units, **eprov)
+            if ename.startswith("prob_ge_"):
+                names[ename]["comment"] = (
+                    "share of the members at or above the threshold; sampling error about "
+                    f"{0.5 / math.sqrt(ens.n_members):.2f} at p = 0.5 with {ens.n_members} members"
+                )
+            data[ename] = ens.arrays[ename]
     for name, arr in data.items():
         a = np.asarray(arr, dtype=np.float32)
         ds[name] = (("y", "x"), a, {**names[name], "grid_mapping": "crs", "coordinates": "lat lon"})
@@ -429,7 +515,7 @@ def render_png(
     if hi <= lo:
         raise hqpe.QpeError("vmax must be greater than vmin")
     image = mosaic._resample_to_image(np.asarray(field, dtype=np.float32), lay)
-    lut, cmap = mosaic._build_lut(FIELDS[name][3])
+    lut, cmap = mosaic._build_lut(field_spec(name)[3])
     png = mosaic.render_png(image, lut, lo, hi)
     finite = image[np.isfinite(image)]
     return {
@@ -439,8 +525,8 @@ def render_png(
         "vmax": hi,
         "cmap": cmap,
         "legend": mosaic._legend(lut, lo, hi),
-        "units": FIELDS[name][1],
-        "label": FIELDS[name][0],
+        "units": field_spec(name)[1],
+        "label": field_spec(name)[0],
         "bbox": result.grid.bbox,
         "corners": [
             [result.grid.bbox[0], result.grid.bbox[3]],
@@ -477,12 +563,12 @@ def mosaic_record(result: QpeResult, name: str = "accumulation", **kw: Any):
         )
         for x in result.radars
     ]
-    label = f"{FIELDS[name][0]} [{'ADJUSTED' if name.endswith('adjusted') else 'RETRIEVED'}]"
+    label = f"{field_spec(name)[0]} [{kind_label(name)}]"
     return mosaic.MosaicRecord(
         mosaic_id=__import__("uuid").uuid4().hex[:12],
         product="qpe",
         variable=label,
-        units=FIELDS[name][1],
+        units=field_spec(name)[1],
         height_m=None,
         threshold_dbz=None,
         resolution_m=grid.cell_m,
@@ -538,7 +624,7 @@ def figure(
     matplotlib.use("Agg", force=False)
     import matplotlib.pyplot as plt
 
-    label, units, _, cmap, _ = FIELDS[name]
+    label, units, _, cmap, _ = field_spec(name)
     arr = _hide_dry(field_array(result, name), name)
     lo, hi = default_range(result, name)
     lo = lo if vmin is None else vmin
@@ -577,7 +663,7 @@ def figure(
     ax.set_xlabel("km east of the grid origin")
     ax.set_ylabel("km north of the grid origin")
     ax.set_aspect("equal")
-    kind = "ADJUSTED" if name.endswith("adjusted") else "RETRIEVED"
+    kind = kind_label(name)
     ax.set_title(
         f"{label}\n{prov.iso_utc(result.start)} to {prov.iso_utc(result.end)}   "
         f"[{kind}: an estimate, not an observation]",
