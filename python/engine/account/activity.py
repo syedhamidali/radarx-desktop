@@ -114,8 +114,8 @@ def format_family(label: Any) -> str:
 KNOWN_COMMANDS = frozenset(
     {
         "login", "logout", "whoami", "info", "check", "plot", "pipeline", "run", "modules", "cells",
-        "sounding", "lightning", "mosaic", "winds", "animate", "qpe", "basin", "indicators",
-        "export", "methods", "project", "env", "serve", "examples", "completion",
+        "sounding", "lightning", "mosaic", "winds", "animate", "qpe", "basin", "report",
+        "indicators", "export", "methods", "project", "env", "serve", "examples", "completion",
     }
 )  # fmt: skip
 #: ``format`` values: the format families of ``file_opened`` and the export formats.

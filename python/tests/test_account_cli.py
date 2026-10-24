@@ -64,6 +64,7 @@ GATED = [
     ["winds", "-i", "a.nc", "b.nc"],
     ["qpe", "-i", "a.nc"],
     ["basin", "-i", "a.nc", "-b", "b.geojson"],
+    ["report", "-i", "a.nc"],
     ["indicators", "-i", "a.nc", "--guidance", "g.nc"],
     ["sounding", "-i", "s.csv"],
     ["animate", "-i", "a.nc"],

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synthetic event</title><style>
+:root { color-scheme: light; --fg:#1d2733; --muted:#5b6876; --line:#d5dbe3; --bg:#fff;
+--soft:#f4f6f9;
+  --accent:#0b5cad; --warn:#8a4b00; --warnbg:#fff4e0; }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px 16px 48px; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 -apple-system, "Segoe UI", "IBM Plex Sans", Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 980px; margin: 0 auto; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 19px; margin: 32px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+.sub { color: var(--muted); margin: 0 0 12px; }
+.banner { background: var(--warnbg); border: 1px solid #e8c88f; color: var(--warn); border-radius:
+6px;
+  padding: 8px 12px; margin: 12px 0; font-size: 14px; }
+.chip { display: inline-block; padding: 0 8px; border: 1px solid var(--accent); color:
+var(--accent);
+  border-radius: 10px; font-size: 12px; font-weight: 600; letter-spacing: .04em; vertical-align:
+  middle; }
+.chip.warn { border-color: var(--warn); color: var(--warn); }
+table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 14px; }
+th, td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align:
+top; }
+th { background: var(--soft); font-weight: 600; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+figure { margin: 12px 0; }
+figure img { max-width: 100%; height: auto; border: 1px solid var(--line); }
+figcaption { color: var(--muted); font-size: 13px; margin-top: 4px; }
+pre { background: var(--soft); border: 1px solid var(--line); padding: 10px; overflow-x: auto; font-
+size: 12px;
+  white-space: pre-wrap; word-break: break-word; }
+code { font-family: ui-monospace, "SF Mono", "IBM Plex Mono", Menlo, monospace; font-size: 13px; }
+.small { font-size: 13px; color: var(--muted); }
+ul.refs { padding-left: 18px; font-size: 13px; }
+footer { margin-top: 36px; padding-top: 12px; border-top: 1px solid var(--line); color:
+var(--muted); font-size: 13px; }
+@media print { body { padding: 0; } h2 { break-after: avoid; } figure, table { break-inside: avoid;
+}
+  details > summary { display: none; } details > * { display: block; } }
+</style></head><body><main>
+<h1>Synthetic event</h1>
+<p class="sub">2024-05-01T20:00:00Z to 2024-05-01T20:20:00Z (UTC) &middot; 20.0 min &middot; <span class="chip">RETRIEVED</span> radar rainfall estimate</p>
+<div class="banner"><strong>Estimates, not observations.</strong> Radar rainfall is a retrieval; every number below is labelled with its class and, where the engine has one, its uncertainty. Experimental guidance, not an official warning. Follow your official weather service (in the US, the National Weather Service).</div>
+<h2>Event summary</h2>
+<table><thead><tr><th class="">Quantity</th><th class="n">Value</th><th class="">Class</th><th class="">Note</th></tr></thead><tbody><tr><td class="">Largest accumulation in a cell</td><td class="n">3.3 mm</td><td class="">RETRIEVED</td><td class="">see the uncertainty row</td></tr><tr><td class="">Mean accumulation over the area with an estimate</td><td class="n">3.33 mm</td><td class="">RETRIEVED</td><td class="">area 31,000 km&sup2;</td></tr><tr><td class="">Area with at least 0.1 mm</td><td class="n">30,000 km&sup2;</td><td class="">RETRIEVED</td><td class=""></td></tr><tr><td class="">Largest rain rate</td><td class="n">10 mm/h</td><td class="">RETRIEVED</td><td class="">one cell, one instant</td></tr><tr><td class="">Share of the period with data (mean over cells)</td><td class="n">100 %</td><td class=""></td><td class="">time without data is not counted as zero</td></tr><tr><td class="">Median relative uncertainty (1 sigma, cells with at least 1 mm)</td><td class="n">33 %</td><td class=""></td><td class="">relation scatter and calibration; errors correlated in time</td></tr></tbody></table>
+<figure><img alt="Map of the rainfall accumulation" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg=="><figcaption>Accumulation map.</figcaption></figure>
+<table><thead><tr><th class="">Radar</th><th class="">Latitude, longitude (deg)</th><th class="n">Volumes</th><th class="">First (UTC)</th><th class="">Last (UTC)</th></tr></thead><tbody><tr><td class="">SYN</td><td class="">35.000, -97.000</td><td class="n">3</td><td class="">2024-05-01T20:00:00</td><td class="">2024-05-01T20:20:00</td></tr></tbody></table>
+<h2>Basins</h2>
+<p>Area-weighted rainfall over each basin polygon (exact cell fractions, true cell area). <span class="chip">RETRIEVED</span></p>
+<table><thead><tr><th class="">Basin</th><th class="n">Area (km²)</th><th class="n">Mean depth (mm)</th><th class="n">1 sigma (mm)</th><th class="n">Largest cell (mm)</th><th class="n">Peak mean rate (mm/h)</th><th class="n">Covered</th></tr></thead><tbody><tr><td class="">H1</td><td class="n">1,200</td><td class="n">3.3</td><td class="n">1.1</td><td class="n">3.3</td><td class="n">10.0</td><td class="n">100 %</td></tr></tbody></table>
+<p class="small">1 sigma: the basin mean of the cell accumulation uncertainty, errors fully correlated in time (an upper bound for the sum); it contains the relation scatter and the calibration only. Covered: the share of the basin area with an estimate; the mean is over that part.</p>
+<h3>Area at or above a depth (km&sup2;)</h3>
+<table><thead><tr><th class="">Basin</th><th class="n">&gt;= 1 mm</th><th class="n">&gt;= 5 mm</th></tr></thead><tbody><tr><td class="">H1</td><td class="n">1,200</td><td class="n">0</td></tr></tbody></table>
+<h3>Return period of the largest basin-mean depth</h3>
+<table><thead><tr><th class="">Basin</th><th class="n">Duration (h)</th><th class="n">Depth (mm)</th><th class="n">Return period (years)</th><th class="">Note</th></tr></thead><tbody><tr><td class="">H1</td><td class="n">0.25</td><td class="n">3.3</td><td class="n">6.5</td><td class="">no areal reduction applied: understated for an area mean (a lower bound)</td></tr></tbody></table>
+<p class="small">From a precipitation-frequency table supplied by the user (never downloaded); point depths compared with an area mean, see the note column for the areal reduction.</p>
+<figure><img alt="Basins coloured by their mean accumulation" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg=="><figcaption>Basins filled by their mean.</figcaption></figure>
+<figure><img alt="Basin rain rate and cumulative depth" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg=="><figcaption>Series.</figcaption></figure>
+<h2>Validation against rain gauges</h2>
+<p>6 gauges paired with the radar accumulation (3 &times; 3 cells). Adjustment: mean-field bias. Gauges are point measurements with errors of their own.</p>
+<table><thead><tr><th class=""></th><th class="n">n</th><th class="n">Relative bias</th><th class="n">RMSE (mm)</th><th class="n">Correlation</th><th class="n">KGE</th></tr></thead><tbody><tr><td class="">radar before adjustment</td><td class="n">6</td><td class="n">-33.0 %</td><td class="n">1.67</td><td class="n">0.99</td><td class="n">0.60</td></tr><tr><td class="">adjusted, in sample</td><td class="n">6</td><td class="n">+0.0 %</td><td class="n">0.10</td><td class="n">0.99</td><td class="n">0.99</td></tr><tr><td class="">adjusted, leave-one-gauge-out</td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td><td class="n"></td></tr></tbody></table>
+<p class="small">The in-sample row is the fit, not a skill; the leave-one-gauge-out row is the honest one.</p>
+<h2>Probabilistic rainfall: ensemble of the estimate</h2>
+<div class="banner">An ensemble under an ASSUMED error model, not a forecast.</div>
+<p>30 members, seed 0; multiplicative lognormal error, sigma of ln = 0.300, correlation length 25 km, variance shares 0.30 common / 0.50 spatial / 0.20 cell to cell.</p>
+<table><thead><tr><th class="">Parameter</th><th class="">Where it came from</th></tr></thead><tbody><tr><td class="">sigma_ln</td><td class="">the engine&#x27;s own uncertainty model</td></tr><tr><td class="">shares</td><td class="">ASSUMED DEFAULT</td></tr></tbody></table>
+<figure><img alt="Ensemble spread and exceedance probability" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg=="><figcaption>Ensemble map.</figcaption></figure>
+<h3>Basin-mean depth over the members</h3>
+<table><thead><tr><th class="">Basin</th><th class="n">Mean (mm)</th><th class="n">5th pct (mm)</th><th class="n">95th pct (mm)</th><th class="n">P(&gt;= 1 mm)</th><th class="n">P(&gt;= 5 mm)</th></tr></thead><tbody><tr><td class="">H1</td><td class="n">3.3</td><td class="n">2.5</td><td class="n">4.2</td><td class="n">100 %</td><td class="n">2 %</td></tr></tbody></table>
+<h3>Reliability</h3>
+<p>No gauges were given: the probabilities are <strong>not validated</strong> against observations.</p>
+<h2>Flash-flood indicators</h2>
+<div class="banner"><strong>RETRIEVED INDICATOR.</strong> Experimental guidance, not an official warning. Follow your official weather service (in the US, the National Weather Service). Antecedent soil moisture, snow, urban drainage and terrain are not modelled.</div>
+<h3>Rain / guidance, 1 h <span class="chip warn">RETRIEVED INDICATOR</span></h3>
+<table><thead><tr><th class="">Class</th><th class="n">Cells</th><th class="n">Area (km²)</th></tr></thead><tbody><tr><td class="">below 50 % of guidance</td><td class="n">10</td><td class="n">40</td></tr><tr><td class="">50 to 75 %</td><td class="n">7500</td><td class="n">30,000</td></tr></tbody></table>
+<p class="small">Input: ffg.nc; vintage: test vintage; units in file: in.</p>
+<figure><img alt="Rain / guidance, 1 h" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAHnOcQAAAAABJRU5ErkJggg=="><figcaption>Indicator map.</figcaption></figure>
+<p class="small">The rainfall period is shorter than the guidance duration: lower bounds.</p>
+<h2>Methods</h2>
+<p>hybrid: Z = 300 R^1.4 test text &lt;b&gt;not html&lt;/b&gt;</p>
+<p>Grid: 100 &times; 100 cells of 2000 m (azimuthal-equidistant, true cell area). Rain rates (mm/h) are integrated over time with advection-corrected interpolation between scans; a gap longer than the limit is not bridged, and time without data is not counted as zero. Reflectivity in dBZ is never added or averaged as a decibel quantity.</p>
+<p class="small">Uncertainty model: DSD variability and calibration.</p>
+<p class="small">Note: No DEM: beam blockage is not evaluated.</p>
+<h3>References</h3><ul class="refs"><li>Fulton, R. A., et al., 1998: The WSR-88D rainfall algorithm. Wea. Forecasting, 13, 377-395.</li><li>Giangrande, S. E., and A. V. Ryzhkov, 2008: Estimation of rainfall based on the results of polarimetric echo classification. J. Appl. Meteor. Climatol., 47, 2445-2462.</li></ul>
+<h2>Run record and provenance</h2>
+<p>Software: radarx-desktop test. Made 2000-01-01T00:00:00Z.</p>
+<p>Input files: <code>v0.hyd</code>, <code>v1.hyd</code>, <code>v2.hyd</code></p>
+<details open><summary>Run record (JSON, file paths reduced to names): the report is made again from the record file with <code>rxd report --from-record</code> (<code>--record</code> writes it with the paths)</summary><pre>{
+  &quot;inputs&quot;: [
+    &quot;v0.hyd&quot;
+  ],
+  &quot;qpe&quot;: {
+    &quot;basins&quot;: &quot;b.geojson&quot;
+  },
+  &quot;record_version&quot;: 1,
+  &quot;report&quot;: {
+    &quot;bin_minutes&quot;: 60.0,
+    &quot;title&quot;: &quot;Synthetic event&quot;
+  },
+  &quot;software&quot;: &quot;radarx-desktop test&quot;,
+  &quot;type&quot;: &quot;event_report&quot;
+}</pre></details>
+<footer>Radarx Desktop by LabShope Technologies. Licence of the program: PolyForm Noncommercial License 1.0.0. Built on radarx, xradar, xarray, NumPy and matplotlib (their licences are in the third-party notices of the program). Basin polygons, gauges and frequency tables are the user's own data and stay under their own licences.</footer>
+</main></body></html>

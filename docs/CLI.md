@@ -111,6 +111,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | | `rxd animate` | a storm-centred 3D animation (MP4) from many volumes, with an optional synthesised sound track (`--sound`) |
 | Hydrology | `rxd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
 | | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
+| | `rxd report` | one HTML report of a rainfall event, reproducible from its run record |
 | | `rxd indicators` | flash-flood indicators: rain vs guidance, return period, vs climatology |
 | Forecast | `rxd nowcast` | advection nowcast of the next 0 to 2 hours with ensemble, probabilities and a verification against persistence ({doc}`NOWCAST`) |
 | Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
