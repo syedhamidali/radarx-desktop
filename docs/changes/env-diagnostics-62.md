@@ -1,1 +1,0 @@
-- **Environment diagnostics**: `diagnose()` now computes lapse rates (0-3 km and 700-500 hPa) alongside CAPE/CIN/LCL/LFC/EL, shear, SRH and precipitable water; bulk shear, Bunkers storm motion and SRH use `radarx.retrieve.wind_profile` when radarx is installed and fall back to local implementations otherwise. See {doc}`source-diagnostics`.
