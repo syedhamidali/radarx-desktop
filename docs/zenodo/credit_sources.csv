@@ -7,3 +7,4 @@ DWD,Deutscher Wetterdienst radar data,radar data,"Deutscher Wetterdienst (DWD) O
 CPOL,CPOL radar data,radar data,"CPOL radar, Darwin, Australia: sample file of the open-radar-data collection",terms of the open-radar-data collection and of the original data provider,https://github.com/openradar/open-radar-data
 NPOL,NPOL radar data,radar data,NPOL radar: sample file of the open-radar-data collection,terms of the open-radar-data collection and of the original data provider,https://github.com/openradar/open-radar-data
 COW,COW radar data,radar data,COW (C-band on Wheels) radar: sample file,terms of the original data provider,
+GLM,GOES-16 GLM lightning data,lightning data,"NOAA GOES-16 Geostationary Lightning Mapper (GLM), GOES-R series, distributed by NOAA/NESDIS",US Government data without copyright restrictions; credit to NOAA requested,https://www.goes-r.gov/spacesegment/glm.html

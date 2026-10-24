@@ -110,3 +110,7 @@ images/ui/radar-globe-australia-light.png,OSM,yes,"radar network globe, light th
 images/ui/radar-globe-dark.png,OSM,yes,"radar network globe, dark theme"
 images/ui/radar-globe-europe-card.png,OSM,yes,"radar network globe, dark theme, over Europe with a selected site's card open"
 images/ui/radar-globe-none-dark.png,,,"radar network globe, dark theme, basemap style ""none"" (no map tiles, no OSM credit)"
+images/lightning-2d-dark.png,OSM;NEXRAD;GLM,yes,"GOES-16 GLM flashes over a KHPX reflectivity scan (11 Dec 2021), dark theme; map tiles credited in the frame"
+images/lightning-2d-light.png,OSM;NEXRAD;GLM,yes,"same as lightning-2d-dark.png, light theme"
+images/lightning-3d-dark.png,OSM;NEXRAD;GLM,no,"GLM flashes on the ground below the 3D reflectivity volume; map draped under the 3D view"
+images/lightning-panel-dark.png,OSM;NEXRAD;GLM,yes,the Lightning panel, same KHPX/GLM scene as lightning-2d-dark.png; map tiles credited in the frame
