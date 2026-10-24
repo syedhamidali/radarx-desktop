@@ -134,7 +134,7 @@
   <div class="wind-root">
     <!-- ── Radars ────────────────────────────────────────────────────────── -->
     <section class="block">
-      <h4>Radars</h4>
+      <h3>Radars</h3>
       {#if rows.length === 0}
         <p class="empty-hint">Open the files of two or more radars that scan the same weather at about the same time.</p>
       {:else}
@@ -166,7 +166,7 @@
 
     <!-- ── Grid ──────────────────────────────────────────────────────────── -->
     <section class="block">
-      <h4>Analysis grid</h4>
+      <h3>Analysis grid</h3>
       <div class="grid2">
         <label class="field">
           <span>Horizontal spacing</span>
@@ -194,7 +194,7 @@
 
     <!-- ── Retrieval ─────────────────────────────────────────────────────── -->
     <section class="block">
-      <h4>Retrieval</h4>
+      <h3>Retrieval</h3>
       <div class="seg" role="group" aria-label="Method">
         <button type="button" class="seg-btn" class:on={s.method === 'analytic'} onclick={() => updateWindSettings({ method: 'analytic' })}
           title="Classic dual-Doppler solution: fast, uses the data exactly where beams cross well">Analytic</button>
@@ -236,7 +236,7 @@
 
     <!-- ── Background wind ───────────────────────────────────────────────── -->
     <section class="block">
-      <h4>Background wind</h4>
+      <h3>Background wind</h3>
       {#if s.method !== 'variational'}
         <p class="help">Only the variational method uses a background wind.</p>
       {:else}
@@ -365,7 +365,7 @@
     {#if res}
       <section class="block result" aria-label="Wind result">
         <div class="block-head">
-          <h4>{res.method === 'analytic' ? 'Analytic' : 'Variational'} wind · {res.radars.map((r) => r.name).join(' + ')}</h4>
+          <h3>{res.method === 'analytic' ? 'Analytic' : 'Variational'} wind · {res.radars.map((r) => r.name).join(' + ')}</h3>
           <span class="spacer"></span>
           <span class="mono muted">{seconds(res.elapsed_ms)}</span>
         </div>
@@ -400,7 +400,7 @@
           </p>
         {/if}
         {#if res.level_coverage && res.level_coverage.length > 0}
-          <h4>Coverage by height</h4>
+          <h3>Coverage by height</h3>
           <div class="cov" role="table" aria-label="Coverage by height">
             <div class="cov-head" role="row">
               <span>km</span><span title="Cells seen by two or more radars">2+ radars</span>
@@ -419,7 +419,7 @@
           <p class="help">Share of all grid cells at each height. A level is empty where the radars cannot see it (far radars cannot see low levels) or where the beams cross too flat.</p>
         {/if}
 
-        <h4>Map layer</h4>
+        <h3>Map layer</h3>
         <div class="grid2">
           <label class="field">
             <span>Field</span>
@@ -472,7 +472,7 @@
           </label>
         {/if}
 
-        <h4>Vertical cross-section</h4>
+        <h3>Vertical cross-section</h3>
         <div class="grid2">
           <label class="field">
             <span>Field</span>
@@ -526,7 +526,7 @@
   .wind-root { display: flex; flex-direction: column; gap: var(--spacing-md, 12px); }
   .block { display: flex; flex-direction: column; gap: var(--spacing-sm, 8px); }
   .block-head { display: flex; align-items: center; gap: var(--spacing-xs, 4px); }
-  h4 {
+  h3 {
     margin: 0;
     font-size: 10px;
     font-weight: 700;
@@ -534,7 +534,7 @@
     letter-spacing: 0.06em;
     color: var(--text-muted);
   }
-  .result h4:first-child { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--text-primary); }
+  .result h3:first-child { text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--text-primary); }
   .spacer { flex: 1; }
   .mono { font-family: var(--font-mono, monospace); font-variant-numeric: tabular-nums; }
   .muted { color: var(--text-muted); }

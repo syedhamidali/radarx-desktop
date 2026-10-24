@@ -133,9 +133,7 @@ def new_record(
         "inputs": [{"name": n} for n in provenance.source_names(list(inputs))],
         "steps": [dict(s) for s in steps],
     }
-    # (the note exists once the opt-in float32 decoding is in: PR for issue #97)
-    note = getattr(provenance, "numeric_precision_note", None)
-    precision = note() if note else None
+    precision = provenance.numeric_precision_note()
     if precision:
         record["numeric_precision"] = precision
     return record

@@ -41,6 +41,7 @@ RADAR_MAP
 RHI
 CROSSSECTION
 CELLS
+ROTATION
 ```
 
 ```{toctree}
@@ -61,6 +62,14 @@ REALISTIC_3D
 STORM_CLIP
 ANIMATE
 export
+```
+
+```{toctree}
+:maxdepth: 2
+:caption: Environment data and diagnostics
+
+ENVIRONMENT
+source-diagnostics
 ```
 
 ```{toctree}

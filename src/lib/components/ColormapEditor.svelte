@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { focusTrap } from '../utils/focusTrap';
   import { COLORMAP_DATA, COLORMAP_CATEGORIES } from '../utils/colormaps';
   import {
     type ColorStop,
@@ -244,7 +245,7 @@
 <svelte:window on:keydown={(e) => { if (e.key === 'Escape' && onClose) { e.stopPropagation(); onClose(); } }} />
 
 <div class="cmap-editor-overlay">
-  <div class="cmap-editor" role="dialog" aria-modal="true" aria-label="Colormap editor">
+  <div class="cmap-editor" role="dialog" aria-modal="true" aria-label="Colormap editor" use:focusTrap>
     <!-- Header -->
     <div class="editor-header">
       <h3>Colormap Editor</h3>

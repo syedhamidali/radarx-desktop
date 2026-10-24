@@ -317,6 +317,148 @@ paths so that it can be run again; the copy printed in the report keeps only fil
 sections are written by the report from the same results the other commands give; the ensemble and indicator sections can be
 added from the Python interface and are not yet command-line options of `rxd report`.
 
+## Probabilistic rainfall: an ensemble of the estimate
+
+One accumulation is one number per cell. Hydrologists also need "how likely is at least 50 mm here?". `--ensemble N`
+(`rxd qpe`, `rxd basin`, `api.qpe(ensemble=N)`, and *Probabilistic rainfall* in the Rainfall panel) builds **N equally
+likely possible truths** around the estimate and derives from them the **mean, the spread, percentiles (5, 50, 95 %)
+and the probability of reaching chosen depths**, per cell and per basin.
+
+```{admonition} The ensemble is the error model you assumed
+:class: warning
+The members come from an error model, not from the physics of the rain. The probabilities are conditional on that model, contain
+only the errors it lists, and are **not calibrated** unless the result says they were checked against gauges (and then
+only for those gauges). An output without gauges says so: "the probabilities are NOT validated against observations".
+It is labelled `RETRIEVED` with the extra words "ensemble, assumed error model"; it is not a forecast.
+```
+
+**The model.** Multiplicative, lognormal, spatially correlated, in the logarithm of the rain (the idea of the radar ensemble
+generator of Germann et al. 2009, which describes the radar error as the log ratio of gauge to radar and its spatial structure
+with an exponential semivariogram; the construction here is simpler and our own):
+
+    member = estimate × exp( s · w(x) · z(x) − s² w(x)² / 2 )
+
+* *s* is the standard deviation of ln(truth / estimate); the last term makes the factor average to 1, so the **ensemble
+  mean is the estimate** (depths in mm are averaged as they are, never as decibels; a rain rate or depth ensemble mean of
+  10 and 40 mm is 25 mm, the geometric mean 20 mm would be lower by exp(−s²/2)),
+* *z* is a unit-variance Gaussian field made of three independent parts: **one number for the whole domain** (a calibration
+  or Z–R bias is the same in every cell), a **spatially correlated field** with correlation exp(−*h*/*L*), and
+  **cell-to-cell noise**; the *shares* of the variance are given for each,
+* *w(x)* scales the error cell by cell with the estimate's own uncertainty field (larger at long range, in hail, behind attenuation).
+
+A cell with 0 mm stays 0 mm in every member (rain is never created where the radar saw none) and cells without an estimate
+stay empty. Member *k* is drawn from `SeedSequence(seed).spawn(N)[k]`: the same seed and options give the same members, and
+adding members does not change the first ones. The seed and the whole model are in the run record that every output carries
+(NetCDF attribute `ensemble_record`, `-o x.json`).
+
+**Where the numbers come from** (each is reported with its source, in the output and in the panel):
+
+| | With gauges (`--gauges`) | Without gauges |
+|---|---|---|
+| *s* | root mean square of ln(gauge/radar) over the gauges with at least 1 mm on both sides, so a bias between them is part of the error (5 gauges needed) | the engine's own uncertainty model: median relative 1σ of the accumulation where it is at least 0.5 mm, as a log standard deviation (not fitted) |
+| shares | the bias share from the mean ln ratio, the rest split by an exponential variogram of the deviations (8 gauges needed, else an assumed 70 / 30 split, said so) | **assumed default** 0.3 common / 0.5 spatial / 0.2 cell to cell: not measured, not a literature value |
+| *L* | the variogram range (8 gauges), a rough number with so few points | **assumed default** 25 km: not measured, not a literature value |
+
+Change any of them (`--error-sigma-ln`, `--error-corr-km`, `--error-shares`) and see how the probabilities move: with
+assumed defaults, that sensitivity *is* the honest statement. The model is built around the radar-only estimate; if you also
+adjust to gauges, the ensemble is centred on the adjusted field and keeps the (conservative) spread of the radar-only
+errors. If the gauges are on average more than 10 % from the radar the output says so.
+
+**Reliability.** With at least 30 gauges the exceedance probabilities are checked at the gauges: for each depth, the share of
+members at least that deep is the probability and "the gauge total is at least that deep" is the event. The output gives the
+Brier skill against the climatological frequency of the same sample and the **reliability slope** (observed frequency against
+forecast probability; 1 is perfect, below 1 overconfident). When the error model was fitted to the same gauges the check is
+optimistic, and says so. With fewer than 30 gauges it says the probabilities are not validated.
+
+On a **synthetic case where the truth is known** (a smooth 25 ± 20 mm field, radar = truth divided by a spatially correlated
+lognormal error with σ = 0.35 and correlation length 8 km, 600 gauges that read the truth), the model fitted from the gauges
+(σ 0.31, correlation length 5.4 km) gives a Brier skill of 0.51 and a reliability slope of 0.93, and the same ensemble with half
+the spread is overconfident (slope 0.79). That shows the check can tell a right spread from a too-narrow one, **not** that the
+ensemble is right for real rain: real radar errors (vertical profile, bright band, overshoot) are not in the model.
+
+**Outputs.** `-o x.nc` adds `ens_mean`, `ens_std`, `ens_p05`, `ens_p50`, `ens_p95` and `prob_ge_<mm>mm` with their labels; the
+map layers have the same names (`--field prob_ge_25mm`, or the layer list of the panel). `--exceed 5,10,25` chooses the depths
+(default 5, 10, 25, 50, 100 mm). With basins, each basin gets the area-weighted basin-mean depth over the members (mean,
+5th and 95th percentile) and the probability that the basin mean reaches each depth. The Monte Carlo noise of a probability
+is about 0.5/√N at p = 0.5 (0.09 for 30 members): use 100 or more members for a map you want to read to the nearest 10 %.
+
+The ensemble, the error model from gauges, the probabilities and the reliability tables are functions of the radarx library; the
+program uses them when the installed radarx has them and otherwise computes the same thing itself.
+
+**Not done yet:** perturbing the physical inputs (calibration offset, ZDR bias, attenuation, vertical profile) through the
+radarx ensemble tools and re-running the retrieval (the error model here acts on the finished accumulation); feeding the
+members to a runoff model (that model does not exist yet); an interactive reliability diagram.
+
+## Flash-flood indicators
+
+```{admonition} Experimental guidance, not an official warning
+:class: warning
+These maps compare the radar rainfall with numbers **you supply**. They are indicators of unusual or
+guidance-exceeding rain, not a flood forecast and not a warning. Follow your official weather service (in the US,
+the National Weather Service). Soil moisture, snow, urban drainage, terrain and basin response are **not modelled**
+unless they are contained in the guidance you supplied. No layer uses the word "warning" and none is coloured
+as one.
+```
+
+`rxd indicators` (and `api.flood_indicators`) takes the rainfall of a period and gives up to three layers:
+
+| Layer | What it is | Class |
+|---|---|---|
+| `ffg_ratio_<D>h` | rain of the period divided by a gridded **flash-flood guidance** depth of the same duration *D* (1, 3, 6, 24 h ...) | `RETRIEVED INDICATOR` |
+| `return_period_<D>h` | the **return period** of the rain from precipitation-frequency grids (depth for 2, 5, 10 ... years, for example NOAA Atlas 14 or a regional equivalent), log-log interpolation per cell; below the smallest or above the largest period the value is flagged, **never extrapolated** | `RETRIEVED INDICATOR` |
+| `relative_1h` | one-hour rain divided by the cell's **own climatological reference** (for example the 99.5th percentile of its one-hour totals in a record you have) | `RETRIEVED INDICATOR` |
+
+The class follows the rain it is made from: a radar estimate is `RETRIEVED`; with a nowcast as input
+(`input_class="FORECAST"`) the same layers are `FORECAST INDICATOR`. Every layer carries its inputs (file names, variable,
+units, the data **vintage** and valid time that you give or the file states, "not given" otherwise), the period, the
+thresholds, the class labels and the sentences above; the maps print them on the picture.
+
+**Why the relative indicator is the reference.** A test of this app's own research compared a machine-learning model (36 predictors:
+rainfall history, neighbourhood rain, terrain, HAND, drainage, built-up fraction, local hour) with simple rules on a season
+it never saw (May to September 2025, 276 million land cell-hours, outcome: a flash-flood warning or report within 3 h). It
+did **not** beat the one-hour rain relative to the cell's own climatology: PR-AUC 0.022 for the model, 0.025 for the 1-h rain
+and 0.025 for the relative 1-h rain; the best critical success index of any method was 0.044; the false-alarm ratio at useful
+hit rates was 0.94 to 0.97; 43 % of the positive cell-hours had less than 1 mm of rain in the previous 3 h (the warning
+polygons are drawn ahead of the rain); and skill was regional. The classic criterion "3-h rain at or above guidance" caught 4 %
+of the warned or reported cell-hours with a false-alarm ratio of 0.92. So the app offers transparent rules whose
+numbers you can check, and no learned model; the outcome used there is a forecaster's decision, not a measured flood, so even the
+reference rule is weak. Read it as "this cell has more rain than usual".
+
+**The rainfall period must match the duration.** The ratio compares the rain of the *whole period* of the result with a
+guidance depth of duration `--duration-h`. A period 5 % longer than the duration is refused (give `--start`/`--end` for exactly
+the hour you want); a period shorter than 90 % of it is allowed and said to give **lower bounds** (the rain of the full
+duration can only be larger).
+
+**Files you supply** (nothing is downloaded; regular latitude/longitude grids or points, WGS 84):
+
+| Format | What the program reads |
+|---|---|
+| NetCDF (`.nc`) | one 2-D variable (`--guidance-variable` if there are several) with 1-D `lat`/`latitude` and `lon`/`longitude` coordinates, either latitude order; `units` attribute `mm`, `cm`, `in` or `m`; the global attributes `vintage`, `valid_time`, `source` are carried into the output |
+| GeoTIFF (`.tif`) | one band, north-up, geographic WGS 84 (the pixel scale and tie point tags), the file's no-data value; units on the command line (default mm) |
+| CSV | `lat,lon,value` rows (other columns are ignored): each cell takes the nearest point within `--max-distance-km` (25), otherwise no value; suitable for guidance given by zone or station |
+
+Grids are brought to the analysis grid by bilinear interpolation (a cell where any of the four neighbours is missing, or outside the
+file, has no value). The depth units are converted to mm and the conversion is written in the output. Give the vintage
+yourself with `--vintage` when the file does not say it ("NWS FFG issued 2024-05-01 18Z"): guidance changes every few hours and
+a ratio against the wrong issue is a wrong number. Frequency grids are **point** depths: for a basin mean use the areal
+reduction in the basin table instead.
+
+```bash
+rxd indicators -i 'event/KHPX/*_V06' --start 2021-12-11T02:30 --end 2021-12-11T03:30 \
+    --guidance ffg_1h.nc --vintage 'FFG issued 2021-12-11 00Z' -o ind.nc -p ind.png
+rxd indicators -i 'event/KHPX/*_V06' --duration-h 3 --frequency-grid 2=atlas_2y.tif \
+    --frequency-grid 10=atlas_10y.tif --frequency-grid 100=atlas_100y.tif --frequency-units in
+rxd indicators -i 'event/KHPX/*_V06' --climatology p995_1h.nc --json
+```
+
+`-o x.nc` writes a CF grid with `rainfall`, each layer, its `_class` (with `class_labels`, -1 = no value) and for the return
+period a `_flag`; every variable has the label, the sentence, the period and the parameters as attributes. `-p ind.png` writes
+one map per layer (`ind_<layer>.png`) in classes with the legend, the label and the inputs on the picture; `-o x.json` the
+summary (area per class, inputs, vintage). The return-period interpolation and the climatological reference are functions of the radarx library; the program uses them
+when the installed radarx has them and otherwise computes the same thing itself.
+
+**Not yet:** a panel in the app, flash-flood potential indices from terrain and land cover, soil-moisture and land-surface inputs, and an accuracy test on stream gauges (the missing measured outcome).
+
 ## Accuracy against a known truth
 
 These numbers come from the validation runs of the method; the DSD runs use the radarx forward
@@ -426,6 +568,10 @@ same image while it is on the map.
 * Fulton, R. A., et al., 1998: The WSR-88D rainfall algorithm. *Wea. Forecasting*, **13**, 377–395.
 * Gal-Chen, T., 1982: Errors in fixed and moving frame of references: Applications for conventional and
   Doppler radar analysis. *J. Atmos. Sci.*, **39**, 2279–2300.
+* Dietrich, C. R., and G. N. Newsam, 1997: Fast and exact simulation of stationary Gaussian processes through
+  circulant embedding of the covariance matrix. *SIAM J. Sci. Comput.*, **18**, 1088–1107.
+* Germann, U., M. Berenguer, D. Sempere-Torres, and M. Zappa, 2009: REAL: ensemble radar precipitation estimation for
+  hydrology in a mountainous region. *Quart. J. Roy. Meteor. Soc.*, **135**, 445–456.
 * Giangrande, S. E., and A. V. Ryzhkov, 2008: Estimation of rainfall based on the results of polarimetric echo
   classification. *J. Appl. Meteor. Climatol.*, **47**, 2445–2462.
 * Goudenhoofd, E., and L. Delobbe, 2009: Evaluation of radar-gauge merging methods for quantitative

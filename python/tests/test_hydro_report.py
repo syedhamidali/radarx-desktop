@@ -16,7 +16,6 @@ pytest.importorskip("radarx")
 from engine import cli
 from engine.hydro import report
 from engine.reader import RadarReader
-
 from tests.hydro_synth import make_tree
 
 GOLDEN = Path(__file__).parent / "golden" / "event_report.html"
@@ -104,7 +103,8 @@ def synthetic_model() -> dict:
                     "max_depth_mm": 3.3,
                     "return_period_years": 6.5,
                     "flag": "",
-                    "note": "no areal reduction applied: understated for an area mean (a lower bound)",
+                    "note": "no areal reduction applied: understated for an area mean "
+                    "(a lower bound)",
                 }
             ],
         },
@@ -155,7 +155,8 @@ def synthetic_model() -> dict:
         "indicators": {
             "label": "RETRIEVED INDICATOR",
             "product_text": report.GUIDANCE_TEXT,
-            "not_modelled": "Antecedent soil moisture, snow, urban drainage and terrain are not modelled.",
+            "not_modelled": "Antecedent soil moisture, snow, urban drainage and terrain are not "
+            "modelled.",
             "notes": ["The rainfall period is shorter than the guidance duration: lower bounds."],
             "layers": {
                 "ffg_ratio_1h": {

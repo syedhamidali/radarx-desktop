@@ -1,1 +1,0 @@
-- **`rxd pipeline` works after `pip install`:** the command-line package failed with a file-not-found error on its first `rxd pipeline` run because it looked for its built-in helper files in a folder that exists only in a source checkout. Found by a Windows test of the installed build.

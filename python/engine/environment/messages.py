@@ -10,6 +10,10 @@
 ``env_cancel``        -> ``env_cancelled`` (from the running fetch)
 ``env_set_settings``  -> ``env_status``;  ``env_clear_cache`` -> ``env_status``
 ``sounding_open``     -> ``sounding_result`` | ``sounding_error`` (a local file or the example)
+``env_profile``       -> ``sounding_result`` | ``sounding_error``: the column of a model or
+                        reanalysis provider at ``lat``/``lon``, read from the cache only (the
+                        data was fetched through ``env_estimate`` / ``env_fetch`` after the
+                        user's approval; this message never downloads)
 
 Not available in web mode (a public service must not download on a visitor's behalf or read the
 server's disk).
@@ -74,6 +78,7 @@ class EnvironmentMessages:
             "env_set_settings": self._handle_env_set_settings,
             "env_clear_cache": self._handle_env_clear_cache,
             "sounding_open": self._handle_sounding_open,
+            "env_profile": self._handle_env_profile,
         }
 
     # -- state ------------------------------------------------------------------------------
@@ -276,6 +281,38 @@ class EnvironmentMessages:
             await self.send({"type": "env_status", **status})  # type: ignore[attr-defined]
         except Exception as exc:
             await self._env_error(msg.get("request_id"), exc)
+
+    async def _handle_env_profile(self, msg: dict[str, Any]) -> None:
+        """``{type: "env_profile", request_id, request, lat, lon}``: a model column."""
+        if await self._env_refuse_in_web_mode(msg, "sounding_error"):
+            return
+        rid = msg.get("request_id")
+        loop = asyncio.get_running_loop()
+
+        def run() -> dict[str, Any]:
+            from engine import sounding
+            from engine.environment.core import Environment
+
+            lat, lon = msg.get("lat"), msg.get("lon")
+            if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon)):
+                raise InvalidRequest("env_profile needs lat and lon in degrees")
+            request = Request.from_dict(msg.get("request") or {})
+            env = Environment.default()
+            # no approval is passed: whatever is not in the cache raises ApprovalRequired
+            result = env.fetch(request)
+            snd = env.provider(request.provider).profile_at(result, float(lat), float(lon), env)
+            return sounding.analyse(snd)
+
+        try:
+            result = await loop.run_in_executor(None, run)
+            await self.send(  # type: ignore[attr-defined]
+                {"type": "sounding_result", "request_id": rid, "sounding": result}
+            )
+        except Exception as exc:
+            logger.info("env_profile failed: %s", exc)
+            await self.send(  # type: ignore[attr-defined]
+                {"type": "sounding_error", "request_id": rid, "message": str(exc)}
+            )
 
     async def _handle_sounding_open(self, msg: dict[str, Any]) -> None:
         """``{type: "sounding_open", path, format?}`` or ``{..., example: true}``."""

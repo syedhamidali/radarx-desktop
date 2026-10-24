@@ -108,8 +108,7 @@ def build_project(
         "recipe": _plain_object(recipe, "recipe") or None,
         "run_record": runrecord.validate(dict(run_record)) if run_record else None,
     }
-    note = getattr(provenance, "numeric_precision_note", None)
-    precision = note() if note else None
+    precision = provenance.numeric_precision_note()
     if precision:
         doc["numeric_precision"] = precision
     return doc

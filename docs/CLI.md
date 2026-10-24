@@ -68,7 +68,7 @@ and everything that was chosen for you is said in one line (`using ...`, `wrote 
 are on the {doc}`installation` page):
 
 ```bash
-pip install "https://downloads.labshope.com/radarx/v0.4.1/radarx_desktop_engine-0.4.1-py3-none-any.whl"
+pip install "https://downloads.labshope.com/radarx/v0.5.0/radarx_desktop_engine-0.5.0-py3-none-any.whl"
 pip install -U radarx             # optional: mosaics, winds and the radarx_* algorithms (Python >= 3.12)
 rxd --version
 ```
@@ -111,6 +111,7 @@ Tab completion: `rxd completion bash > ~/.local/share/bash-completion/completion
 | Hydrology | `rxd qpe` | rain rate / rainfall accumulation with uncertainty, gauge adjustment ({doc}`HYDROLOGY`) |
 | | `rxd basin` | area-weighted rainfall over basins: table, hyetograph, return period |
 | | `rxd report` | one HTML report of a rainfall event, reproducible from its run record |
+| | `rxd indicators` | flash-flood indicators: rain vs guidance, return period, vs climatology |
 | Forecast | `rxd nowcast` | advection nowcast of the next 0 to 2 hours with ensemble, probabilities and a verification against persistence ({doc}`NOWCAST`) |
 | Save | `rxd export` | NetCDF, CfRadial2, Zarr, CSV or an image |
 | Remote | `rxd serve` | run the engine here for the app on your own computer, through an SSH port forward ({doc}`cluster`) |
@@ -265,6 +266,31 @@ precipitable water 22 mm (to 7.0 hPa)
 `-v` adds the definitions and references, `--json` everything, `-o result.json` / `-o profile.csv` write the full
 result or the levels (with a provenance header).
 
+### Weather: `env`
+
+Model analyses and forecasts, reanalysis and radar products from open archives, with the same rules as in the app:
+**nothing is downloaded until you have seen the servers, the number of files and the exact size and said yes**, the
+download is cached (size-limited, shared with the app) and works offline afterwards.
+Actions: `providers`, `inventory SOURCE`, `estimate SOURCE`, `fetch SOURCE`, `show SOURCE` (the fields as a table and
+NetCDF), `profile SOURCE --lat --lon` (a model column read as a sounding), `cache`.
+
+```console
+$ rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km
+HRRR model analysis and forecast (NOAA, AWS open data)  [MODEL]
+  From      noaa-hrrr-bdp-pds.s3.amazonaws.com
+  Download  2 file(s), 1.6 MB
+  Saved to  /Users/you/.xradar-desktop/environment-cache
+  Credit    High-Resolution Rapid Refresh (HRRR), NOAA/NCEP/EMC, ...
+  Note      run 2021-12-11 03 UTC, forecast hour 0 (analysis), valid 2021-12-11 03:00 UTC; requested 03:00 UTC, ...
+$ rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V cape -V srh_0_3km -o env.nc   # asks first
+```
+
+`estimate` downloads nothing. `fetch`, `show` and `profile` ask on a terminal; in a script `--yes` approves exactly the
+estimate that was printed. `-V` takes a short name or the source's own words, `-P KEY=VALUE` the source's options,
+`--bbox W,S,E,N` the area, `--time` the time wanted (the nearest valid time is used and named; nothing is interpolated).
+`rxd env cache` shows and sets the folder (`--dir`), the limit (`--max-mb`), offline mode (`--offline`, `--online`)
+and empties it (`--clear`). Sources and their options: {doc}`environment-sources`.
+
 ### Clean: `pipeline`
 
 A recipe is an ordered list of steps (SNR gate, clutter filter, biological-echo filter,
@@ -417,6 +443,10 @@ wrote rain.png
   Without `-o`/`-p`: `qpe_<time>.nc` and `qpe_<time>_map.png`.
 * Gauges are local files (CSV/JSON/NOAA hourly and daily/METAR): `--gauges FILE --adjust mfb|brandes|ked`; the validation
   (bias, RMSE, correlation, KGE, leave-one-out) is printed and in `--json`. Nothing is downloaded.
+* `--ensemble N [--seed S] [--exceed 10,25,50]` adds an ensemble of the accumulation under an *assumed* multiplicative error
+  model (mean, spread, 5/50/95 % percentiles, exceedance probabilities, per basin too; seeded, with a run record). The error
+  parameters come from the gauges when there are some and are marked as assumed defaults otherwise
+  (`--error-sigma-ln`, `--error-corr-km`, `--error-shares` override); see {doc}`HYDROLOGY`.
 * `rxd basin -i FILES -b polygons.geojson|.shp|.gpkg` is the same run with the basins required: the table with area-weighted
   mean and maximum depth, area above thresholds (`--thresholds 10,25,50`), the hyetograph figure (`-p`, `--bin-minutes`) and,
   with `--frequency table.json`, the return period of the basin-mean depth (add `"areal_reduction"` to the table for the
@@ -424,6 +454,10 @@ wrote rain.png
   the outlines with their statistics for a GIS and `--map map.png` the accumulation with each basin filled by its mean; the CSV
   files begin with `#` lines (units, method, uncertainty, sources).
 * A long series is read one file at a time; give `--extent W,S,E,N` so that each file is decoded once.
+* `rxd indicators -i FILES --guidance ffg.nc [--frequency-grid 10=a10.tif ...] [--climatology p995.nc] --vintage TEXT` compares the
+  rainfall of the period with guidance, precipitation-frequency and climatology files you supply (NetCDF, GeoTIFF or CSV; nothing
+  is downloaded) and writes labelled indicator layers (`-o .nc/.json`, `-p` maps). Experimental guidance, not an official warning;
+  see {doc}`HYDROLOGY`.
 
 ### Save: `export`
 

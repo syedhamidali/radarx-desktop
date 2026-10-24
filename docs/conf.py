@@ -10,15 +10,23 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 
+# Builds honour SOURCE_DATE_EPOCH (set by scripts/release/build_docs_deposit.py to the commit time) so the
+# dates printed in the documentation come from the sources, not from the moment of the build.
+_EPOCH = os.environ.get("SOURCE_DATE_EPOCH")
+NOW = (
+    dt.datetime.fromtimestamp(int(_EPOCH), dt.timezone.utc) if _EPOCH else dt.datetime.now(dt.timezone.utc)
+)
+
 # -- project information -----------------------------------------------------------------------
 project = "Radarx Desktop"
 author = "Radarx Desktop by LabShope Technologies"
-copyright = f"2025-{dt.datetime.now(dt.timezone.utc).year}, {author}"
+copyright = f"2025-{NOW.year}, {author}"
 html_title = project
 master_doc = "index"
 
@@ -32,6 +40,11 @@ if not release:
 
     release = json.loads((ROOT / "package.json").read_text())["version"]
 version = ".".join(release.lstrip("v").split(".")[:2])
+# The archived copy of the documentation (scripts/release/build_docs_deposit.py) names no software version
+# anywhere it controls: not on the PDF title page, not on the home page, not in the metadata or file names.
+DEPOSIT = bool(os.environ.get("RADARX_DEPOSIT"))
+if DEPOSIT:
+    release, version = "", ""
 
 # -- extensions ---------------------------------------------------------------------------------
 extensions = [
@@ -45,7 +58,8 @@ myst_heading_anchors = 3
 source_suffix = {".rst": "restructuredtext", ".md": "myst-nb", ".ipynb": "myst-nb", ".myst": "myst-nb"}
 myst_substitutions = {
     "release": release,
-    "today": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d"),
+    "release_line": "" if DEPOSIT else f"**Release:** {release}",
+    "today": NOW.strftime("%Y-%m-%d"),
 }
 
 intersphinx_mapping = {
@@ -102,12 +116,14 @@ html_theme_options = {
 # measurements, design notes, running it as a service. They stay in the source tree (scripts/check_links.py
 # reads this list) and are not part of the published documentation.
 INTERNAL_PAGES = [
+    "ACCESSIBILITY",
     "API",
     "BUNDLING",
     "DESIGN",
     "PACKAGING_AUDIT",
     "PERFORMANCE",
     "PERFORMANCE_FRONTEND",
+    "PROTOCOL",
     "RELEASING",
     "RELIABILITY",
     "RENDER",
@@ -125,7 +141,73 @@ exclude_patterns = [
     ".DS_Store",
     "**.ipynb_checkpoints",
     "changes",
+    "generated",
     "render",
+    "zenodo",
     "images/README*",
     *(f"{name}.md" for name in INTERNAL_PAGES),
+    # The archived copy names no software version: the What's new chapter is a list of release numbers.
+    *(["history.md"] if DEPOSIT else []),
 ]
+
+
+def setup(app):  # noqa: ANN001
+    if DEPOSIT:
+        # leave the What's new entries out of the home page of the archived copy (page excluded above)
+        def _drop_history(app, docname, source):  # noqa: ANN001
+            if docname == "index":
+                source[0] = "\n".join(
+                    line for line in source[0].split("\n") if line.strip() != "history" and "{doc}`history`" not in line
+                )
+
+        app.connect("source-read", _drop_history)
+
+
+# -- citation and image credits -------------------------------------------------------------------
+# "How to cite" (cite.md) and "Images and third-party credits" (image-credits.md) include fragments made
+# from one source each: docs/zenodo/zenodo_metadata.json + doi.json, and docs/zenodo/image_credits.csv +
+# credit_sources.csv (see docs/zenodo/README.md, a maintainer page that is not published).
+def _write_citation_and_credits() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("_radarx_citation", HERE / "zenodo" / "citation.py")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # dataclasses look the module up while the class is made
+    spec.loader.exec_module(mod)
+    mod.write_generated(HERE / "generated", HERE, set(INTERNAL_PAGES))
+
+
+_write_citation_and_credits()
+
+# -- PDF (LaTeX) ------------------------------------------------------------------------------------
+# The archived PDF (docs/zenodo/README.md): ``sphinx -b latex`` then latexmk with XeLaTeX, which handles the
+# Unicode in the pages (arrows, Greek letters, box drawing) with the GNU FreeFont fonts of TeX Live.
+latex_engine = "xelatex"
+PDF_TITLE = "Radarx Desktop: User Documentation"
+latex_documents = [(master_doc, "radarx-desktop-documentation.tex", PDF_TITLE, author, "manual", False)]
+latex_show_urls = "footnote"
+latex_show_pagerefs = False
+latex_domain_indices = False
+today = NOW.strftime("%Y-%m-%d")  # the date on the title page
+latex_elements = {
+    "papersize": "a4paper",
+    "pointsize": "10pt",
+    "extraclassoptions": "openany,oneside",
+    "releasename": " " if DEPOSIT else "Release",
+    "printindex": "",
+    "fvset": r"\fvset{fontsize=\footnotesize}",
+    "sphinxsetup": "verbatimwrapslines=true, verbatimforcewraps=true, verbatimmaxunderfull=2, TitleColor={rgb}{0.05,0.2,0.35}",
+    "preamble": r"""
+\setcounter{tocdepth}{1}
+% Tables: a smaller font so that columns with code names fit the page width.
+\usepackage{etoolbox}
+\AtBeginEnvironment{tabulary}{\footnotesize}
+\AtBeginEnvironment{longtable}{\footnotesize}
+\AtBeginEnvironment{tabular}{\footnotesize}
+% Inline code (variable and option names) may break after an underscore, so narrow columns do not cut it.
+\let\spxcodeorig\sphinxcode
+\let\spxunderscoreorig\_
+\renewcommand{\sphinxcode}[1]{\begingroup\def\_{\spxunderscoreorig\allowbreak}\spxcodeorig{#1}\endgroup}
+\hypersetup{pdfauthor={Radarx Desktop by LabShope Technologies}, pdftitle={Radarx Desktop: User Documentation}, pdfcreator={Sphinx}, pdfsubject={User documentation}}
+""",
+}

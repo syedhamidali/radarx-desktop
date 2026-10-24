@@ -330,10 +330,20 @@ wrote basin.png
 
 ## Environment data
 
-Model fields, reanalyses, satellite images and the like are fetched, cached and labelled **in the app**, which asks before
-any download ({doc}`ENVIRONMENT`). `rxd` has **no command for them** and never downloads anything. What you can do in the terminal
-is use files you already have: a radiosonde file with `rxd sounding` (above), rain-gauge files with `rxd qpe --gauges`, a terrain file
-with `rxd qpe --dem`, a basin file with `rxd basin -b`.
+Model fields and other environment data are fetched, cached and labelled by one framework that **asks before any download**
+({doc}`ENVIRONMENT`, {doc}`environment-sources`). In the terminal that is `rxd env`:
+
+```bash
+rxd env providers                                                   # the sources, their class and licence
+rxd env estimate hrrr --time 2021-12-11T03:00Z -V cape -V srh_0_3km # exact size and servers; nothing is downloaded
+rxd env show hrrr --time 2021-12-11T03:00Z --bbox=-92.5,34,-85,39 -V @storm_environment -o environment.nc
+rxd env cache --max-mb 4096                                         # the cache is shared with the app
+```
+
+`fetch`, `show` and `profile` print the estimate (servers by name, number of files, exact bytes, cache folder, credit,
+licence) and ask; in a script `--yes` approves exactly that estimate, and without it nothing is downloaded. Everything else in
+`rxd` never uses the network for data. Files you already have work as before: a radiosonde file with `rxd sounding` (above),
+rain-gauge files with `rxd qpe --gauges`, a terrain file with `rxd qpe --dem`, a basin file with `rxd basin -b`.
 
 ## Movies
 

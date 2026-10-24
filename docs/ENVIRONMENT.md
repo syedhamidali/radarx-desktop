@@ -3,13 +3,15 @@
 Radar data is only half of an analysis. The other half is the environment: a sounding, a model
 field, a reanalysis, a satellite image, a gauge. This page describes the framework every such source
 plugs into (**consent first, cached, usable offline, attributed**), the **provenance** that labels every
-layer, and the first source built on it: **observed soundings** with a Skew-T and thermodynamic
-parameters.
+layer, and the sources built on it: **observed soundings** with a Skew-T and thermodynamic
+parameters here, and model, reanalysis and radar-product data on pages of their own
+({doc}`environment-sources`).
 
 * [The rules](#the-rules)
 * [Provenance: what kind of numbers is this?](#provenance-what-kind-of-numbers-is-this)
 * [Using environment data](#using-environment-data) (what you see)
 * [Soundings](#soundings)
+* [Command line](#command-line)
 * [Limits, honestly](#limits-honestly)
 
 ## The rules
@@ -192,11 +194,31 @@ rxd sounding -i sonde.csv -o result.json -o profile.csv       # full result / pr
 Same options as every command: `-i`, `-o`, `-f/--format`, `--json`, `-v`, `-q`. Exit codes: 3 for an unreadable
 file, 4 when radarx is missing (the parcel thermodynamics need `pip install radarx`).
 
+## Command line
+
+Every source in this framework is also reached from the terminal with `rxd env` (see {doc}`cli-guide`):
+
+```bash
+rxd env providers                                   # the sources, their class and licence
+rxd env inventory SOURCE                            # what a source offers
+rxd env estimate SOURCE --time 2021-12-11T03:00Z -V NAME   # what it would cost; downloads nothing
+rxd env fetch SOURCE --time ... -V NAME --yes       # download exactly the estimate that was printed
+rxd env cache                                       # folder, size in use, limit; --max-mb, --dir, --offline, --clear
+```
+
+`fetch`, `show` and `profile` print the estimate first (the servers by name, the number of files and the exact bytes,
+the cache folder, the credit and the licence) and then ask. In a script `--yes` approves exactly the estimate that was
+printed; without it, and without a terminal, nothing is downloaded. The cache folder, its size limit and the offline
+switch are the ones the app uses. Output of `--json` is meant for programs.
+
 ## Limits, honestly
 
-* **No model, reanalysis, satellite or gauge provider ships yet.** The framework, the local-files provider,
-  one observed-sounding archive (IEM) and a simulated-server test setup do. The IEM request has been exercised only against
-  recorded samples and a simulated server; the real service is not part of the automated checks.
+* **Satellite and gauge providers do not ship yet.** The framework, the local-files provider, one observed-sounding
+  archive (IEM), the model and reanalysis sources of {doc}`environment-sources` and a simulated-server test setup do.
+  The IEM request has been exercised only against recorded samples and a simulated server; the real service is not part
+  of the automated checks.
+* Reading GRIB2 files (the format of most model and radar-product archives) needs the open ecCodes library, an optional
+  extra that the installers do not contain: downloaded data stays in the cache until it is installed.
 * The IEM terms of use are linked in the provider's licence text, not reproduced; read them before relying on it.
 * A sounding is not one place and one time: the balloon rises at about 5 m/s and drifts with the wind. The panel
   says so and, where the file has the track, gives the drift.

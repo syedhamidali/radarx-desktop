@@ -21,7 +21,10 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))  # the python/ directory
 
 
 def installed(name):
-    return importlib.util.find_spec(name) is not None
+    try:
+        return importlib.util.find_spec(name) is not None
+    except ImportError:  # a dotted name whose parent package is not installed
+        return False
 
 
 def _not_a_test(name):
@@ -48,6 +51,16 @@ for pkg in (
     "h5netcdf",
     "netCDF4",
     "numcodecs",
+    # The sign-in tokens' credential store: backends are found through entry points at run time
+    # (engine/account/credentials.py); the last four exist only on the system that needs them.
+    "keyring",
+    "jaraco.classes",
+    "jaraco.functools",
+    "jaraco.context",
+    "more_itertools",
+    "win32ctypes",
+    "secretstorage",
+    "jeepney",
 ):
     if not installed(pkg):
         continue

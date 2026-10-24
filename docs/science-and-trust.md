@@ -9,7 +9,9 @@ under which licences the software and its data are provided, and what is done wi
 SCIENCE
 OUTPUT_STANDARDS
 ENVIRONMENT
+environment-sources
 LICENSES
+image-credits
 PRIVACY
 REPORTING
 ```
