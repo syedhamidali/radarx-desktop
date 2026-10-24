@@ -94,6 +94,7 @@ COMMANDS = (
     "qpe",
     "basin",
     "indicators",
+    "env",
     "export",
     "methods",
     "project",
