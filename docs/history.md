@@ -3,6 +3,109 @@
 ```{include} changes/unreleased.md
 ```
 
+## 0.6.0
+
+- **New Lightning layer (observed).** Open GOES GLM Level 2 files or Lightning Mapping Array source files from your
+  disk and see the flashes over the radar, in 2D and in 3D. Dots are drawn at their measured time (and, for the
+  array, height), joined in time order by flash, brighter for stronger and fading with age; the time window follows
+  the volume time. A panel gives the flash rate per minute and the number of sources, hatches the time the files do
+  not cover (no data is never drawn as no lightning), and shows the GLM parallax as an uncertainty (or corrects it to
+  a cloud-top height you choose, an assumption it states). LMA sources are linked into flashes with the space-time
+  metric of Fuchs et al. (2016), thresholds in the panel. The same is available as `rxd lightning`. See {doc}`LIGHTNING`.
+- **Lightning: LMA source heights and lightning jumps.** For Lightning Mapping Array files the Lightning panel shows
+  how many sources and flash initiations lie in each height bin (km above mean sea level, with the median and the
+  most common height) and marks lightning jumps (the "2 sigma" algorithm of Schultz et al. 2009) on the flash-rate
+  chart; both are computed by the radarx library. It says that a distribution of located sources depends on the
+  range from the array, that the jump needs 14 minutes of data, and that charge layers are not inferred.
+- **Lightning sound in the viewer.** The Lightning panel can replay the flashes of the time window as sound
+  ("Synthesised from the data, not a recording"): thunder that arrives after distance / 343 m/s (divided by the
+  replay speed), quieter, duller and longer the farther the flash, heard from the radar or from the 3D camera with
+  binaural-style direction, plus an optional tick at the time of each flash. A small mixer has a master level, a
+  level and mute per layer and a limiter ceiling; the panel lists which instrument drives each layer and says that
+  the timbre is made up. Nothing plays until you press Listen. There is no wind, rain, hail or tornado sound.
+- **HRRR model data and `rxd env`.** The 3 km HRRR model (CAPE, helicity, shear, reflectivity, temperature, wind and
+  hydrometeor fields, and a model column read as a sounding) can be fetched for a time you choose. Only the fields
+  you pick are downloaded, the exact size is shown and approved first, the nearest hourly time is used and named
+  (never interpolated), and everything is labelled as a model. `rxd env` does the same from the terminal
+  ({doc}`environment-sources`). Reading the files needs the optional ecCodes package
+  (`pip install "radarx-desktop-engine[grib]"`).
+- **ERA5 reanalysis data.** Hourly global fields and profiles from the public ERA5 copy on Google Cloud, for any date
+  since 1940 and any place. Only the levels and latitudes you ask for are downloaded (a seven-level profile is about
+  17 MB instead of 526 MB), the exact size is shown and approved first, the nearest hour is used and named (never
+  interpolated), and everything is labelled as a model. Available as `rxd env ... era5` ({doc}`source-era5`).
+  ERA5-Land is not offered.
+- **MRMS radar products.** The NOAA 1 km, 2-minute mosaics (3-D and composite reflectivity, rain rate, radar-only and
+  gauge-adjusted accumulations, precipitation type, hail size, rotation tracks, echo tops) for a time you choose. The
+  exact size is shown and approved first, the nearest file is used and named (never interpolated), and each layer
+  says whether it is radar only, model-assisted, gauge-adjusted or a model field. Available as `rxd env ... mrms`
+  ({doc}`source-mrms`); reading the files needs the optional ecCodes package.
+- **Environment diagnostics.** `diagnose()` now computes lapse rates (0-3 km and 700-500 hPa) alongside
+  CAPE/CIN/LCL/LFC/EL, shear, SRH and precipitable water; bulk shear, Bunkers storm motion and SRH use
+  `radarx.retrieve.wind_profile` when radarx is installed and fall back to local implementations otherwise. See
+  {doc}`source-diagnostics`.
+- **Rotation tracks.** A new module, *Rotation Tracks (radarx)*, follows low-level rotation over a sequence of
+  volumes of one radar: a swath of the largest azimuthal shear, with the rotation couplets linked into tracks, the
+  gaps between volumes and the limits of range-dependent resolution shown with the result. It is a retrieval, never
+  a tornado warning or a damage estimate, and its detection skill has not been measured. The existing *Azimuthal
+  Shear* and *Rotation Couplets* modules (with *Tilts needed* for vertical continuity) are described on the same
+  page ({doc}`ROTATION`).
+- **Event report.** `rxd report` writes one self-contained HTML document of a rainfall event: summary numbers with
+  units and class, accumulation map, basin table, map and series, gauge validation, methods with references, the run
+  record and the credits; every figure and number is labelled as an estimate with its uncertainty where known.
+  `--record` saves the run record and `--from-record` makes the same report again from it. See {doc}`HYDROLOGY`.
+- **Probabilistic rainfall.** `--ensemble N` (and the *Probabilistic rainfall* block of the Rainfall panel) builds an
+  ensemble of the rainfall estimate under an assumed multiplicative, spatially correlated error model and gives the
+  mean, the spread, percentiles and the probability of reaching chosen depths, per cell and per basin. The error
+  parameters come from your gauges when you give some; otherwise they come from the estimate's own uncertainty and
+  from defaults that are marked as assumed. Seeded and reproducible, with the run record in the output, and always
+  labelled as an ensemble under an assumed model; with 30 or more gauges the probabilities are checked against them
+  (Brier skill and reliability slope), otherwise the output says they are not validated. See {doc}`HYDROLOGY`.
+- **Flash-flood indicators.** `rxd indicators` compares the rainfall of a period with flash-flood guidance,
+  precipitation-frequency grids (return period) and the cell's own climatology, from files you supply (NetCDF,
+  GeoTIFF or CSV; nothing is downloaded). The layers are labelled as indicators of the class of the rain they come
+  from, carry their inputs, vintage and limits, and say that they are experimental guidance, not an official
+  warning. The relative-to-climatology rule is the reference rule: a 36-predictor machine-learning model did not
+  beat it in our test, and the rule itself is weak. See {doc}`HYDROLOGY`.
+- **Dealiasing is now checked, always.** The pipeline step, the QC panel's velocity dealiasing and the *Velocity
+  Dealiasing* module test every result for a sweep that sits in the wrong multiple of two Nyquist velocities (a
+  range-ring test with a uniform-wind VAD fit, Browning and Wexler 1968), write the verdict into the run record, and
+  warn when the whole sweep is off or when parts of it sit in different intervals. The data are not changed and the
+  default *Fold reference* stays `none`: on 133 Doppler cuts of 12 NEXRAD volumes no whole-sweep offset was found in
+  the QC panel's method, so the evidence did not justify changing it. Velocity dealiasing in the QC panel can also use
+  radarx when it is installed (new *Unfolding engine* option: auto, builtin, radarx), exact where the built-in method
+  can be one interval off; and a gate beyond 150 m/s (or five Nyquist velocities) after dealiasing is set to missing,
+  counted in the run record and warned about, so a rare unfolding fault never reaches your results. See {doc}`PIPELINES`.
+- **A stuck or runaway analysis is easier to get out of.** Cancelling a module now really stops it (and an export,
+  batch or animation stops at its next step and leaves no half-written file); a module that grows past 75 % of the
+  computer's memory is stopped with a message (`XRADAR_MODULE_MAX_MB`); cloud listings and downloads give up after
+  five minutes with a clear message (`XRADAR_CLOUD_TIMEOUT_S`); and an engine whose event loop is stuck for a minute
+  restarts itself, while the app warns after 30 s of silence.
+- **The engine starts about 30 % faster** (ready after about 0.5 s instead of 0.7 s), because file-format and image
+  libraries are now loaded in the background after start-up instead of before it. New opt-in setting
+  `XRADAR_FLOAT32=1` keeps decoded Level II style moments as 32-bit numbers: half the memory for them, values within
+  6e-8 of their size (written files say so in `numeric_precision`). Slowdowns of several times are now caught by an
+  optional benchmark check run by the maintainers.
+- **Sign-in tokens leave the plain-text file.** The app and `rxd` keep your access and refresh tokens in the system
+  credential store (Credential Manager on Windows, Keychain on macOS, Secret Service on Linux) instead of a readable
+  `session.json`. An existing sign-in moves there on its own and you stay signed in. Without a credential store (no
+  desktop session, a cluster login node) the tokens stay in a file that only your user can read, and on Windows its
+  access list now names only you. {doc}`ACCOUNTS` explains what this does and does not protect, and
+  `RADARX_CREDENTIAL_STORE` chooses.
+- **The app's engine refuses web pages.** A page open in your browser can no longer open a connection to the engine
+  that runs on your computer. Any page other than the app itself, and any request that names another computer, gets
+  "403 Forbidden" before a connection is made; before, an engine started by hand (without the app's per-run key)
+  accepted every page, and one started by the app closed the connection only after it was open. {doc}`ACCOUNTS` says
+  what this does and does not protect.
+- **Accessibility.** An automated audit of the main screens in the light and dark themes (axe-core in headless
+  Chrome) found headings, landmarks and one scroll area that keyboard and screen-reader users could not use
+  properly; they are fixed, and three dialogs (colormap editor, data table, metadata viewer) now keep keyboard focus
+  inside while open and give it back when closed. A first step towards translations is in place (a message catalogue
+  helper and one translated-ready dialog); no language was added yet.
+- **Smaller fixes:** the engine says plainly when its port is already in use (one line, exit code 75) and keeps its
+  crash report instead of deleting it when the log rotates; `rxd login` explains itself and exits cleanly (code 5)
+  when there is no terminal to type a password into; a mistyped request to the engine is answered "Unknown message
+  type" instead of "not signed in"; and the engine reports its own version with `--version`.
+
 ## 0.5.0
 
 - **Python 3.12 or newer is now required for the command-line package** (`rxd`): it uses the radar-reading library
