@@ -1004,7 +1004,9 @@ export function runModule(moduleId: string): void {
       slowMs: 10_000,
       timeoutMs: 0,
       onCancel: () => {
-        // Stop waiting; the server cannot abort the run, so its late result is dropped.
+        // Stop waiting, and ask the engine to stop the run too (cancel_module; a module that
+        // ignores the request keeps running in the background but its late result is dropped).
+        void wsManager.send({ type: 'cancel_module', ...(file ? { file_id: file.id } : {}) });
         runOps.delete(moduleId);
         ignoreResults.set(moduleId, (ignoreResults.get(moduleId) ?? 0) + 1);
         setRunning(moduleId, false);
@@ -1053,6 +1055,7 @@ export function runModuleAllSweeps(moduleId: string): void {
       slowMs: 30_000,
       timeoutMs: 0, // VOLUME_RUN_TIMEOUT_MS (setRunning) ends it
       onCancel: () => {
+        void wsManager.send({ type: 'cancel_module', ...(file ? { file_id: file.id } : {}) });
         runOps.delete(moduleId);
         ignoreResults.set(moduleId, (ignoreResults.get(moduleId) ?? 0) + 1);
         setRunning(moduleId, false);

@@ -59,7 +59,13 @@ def register(command: Any, cli: Any) -> None:
     _grid_time_options(p)
     _gauge_options(p)
     _basin_options(p, required=False)
-    p.add_argument("--field", metavar="NAME", help="field of the picture (default accumulation)")
+    _ensemble_options(p)
+    p.add_argument(
+        "--field",
+        metavar="NAME",
+        help="field of the picture (default accumulation; with --ensemble also ens_mean, ens_std, "
+        "ens_p05, ens_p50, ens_p95, prob_ge_<mm>mm)",
+    )
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.add_argument("--list-relations", action="store_true", help="list the Z-R relations and exit")
     p.set_defaults(func=cmd_qpe)
@@ -77,6 +83,7 @@ def register(command: Any, cli: Any) -> None:
     _grid_time_options(p)
     _gauge_options(p)
     _basin_options(p, required=True)
+    _ensemble_options(p)
     p.add_argument(
         "--bin-minutes", type=float, default=60.0, help="hyetograph bin in minutes (default 60)"
     )
@@ -87,6 +94,49 @@ def register(command: Any, cli: Any) -> None:
     )
     p.add_argument("--dpi", type=int, default=150, help="figure resolution (default 150)")
     p.set_defaults(func=cmd_basin)
+
+    from engine.hydro.indicators_cli import register as register_indicators
+
+    register_indicators(command, cli)
+
+
+def _ensemble_options(p: argparse.ArgumentParser) -> None:
+    g = p.add_argument_group(
+        "probabilistic rainfall (an ensemble under an ASSUMED error model, not a forecast)"
+    )
+    g.add_argument(
+        "--ensemble",
+        type=int,
+        metavar="N",
+        help="N members (2 to 500) of the accumulation with a multiplicative lognormal, spatially "
+        "correlated error: mean, spread, percentiles and exceedance probabilities (off by default)",
+    )
+    g.add_argument("--seed", type=int, default=0, help="random seed of the ensemble (default 0)")
+    g.add_argument(
+        "--exceed",
+        metavar="MM,MM",
+        help="depths for the exceedance probability maps (default 5,10,25,50,100 mm)",
+    )
+    g.add_argument(
+        "--error-sigma-ln",
+        type=float,
+        metavar="S",
+        help="standard deviation of ln(truth/estimate); default: from the gauges if given, else "
+        "from the engine's uncertainty model (0.3 is about 30 %%)",
+    )
+    g.add_argument(
+        "--error-corr-km",
+        type=float,
+        metavar="KM",
+        help="correlation length of the error; default: from the gauges (8 or more), else an "
+        "ASSUMED 25 km",
+    )
+    g.add_argument(
+        "--error-shares",
+        metavar="C,S,N",
+        help="variance shares: common to the domain, spatially correlated, cell to cell "
+        "(add up to 1); default 0.3,0.5,0.2 ASSUMED when there are no gauges",
+    )
 
 
 def _estimator_options(p: argparse.ArgumentParser) -> None:
@@ -248,6 +298,9 @@ def _collect(args: argparse.Namespace, cl: Any) -> dict[str, Any]:
             )
         if args.frequency:
             kw["frequency"] = args.frequency
+    eo = _ensemble_kwargs(args, cl)
+    if eo:
+        kw["ensemble"] = eo
     if args.gauges:
         kw["gauges"] = args.gauges
         go = {
@@ -276,6 +329,27 @@ def _collect(args: argparse.Namespace, cl: Any) -> dict[str, Any]:
     elif args.adjust:
         raise cl.UsageError("--adjust needs --gauges FILE")
     return kw
+
+
+def _ensemble_kwargs(args: argparse.Namespace, cl: Any) -> dict[str, Any] | None:
+    """The ``ensemble`` argument of :func:`engine.api.qpe` from the command line (None = off)."""
+    if not hasattr(args, "ensemble"):  # a command without the ensemble options (indicators)
+        return None
+    given = (args.exceed, args.error_sigma_ln, args.error_corr_km, args.error_shares)
+    if not args.ensemble:
+        if any(v is not None for v in given):
+            raise cl.UsageError("--exceed and --error-* need --ensemble N")
+        return None
+    eo: dict[str, Any] = {"n_members": args.ensemble, "seed": args.seed}
+    if args.exceed:
+        eo["thresholds"] = cl._numbers(args.exceed, len(args.exceed.split(",")), "--exceed")
+    if args.error_sigma_ln is not None:
+        eo["sigma_ln"] = args.error_sigma_ln
+    if args.error_corr_km is not None:
+        eo["corr_length_km"] = args.error_corr_km
+    if args.error_shares:
+        eo["shares"] = cl._numbers(args.error_shares, 3, "--error-shares")
+    return eo
 
 
 def cmd_qpe(args: argparse.Namespace, out: Any) -> int:
@@ -539,6 +613,8 @@ def _print_result(res: Any, out: Any, cl: Any, basin_mode: bool) -> None:
                 f"up to {v['window_mismatch_s'] / 60:.1f} min (use --start/--end on the hour "
                 "and --hold-edges-s)"
             )
+    if res.ensemble is not None:
+        _print_ensemble(res.ensemble, cl)
     for n in res.notes:
         print(f"  note: {n}")
 
@@ -565,3 +641,50 @@ def _m(m: dict[str, Any]) -> tuple[str, ...]:
         f(m.get("correlation"), ".2f"),
         f(m.get("kge"), ".2f"),
     )
+
+
+def _print_ensemble(ens: Any, cl: Any) -> None:
+    em = ens.model
+    print(
+        cl.bold("ensemble")
+        + f"  |  {ens.n_members} members, seed {ens.seed}  |  RETRIEVED, ASSUMED error model: "
+        "not a forecast, not calibrated unless verified"
+    )
+    print(
+        f"  error    sigma(ln) {em.sigma_ln:.3f}, correlation {em.corr_length_km:.0f} km, shares "
+        f"common/spatial/cell {em.shares[0]:.2f}/{em.shares[1]:.2f}/{em.shares[2]:.2f}"
+    )
+    for k, v in em.sources.items():
+        print(f"           {k}: {v}")
+    for n in em.notes:
+        print(f"  note: {n}")
+    nan = float("nan")
+    for r in ens.basins:
+        bm = r.get("basin_mean_mm")
+        if not bm:
+            continue
+        probs = ", ".join(
+            f"P(>= {t} mm) {100 * p:.0f} %" for t, p in r["prob_basin_mean_ge"].items()
+        )
+        print(
+            f"  {r['id']}: basin mean {bm['mean']:.1f} mm "
+            f"(5-95 %: {bm.get('p05', nan):.1f} to {bm.get('p95', nan):.1f}); {probs}"
+        )
+    rel = ens.reliability
+    if rel is None:
+        print("  reliability  no gauges: the probabilities are NOT validated against observations")
+    elif not rel.get("validated"):
+        print(f"  reliability  {rel['note']}")
+    else:
+        pool = rel["pooled"]
+        slope = pool["reliability_slope"] if pool["reliability_slope"] is not None else nan
+        print(
+            f"  reliability  {rel['n_gauges']} gauges: "
+            f"Brier skill {pool['brier_skill_score']:.2f}, "
+            f"slope {slope:.2f}"
+            + (
+                " (model fitted to the same gauges: optimistic)"
+                if rel["model_from_the_same_gauges"]
+                else ""
+            )
+        )

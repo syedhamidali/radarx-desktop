@@ -16,6 +16,7 @@ import xarray as xr
 # (tests/test_account_*.py) switch it on with the ``gate_on`` fixture and use a locally made test
 # key, a mocked key document and a mocked account server, never the real network or a real account.
 os.environ["RADARX_AUTH_DISABLED"] = "1"
+os.environ.setdefault("XRADAR_WATCHDOG_S", "0")  # a test must never end the test process
 
 # ---------------------------------------------------------------------------
 # Synthetic radar data

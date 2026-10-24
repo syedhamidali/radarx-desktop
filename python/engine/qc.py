@@ -7,6 +7,7 @@ that chains multiple steps in user-defined order.
 from __future__ import annotations
 
 import logging
+import warnings
 from typing import Any
 
 import numpy as np
@@ -339,12 +340,51 @@ def _region_unfold(values: np.ndarray, nyq: float, wrap_az: bool) -> np.ndarray:
     return values + label_shift[label].reshape(ny, nx) * interval
 
 
+def _radarx_unfold(data: xr.DataArray, nyquist_vel: float) -> np.ndarray | None:
+    """Region unfolding by radarx, as an array shaped like ``data``; None if it cannot be used."""
+    if data.ndim != 2 or "azimuth" not in data.dims or "range" not in data.dims:
+        return None
+    try:
+        import radarx.retrieve as rt
+    except ImportError:
+        return None
+    d = data.transpose("azimuth", "range")
+    n_az, n_rg = d.shape
+    ds = xr.Dataset(
+        {"VRADH": (("azimuth", "range"), d.values.astype(np.float64))},
+        coords={
+            "azimuth": d["azimuth"].values,
+            "range": d["range"].values if "range" in d.coords else np.arange(n_rg) * 250.0,
+            "elevation": ("azimuth", np.full(n_az, 0.5)),
+        },
+    )
+    try:
+        with warnings.catch_warnings():
+            # radarx warns that the absolute fold is only assumed when the echo covers part of the
+            # circle; the fold check of this function reports on the result instead
+            warnings.simplefilter("ignore", UserWarning)
+            out = rt.dealias_velocity(ds, "VRADH", float(nyquist_vel), method="region")
+        arr = np.asarray(out.transpose("azimuth", "range").values, dtype=np.float64)
+    except Exception:
+        logger.warning("radarx dealiasing failed; using the built-in method", exc_info=True)
+        return None
+    if arr.shape != (n_az, n_rg):
+        return None
+    return arr if data.dims == ("azimuth", "range") else arr.T
+
+
 def velocity_dealiasing(
     data: xr.DataArray,
     nyquist_vel: float,
     reference: str = "none",
+    engine: str = "auto",
 ) -> xr.DataArray:
     """Region-based velocity dealiasing.
+
+    With radarx installed the unfolding is done by ``radarx.retrieve.dealias_velocity`` (the
+    project's reference implementation, ``engine="auto"``); without it, or with
+    ``engine="builtin"``, the built-in method below is used. The fold check at the end runs
+    either way.
 
     Contiguous regions of gates (no jump larger than the Nyquist velocity
     between neighbours) are identified, and the integer number of Nyquist
@@ -360,6 +400,10 @@ def velocity_dealiasing(
         Radial velocity field (2-D, azimuth x range).
     nyquist_vel : float
         Nyquist velocity (m/s) — half the unambiguous velocity interval.
+    engine : {"auto", "builtin", "radarx"}
+        ``"auto"`` uses radarx when it is installed and the field is a 2-D (azimuth, range)
+        sweep, and falls back to the built-in method when it is not or when radarx fails;
+        ``"radarx"`` requires radarx; ``"builtin"`` never uses it.
     reference : {"none", "zero", "vad"}
         How the absolute fold of the whole sweep is chosen. ``"none"`` (default) keeps the
         largest region's raw values, so the whole sweep can be off by a multiple of
@@ -368,7 +412,12 @@ def velocity_dealiasing(
         ``"vad"`` uses the constant term of a uniform-wind VAD fit (refused when the echo leaves
         an azimuth gap wider than 180 degrees). See :mod:`engine.dealias_reference`.
     """
-    from engine.dealias_reference import REFERENCES, fold_reference_shift
+    from engine.dealias_reference import (
+        REFERENCES,
+        fold_check,
+        fold_reference_shift,
+        implausible_velocity,
+    )
 
     if not np.isfinite(nyquist_vel) or nyquist_vel <= 0:
         raise ValueError(f"nyquist_vel must be a positive number, got {nyquist_vel}")
@@ -379,12 +428,25 @@ def velocity_dealiasing(
             f"reference {reference!r} needs a 2-D sweep with the azimuth coordinate of the rays"
         )
 
+    if engine not in ("auto", "builtin", "radarx"):
+        raise ValueError(f"engine must be auto, builtin or radarx, got {engine!r}")
     values = data.values.astype(np.float64)
     mask = np.isnan(values)
     interval = 2.0 * nyquist_vel
     modes = _filter_modes(data)
 
-    if not mask.all():
+    used = "built-in region method"
+    by_radarx = None
+    if engine != "builtin" and not mask.all():
+        by_radarx = _radarx_unfold(data, nyquist_vel)
+        if by_radarx is None and engine == "radarx":
+            raise ValueError(
+                "engine 'radarx' needs radarx installed and a 2-D (azimuth, range) sweep"
+            )
+    if by_radarx is not None:
+        values = by_radarx
+        used = "radarx region method"
+    elif not mask.all():
         if values.ndim == 2:
             az_axis = _azimuth_axis(data)
             work = np.moveaxis(values, az_axis, 0)
@@ -400,7 +462,20 @@ def velocity_dealiasing(
                 break
             values = values - n_folds * interval
 
-    note = f"nyquist_vel={nyquist_vel}"
+    note = f"nyquist_vel={nyquist_vel}, {used}"
+    # Whatever the engine returned, a velocity no wind can have is set to missing, counted and
+    # warned about, never passed on (radarx issue 350: a few gates with a fold of thousands).
+    absurd = implausible_velocity(values, nyquist_vel)
+    n_absurd = int(absurd.sum())
+    if n_absurd:
+        values = np.where(absurd, np.nan, values)
+        note += f", {n_absurd} gate(s) beyond a plausible velocity set to missing"
+        warnings.warn(
+            f"velocity dealiasing ({used}) gave {n_absurd} gate(s) with a velocity beyond "
+            f"{max(150.0, 5.0 * nyquist_vel):g} m/s; they were set to missing",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     if reference != "none":
         az_axis = _azimuth_axis(data)
         k, how = fold_reference_shift(
@@ -410,7 +485,19 @@ def velocity_dealiasing(
         note += f", {how}"
 
     out = data.copy(data=values)
-    out.attrs = {**data.attrs, "qc_dealiased": note}
+    out.attrs = {**data.attrs, "qc_dealiased": note, "qc_implausible_gates": n_absurd}
+    if values.ndim == 2 and "azimuth" in data.coords and not mask.all():
+        # Always on: say loudly when the unfolded sweep sits in a wrong interval (issue #152).
+        az_axis = _azimuth_axis(data)
+        check = fold_check(
+            np.moveaxis(values, az_axis, 0),
+            data.coords["azimuth"].values,
+            nyquist_vel,
+            data.coords["range"].values if "range" in data.coords else None,
+        )
+        out.attrs["qc_fold_check"] = f"{check['status']}: {check['message']}"
+        if check["status"] in ("whole_field_offset", "inconsistent"):
+            warnings.warn(check["message"], RuntimeWarning, stacklevel=2)
     return out
 
 
@@ -619,6 +706,12 @@ QC_REGISTRY: dict[str, dict[str, Any]] = {
                 "default": "none",
                 "label": "Fold reference",
                 "options": ["none", "zero", "vad"],
+            },
+            "engine": {
+                "type": "str",
+                "default": "auto",
+                "label": "Unfolding engine",
+                "options": ["auto", "builtin", "radarx"],
             },
         },
         "applicable_variables": ["VRADH", "VRAD", "V", "VEL"],

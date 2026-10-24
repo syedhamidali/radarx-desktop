@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
+from engine.dealias_reference import fold_check
 from engine.plugins import Result, module, param
 
 
@@ -38,6 +39,11 @@ and coordinate descent; the absolute fold of the largest region comes from a ref
 (Eilts and Smith 1990) if you give one, otherwise its mean velocity is brought close to zero. \
 method "unravel": Louf et al. (2020, JTECH 37, 741-758); needs no reference but is about 40x \
 slower and removes some noisy gates (including vortex cores).
+
+Fold check (always on): the module tests every 10 km range ring of the result; where the median \
+along-beam wind is more than one Nyquist velocity from zero (Browning and Wexler 1968) the ring is \
+in a wrong interval. It reports a whole-sweep offset (all affected rings agree) or an inconsistent \
+sweep (they do not) and never changes the data.
 
 Limits: this module dealiases only the selected sweep (no volume continuity from the sweep \
 below). Without a reference wind the absolute fold assumes echo all around the radar; for \
@@ -166,6 +172,14 @@ def run(ctx, output, method, nyquist_velocity, threshold, max_speed, wind_speed,
     changed = int((both & (np.abs(folds) >= 1)).sum())
     valid = int(both.sum())
 
+    # Always on: is the unfolded sweep in the right interval? (reports, never changes the data)
+    check = fold_check(
+        np.where(np.isfinite(raw), out, np.nan),
+        np.asarray(ds["azimuth"].values, dtype=float),
+        nyq,
+        np.asarray(ds["range"].values, dtype=float),
+    )
+
     res = Result()
     if output == "velocity":
         lim = max(float(nyq), A.symmetric_limit(out, 99.5))
@@ -204,9 +218,17 @@ def run(ctx, output, method, nyquist_velocity, threshold, max_speed, wind_speed,
                 "unit": "m/s",
             },
             {"label": "Absolute fold fixed by", "value": da.attrs.get("dealias_anchor")},
+            {"label": "Fold check", "value": check["status"].replace("_", " ")},
+            {
+                "label": "Gates in rings off by whole intervals",
+                "value": None if check["off_share"] is None else 100.0 * check["off_share"],
+                "unit": "%",
+            },
             {"label": "Method", "value": method},
             {"label": "radarx", "value": A.radarx_version()},
         ]
     )
+    if check["status"] in ("whole_field_offset", "inconsistent", "undetermined"):
+        res.text(check["message"], title="Fold check")
     res.text(NOTES, title="About this method")
     return A.add_warnings(res, warns)

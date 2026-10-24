@@ -122,6 +122,7 @@ __all__ = [
     "coerce_user_params",
     "export",
     "find_module",
+    "flood_indicators",
     "format_module",
     "info",
     "module",
@@ -2150,6 +2151,7 @@ def qpe(
     gauge_options: Mapping[str, Any] | None = None,
     basin_options: Mapping[str, Any] | None = None,
     adjust_options: Mapping[str, Any] | None = None,
+    ensemble: Mapping[str, Any] | int | None = None,
     out: str | os.PathLike[str] | Sequence[str | os.PathLike[str]] | None = None,
     plot: str | os.PathLike[str] | None = None,
     field: str | None = None,
@@ -2181,6 +2183,13 @@ def qpe(
     basins : path or BasinSet, optional
         GeoJSON / shapefile / GeoPackage polygons: area-weighted statistics and rainfall series in
         ``result.basin_series``; ``frequency`` adds the return period of the basin-mean depth.
+    ensemble : int or dict, optional
+        Number of members, or ``{"n_members": 30, "seed": 0, "thresholds": [10, 25, 50],
+        "sigma_ln": ..., "corr_length_km": ..., "shares": (common, spatial, cell)}``: an ensemble of
+        the accumulation under an *assumed* multiplicative lognormal error model with spatial
+        correlation (parameters from the gauges when there are some, else from the engine's own
+        uncertainty and marked defaults); gives ``result.ensemble`` with mean, spread, percentiles
+        and exceedance probabilities. Seeded, with a run record. See ``docs/HYDROLOGY.md``.
     out, plot : path(s)
         ``.nc`` / ``.png`` (+ ``.pgw``, ``.prj``) / ``.json`` / ``.csv`` and a figure.
     **options
@@ -2228,6 +2237,7 @@ def qpe(
         adjust=adjust or ("mfb" if gauges is not None else None),
         adjust_options=adjust_options,
         dem=dem,
+        ensemble={"n_members": int(ensemble)} if isinstance(ensemble, int) else ensemble,
         progress=progress,
         resolution_m=resolution_m,
         max_range_km=max_range_km,
@@ -2240,6 +2250,29 @@ def qpe(
     if plot is not None:
         save_figure(result.plot(field), plot)
     return result
+
+
+def flood_indicators(result: Any, **options: Any) -> Any:
+    """Flash-flood indicators of a rainfall result (``rxd indicators``).
+
+    Compares the rainfall of the period of ``result`` (from :func:`qpe`) with guidance depth,
+    precipitation
+    frequency and climatology files that you supply: ``duration_h=1``, ``guidance="ffg.nc"``,
+    ``frequency=[(2, "a2.tif"), (10, "a10.tif")]``, ``climatology="p995.nc"`` (each with
+    ``*_units`` and ``*_variable``), ``vintage="..."``, ``max_distance_km=25``. Nothing is
+    downloaded. The result is labelled ``RETRIEVED INDICATOR`` (``FORECAST INDICATOR`` with
+    ``input_class="FORECAST"``): experimental guidance, not an official warning; antecedent soil
+    moisture and urban drainage are not modelled. See ``docs/HYDROLOGY.md``.
+
+    Returns
+    -------
+    engine.hydro.indicators.IndicatorResult
+        ``.layers`` (values, classes, provenance), ``.summary()``, and
+        ``engine.hydro.indicators.to_dataset`` / ``figure`` for files and maps.
+    """
+    from engine.hydro import indicators as hi
+
+    return hi.run(result, **options)
 
 
 def _qpe_sources(files: Any) -> list[Any]:
