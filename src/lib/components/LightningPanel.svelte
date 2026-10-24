@@ -6,7 +6,7 @@
    * data cannot say: GLM has no height and a parallax; detection efficiency falls with range and is
    * not drawn; a time with no file coverage is a gap, not "no lightning".
    */
-  import { lightning, lightningSettings, lightningWindow, volumeMs, openLightningFiles, rereadLightning, clearLightning, resetLightningSettings } from '../stores/lightning';
+  import { lightning, lightningSettings, lightningWindow, volumeMs, lightningStats, requestLightningStats, openLightningFiles, rereadLightning, clearLightning, resetLightningSettings } from '../stores/lightning';
   import { connectionStatus } from '../stores/radarData';
   import {
     coverageNote,
@@ -21,12 +21,15 @@
   import CollapsiblePanel from './CollapsiblePanel.svelte';
   import ProvenanceChip from './ProvenanceChip.svelte';
   import LightningSeries from './LightningSeries.svelte';
+  import LightningHeights from './LightningHeights.svelte';
+  import LightningSound from './LightningSound.svelte';
 
   const st = $derived($lightning);
   const data = $derived(st.data);
   const cfg = $derived($lightningSettings);
   const win = $derived($lightningWindow);
   const connected = $derived($connectionStatus === 'connected');
+  const stats2 = $derived($lightningStats);
 
   const stats = $derived(data && win ? windowStats(data, win.start, win.end) : null);
   const covText = $derived(data && win ? windowCoverageText(data, win.start, win.end) : '');
@@ -134,8 +137,30 @@
         {#if covText}<p class="warn">{covText}</p>{/if}
       {/if}
 
-      <LightningSeries series={rate} title="Flash rate" unit="flashes per minute" windowS={win} volumeS={volS} tRefMs={data.tRefMs} />
+      <LightningSeries series={rate} title="Flash rate" unit="flashes per minute" windowS={win} volumeS={volS} tRefMs={data.tRefMs} marks={stats2.stats?.jump.startS ?? []} />
       <LightningSeries series={prate} title={data.kind === 'glm' ? 'Group rate' : 'Source density in time'} unit={data.kind === 'glm' ? 'groups per minute' : 'sources per minute'} windowS={win} volumeS={volS} tRefMs={data.tRefMs} color="var(--c-text-dim)" />
+
+      {#if data.kind === 'lma'}
+        <div data-testid="lightning-lma-stats">
+          {#if stats2.loading}<p class="hint" role="status">Counting source heights...</p>{/if}
+          {#if stats2.error}<p class="err" role="alert">{stats2.error}</p>{/if}
+          {#if stats2.stats}
+            <LightningHeights stats={stats2.stats} />
+            {#if stats2.stats.jump.available}
+              <p class="hint" data-testid="lightning-jumps">
+                Lightning jumps (2-sigma algorithm, Schultz et al. 2009; flash rate at least {stats2.stats.jump.minRatePerMin} per minute):
+                {#if stats2.stats.jump.startS.length}
+                  {stats2.stats.jump.startS.length} found, marked in red above, at {stats2.stats.jump.startS.map((t) => utc(t).slice(0, 5)).join(', ')} UTC.
+                {:else}none in these data.{/if}
+              </p>
+            {:else if stats2.stats.jump.reason}
+              <p class="hint">{stats2.stats.jump.reason}</p>
+            {/if}
+            {#each stats2.stats.notes as n (n)}<p class="hint">{n}</p>{/each}
+          {/if}
+          {#if !stats2.stats && !stats2.loading && !stats2.error}<button onclick={() => requestLightningStats()} disabled={!connected}>Count source heights</button>{/if}
+        </div>
+      {/if}
 
       {#if data.kind === 'glm' && par}
         <fieldset data-testid="lightning-parallax">
@@ -178,6 +203,8 @@
           <button onclick={rereadLightning} disabled={st.loading || !connected}>Apply</button>
         </fieldset>
       {/if}
+
+      <LightningSound />
 
       <details class="about" open>
         <summary>What this shows, and its limits</summary>

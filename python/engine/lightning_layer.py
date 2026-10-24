@@ -231,6 +231,8 @@ class LightningSet:
     files: list[str]
     meta: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    #: LMA only: the radarx dataset of the kept sources with their flashes (not sent to the viewer; the statistics use it)
+    source_ds: Any = None
 
     @property
     def n_points(self) -> int:
@@ -824,6 +826,7 @@ def lma_set_from_dataset(
         files=names,
         meta=meta,
         notes=notes,
+        source_ds=clustered,
     )
 
 

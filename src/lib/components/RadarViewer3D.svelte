@@ -30,7 +30,7 @@
   import { buildGroundMap } from '../utils/groundMap';
   import { get } from 'svelte/store';
   import { showRadarSites } from '../stores/radarSitesPref';
-  import { lightning, lightningSettings, lightningWindow, sceneNow } from '../stores/lightning';
+  import { lightning, lightningSettings, lightningWindow, sceneNow, setCameraPose } from '../stores/lightning';
   import { drawLightning, drawLightningLabel } from '../utils/lightningScene3d';
   import type { SceneMarker } from '../utils/scene3d';
   import { GLSL_THRESHOLD, GLSL_HASH, GLSL_GROUND_POLAR } from '../utils/volumeShaderParts';
@@ -1453,6 +1453,8 @@ ${GLSL_THRESHOLD}${GLSL_VALUE_MASK}${GLSL_HASH}${GLSL_GROUND_POLAR}
   /** Lightning above the scene: the points of the window in time order, with a label that says what they are. */
   function drawSceneLightning(ctx: CanvasRenderingContext2D, cam: Cam, cssH: number) {
     const data = get(lightning).data;
+    // the listener of the lightning sound follows this camera (km east / north of the radar, heading clockwise from north)
+    setCameraPose({ x: cam.eye[0], y: cam.eye[1], yawDeg: (Math.atan2(cam.fwd[0], cam.fwd[1]) * 180) / Math.PI });
     if (!data || !get(lightningSettings).show3d) return;
     const site = currentSite();
     if (!site) return;
